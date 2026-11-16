@@ -1,0 +1,363 @@
+// Add after NetTestHarness.cs:1136: yield return Safely(h, "P", NetPhysTest.Run(h));
+using System;
+using System.Collections;
+using System.Collections.Generic;
+using System.IO;
+using UnityEngine;
+
+namespace OriCoop
+{
+    // Online pushable-stone phase P. Both PCs observe their own game; numbered barriers use message 72.
+    public static class NetPhysTest
+    {
+        const byte MsgBarrier = 72;
+        static readonly Dictionary<int, Sample> s_partnerSteps = new Dictionary<int, Sample>();
+        sealed class Sample
+        {
+            public bool Loaded;
+            public int Id;
+            public Vector3 Position;
+        }
+
+        static SeinCharacter Own { get { return P2Context.P1; } }
+        static SeinCharacter Puppet { get { return P2Context.P2; } }
+        static string F(float value) { return value.ToString("F2"); }
+        static string V(Vector3 value) { return "(" + F(value.x) + "," + F(value.y) + ")"; }
+        static IEnumerator Wait(float seconds)
+        {
+            float end = Time.realtimeSinceStartup + seconds;
+            while (Time.realtimeSinceStartup < end) yield return null;
+        }
+
+        static void OnBarrier(BinaryReader r)
+        {
+            int step = r.ReadInt32();
+            Sample sample = new Sample();
+            sample.Loaded = r.ReadBoolean(); sample.Id = r.ReadInt32();
+            sample.Position = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+            s_partnerSteps[step] = sample;
+        }
+
+        static IEnumerator Barrier(TestHarness h, int step, PushPullBlock block)
+        {
+            bool loaded = block != null;
+            int id = loaded ? PushBlockSync.StateOf(block).Id : 0;
+            Vector3 position = loaded ? block.Position : Vector3.zero;
+            NetPlay.Send(MsgBarrier, true, w => {
+                w.Write(step); w.Write(loaded); w.Write(id);
+                w.Write(position.x); w.Write(position.y); w.Write(position.z);
+            });
+            float end = Time.realtimeSinceStartup + 30f;
+            while (NetPlay.Connected && !s_partnerSteps.ContainsKey(step) && Time.realtimeSinceStartup < end) yield return null;
+            h.Check(s_partnerSteps.ContainsKey(step), "P barrier " + step + " reached by both");
+        }
+
+        static void Bot(bool push)
+        {
+            NetTestHarness.BotButtons = 0; NetTestHarness.BotLX = push ? 1f : 0f;
+            P2Input.BotRT = push;
+        }
+
+        static bool InScene(RuntimeSceneMetaData scene, Vector3 position)
+        {
+            foreach (Rect boundary in scene.SceneBoundaries)
+                if (boundary.Contains(new Vector2(position.x, position.y))) return true;
+            return false;
+        }
+
+        static PushPullBlock FindBlock(RuntimeSceneMetaData scene)
+        {
+            PushPullBlock chosen = null;
+            for (int i = 0; i < PushPullBlock.All.Count; i++)
+            {
+                PushPullBlock block = PushPullBlock.All[i];
+                if (!InScene(scene, block.Position)) continue;
+                if (chosen == null || PushBlockSync.StateOf(block).Id < PushBlockSync.StateOf(chosen).Id) chosen = block;
+            }
+            return chosen;
+        }
+
+        static Bounds BlockBounds(PushPullBlock block)
+        {
+            Bounds bounds = new Bounds(); bool any = false;
+            foreach (Collider collider in block.GetComponentsInChildren<Collider>())
+            {
+                if (!collider.enabled || collider.isTrigger || !collider.gameObject.activeInHierarchy) continue;
+                if (!any) { bounds = collider.bounds; any = true; }
+                else bounds.Encapsulate(collider.bounds);
+            }
+            return bounds;
+        }
+
+        static Vector3 s_lastTarget;
+        static void PlaceOwn(float centerX, float feetY, float z)
+        {
+            s_lastTarget = new Vector3(centerX, feetY + 0.55f, z);
+            // Absolute target: Ori.Position is ~0.53 above the feet (measured standing on the stone). Collider bounds can
+            // lag the transform right after a reset / push-out, which once put the Ori 3 units off, inside the wall.
+            Plugin.Teleport(Own, new Vector3(centerX, feetY + 0.55f, z) - Vector3.up * 0.5f);
+            SessionRules.PositionChanged();
+        }
+
+        static float Penetration(Bounds block, Bounds ori)
+        {
+            return Mathf.Max(0f, Mathf.Min(Mathf.Min(ori.max.x - block.min.x, block.max.x - ori.min.x),
+                Mathf.Min(ori.max.y - block.min.y, block.max.y - ori.min.y)));
+        }
+
+        // Depth inside the stone's real shape (rounded MeshCollider), measured the same way as PushBlockSync's push-out.
+        static float ShapeDepth(PushPullBlock block)
+        {
+            Vector3 move; string dir;
+            return PushBlockSync.Depth(block, Own, out move, out dir);
+        }
+
+        // The tutorial scene has a spiked slug: two hits down an Ori (frozen by Revive), which ruins the round. Keep both alive.
+        static void KeepAlive() { if (Own != null && !Revive.IsDowned(Own) && Own.Mortality.Health.Amount < Own.Mortality.Health.MaxHealth) Own.Mortality.Health.RestoreAllHealth(); }
+
+        static void Observe(PushPullBlock block, bool top, ref float contactAt, ref float maxPenetration,
+            ref float minFeet, ref bool contacted)
+        {
+            KeepAlive();
+            Bounds bb = BlockBounds(block), ob = Own.PlatformBehaviour.PlatformMovement.CapsuleCollider.bounds;
+            float depth = ShapeDepth(block), now = Time.realtimeSinceStartup;
+            if (depth > 0f)
+            {
+                if (contactAt < 0f) contactAt = now;
+                if (top || now - contactAt >= 0.1f) maxPenetration = Mathf.Max(maxPenetration, depth);
+            }
+            else contactAt = -1f;
+            float surface = PushBlockSync.SurfaceY(block, ob.center.x);
+            if (top && !float.IsNaN(surface)) minFeet = Mathf.Min(minFeet, ob.min.y - surface);
+            if (!top && ob.max.y > bb.min.y && ob.min.y < bb.max.y && ob.min.x <= bb.max.x + 0.15f && ob.max.x >= bb.min.x)
+                contacted = true;
+        }
+
+        static void Note(TestHarness h, string phase, PushPullBlock block)
+        {
+            if (Own == null || block == null) { h.Note(phase + " (own Ori or stone missing)"); return; }
+            PushBlockSync.St state = PushBlockSync.StateOf(block);
+            h.Note(phase + " block=" + V(block.Position) + " rz=" + F(block.transform.eulerAngles.z) + " grounded=" + Own.PlatformBehaviour.PlatformMovement.IsOnGround + " hp=" + Own.Mortality.Health.Amount.ToString("F0") + " Ori=" + V(Own.Position) + " puppet=" + (Puppet == null ? "none" : V(Puppet.Position))
+                + " id=" + state.Id + " owner=" + state.OwnerSeat + " epoch=" + state.Epoch
+                + " localOwner=" + PushBlockSync.IsLocalOwner(block)
+                + " ignoresOwn=" + PushBlockSync.Ignores(block, Own.PlatformBehaviour.PlatformMovement)
+                + " PushOuts=" + PushBlockSync.PushOuts + " PuppetPushOuts=" + PushBlockSync.PuppetPushOuts
+                + " ClaimsSent=" + PushBlockSync.ClaimsSent + " ClaimsAccepted=" + PushBlockSync.ClaimsAccepted
+                + " Denied=" + PushBlockSync.Denied + " PuppetCallsIgnored=" + PushBlockSync.PuppetCallsIgnored
+                + " Snaps=" + PushBlockSync.Snaps + " locked=" + SessionRules.LocalLocked + " watching=" + StorySync.Watching + " respawning=" + SessionRules.Respawning);
+        }
+
+        public static IEnumerator Run(TestHarness h)
+        {
+            s_partnerSteps.Clear(); NetPlay.On(MsgBarrier, OnBarrier);
+            bool host = NetPlay.IsHost;
+            h.Note("--- phase P: online pushable stones (" + (host ? "host" : "guest") + ")");
+            try
+            {
+                Bot(false);
+                if (Environment.GetEnvironmentVariable("ORICOOP_PHYS_OFF") == "1")
+                {
+                    PushBlockSync.Enabled = false;
+                    h.Note("P mutation: ORICOOP_PHYS_OFF=1, PushBlockSync.Enabled=false");
+                }
+                if (Own == null || Puppet == null) { h.Check(false, "P needs both Oris"); yield break; }
+                RuntimeSceneMetaData scene = Core.Scenes.Manager.GetSceneInformation("sunkenGladesSpiritCavernsPushBlockIntroduction");
+                h.Check(scene != null, "P push-block tutorial scene found");
+                if (scene == null) yield break;
+                Plugin.Teleport(Own, new Vector3(scene.PlaceholderPosition.x, scene.PlaceholderPosition.y, Own.Position.z));
+                SessionRules.PositionChanged();
+                PushPullBlock block = null;
+                float deadline = Time.realtimeSinceStartup + 20f;
+                while (Time.realtimeSinceStartup < deadline)
+                {
+                    block = FindBlock(scene);
+                    // Remote-owned blocks are deliberately kinematic; test the game's boundary condition instead.
+                    if (block != null && Core.Scenes.Manager.IsInsideActiveSceneBoundary(block.Position + Vector3.down * 2f)) break;
+                    block = null;
+                    yield return null;
+                }
+                h.Check(block != null, "P deterministic block loaded inside active scene boundaries within 20s");
+                yield return Barrier(h, 1, block);
+                Sample partner;
+                if (!s_partnerSteps.TryGetValue(1, out partner)) yield break;
+                h.Check(partner.Loaded && block != null && partner.Id == PushBlockSync.StateOf(block).Id, "P both PCs chose the same smallest block id");
+                if (block == null || !partner.Loaded || partner.Id != PushBlockSync.StateOf(block).Id) yield break;
+                yield return Wait(1f);
+                Vector3 resting = block.Position; Quaternion restingRot = block.transform.rotation;
+                int guestSeat = host ? Players.First.Seat : Players.LocalSeat;
+
+                for (int run = 1; run <= 5; run++)
+                {
+                    // runs 4/5 repeat P1/P3 with 100 ms added on each side (200 ms RTT, the playtest's relay).
+                    int round = run <= 3 ? run : run == 4 ? 1 : 3; bool lag = run >= 4;
+                    NetPlay.SetSim(lag ? 100 : 0, 0, 0, 0);
+                    string phase = "P" + round + (lag ? "L" : "");
+                    int step = run * 10;
+                    bool pusher = round == 3 ? !host : host;
+                    bool top = round != 2;
+                    Bot(false);
+                    KeepAlive();
+                    // Both players step clear (host onto the free floor left of the rest spot, guest right of it) before the
+                    // stone is put back, so the reset never drops it onto someone (PD tests that case on purpose).
+                    PlaceOwn(resting.x + (host ? -2.45f : 2.8f), resting.y + 0.5f, block.Position.z);   // free floor: host left (wall at ~-282), guest right
+                    yield return Wait(0.5f);
+                    yield return Barrier(h, step, block);
+                    if (PushBlockSync.IsLocalOwner(block))
+                    {
+                        Rigidbody body = block.GetComponent<Rigidbody>();
+                        body.position = resting; block.transform.position = resting; body.rotation = restingRot; block.transform.rotation = restingRot;
+                        body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero;
+                        body.Sleep();   // the authored pose (9.6 deg on a slope) only holds while asleep, as after scene load
+                    }
+                    yield return Wait(1.2f);
+                    yield return Barrier(h, step + 1, block);
+                    // Under lag the follower's copy is still gliding back to the reset spot: place only once it is there.
+                    float settleEnd = Time.realtimeSinceStartup + 3f;
+                    while (Time.realtimeSinceStartup < settleEnd && (block.Position - resting).magnitude > 0.05f) yield return null;
+                    h.Note(phase + " stone settled at the reset spot (off=" + F((block.Position - resting).magnitude) + ")");
+                    Bounds bb = BlockBounds(block), ob = Own.PlatformBehaviour.PlatformMovement.CapsuleCollider.bounds;
+                    if (pusher)
+                    {
+                        PlaceOwn(bb.min.x - ob.extents.x - 0.02f, bb.min.y + 0.04f, block.Position.z);
+                        Own.PlatformBehaviour.Visuals.SpriteMirror.FaceLeft = false;
+                    }
+                    else if (top) PlaceOwn(bb.center.x + 0.4f, bb.max.y + 0.5f, block.Position.z);   // drop onto the rounded top (its rest tilt slopes down to the left)
+                    else PlaceOwn(bb.max.x + ob.extents.x + 0.3f, bb.max.y + 0.5f, block.Position.z);   // drop onto the floor right of it
+                    yield return Wait(1.0f);
+                    // The rounded top can shed a dropped rider (seen twice in full-suite runs: landed 2 units off, beside it):
+                    // place once more before judging the setup.
+                    if (!pusher && top && (float.IsNaN(PushBlockSync.SurfaceY(block, Own.Position.x)) || !Own.PlatformBehaviour.PlatformMovement.IsOnGround))
+                    {
+                        h.Note(phase + " rider slid off the top while landing, placing again (Ori=" + V(Own.Position) + ")");
+                        bb = BlockBounds(block);
+                        PlaceOwn(bb.center.x + 0.4f, bb.max.y + 0.5f, block.Position.z);
+                        yield return Wait(1.0f);
+                    }
+                    if (!pusher) h.Check(Own.PlatformBehaviour.PlatformMovement.IsOnGround, phase + " " + (top ? "stander landed on the stone" : "stander landed beside the stone")
+                        + " (Ori=" + V(Own.Position) + " target=" + V(s_lastTarget) + " surface=" + F(PushBlockSync.SurfaceY(block, Own.Position.x)) + ")");
+                    if (pusher) h.Check(Own.PlatformBehaviour.PlatformMovement.IsOnGround, phase + " pusher grounded beside the left face");
+                    Note(h, phase + " start", block);
+                    float contactAt = -1f, maxPenetration = 0f, minFeet = float.PositiveInfinity;
+                    bool contacted = false;
+                    IEnumerator ready = Barrier(h, step + 2, block);
+                    while (ready.MoveNext())
+                    {
+                        if (!pusher) Observe(block, top, ref contactAt, ref maxPenetration, ref minFeet, ref contacted);
+                        yield return ready.Current;
+                    }
+                    Vector3 start = block.Position;
+                    float began = Time.realtimeSinceStartup;
+                    bool grabbed = false, guestOwned = false;
+                    float notedAt = 0f;
+                    if (pusher) Bot(true);
+                    while (Time.realtimeSinceStartup - began < 4.5f)   // 2 s push, then the stone rolls back and settles
+                    {
+                        float elapsed = Time.realtimeSinceStartup - began;
+                        KeepAlive();
+                        if (elapsed >= notedAt + 0.5f) { notedAt += 0.5f; Note(h, phase + " t=" + F(notedAt), block); }
+                        if (pusher && elapsed >= 2f) Bot(false);
+                        if (pusher && Own.Abilities.GrabBlock.IsGrabbing && block.IsGrabbed) grabbed = true;
+                        if (round == 3 && elapsed <= 1f && PushBlockSync.StateOf(block).OwnerSeat == guestSeat) guestOwned = true;
+                        if (!pusher) Observe(block, top, ref contactAt, ref maxPenetration, ref minFeet, ref contacted);
+                        yield return null;
+                    }
+                    Bot(false);
+                    if (pusher) h.Check(grabbed, phase + " pusher grabbed the stone using Glide + LX");
+                    if (round == 3) h.Check(guestOwned && PushBlockSync.StateOf(block).OwnerSeat == guestSeat,
+                        phase + " guest became owner on this PC within 1s (seat=" + guestSeat + ")");
+                    h.Check(block.Position.x - start.x >= 0.5f, phase + " block moved >=0.5 right on this PC (dx=" + F(block.Position.x - start.x) + ")");
+                    Vector3 final = block.Position;
+                    IEnumerator finished = Barrier(h, step + 3, block);
+                    while (finished.MoveNext())
+                    {
+                        if (!pusher) Observe(block, top, ref contactAt, ref maxPenetration, ref minFeet, ref contacted);
+                        yield return finished.Current;
+                    }
+                    // A rider on a stone rolling back can be in the air at any one instant: give it up to 1 s to land.
+                    float landBy = Time.realtimeSinceStartup + 1f;
+                    while (!pusher && !Own.PlatformBehaviour.PlatformMovement.IsOnGround && Time.realtimeSinceStartup < landBy)
+                    {
+                        Observe(block, top, ref contactAt, ref maxPenetration, ref minFeet, ref contacted);
+                        yield return null;
+                    }
+                    if (!pusher)
+                    {
+                        bb = BlockBounds(block); ob = Own.PlatformBehaviour.PlatformMovement.CapsuleCollider.bounds;
+                        h.Check(maxPenetration <= 0.15f, phase + " own capsule never penetrates >0.15" + (top ? "" : " after 0.1s contact grace")
+                            + " (max=" + F(maxPenetration) + ")");
+                        if (top)
+                        {
+                            float surface = PushBlockSync.SurfaceY(block, ob.center.x);
+                            h.Check(minFeet >= -0.15f, phase + " feet stay above the stone's surface-0.15 while over it (min=" + F(minFeet) + ")");
+                            // The tutorial stone climbs a slope and rolls back after release; a rider may step off onto the
+                            // terrain (game physics). What must hold: standing (on it or beside it), never inside it.
+                            h.Check(Own.PlatformBehaviour.PlatformMovement.IsOnGround && ShapeDepth(block) <= 0.15f,
+                                phase + " own Ori grounded and not inside the stone after the push (onTop=" + (!float.IsNaN(surface) && Mathf.Abs(ob.min.y - surface) <= 0.25f)
+                                + " feet-surface=" + F(ob.min.y - surface) + ")");
+                        }
+                        else
+                        {
+                            h.Check(contacted, "P2 stone reached own Ori on its right side");
+                            h.Check(ShapeDepth(block) <= 0.15f, "P2 own Ori is not inside the stone at the end");
+                        }
+                    }
+                    if (s_partnerSteps.TryGetValue(step + 3, out partner))
+                    {
+                        float dx = Mathf.Abs(final.x - partner.Position.x), dy = Mathf.Abs(final.y - partner.Position.y);
+                        h.Check(partner.Loaded && partner.Id == PushBlockSync.StateOf(block).Id && dx < 0.3f && dy < 0.3f,
+                            "P4 after " + phase + " block positions agree (dx=" + F(dx) + ", dy=" + F(dy) + ")");
+                    }
+                    Note(h, phase + " end", block);
+                    yield return Barrier(h, step + 4, block);   // both finished their checks before anyone moves on / quits
+                }
+
+                // PD: a stone dropped onto a player. The owner holds the stone 2.5 above its rest spot, the other player
+                // stands on the floor there, then the owner lets go. The victim must never stay inside it.
+                NetPlay.SetSim(0, 0, 0, 0);
+                bool owner = PushBlockSync.IsLocalOwner(block);
+                Rigidbody rb = block.GetComponent<Rigidbody>();
+                Vector3 lifted = resting + Vector3.up * 2.5f;
+                yield return Barrier(h, 60, block);
+                float holdEnd = Time.realtimeSinceStartup + 2.5f;
+                bool placed = false, replaced = false; float placedAt = 0f;
+                while (Time.realtimeSinceStartup < holdEnd)
+                {
+                    if (owner) { rb.position = lifted; block.transform.position = lifted; rb.rotation = restingRot; rb.velocity = Vector3.zero; rb.angularVelocity = Vector3.zero; }
+                    else if ((!placed || (placedAt > 0f && Time.realtimeSinceStartup - placedAt > 0.8f && !Own.PlatformBehaviour.PlatformMovement.IsOnGround && !replaced))
+                        && (block.Position - lifted).magnitude < 0.3f)
+                    {
+                        // Under load the first drop onto the floor sometimes did not land (full-suite flake): place once more.
+                        if (placed) replaced = true;
+                        placed = true; placedAt = Time.realtimeSinceStartup;
+                        Bounds rest = BlockBounds(block); rest.center -= Vector3.up * 2.5f;
+                        PlaceOwn(resting.x + 0.3f, rest.min.y + 0.6f, block.Position.z);
+                    }
+                    yield return null;
+                }
+                if (!owner) h.Check(placed && Own.PlatformBehaviour.PlatformMovement.IsOnGround, "PD victim standing under the held stone (Ori=" + V(Own.Position) + ")");
+                Note(h, "PD drop", block);
+                yield return Barrier(h, 61, block);
+                float dropAt = Time.realtimeSinceStartup, dContact = -1f, dMax = 0f, dMinFeet = float.PositiveInfinity;
+                bool dTouched = false;
+                while (Time.realtimeSinceStartup - dropAt < 3f)
+                {
+                    if (Own == null || block == null) { h.Check(false, "PD own Ori or the stone disappeared during the drop"); yield break; }
+                    if (!owner) Observe(block, false, ref dContact, ref dMax, ref dMinFeet, ref dTouched);
+                    yield return null;
+                }
+                Note(h, "PD end", block);
+                if (!owner)
+                {
+                    h.Check(dMax <= 0.15f, "PD dropped stone never keeps the victim inside >0.15 after 0.1 s (max=" + F(dMax) + ")");
+                    h.Check(Own.PlatformBehaviour.PlatformMovement.IsOnGround && ShapeDepth(block) <= 0.15f, "PD victim grounded and not inside the stone at the end (Ori="
+                        + V(Own.Position) + " block=" + V(block.Position) + ")");
+                }
+                yield return Barrier(h, 62, block);
+            }
+            finally
+            {
+                NetTestHarness.BotButtons = 0; NetTestHarness.BotLX = 0f; P2Input.BotRT = false; NetPlay.SetSim(0, 0, 0, 0);
+            }
+        }
+    }
+}

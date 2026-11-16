@@ -1,0 +1,31 @@
+using System.Reflection;
+using HarmonyLib;
+
+namespace OriCoop
+{
+    // Going back to the title screen ends the online session (pause menu -> quit, the disconnect dialog, any other
+    // GameController.RestartGame). Before this the Steam lobby / relay room / direct host stayed open at the title:
+    // NetPlay.Enabled kept the native mode menu off (picking a slot went straight into single player) and every
+    // later save load ran as an online session nobody had chosen (found 2026-11-15).
+    // Exception: a guest's checkpoint transfer (SaveSync) restarts the game on purpose to load the host's save.
+    static class TitleReturn
+    {
+        static readonly FieldInfo s_transferField = AccessTools.Field(typeof(SaveSync), "s_loading");
+        public static int SessionsEnded;
+        // Test-only mutation switch: proves the "title" checks fail without this fix.
+        static readonly bool s_mutate = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_KEEP_NET") == "1";
+
+        static bool TransferRunning { get { return s_transferField != null && (bool)s_transferField.GetValue(null); } }
+
+        [HarmonyPatch(typeof(GameController), "RestartGame")]
+        static class RestartPatch
+        {
+            static void Prefix()
+            {
+                if (!NetPlay.Enabled || TransferRunning || s_mutate) return;
+                SessionsEnded++;
+                NetPlay.End("returned to the title screen");
+            }
+        }
+    }
+}

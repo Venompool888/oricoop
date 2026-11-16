@@ -1,0 +1,383 @@
+using System;
+using Game;
+using J2i.Net.XInputWrapper;
+using UnityEngine;
+
+namespace OriCoop
+{
+    // In-game co-op settings panel. Opens with F8 or by holding Back/View on any controller for 1 s, from gameplay
+    // or the pause menu. The game is frozen while it is open. Works with mouse, keyboard (arrows/Enter/Esc) and
+    // any controller (D-pad/stick, A, B).
+    //   - Shows each controller slot live: connected or not, which player has it, and lights up while pressed,
+    //     so the players can tell which physical controller is which.
+    //   - "Choose controller" for P1 / P2: press any button on the controller you want (for P1, any keyboard key
+    //     = keyboard/mouse only). If the other player had that controller, the two swap.
+    //   - Story cutscenes: only P1 starts them, or either player.
+    //   - P2 join / remove.
+    //
+    // Pages:
+    //   Settings (F8 / hold Back): the panel above.
+    //   ModeSelect (opened by PlayMode once a save is running): Single player / 2 players. Must pick one.
+    //   Setup (after "2 players"): choose each player's controller, then Start (P2 joins). B / Esc goes back.
+    public static class CoopMenu
+    {
+        public const int PageSettings = 0, PageModeSelect = 1, PageSetup = 2;
+        public static bool IsOpen { get; private set; }
+        public static int Page { get; private set; }
+        static int s_focus;
+        static int s_waitFor;            // 0 none, 1 = choosing P1's controller, 2 = choosing P2's
+        static int[] s_baseline = new int[4];
+        static float s_ignoreNavUntil, s_backHeld;
+        static float s_savedTimeScale = 1f;
+        static bool s_savedLockInput;
+        static string s_message = "";
+        static readonly bool[] s_connected = new bool[4];
+        static readonly int[] s_buttons = new int[4];
+        static readonly int[] s_prevButtons = new int[4];
+        static float s_scanTimer;
+        static XInputState s_state = new XInputState();
+
+        // Test hook: when set, replaces the physical pads' buttons (and marks them connected).
+        public static int[] TestPadButtons;
+
+        const int A = 0x1000, B = 0x2000, BACK = 0x20, START = 0x10, DUP = 1, DDOWN = 2;
+        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : 6; } }
+
+        static void PollPads()
+        {
+            s_scanTimer -= Time.unscaledDeltaTime;
+            bool rescan = s_scanTimer <= 0f;
+            if (rescan) s_scanTimer = 1f;
+            for (int i = 0; i < 4; i++)
+            {
+                s_prevButtons[i] = s_buttons[i];
+                if (TestPadButtons != null) { s_connected[i] = true; s_buttons[i] = TestPadButtons[i]; continue; }
+                // Polling an empty XInput slot is slow; check unplugged slots only once a second.
+                if (!s_connected[i] && !rescan) { s_buttons[i] = 0; continue; }
+                s_connected[i] = XInput.XInputGetState(i, ref s_state) == 0;
+                int b = 0;
+                if (s_connected[i])
+                {
+                    XInputGamepad g = s_state.Gamepad;
+                    b = g.wButtons;
+                    if (g.sThumbLY > 16000) b |= DUP;
+                    if (g.sThumbLY < -16000) b |= DDOWN;
+                    if (g.bLeftTrigger > 20 || g.bRightTrigger > 20) b |= 0x10000;
+                }
+                s_buttons[i] = b;
+            }
+        }
+
+        static bool AnyPadPressed(int mask) { for (int i = 0; i < 4; i++) if ((s_buttons[i] & mask) != 0 && (s_prevButtons[i] & mask) == 0) return true; return false; }
+
+        public static void Open() { OpenPage(PageSettings); }
+
+        public static void OpenModeSelect()
+        {
+            OpenPage(PageModeSelect);
+            s_focus = PlayMode.LastChoice == PlayMode.Single ? 0 : 1;
+        }
+
+        // 2 players already chosen (NativeModeMenu): straight to choosing controllers.
+        public static void OpenSetup() { OpenPage(PageSetup); s_focus = 3; }
+
+        static void GoTo(int page)
+        {
+            Page = page; s_focus = 0; s_waitFor = 0; s_message = "";
+            if (page == PageModeSelect) s_focus = PlayMode.LastChoice == PlayMode.Single ? 0 : 1;
+            if (page == PageSetup) s_focus = 3;   // "Start" (the controllers shown are usually already right)
+            s_ignoreNavUntil = Time.unscaledTime + 0.25f;
+        }
+
+        static void OpenPage(int page)
+        {
+            if (IsOpen) { GoTo(page); return; }
+            IsOpen = true;
+            Page = page;
+            s_focus = 0; s_waitFor = 0; s_message = "";
+            s_ignoreNavUntil = Time.unscaledTime + 0.3f;
+            if (UI.MainMenuVisible) { try { UI.Menu.HideMenuScreen(true); } catch (Exception) { } }
+            s_savedTimeScale = Time.timeScale;
+            Time.timeScale = 0f;
+            if (GameController.Instance != null) { s_savedLockInput = GameController.Instance.LockInput; GameController.Instance.LockInput = true; }
+            PollPads(); PollPads();
+            Plugin.Log.LogInfo("co-op menu opened (" + (page == PageModeSelect ? "mode select" : page == PageSetup ? "2-player setup" : "settings") + ")");
+        }
+
+        public static void Close()
+        {
+            if (!IsOpen) return;
+            IsOpen = false;
+            s_waitFor = 0;
+            Time.timeScale = s_savedTimeScale <= 0f ? 1f : s_savedTimeScale;
+            if (GameController.Instance != null) GameController.Instance.LockInput = s_savedLockInput;
+            P2Input.StartLatched = false;
+            KeyboardOnlyP1.HoldUntilReleased = true;
+            KeyboardOnlyP1.Refresh();
+            Plugin.Log.LogInfo("co-op menu closed");
+        }
+
+        // Called every frame from Plugin.Tick.
+        public static void Tick()
+        {
+            bool inGame = Characters.Sein != null && Characters.Sein.gameObject.activeInHierarchy;
+            if (!IsOpen)
+            {
+                if (!inGame) { s_backHeld = 0f; return; }
+                // Hold Back/View on any pad for 1 s, or press F8.
+                PollPads();
+                bool backDown = false; for (int i = 0; i < 4; i++) if ((s_buttons[i] & BACK) != 0) backDown = true;
+                s_backHeld = backDown ? s_backHeld + Time.unscaledDeltaTime : 0f;
+                if (Input.GetKeyDown(KeyCode.F8) || s_backHeld > 1f) { s_backHeld = 0f; Open(); }
+                return;
+            }
+            if (!inGame) { Close(); return; }
+            PollPads();
+
+            if (s_waitFor != 0)
+            {
+                for (int i = 0; i < 4; i++)
+                {
+                    int fresh = s_buttons[i] & ~s_baseline[i];
+                    s_baseline[i] &= s_buttons[i]; // a button held at the start counts once released and pressed again
+                    if (fresh != 0) { Assign(s_waitFor, i); return; }
+                }
+                if (Input.GetKeyDown(KeyCode.Escape)) { s_waitFor = 0; s_message = L10n.T("coop.cancelled"); s_ignoreNavUntil = Time.unscaledTime + 0.2f; }
+                return; // keyboard "any key" for P1 is read in Draw (needs the GUI event)
+            }
+
+            if (Time.unscaledTime < s_ignoreNavUntil) return;
+            bool back = Input.GetKeyDown(KeyCode.Escape) || AnyPadPressed(B);
+            bool confirm = Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter) || Input.GetKeyDown(KeyCode.Space) || AnyPadPressed(A);
+            if (Page == PageSettings)
+            {
+                if (back || Input.GetKeyDown(KeyCode.F8) || AnyPadPressed(START)) { Close(); return; }
+            }
+            else if (Page == PageModeSelect)
+            {
+                if (AnyPadPressed(START)) confirm = true; // a choice is required; Esc / B do nothing here
+            }
+            else if (Page == PageSetup)
+            {
+                if (back) { GoTo(PageModeSelect); return; }
+                if (AnyPadPressed(START)) { Activate(3); return; }
+            }
+            if (Input.GetKeyDown(KeyCode.DownArrow) || AnyPadPressed(DDOWN)) s_focus = (s_focus + 1) % Rows;
+            if (Input.GetKeyDown(KeyCode.UpArrow) || AnyPadPressed(DUP)) s_focus = (s_focus + Rows - 1) % Rows;
+            if (confirm) Activate(s_focus);
+        }
+
+        public static void Assign(int player, int pad)
+        {
+            Plugin.Instance.AssignPad(player, pad);
+            s_waitFor = 0;
+            s_message = pad < 0 ? L10n.T("coop.p1_keyboard")
+                : L10n.F("coop.assigned", pad + 1, player);
+            s_ignoreNavUntil = Time.unscaledTime + 0.35f;
+        }
+
+        public static void Activate(int row)
+        {
+            if (Page == PageModeSelect)
+            {
+                if (row == 0)
+                {
+                    PlayMode.SetMode(PlayMode.Single);
+                    if (P2Context.P2 != null) Plugin.DespawnNow("single player chosen");
+                    Close();
+                }
+                else GoTo(PageSetup);
+                return;
+            }
+            switch (row)
+            {
+                case 0:
+                case 1:
+                    s_waitFor = row + 1;
+                    Array.Copy(s_buttons, s_baseline, 4);
+                    s_message = "";
+                    break;
+                case 2:
+                    Plugin.Instance.P2CanTriggerCutscenes = !Plugin.Instance.P2CanTriggerCutscenes;
+                    break;
+                case 3:
+                    if (Page == PageSetup || P2Context.P2 == null)
+                    {
+                        PlayMode.SetMode(PlayMode.Coop);
+                        Close();
+                        if (P2Context.P2 == null) Plugin.Instance.Spawn();
+                    }
+                    else { Plugin.DespawnNow("removed from the co-op menu"); }
+                    break;
+                case 4:
+                    if (Page == PageSetup) { GoTo(PageModeSelect); break; }
+                    // Settings: change mode (single: P2 leaves and P1 gets the controller; 2 players: setup page).
+                    GoTo(PageModeSelect);
+                    break;
+                case 5:
+                    Close();
+                    break;
+            }
+        }
+
+        // ---- drawing --------------------------------------------------------------------------------------
+        static Font s_font;
+        static GUIStyle s_title, s_text, s_row, s_rowFocus, s_small, s_box;
+        static Texture2D s_bg, s_focusBg;
+
+        static Texture2D Tex(Color c) { Texture2D t = new Texture2D(1, 1); t.SetPixel(0, 0, c); t.Apply(); t.hideFlags = HideFlags.HideAndDontSave; return t; }
+
+        static void Styles()
+        {
+            if (s_title != null) return;
+            int size = Mathf.Max(14, Screen.height / 42);
+            try { s_font = Font.CreateDynamicFontFromOSFont(new string[] { "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial" }, size); } catch (Exception) { s_font = null; }
+            s_bg = Tex(new Color(0.05f, 0.07f, 0.12f, 0.92f));
+            s_focusBg = Tex(new Color(0.95f, 0.8f, 0.35f, 0.25f));
+            s_box = new GUIStyle(GUI.skin.box); s_box.normal.background = s_bg;
+            s_text = new GUIStyle(GUI.skin.label); s_text.fontSize = size; s_text.wordWrap = true; s_text.richText = true;
+            if (s_font != null) s_text.font = s_font;
+            s_text.normal.textColor = new Color(0.92f, 0.94f, 1f);
+            s_title = new GUIStyle(s_text); s_title.fontSize = (int)(size * 1.35f); s_title.fontStyle = FontStyle.Bold; s_title.normal.textColor = new Color(1f, 0.85f, 0.4f);
+            s_small = new GUIStyle(s_text); s_small.fontSize = (int)(size * 0.8f); s_small.normal.textColor = new Color(0.7f, 0.75f, 0.85f);
+            s_row = new GUIStyle(GUI.skin.button); s_row.fontSize = size; s_row.alignment = TextAnchor.MiddleLeft; s_row.richText = true;
+            if (s_font != null) s_row.font = s_font;
+            s_row.padding = new RectOffset(14, 14, 6, 6);
+            s_rowFocus = new GUIStyle(s_row); s_rowFocus.normal.background = s_focusBg; s_rowFocus.normal.textColor = new Color(1f, 0.9f, 0.5f);
+        }
+
+        static string PlayerOfPad(int i)
+        {
+            if (KeyboardOnlyP1.P1Pad == i) return L10n.T("coop.p1");
+            if (Plugin.Instance.P2PadInUse == i) return L10n.T("coop.p2");
+            return L10n.T("coop.unused");
+        }
+
+        // Called from OnGUI.
+        public static void Draw()
+        {
+            if (!IsOpen)
+            {
+                if (UI.MainMenuVisible && Characters.Sein != null)
+                {
+                    Styles();
+                    GUI.Label(new Rect(16f, 12f, 900f, 40f),
+                        L10n.T("coop.settings_hint"), s_small);
+                }
+                return;
+            }
+            Styles();
+            if (Page == PageModeSelect) { DrawModeSelect(); return; }
+            if (s_waitFor == 1)
+            {
+                Event e = Event.current;
+                if (e != null && e.type == EventType.KeyDown && e.keyCode != KeyCode.None && e.keyCode != KeyCode.Escape && e.keyCode != KeyCode.F8)
+                { Assign(1, -1); e.Use(); }
+            }
+
+            float w = Mathf.Min(Screen.width - 40f, 760f), lineH = s_text.fontSize * 1.9f, inner = w - 40f;
+            string title = Page == PageSetup ? L10n.T("coop.choose_controllers") : L10n.T("coop.settings");
+            string ctrlHint = L10n.T("coop.controller_hint");
+            string[] padLines = new string[4];
+            for (int i = 0; i < 4; i++)
+            {
+                bool pressed = s_buttons[i] != 0;
+                string state = s_connected[i] ? L10n.T("coop.connected") : L10n.T("coop.not_connected");
+                padLines[i] = (pressed ? "<color=#ffd166>●</color> " : "○ ") + L10n.F("coop.controller_state", i + 1, state) + (s_connected[i] ? "  →  " + PlayerOfPad(i) : "");
+            }
+            string kbLine = KeyboardOnlyP1.P1Pad < 0 ? L10n.T("coop.keyboard")
+                : L10n.F("coop.keyboard_pad", KeyboardOnlyP1.P1Pad + 1);
+            string warn = Page == PageSetup && !s_connected[Mathf.Clamp(Plugin.Instance.P2PadInUse, 0, 3)]
+                ? L10n.F("coop.p2_disconnected", Plugin.Instance.P2PadInUse + 1) : "";
+            string footer = L10n.T("coop.cutscene_hint");
+
+            string p1 = KeyboardOnlyP1.P1Pad < 0 ? L10n.T("coop.keyboard_only") : L10n.F("coop.controller", KeyboardOnlyP1.P1Pad + 1);
+            string p2 = L10n.F("coop.controller", Plugin.Instance.P2PadInUse + 1);
+            string row0 = s_waitFor == 1 ? L10n.T("coop.choose_p1") : L10n.F("coop.p1_uses", p1);
+            string row1 = s_waitFor == 2 ? L10n.T("coop.choose_p2") : L10n.F("coop.p2_uses", p2);
+            string row2 = L10n.F("coop.cutscenes", Plugin.Instance.P2CanTriggerCutscenes ? L10n.T("coop.either") : L10n.T("coop.p1_only"));
+            string[] rows;
+            if (Page == PageSetup)
+                rows = new string[] { row0, row1, row2,
+                    L10n.T("coop.start"),
+                    L10n.T("coop.back") };
+            else
+                rows = new string[] { row0, row1, row2,
+                    P2Context.P2 == null ? L10n.T("coop.add_p2") : L10n.T("coop.remove_p2"),
+                    L10n.F("coop.mode", PlayMode.Current == PlayMode.Single ? L10n.T("coop.single") : L10n.T("coop.two_players")),
+                    L10n.T("coop.close") };
+
+            // Panel height from what is actually drawn (the footer wraps, the message and warning come and go),
+            // so the last line is never cut off.
+            float h = 28f + LineH(s_title, title, inner) + 4f + LineH(s_small, ctrlHint, inner);
+            for (int i = 0; i < 4; i++) h += LineH(s_text, padLines[i], inner);
+            h += LineH(s_text, kbLine, inner) + 8f;
+            h += rows.Length * (lineH * 1.15f + s_row.margin.vertical) + 6f;
+            if (s_message != "") h += LineH(s_text, s_message, inner);
+            if (warn != "") h += LineH(s_text, warn, inner);
+            h += LineH(s_small, footer, inner) + 8f;
+            // Once a frame has been laid out, use the real content height (the estimate above runs a bit high).
+            if (s_settingsH > 0f && Mathf.Abs(s_settingsW - w) < 1f) h = s_settingsH;
+            h = Mathf.Min(h, Screen.height - 20f);
+
+            Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
+            GUI.Box(r, GUIContent.none, s_box);
+            GUILayout.BeginArea(new Rect(r.x + 20f, r.y + 14f, r.width - 40f, r.height - 28f));
+            GUILayout.Label(title, s_title);
+            GUILayout.Space(4f);
+            GUILayout.Label(ctrlHint, s_small);
+            for (int i = 0; i < 4; i++) GUILayout.Label(padLines[i], s_text);
+            GUILayout.Label(kbLine, s_text);
+            GUILayout.Space(8f);
+            for (int i = 0; i < rows.Length; i++)
+            {
+                if (GUILayout.Button(rows[i], i == s_focus ? s_rowFocus : s_row, GUILayout.Height(lineH * 1.15f)))
+                { s_focus = i; if (s_waitFor == 0) Activate(i); }
+            }
+            GUILayout.Space(6f);
+            if (s_message != "") GUILayout.Label(s_message, s_text);
+            if (warn != "") GUILayout.Label(warn, s_text);
+            GUILayout.Label(footer, s_small);
+            if (Event.current.type == EventType.Repaint)
+            {
+                // Area starts 14 px below the panel top; keep 14 px under the last line.
+                s_settingsH = GUILayoutUtility.GetLastRect().yMax + 28f;
+                s_settingsW = w;
+            }
+            GUILayout.EndArea();
+        }
+
+        static float s_settingsH, s_settingsW;   // measured settings panel height (last repaint) and the width it was for
+
+        // Height GUILayout gives a label of this text at this width (wrapping included), plus its margins.
+        static float LineH(GUIStyle style, string text, float width)
+        {
+            return style.CalcHeight(new GUIContent(text), width) + style.margin.vertical;
+        }
+
+        static void DrawModeSelect()
+        {
+            float w = Mathf.Min(Screen.width - 40f, 680f), lineH = s_text.fontSize * 1.9f;
+            float h = lineH * 9.4f;
+            Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
+            GUI.Box(r, GUIContent.none, s_box);
+            GUILayout.BeginArea(new Rect(r.x + 20f, r.y + 14f, r.width - 40f, r.height - 28f));
+            GUILayout.Label(
+                L10n.T("coop.play_how"), s_title);
+            GUILayout.Space(8f);
+            string[] rows = {
+                L10n.F("coop.single_desc", s_small.fontSize),
+                L10n.F("coop.two_desc", s_small.fontSize)
+            };
+            for (int i = 0; i < rows.Length; i++)
+            {
+                if (GUILayout.Button(rows[i], i == s_focus ? s_rowFocus : s_row, GUILayout.Height(lineH * 2.1f)))
+                { s_focus = i; Activate(i); }
+            }
+            GUILayout.Space(8f);
+            GUILayout.Label(
+                L10n.T("coop.play_hint"), s_small);
+            GUILayout.EndArea();
+        }
+    }
+}

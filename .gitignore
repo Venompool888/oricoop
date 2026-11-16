@@ -1,0 +1,28 @@
+# Your own game copy and everything generated from it: never commit.
+/game/
+/game-*/
+/appdata*/
+/test/
+/test-*/
+/test-runtime*/
+/save-backup/
+/logs/
+/dist/
+/skin-dump/
+/decomp*/
+*.log
+*.lock
+
+# Build outputs and game/BepInEx binaries
+bin/
+obj/
+*.exe
+*.dll
+*.pdb
+
+# Game-derived art and text (regenerate from your own game copy)
+src/assets/dead-marker/*.png
+src/assets/zh-text/
+src/assets/zh-glyphs/adobeHeitiStdR.json
+/assets-ref/
+.env
