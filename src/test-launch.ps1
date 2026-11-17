@@ -408,7 +408,11 @@ function Install-TestPlugins {
     $plugins = Join-Path $script:TL_GameDir 'BepInEx\plugins'
     if ($env:ORICOOP_TEST_DLL) {
         if (-not (Test-Path -LiteralPath $env:ORICOOP_TEST_DLL)) { throw ('ORICOOP_TEST_DLL not found: ' + $env:ORICOOP_TEST_DLL) }
-        Copy-Item -LiteralPath $env:ORICOOP_TEST_DLL (Join-Path $plugins 'OriCoop.dll') -Force
+        # A just-stopped game (orphan) can keep the DLL mapped for a few seconds: "user-mapped section open". Retry.
+        for ($try = 1; ; $try++) {
+            try { Copy-Item -LiteralPath $env:ORICOOP_TEST_DLL (Join-Path $plugins 'OriCoop.dll') -Force -ErrorAction Stop; break }
+            catch [System.IO.IOException] { if ($try -ge 30) { throw }; Start-Sleep -Seconds 1 }
+        }
         'installed ' + $env:ORICOOP_TEST_DLL + ' into copy ' + $script:TL_Copy
     }
     $quiet = Join-Path $plugins 'OriCoop.TestQuiet.dll'
