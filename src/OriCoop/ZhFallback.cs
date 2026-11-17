@@ -188,6 +188,7 @@ namespace OriCoop
             return result;
         }
 
+#if !ZHPATCH
         // ORICOOP_ZH_SCAN=1: when the save screen wakes, ask every loaded translated text for its Chinese version and
         // log how many were blank and whether any placeholder still comes out.
         [HarmonyPatch(typeof(SaveSlotsUI), "Awake")]
@@ -268,6 +269,8 @@ namespace OriCoop
             }
             Plugin.Log.LogInfo("ZHSHOT done");
         }
+
+#endif
 
         [HarmonyPatch(typeof(TranslatedMessageProvider.MessageItem), "GetDescriptor")]
         static class GetDescriptorPatch
