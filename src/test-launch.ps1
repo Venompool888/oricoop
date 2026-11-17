@@ -189,7 +189,7 @@ public static class OriTestLaunch5
 
 # All test copies (existing or not). Copy a keeps the historical paths.
 function Get-TestCopies {
-    foreach ($c in @('a', 'b', 'c')) {
+    foreach ($c in @('a', 'b', 'c', 'd', 'e')) {
         $sfx = $(if ($c -eq 'a') { '' } else { '-' + $c })
         # ORICOOP_FAKE_OWNER_EXE: a test copy that stands in for the owner's game (never the owner's real game).
         if ($env:ORICOOP_FAKE_OWNER_EXE -and [string]::Equals($env:ORICOOP_FAKE_OWNER_EXE, "$($script:TL_Root)\game$sfx\oriDE.exe", [StringComparison]::OrdinalIgnoreCase)) { continue }
@@ -217,11 +217,19 @@ function Get-ProcPath($proc) {
     return $null
 }
 
-function Test-IsTestGame($proc) {
-    $path = Get-ProcPath $proc
+# An oriDE.exe anywhere under C:\OriCoop\ is a test game (any copy, known to this script or added later): never the
+# owner's. Only paths outside it (the owner's D:\SteamLibrary\...\Ori DE\OriDE.exe) count as the owner's game.
+# (2026-11-18: copies d/e, unknown to older scripts, were taken for the owner's game and stopped other runs.)
+# ORICOOP_FAKE_OWNER_EXE marks one test copy as the stand-in owner for experiments.
+function Test-IsTestPath([string]$path) {
     if (-not $path) { return $false }
-    foreach ($c in Get-TestCopies) { if ([string]::Equals($path, $c.Exe, [StringComparison]::OrdinalIgnoreCase)) { return $true } }
-    return $false
+    if ($env:ORICOOP_FAKE_OWNER_EXE -and [string]::Equals($path, $env:ORICOOP_FAKE_OWNER_EXE, [StringComparison]::OrdinalIgnoreCase)) { return $false }
+    $root = [IO.Path]::GetFullPath($script:TL_Root).TrimEnd('\') + '\'
+    return [IO.Path]::GetFullPath($path).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
+}
+
+function Test-IsTestGame($proc) {
+    return (Test-IsTestPath (Get-ProcPath $proc))
 }
 
 function Get-CopyGames($copy) {
@@ -283,6 +291,14 @@ function Enter-CopyLock($copy, [string]$script) {
 function Exit-AlongsideLock {
     $f = $script:TL_AlongsideLock
     if ($f -and (Test-Path -LiteralPath $f) -and (Read-LockInfo $f)['pid'] -eq [string]$PID) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+}
+
+# A lock this session made BY HAND (no pid= line, its session name inside) may be reused by its own runs. A lock written
+# by the launcher always has pid= and belongs to that run, even if another run of the same session wants the copy.
+function Test-LockReusableByName([string]$lock) {
+    if (-not $env:ORICOOP_SESSION -or -not (Test-Path -LiteralPath $lock)) { return $false }
+    if ((Read-LockInfo $lock).ContainsKey('pid')) { return $false }
+    return [bool]((Get-Content -LiteralPath $lock -Raw -ErrorAction SilentlyContinue) -match [regex]::Escape($env:ORICOOP_SESSION))
 }
 
 function Exit-CopyLock {
@@ -347,14 +363,24 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
             # A lock this session took by hand (same ORICOOP_SESSION name, e.g. New-Item per the playtest rules) is
             # reused and left for the session to delete.
             $held = Read-LockInfo $c.Lock
-            $mine = $env:ORICOOP_SESSION -and (Test-Path -LiteralPath $c.Lock) -and ((Get-Content -LiteralPath $c.Lock -Raw -ErrorAction SilentlyContinue) -match [regex]::Escape($env:ORICOOP_SESSION)) -and $held['pid'] -ne [string]$PID
+            # Only a HAND-MADE lock (no pid= line) is reused by name: a lock written by another run of the same session
+            # (e.g. two nightly suites, same ORICOOP_SESSION) belongs to that run (2026-11-18: two runs shared copy a/e).
+            $mine = Test-LockReusableByName $c.Lock
             if (-not $mine -and -not (Enter-CopyLock $c $script)) { continue }
             $orphans = @(Get-CopyGames $c)
             if ($orphans.Count -gt 0) {
-                # Games of this copy without a live lock: left over from a run that died. Never killed by us.
-                if (-not $mine) { Remove-Item -LiteralPath $c.Lock -Force -ErrorAction SilentlyContinue }
-                'TEST GAME RUNNING in copy ' + $c.Name + ' without a lock (' + (Format-Games $orphans) + '): skipped; no process stopped.'
-                continue
+                # Games of this copy while nobody holds its lock. If the PowerShell that started them is gone, they are
+                # orphans of a dead run: stop them (test games only, by pid) and take the copy. If it is alive, a run
+                # holds the copy without its lock: leave everything alone and skip the copy.
+                $alive = @($orphans | Where-Object { $pp = $null; try { $pp = (Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_.Id)).ParentProcessId } catch { }; $pp -and (Get-Process -Id $pp -ErrorAction SilentlyContinue) })
+                if ($alive.Count -eq 0) {
+                    'ORPHAN test games in copy ' + $c.Name + ' (their run is gone: ' + (Format-Games $orphans) + '): stopped.'
+                    foreach ($o in $orphans) { if (Test-IsTestGame $o) { try { $o.Kill(); [void]$o.WaitForExit(10000) } catch { } } }
+                } else {
+                    if (-not $mine) { Remove-Item -LiteralPath $c.Lock -Force -ErrorAction SilentlyContinue }
+                    'TEST GAME RUNNING in copy ' + $c.Name + ' without a lock, its run is alive (' + (Format-Games $alive) + '): skipped; no process stopped.'
+                    continue
+                }
             }
             Use-Copy $c
             'TEST COPY ' + $c.Name + ': ' + $c.GameDir + ' (lock ' + $c.Lock + ', port offset ' + $c.PortOffset + ')'
