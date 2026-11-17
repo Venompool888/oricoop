@@ -15,6 +15,8 @@ Fan-made co-op mod for *Ori and the Blind Forest: Definitive Edition* (BepInEx 5
 Not affiliated with or endorsed by Moon Studios, iam8bit or Microsoft. This repository contains **no game files, no
 game art, no game audio and no decompiled game code**. You need your own copy of the game.
 本项目与 Moon Studios、Microsoft 无关。仓库里**没有任何游戏文件、美术、音频或反编译代码**，需要你自己拥有正版游戏。
+Release kits embed a few game-derived items (a marker image, some game text); see / release 套件内嵌了少量来自游戏的内容，见
+[GAME-ASSETS-NOTICE.md](GAME-ASSETS-NOTICE.md).
 
 ---
 
