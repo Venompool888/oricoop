@@ -141,6 +141,23 @@ namespace OriCoop
                 yield return StartCoroutine(WaitFor(() => SignpostTest.Found, 20f));
                 yield return StartCoroutine(HoldOwn(SignpostTest.AwayPos + side, 3f));
                 Check(SignpostTest.Found && SignpostTest.Hidden, "sign: guide stone loaded, hidden while nobody is near (" + SignpostTest.Diag() + ")");
+                Note("sign: actions " + SignpostTest.Actions());
+                // T-024: ANY player at the stone shows the text on EVERY screen (server mode showed it only for P1).
+                foreach (string who in new[] { "host", "join" })
+                {
+                    yield return StartCoroutine(Barrier("sign-" + who + "-near"));
+                    yield return StartCoroutine(HoldOwn(m_role == who ? SignpostTest.StonePos : SignpostTest.AwayPos + side, 4f));
+                    Check(SignpostTest.Shown, "sign: text shows on the " + m_role + "'s screen with only the " + who + " at the stone (" + SignpostTest.Diag() + ")");
+                    if (!SignpostTest.Shown)
+                    {
+                        SignpostTest.PerformEnter();
+                        yield return StartCoroutine(HoldOwn(m_role == who ? SignpostTest.StonePos : SignpostTest.AwayPos + side, 1f));
+                        Note("sign: experiment: enter action run directly -> " + SignpostTest.Diag());
+                    }
+                    yield return StartCoroutine(Barrier("sign-" + who + "-away"));
+                    yield return StartCoroutine(HoldOwn(SignpostTest.AwayPos + side, 4f));
+                    Check(SignpostTest.Hidden, "sign: text hides on the " + m_role + "'s screen once the " + who + " left (" + SignpostTest.Diag() + ")");
+                }
                 yield return StartCoroutine(Barrier("sign1"));
                 yield return StartCoroutine(HoldOwn(SignpostTest.StonePos, 4f));
                 Check(SignpostTest.Shown, "sign: text shows with both at the stone (" + SignpostTest.Diag() + ")");

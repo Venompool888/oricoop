@@ -190,7 +190,9 @@ namespace OriCoop
                 bool selfIsOri = self != null && ((P1 != null && self.transform.IsChildOf(P1.transform)) || BelongsToP2(self));
                 Puppet touched = Players.Of(other);
                 bool puppetTouch = !selfIsOri && touched != null && touched.Sein.gameObject.activeInHierarchy;
-                if (puppetTouch && NetPlay.Enabled && !MovementTouch(self) && !EnemySync.ProjectileTouch(self))
+                // Enter/exit zones (the guide stone's text, T-024) count every Ori, puppets included (P2Extras zones):
+                // skipping them here meant a partner standing there alone showed nothing on this screen.
+                if (puppetTouch && NetPlay.Enabled && !MovementTouch(self) && !EnemySync.ProjectileTouch(self) && !(self is SeinEnterExitTrigger))
                 {
                     s_entered.Push(false); // Finalizer still runs for a skipped callback.
                     return false;

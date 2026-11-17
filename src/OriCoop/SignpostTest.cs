@@ -43,15 +43,59 @@ namespace OriCoop
         }
 
         public static bool Found { get { return Driver() != null; } }
+
+        // Diagnostics (T-024): what the zone's enter / exit actions are (types, fields, nested actions).
+        public static string Actions()
+        {
+            Driver();
+            if (s_zone == null) return "no zone";
+            return "enter=" + Describe(s_zone.OnEnterAction, 0) + " | exit=" + Describe(s_zone.OnExitAction, 0);
+        }
+
+        static string Describe(object o, int depth)
+        {
+            UnityEngine.Object u = o as UnityEngine.Object;
+            if (o == null || (u != null && u == null)) return "null";
+            if (u != null && !(u is ActionMethod) && !(u is Condition)) return u.GetType().Name + ":" + u.name;
+            if (depth > 3) return o.GetType().Name + (u != null ? ":" + u.name : "");
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            sb.Append(o.GetType().Name).Append(u != null ? ":" + u.name : "").Append(" {");
+            for (Type t = o.GetType(); t != null && t != typeof(MonoBehaviour) && t != typeof(object); t = t.BaseType)
+                foreach (System.Reflection.FieldInfo f in t.GetFields(System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.DeclaredOnly))
+                {
+                    object v; try { v = f.GetValue(o); } catch (Exception) { continue; }
+                    if (v == null || v is string && ((string)v).Length == 0) continue;
+                    System.Collections.IList list = v as System.Collections.IList;
+                    if (list != null && !(v is string))
+                    {
+                        sb.Append(' ').Append(f.Name).Append("=[");
+                        int n = 0; foreach (object e in list) { if (n++ > 8) { sb.Append("..."); break; } sb.Append(Describe(e, depth + 1)).Append(", "); }
+                        sb.Append(']');
+                    }
+                    else if (v is UnityEngine.Object || !(v.GetType().IsPrimitive || v is Enum)) sb.Append(' ').Append(f.Name).Append('=').Append(Describe(v, depth + 1));
+                    else sb.Append(' ').Append(f.Name).Append('=').Append(v);
+                }
+            return sb.Append(" }").ToString();
+        }
         // Shown: fading in or fully in. Hidden: fading out or gone.
         public static bool Shown { get { AnimatorDriver d = Driver(); return d != null && !d.IsReversed && d.CurrentTime > 0.01f; } }
         public static bool Hidden { get { AnimatorDriver d = Driver(); return d != null && (d.IsReversed || d.CurrentTime <= 0.01f); } }
+        static string SeqRunning()
+        {
+            if (s_zone == null || s_zone.OnEnterAction == null) return "?";
+            System.Reflection.FieldInfo f = s_zone.OnEnterAction.GetType().GetField("m_isRunning", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic);
+            return f == null ? "?" : f.GetValue(s_zone.OnEnterAction).ToString();
+        }
+
+        // Experiment (T-024 diagnostics): run the enter action directly, outside any trigger callback.
+        public static void PerformEnter() { Driver(); if (s_zone != null && s_zone.OnEnterAction != null) s_zone.OnEnterAction.Perform(null); }
+
         public static string Diag()
         {
             AnimatorDriver d = Driver();
             SeinEnterExitTrigger z = s_zone;
             return d == null ? "no stone" : "t=" + d.CurrentTime.ToString("F2") + "/" + d.Duration.ToString("F2") + (d.IsReversed ? " reversed" : " forward")
-                + " active=" + s_timeline.gameObject.activeInHierarchy + " occupants=" + (z == null ? "?" : P2Extras.OccupantsOf(z)) + " staleExits=" + P2Extras.StaleZoneExits;
+                + " playing=" + d.IsPlaying + " seqRunning=" + SeqRunning() + " active=" + s_timeline.gameObject.activeInHierarchy + " occupants=" + (z == null ? "?" : P2Extras.OccupantsOf(z)) + " staleExits=" + P2Extras.StaleZoneExits;
         }
 
         // Chinese glyph check: every text renderer of the stone samples the atlas its font's glyph table points into
