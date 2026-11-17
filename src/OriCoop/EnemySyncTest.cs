@@ -17,7 +17,7 @@ namespace OriCoop
             public string Key; public Vector3 Origin, Position; public float Health;
             public DifficultyMode Difficulty; public bool Ready;
             public int Seat, OwnerSeat; public uint Epoch; public bool Owner, Dead;
-            public float Tick;
+            public float Tick, Angle;
             public EnemyTickPosition[] Samples = new EnemyTickPosition[0];
         }
         static string s_comparisonKey;
@@ -47,6 +47,7 @@ namespace OriCoop
             p.Samples = new EnemyTickPosition[count];
             for (int i = 0; i < count; i++) p.Samples[i] = new EnemyTickPosition(r.ReadSingle(),
                 new EnemyVector(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
+            p.Angle = r.ReadSingle();
         }
         static IEnumerator Wait(float seconds) { float end = Now + seconds; while (Now < end) yield return null; }
         static bool FamilyAhead(int step)
@@ -62,7 +63,7 @@ namespace OriCoop
             Packet report = new Packet { Key = key ?? "", Owner = p.Owner, Dead = p.Dead, Position = p.Position,
                 Ready = p.Present && (family || p.Mirrored) && p.Known && !p.Dead && ExpectedRole(p),
                 Seat = Players.LocalSeat, OwnerSeat = p.OwnerSeat, Epoch = p.Epoch,
-                Tick = p.Owner ? NetPlay.LocalTick : p.RenderTick,
+                Tick = p.Owner ? NetPlay.LocalTick : p.RenderTick, Angle = p.Angle,
                 Samples = NetRoute.ServerMode && key == s_comparisonKey && p.Owner && p.Epoch == s_comparisonEpoch
                     ? s_ownerPositions.ToArray() : new EnemyTickPosition[0] };
             s_localSteps[step + s_offset] = report;
@@ -77,6 +78,7 @@ namespace OriCoop
                 w.Write(report.Tick); w.Write((ushort)report.Samples.Length);
                 foreach (EnemyTickPosition sample in report.Samples)
                 { w.Write(sample.Tick); w.Write(sample.Position.X); w.Write(sample.Position.Y); w.Write(sample.Position.Z); }
+                w.Write(p.Angle);
             });
             float end = Now + timeout;
             while (NetPlay.Connected && !Has(step) && Now < end && (!family || !FamilyAhead(step)))
@@ -479,7 +481,7 @@ namespace OriCoop
         }
         static IEnumerator Family(TestHarness h, string cls, Dictionary<string, Packet> found, int step)
         {
-            Packet chosen = new Packet(); Vector3 saved = Vector3.zero; bool immortal = false, held = false;
+            Packet chosen = new Packet(); Vector3 saved = Vector3.zero; bool immortal = false, held = false, angleHeld = false;
             try
             {
                 if (Own == null || P2Context.P2 == null) { float back = Now + 20f; while ((P2Context.P1 == null || P2Context.P2 == null) && Now < back) yield return null; }
@@ -552,10 +554,19 @@ namespace OriCoop
                     h.Check(stable && mirrorSeen && (travel > 1f || stationary), s_tag + " " + cls + " mirror travels >1 or stationary");
                 }
                 Vector3 final = p.Position;
+                // T-027: a surface crawler (TraceGroundMovement) turns its whole body to the wall or ceiling it walks on.
+                // The owner turns it a quarter turn from its current pose (as if onto a wall) and holds it until the
+                // step+3 barrier, which carries each peer's body angle; the mirror must show the owner's angle.
+                bool crawler = cls == "StarSlugEnemy";
+                float crawlerTarget = Mathf.Repeat(EnemySync.Inspect(chosen.Key).Angle + 90f, 360f);
+                if (crawler && OwnerHere(chosen.Key)) { EnemySync.TestHoldAngle(chosen.Key, crawlerTarget); angleHeld = true; }
+                if (crawler) yield return Wait(1.5f);
                 yield return Barrier(h, step + 3, chosen.Key, true);
+                if (angleHeld) { EnemySync.TestHoldAngle(chosen.Key, null); angleHeld = false; }
                 if (!Has(step + 3)) yield break;
                 h.Check(Agreement(chosen.Key, step + 3), s_tag + " " + cls + " peers agree on one owner/epoch after simulation");
                 if (!owner && mirrored) h.Check(Vector3.Distance(final, Part[step + 3].Position) < 5f, s_tag + " " + cls + " final peer positions differ <5");
+                if (crawler) CrawlerAngle(h, cls, step + 3, crawlerTarget);
                 // Suicidal families may have respawned during the sample; kill a live instance on both peers.
                 yield return FamilyPresence(chosen);
                 p = EnemySync.Inspect(chosen.Key);
@@ -585,9 +596,19 @@ namespace OriCoop
             }
             finally
             {
+                if (angleHeld) EnemySync.TestHoldAngle(chosen.Key, null);
                 if (!string.IsNullOrEmpty(chosen.Key)) EnemySync.EndTestEnemy(chosen.Key);
                 if (held && Own != null) { Own.Mortality.DamageReciever.IsImmortal = immortal; Plugin.Teleport(Own, saved); }
             }
+        }
+        // T-027 check at the barrier that carried both body angles (see Family).
+        static void CrawlerAngle(TestHarness h, string cls, int step, float target)
+        {
+            Packet mine = LocalReport(step), theirs = Part[step];
+            if (mine.Owner && !theirs.Owner) h.Check(Mathf.Abs(Mathf.DeltaAngle(mine.Angle, target)) < 5f, s_tag + " " + cls + " owner holds the turned angle " + F(target) + " (" + F(mine.Angle) + ")");
+            else if (!mine.Owner && theirs.Owner) h.Check(Mathf.Abs(Mathf.DeltaAngle(mine.Angle, theirs.Angle)) < 10f,
+                s_tag + " " + cls + " mirror body angle matches the owner's (mirror " + F(mine.Angle) + ", owner " + F(theirs.Angle) + ")");
+            else h.Note(s_tag + " " + cls + " angle check skipped: owner moved during the hold");
         }
         static IEnumerator EveryFamily(TestHarness h, Dictionary<string, Packet> found)
         {
