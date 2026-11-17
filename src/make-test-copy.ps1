@@ -1,12 +1,12 @@
-# Makes an extra test copy (b -> C:\OriCoop\game-b, c -> game-c) so several sessions can run game tests in parallel.
+# Makes an extra test copy (b -> C:\OriCoop\game-b, c -> game-c, d -> game-d, e -> game-e) so several sessions can run game tests in parallel.
 # Large read-only game data is shared with C:\OriCoop\game: files are HARD LINKS, oriDE_Data subfolders JUNCTIONS
 # (never write into them). Each copy has its own oriDE.exe path (Unity's single-instance mutex is named after the exe
 # path, so copies never block each other or the owner's D: game), its own BepInEx (core/config/patchers/plugins are
 # real copies: install your own OriCoop.dll there), its own saves (appdata-b, appdata2-b, appdata3-b), test output
-# (test-b), runtime dir (test-runtime-b) and UDP ports (+100 for b, +200 for c; its config has Port = 47011+offset).
+# (test-b), runtime dir (test-runtime-b) and UDP ports (+100 for b, +200 for c, +300 for d, +400 for e; its config has Port = 47011+offset).
 #   -Refresh  re-copy BepInEx (core, config, patchers, plugins) from C:\OriCoop\game; takes the copy's lock first.
 # Never touches C:\OriCoop\game itself or the owner's D: copy.
-param([Parameter(Mandatory = $true)][ValidateSet('b', 'c')][string]$Name, [switch]$Refresh)
+param([Parameter(Mandatory = $true)][ValidateSet('b', 'c', 'd', 'e')][string]$Name, [switch]$Refresh)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'test-launch.ps1')
 $src = 'C:\OriCoop\game'
