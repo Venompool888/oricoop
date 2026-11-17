@@ -174,6 +174,20 @@ namespace OriCoop
             if (P2 == null) { Finish(); yield break; }
             Check(P2 != P1, "P2 is a separate SeinCharacter");
             Check(Characters.Sein == P1, "Characters.Sein restored to P1 after spawn");
+            // T-032: the build is named (the build scripts embed the commit) and F8 opens the log folder.
+            Check(OriCoop.Ui.BuildInfo.Commit != OriCoop.Ui.BuildInfo.Unknown, "build info: DLL names its commit (" + OriCoop.Ui.BuildInfo.Commit + ")");
+            string opened = null;
+            CoopMenu.OpenFolderHook = delegate(string dir) { opened = dir; };
+            CoopMenu.Open();
+            yield return StartCoroutine(Wait(0.5f));
+            Check(CoopMenu.SettingsLogsRow == 2 + 3 && CoopMenu.SettingsCloseRow == 2 + 4, "F8: two seats, then cutscenes / remove P2 / mode / log folder / close (rows "
+                + CoopMenu.SettingsLogsRow + ", " + CoopMenu.SettingsCloseRow + ")");
+            CoopMenu.Activate(CoopMenu.SettingsLogsRow);
+            Check(opened != null && System.IO.File.Exists(System.IO.Path.Combine(opened, "LogOutput.log")),
+                "F8: 打开日志文件夹 opens the folder with LogOutput.log (" + (opened == null ? "not opened" : System.IO.File.Exists(System.IO.Path.Combine(opened, "LogOutput.log")) ? "LogOutput.log found" : "no LogOutput.log there") + ")");
+            Check(CoopMenu.IsOpen, "F8: panel stays open after opening the log folder");
+            CoopMenu.Close();
+            CoopMenu.OpenFolderHook = null;
             yield return StartCoroutine(Wait(1f));
             // Save isolation: P2 must not take over any of P1's checkpoint save entries.
             int p1SaveEntries1 = CountSaveEntriesUnder(P1.transform), p2Entries = CountSaveEntriesUnder(P2.transform);
@@ -871,8 +885,13 @@ namespace OriCoop
                 pauseNav.SetCurrentMenuItem(pauseEntry);
                 pauseNav.PressCurrentItem();
                 yield return null;
-                Check(CoopMenu.IsOpen && UI.MainMenuVisible && !pauseNav.IsVisible && pauseNav.IsLocked && Time.timeScale == pauseScale,
-                    "menu: pause entry opens settings without adding a pause or releasing the native pause");
+                // "Without adding a pause": the panel must not freeze the game itself (the native pause keeps its own). Not an exact
+                // timeScale compare: the game's SyncFramesTest.Update writes 1 / 1.5 / 0.5 every frame to pace fixed updates
+                // (decomp SyncFramesTest.cs:28-50), so two frames' values differ by design.
+                Check(CoopMenu.IsOpen && UI.MainMenuVisible && !pauseNav.IsVisible && pauseNav.IsLocked && !CoopMenu.FrozeGame && Time.timeScale > 0f,
+                    "menu: pause entry opens settings without adding a pause or releasing the native pause (open=" + CoopMenu.IsOpen + " page=" + CoopMenu.Page
+                    + " menuVisible=" + UI.MainMenuVisible + " pauseVisible=" + pauseNav.IsVisible + " pauseLocked=" + pauseNav.IsLocked
+                    + " froze=" + CoopMenu.FrozeGame + " timeScale=" + Time.timeScale + " was " + pauseScale + ")");
                 CoopMenu.Close();
                 yield return StartCoroutine(Wait(0.4f));
                 Check(!CoopMenu.IsOpen && UI.MainMenuVisible && pauseNav.IsVisible && pauseNav.IsActive && !pauseNav.IsLocked && pauseNav.CurrentMenuItem == pauseEntry,
@@ -900,7 +919,7 @@ namespace OriCoop
 
             CoopMenu.Activate(2);
             Check(Plugin.Instance.P2CanTriggerCutscenes != cutWas, "menu: story cutscene option toggles");
-            CoopMenu.Activate(5);
+            CoopMenu.Activate(CoopMenu.SettingsCloseRow);
             yield return null;
             Check(!CoopMenu.IsOpen && Time.timeScale > 0f, "menu: closes and the game runs again");
             Check((P2 != null ? 1 : 0) == joins0, "menu: buttons pressed in the menu don't add/remove P2");
