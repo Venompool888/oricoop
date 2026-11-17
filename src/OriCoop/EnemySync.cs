@@ -351,7 +351,9 @@ namespace OriCoop
             {
                 if (controller && e is JumperEnemy) s.ShouldStomp = (bool)s_shouldStomp.GetValue(e);
                 FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy;
-                Transform visual = fish != null ? fish.Rotation : owl != null && owl.SpriteRotation != null ? owl.SpriteRotation.transform : null;
+                // T-027: surface crawlers (star slugs; TraceGroundMovement) turn the whole body to the wall/ceiling they walk on.
+                Transform visual = fish != null ? fish.Rotation : owl != null && owl.SpriteRotation != null ? owl.SpriteRotation.transform
+                    : e.GetComponent<TraceGroundMovement>() != null ? e.transform : null;
                 if (visual != null) { s.HasVisualAngle = true; s.VisualAngle = visual.eulerAngles.z; }
                 s.Position = e.Position; s.Left = e.Animation != null && e.Animation.SpriteMirror != null && e.FaceLeft; s.Health = e.DamageReciever == null ? 0 : e.DamageReciever.Health;
                 s.DealerActive = e.DamageDealer != null && e.DamageDealer.Activated; s.TargetActive = e.Targetting != null && e.Targetting.Activated;
@@ -665,6 +667,8 @@ namespace OriCoop
                 { Vector3 angles = fish.Rotation.eulerAngles; angles.z = s.VisualAngle; fish.Rotation.eulerAngles = angles; }
                 if (owl != null && owl.SpriteRotation != null)
                 { owl.SpriteRotation.TargetAngle = s.VisualAngle; owl.SpriteRotation.RotateToTargetImmediately(); }
+                if (fish == null && owl == null && e.GetComponent<TraceGroundMovement>() != null)
+                { Vector3 angles = e.transform.eulerAngles; angles.z = s.VisualAngle; e.transform.eulerAngles = angles; }
             }
             if (e.DamageReciever != null) e.DamageReciever.Health = s.Health;
             if (e.DamageDealer != null) e.DamageDealer.Activated = s.DealerActive;
@@ -1351,7 +1355,7 @@ namespace OriCoop
             public bool Present, Known, Owner, Dead, HasSnapshot, Mirrored, PlaceholderLoaded; public uint Epoch, Generation;
             public int OwnerSeat;
             public string ClassName, StateName, LiveState, SceneName, LastRemoval, LastDeath;
-            public float Health, DeathTime, RenderTick; public Vector3 Position, OwnerPosition, Origin;
+            public float Health, DeathTime, RenderTick, Angle; public Vector3 Position, OwnerPosition, Origin;
         }
         public static string[] LoadedEnemies()
         {
@@ -1437,7 +1441,8 @@ namespace OriCoop
             p.StateName = Mine(a) && a.Entity != null && a.Entity.Controller != null && a.Entity.Controller.StateMachine.CurrentState != null ? a.Entity.Controller.StateMachine.CurrentState.GetType().Name : a.Latest.StateName;
             p.LiveState = a.Entity != null && a.Entity.Controller != null && a.Entity.Controller.StateMachine.CurrentState != null
                 ? a.Entity.Controller.StateMachine.CurrentState.GetType().Name : "";
-            p.Position = a.Entity == null ? a.Latest.Position : a.Entity.Position; p.OwnerPosition = a.Latest.Position; p.HasSnapshot = a.Buffer.Count > 0; p.DeathTime = a.DeathTime; p.RenderTick = a.RenderTick; return p;
+            p.Position = a.Entity == null ? a.Latest.Position : a.Entity.Position; p.OwnerPosition = a.Latest.Position; p.HasSnapshot = a.Buffer.Count > 0; p.DeathTime = a.DeathTime; p.RenderTick = a.RenderTick;
+            p.Angle = a.Entity != null ? a.Entity.transform.eulerAngles.z : 0f; return p;
         }
         public static string Describe(string key)
         {
@@ -1519,6 +1524,14 @@ namespace OriCoop
             }
             if (a.Entity == null) { a.Placeholder.PerformRespawn(); a.Placeholder.Spawn(); Bind(a); }
             a.Entity.DamageReciever.Health = health; a.Latest = Capture(a, true); SendLife(a, 1);
+        }
+        // Test only (T-027): the owner holds a surface crawler (TraceGroundMovement) at a body angle; null lets it go.
+        public static void TestHoldAngle(string key, float? angle)
+        {
+            Actor a; if (!s_actors.TryGetValue(key, out a) || !Mine(a) || a.Entity == null) return;
+            TraceGroundMovement trace = a.Entity.GetComponent<TraceGroundMovement>(); if (trace == null) return;
+            trace.IsSuspended = angle.HasValue;
+            if (angle.HasValue) a.Entity.transform.eulerAngles = new Vector3(0f, 0f, angle.Value);
         }
         public static void EndTestEnemy(string key)
         {
