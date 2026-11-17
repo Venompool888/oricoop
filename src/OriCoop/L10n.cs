@@ -344,6 +344,8 @@ namespace OriCoop
             "revive.hold", "按住 {0} 复活", "Hold {0} to revive",
             "revive.again", "被打断了，重新按住 {0}", "Interrupted - Hold {0} again",
             "revive.mouse", "鼠标左键", "the left mouse button",
+            "gate.force", "长按 {0} 强制触发", "Hold {0} to force it",
+            "gate.wait", "需全员到齐以推进（{0}/{1}）", "Everyone must be here to continue ({0}/{1})",
             "pause.by", "{0} 暂停了", "{0} paused the game",
             "session.resumed", "有玩家继续了游戏", "A player resumed the game",
             // title / mode / lobby

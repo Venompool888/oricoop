@@ -253,7 +253,7 @@ namespace OriCoop
             Vector2 center = meta.SceneBounds.center;
             Plugin.Teleport(Own, new Vector3(center.x, center.y, 0));
             Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(meta.SceneBounds, true, false, false);
-            float end = Now + 8f;
+            float end = Now + 20f;   // busy test machine: big scenes need longer than 8 s
             while (Loaded(meta) == null && Now < end) yield return null;
         }
 
@@ -312,7 +312,8 @@ namespace OriCoop
                 int sceneCount = 0, sequenceCount = 0;
                 foreach (RuntimeSceneMetaData meta in scenes)
                 {
-                    bool match = false;
+                    // ORICOOP_SCAN_ALL=1: every scene (T-040 trigger list), not only the early-game prefixes.
+                    bool match = Environment.GetEnvironmentVariable("ORICOOP_SCAN_ALL") == "1";
                     foreach (string prefix in Prefixes) if (meta.Scene.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)) { match = true; break; }
                     if (!match) continue;
                     IEnumerator load = Load(meta);

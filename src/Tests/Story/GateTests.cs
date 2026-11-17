@@ -1,0 +1,141 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
+using OriCoop.Story;
+
+static partial class StoryTests
+{
+    static BinaryReader GatePacket(Action<BinaryWriter> write)
+    {
+        MemoryStream stream = new MemoryStream();
+        BinaryWriter writer = new BinaryWriter(stream); write(writer); writer.Flush(); stream.Position = 0;
+        return new BinaryReader(stream);
+    }
+    static void GateInvalid(Action<BinaryWriter> write, Action<BinaryReader> read)
+    {
+        using (BinaryReader reader = GatePacket(write))
+        {
+            try { read(reader); }
+            catch (InvalidDataException) { return; }
+            throw new Exception("expected InvalidDataException");
+        }
+    }
+    static void GateCases()
+    {
+        Check("gate counts 0/1/2 seats", delegate {
+            GateTable t = new GateTable(); Equal(0, t.Count("a", 0));
+            t.SetInside("a", 1, true, 0); Equal(1, t.Count("a", 0));
+            t.SetInside("a", 2, true, 0); Equal(2, t.Count("a", 0));
+            t.SetInside("a", 2, true, 0); Equal(2, t.Count("a", 0));
+            Equal(0, t.Count("b", 0));
+        });
+        Check("gate all-here boundaries", delegate {
+            GateTable t = new GateTable(); Equal(false, t.AllHere("a", 0, 0));
+            t.SetInside("a", 1, true, 0); Equal(false, t.AllHere("a", 2, 0));
+            t.SetInside("a", 2, true, 0); Equal(true, t.AllHere("a", 2, 0));
+            t.SetInside("a", 3, true, 0); Equal(false, t.AllHere("a", 4, 0));
+            Equal(true, t.AllHere("a", 3, 0));
+        });
+        Check("gate heartbeat timeout and refresh", delegate {
+            GateTable t = new GateTable(); t.SetInside("a", 1, true, 0);
+            Equal(1, t.Count("a", 1.4f)); Equal(1, t.Count("a", 1.5f)); Equal(0, t.Count("a", 1.6f));
+            t.SetInside("a", 1, true, 1.6f); Equal(1, t.Count("a", 2));
+        });
+        Check("gate forget seat across keys", delegate {
+            GateTable t = new GateTable(); t.SetInside("a", 1, true, 0); t.SetInside("b", 1, true, 0);
+            t.SetInside("a", 2, true, 0); t.Forget(1);
+            Equal(1, t.Count("a", 0)); Equal(0, t.Count("b", 0));
+        });
+        Check("gate seat-specific presence for force authorization", delegate {
+            GateTable t = new GateTable(); t.SetInside("a", 2, true, 0);
+            Equal(true, t.IsInside("a", 2, 1.4f)); Equal(false, t.IsInside("a", 1, 1.4f));
+            Equal(false, t.IsInside("a", 2, 1.6f));
+            t.SetInside("a", 2, false, 0.5f); Equal(false, t.IsInside("a", 2, 0.5f));
+        });
+        Check("gate leave removes presence", delegate {
+            GateTable t = new GateTable(); t.SetInside("a", 1, true, 0); t.SetInside("a", 1, false, 0.1f);
+            Equal(0, t.Count("a", 0.1f));
+        });
+        Check("gate fired ignores presence for 15 seconds", delegate {
+            GateTable t = new GateTable(); t.SetInside("a", 1, true, 0); t.MarkFired("a", 0);
+            Equal(true, t.RecentlyFired("a", 14.9f)); Equal(0, t.Count("a", 0));
+            t.SetInside("a", 2, true, 14.9f); Equal(0, t.Count("a", 14.9f));
+            Equal(false, t.RecentlyFired("a", 15f)); Equal(false, t.RecentlyFired("a", 15.1f));
+            t.SetInside("a", 2, true, 15.1f); Equal(1, t.Count("a", 15.1f));
+        });
+        Check("gate seat order symmetry", delegate {
+            GateTable a = new GateTable(), b = new GateTable();
+            a.SetInside("g", 1, true, 0); a.SetInside("g", 2, true, 0);
+            b.SetInside("g", 2, true, 0); b.SetInside("g", 1, true, 0);
+            Equal(2, a.Count("g", 0)); Equal(a.Count("g", 0), b.Count("g", 0));
+            Equal(true, a.AllHere("g", 2, 0)); Equal(a.AllHere("g", 2, 0), b.AllHere("g", 2, 0));
+        });
+        Check("gate active keys exclude expired and fired", delegate {
+            GateTable t = new GateTable(); t.SetInside("old", 1, true, 0); t.SetInside("live", 2, true, 1);
+            t.SetInside("fired", 1, true, 1); t.MarkFired("fired", 1);
+            List<string> keys = new List<string>(t.ActiveKeys(1.6f)); Equal(1, keys.Count); Equal("live", keys[0]);
+        });
+        Check("gate hold fills once after 15 tenths", delegate {
+            HoldMeter m = new HoldMeter(); Equal(1.5f, HoldMeter.FillSeconds);
+            for (int i = 0; i < 14; i++) Equal(false, m.Update(true, 0.1f));
+            Equal(true, m.Update(true, 0.1f)); Equal(1f, m.Progress);
+            Equal(false, m.Update(true, 1)); Equal(false, m.Update(false, 1)); Equal(1f, m.Progress);
+            m.Reset(); Equal(0f, m.Progress);
+        });
+        Check("gate release resets partial hold", delegate {
+            HoldMeter m = new HoldMeter(); for (int i = 0; i < 10; i++) Equal(false, m.Update(true, 0.1f));
+            Equal(false, m.Update(false, 0.1f)); Equal(0f, m.Progress);
+            for (int i = 0; i < 14; i++) Equal(false, m.Update(true, 0.1f));
+            Equal(true, m.Update(true, 0.1f)); Equal(1f, m.Progress);
+        });
+        Check("gate wire state round trip", delegate {
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteState(w, "洞穴", true); }))
+            { bool inside; Equal("洞穴", GateWire.ReadState(r, out inside)); Equal(true, inside); }
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteState(w, "a", false); }))
+            { bool inside; Equal("a", GateWire.ReadState(r, out inside)); Equal(false, inside); }
+        });
+        Check("gate wire count round trip", delegate {
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteCount(w, "a", 2, 4); }))
+            { byte n, total; Equal("a", GateWire.ReadCount(r, out n, out total)); Equal((byte)2, n); Equal((byte)4, total); }
+        });
+        Check("gate wire force round trip", delegate {
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteForce(w, "a"); })) Equal("a", GateWire.ReadForce(r));
+        });
+        Check("gate wire fire round trip", delegate {
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteFire(w, "a", -1.5f, 2.25f, 0.5f); }))
+            { float x, y, z; Equal("a", GateWire.ReadFire(r, out x, out y, out z)); Equal(-1.5f, x); Equal(2.25f, y); Equal(0.5f, z); }
+        });
+        Check("gate wire rejects count 9", delegate {
+            GateInvalid(delegate(BinaryWriter w) { w.Write("a"); w.Write((byte)9); w.Write((byte)2); },
+                delegate(BinaryReader r) { byte n, total; GateWire.ReadCount(r, out n, out total); });
+        });
+        Check("gate wire rejects total 0 and 9", delegate {
+            foreach (byte total in new byte[] { 0, 9 })
+                GateInvalid(delegate(BinaryWriter w) { w.Write("a"); w.Write((byte)0); w.Write(total); },
+                    delegate(BinaryReader r) { byte n, size; GateWire.ReadCount(r, out n, out size); });
+        });
+        Check("gate wire rejects nonfinite coordinates", delegate {
+            foreach (float invalid in new float[] { float.NaN, float.PositiveInfinity, float.NegativeInfinity })
+                for (int axis = 0; axis < 3; axis++)
+                    GateInvalid(delegate(BinaryWriter w) { w.Write("a"); for (int i = 0; i < 3; i++) w.Write(i == axis ? invalid : 0f); },
+                        delegate(BinaryReader r) { float x, y, z; GateWire.ReadFire(r, out x, out y, out z); });
+        });
+        Check("gate wire rejects long keys in every message", delegate {
+            GateInvalid(delegate(BinaryWriter w) { GateWire.WriteState(w, new string('a', 1025), true); },
+                delegate(BinaryReader r) { bool inside; GateWire.ReadState(r, out inside); });
+            GateInvalid(delegate(BinaryWriter w) { GateWire.WriteCount(w, new string('a', 1025), 1, 2); },
+                delegate(BinaryReader r) { byte n, total; GateWire.ReadCount(r, out n, out total); });
+            GateInvalid(delegate(BinaryWriter w) { GateWire.WriteForce(w, new string('a', 1025)); },
+                delegate(BinaryReader r) { GateWire.ReadForce(r); });
+            GateInvalid(delegate(BinaryWriter w) { GateWire.WriteFire(w, new string('a', 1025), 0, 0, 0); },
+                delegate(BinaryReader r) { float x, y, z; GateWire.ReadFire(r, out x, out y, out z); });
+        });
+        Check("gate wire accepts boundary key and counts", delegate {
+            string key = new string('a', 1024);
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteCount(w, key, 8, 8); }))
+            { byte n, total; Equal(key, GateWire.ReadCount(r, out n, out total)); Equal((byte)8, n); Equal((byte)8, total); }
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteCount(w, "a", 0, 1); }))
+            { byte n, total; Equal("a", GateWire.ReadCount(r, out n, out total)); Equal((byte)0, n); Equal((byte)1, total); }
+        });
+    }
+}

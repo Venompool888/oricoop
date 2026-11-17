@@ -138,6 +138,18 @@ namespace OriCoop
             if (baked) Classification[key] = story;
             return story;
         }
+        public static bool IsStoryAction(Component c) { return ContainsStory(c, new HashSet<Component>()); }
+        // T-040: a story that takes the player over (input lock, letterbox, story text, pause, cutscene state).
+        // Camera-only moves (chase / escape camera setups) are not: those areas must never wait for everyone.
+        static bool s_takeoverOnly;
+        public static bool IsTakeoverAction(Component c)
+        {
+            s_takeoverOnly = true;
+            try { return ContainsStory(c, new HashSet<Component>()); }
+            finally { s_takeoverOnly = false; }
+        }
+        public static bool IsStoryCutscene(CutsceneController c) { return StoryController(c); }
+        public static string ComponentKey(Component c) { return SceneOf(c) + ":" + PathOf(c.transform); }
         static bool BlocksSein(CutsceneState state)
         {
             return state is NormalBackwardsCutsceneState || state is MovingCutsceneState || state is PlayAnimationCutsceneState;
@@ -171,6 +183,9 @@ namespace OriCoop
             if (change != null) return BlocksSein(change.State) || StoryController(change.Cutscene);
             PauseGameAction pause = component as PauseGameAction;
             if (pause != null && (pause.SuspendPlayer || pause.ShowLetterbox)) return true;
+            if (s_takeoverOnly) { }   // camera-only moves do not take the player over (T-040)
+            else
+            {
             SetCameraTargetAction target = component as SetCameraTargetAction;
             if (target != null && target.Target != null && target.Target.GetComponentInParent<SeinCharacter>() == null) return true;
             if (component is MoveCameraAction || component is MoveCameraHereAction) return true;
@@ -180,6 +195,7 @@ namespace OriCoop
                 if (animation.Animators != null) foreach (BaseAnimator animator in animation.Animators) if (Cinematic(animator)) return true;
                 if (animation.Target != null)
                     foreach (BaseAnimator animator in animation.Target.GetComponentsInChildren<BaseAnimator>(true)) if (Cinematic(animator)) return true;
+            }
             }
             // Follow action references, not arbitrary scene objects. This includes ActionSequence.Actions,
             // PerformActionAction.SequenceToRun and conditional/wrapper actions, with a cycle guard.
@@ -229,6 +245,7 @@ namespace OriCoop
             StoryHost.Current = new GameStoryHost();
             GameStoryHost.InitIntroNetwork();
             CutsceneGuard.Init();
+            ForcedSync.Init();
             Services.Net.On(StartMessage, ReceiveStart);
             Services.Net.On(EndMessage, ReceiveEnd);
             Services.Net.On(SkipMessage, ReceiveSkip);
@@ -581,11 +598,13 @@ namespace OriCoop
             finally { s_mirroring = previous; }
         }
         static readonly Action s_cutsceneTick = CutsceneGuard.Tick;
+        static readonly Action s_gateTick = ForcedSync.Tick;
 
         public static void Tick()
         {
             TickIntro();
             SubsystemGuard.Run("CutsceneGuard.Tick", s_cutsceneTick);
+            SubsystemGuard.Run("ForcedSync.Tick", s_gateTick);
             if (Time.realtimeSinceStartup >= s_statsAt)
             {
                 s_statsAt = Time.realtimeSinceStartup + 30f;
