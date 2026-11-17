@@ -546,7 +546,14 @@ function New-TestClientRoot([string]$Tag) {
     Copy-Item -Path "$src\config\*" -Destination (Join-Path $bepRoot 'config') -Recurse -Force
     foreach ($dir in @('plugins', 'patchers')) {
         $link = Join-Path $bepRoot $dir
+        # A real folder in place of the junction (seen in copy e: empty plugins/patchers) starts the game with no mod
+        # and no TestQuiet, so Steam tracks the test game as "Ori running". An empty one is replaced; anything else stops.
+        if ((Test-Path -LiteralPath $link) -and -not ((Get-Item -LiteralPath $link -Force).Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+            if (@(Get-ChildItem -LiteralPath $link -Force).Count -gt 0) { throw ('not a junction and not empty: ' + $link + ' (expected a link to ' + (Join-Path $src $dir) + ')') }
+            Remove-Item -LiteralPath $link -Force
+        }
         if (-not (Test-Path -LiteralPath $link)) { New-Item -ItemType Junction -Path $link -Target (Join-Path $src $dir) | Out-Null }
+        if (-not (Test-Path -LiteralPath (Join-Path $link 'OriCoop.TestQuiet.dll')) -and $dir -eq 'plugins') { throw ('TestQuiet missing in ' + $link + ': the test game would register with Steam') }
     }
     foreach ($log in @((Join-Path $script:TL_TestDir ($Tag + '-unity.log')), (Join-Path $script:TL_TestDir ($Tag + '.log')), (Join-Path $bepRoot 'LogOutput.log'))) {
         if (Test-Path -LiteralPath $log) { Remove-Item -LiteralPath $log -Force }

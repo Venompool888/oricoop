@@ -173,7 +173,7 @@ namespace OriCoop
         {
             void FixedUpdate() { SubsystemGuard.Run("CoopTrace.FixedTick", s_traceFixed); Instance.DoFixedUpdate(); }
             void Update() { SubsystemGuard.Run("CoopTrace.Tick", s_traceUpdate); Instance.DoUpdate(); }
-            void LateUpdate() { Instance.DoLateUpdate(); }
+            void LateUpdate() { Instance.DoLateUpdate(); SubsystemGuard.Run("StorySync.ApplyIntro", StorySync.ApplyIntro); }
             void OnGUI() { Instance.DoGUI(); }
             void OnDestroy() { Log.LogWarning("OriCoopRunner destroyed"); }
             void OnApplicationQuit() { NetPlay.Shutdown(); CoopTrace.Event("scene", "quit"); CoopTrace.Flush(); }
@@ -245,6 +245,7 @@ namespace OriCoop
         void Tick()
         {
             SubsystemGuard.Run("Plugin.TickLifecycle", m_lifecycle);
+            if (StorySync.IntroActive) return; // Intro owns hiding, freezing and the one-time wake layout.
             if (P2Input.Connected != m_lastConnected)
             {
                 m_lastConnected = P2Input.Connected;

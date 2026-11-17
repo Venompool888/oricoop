@@ -15,6 +15,16 @@ namespace OriCoop
     public static class StorySync
     {
         const byte StartMessage = 50, EndMessage = 51, SkipMessage = 52;
+        static readonly IntroRule Intro = new IntroRule();
+        public static bool IntroActive { get { return Intro.Active; } }
+        public static bool IntroHeld(int seat) { return Intro.HoldsSeat(seat); }
+        internal static void TickIntro() { Intro.Tick(StoryHost.Current); }
+        internal static void ResetIntro() { Intro.Reset(StoryHost.Current); }
+        internal static void ApplyIntro()
+        {
+            // Called after the usual parking/visual updates, so nothing re-shows an intro-held Ori.
+            for (int seat = 1; seat <= 4; seat++) StoryHost.Current.SetIntroHeld(seat, Intro.HoldsSeat(seat));
+        }
         sealed class Story : StoryEntry
         {
             public byte Kind;
@@ -217,6 +227,7 @@ namespace OriCoop
         public static void Init()
         {
             StoryHost.Current = new GameStoryHost();
+            GameStoryHost.InitIntroNetwork();
             CutsceneGuard.Init();
             Services.Net.On(StartMessage, ReceiveStart);
             Services.Net.On(EndMessage, ReceiveEnd);
@@ -573,6 +584,7 @@ namespace OriCoop
 
         public static void Tick()
         {
+            TickIntro();
             SubsystemGuard.Run("CutsceneGuard.Tick", s_cutsceneTick);
             if (Time.realtimeSinceStartup >= s_statsAt)
             {

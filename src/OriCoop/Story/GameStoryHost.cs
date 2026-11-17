@@ -6,7 +6,7 @@ using UnityEngine;
 
 namespace OriCoop.Story
 {
-    internal sealed class GameStoryHost : IStoryHost
+    internal partial class GameStoryHost : IStoryHost
     {
         static readonly FieldInfo CameraTarget = AccessTools.Field(typeof(Plugin), "m_camTarget");
         internal static MoonGuid ReadGuid(byte[] bytes) { return new MoonGuid(new BinaryReader(new MemoryStream(bytes))); }

@@ -19,6 +19,7 @@ static partial class StoryTests
             SharedValues a = r.Merge(3, 4, 2f, 5f, 9, 9, 9f);
             Equal(3, a.Keys); Equal(4, a.Maps); Equal(2f, a.Energy);
         });
+        IntroCases();
         StoryCases();
         ProgressCases();
         ObjectCases();

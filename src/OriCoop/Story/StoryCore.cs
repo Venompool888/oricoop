@@ -4,6 +4,135 @@ using System.IO;
 
 namespace OriCoop.Story
 {
+    internal struct StoryPoint
+    {
+        public float X, Y, Z;
+        public StoryPoint(float x, float y, float z) { X = x; Y = y; Z = z; }
+    }
+
+    // Pure boundary shared by IStoryHost and the unit-test fake.
+    internal interface IIntroHost
+    {
+        bool IntroAuthority { get; }
+        bool IntroPlaying { get; }
+        bool IntroP1Free { get; }
+        bool IntroAtTitle { get; }
+        StoryPoint IntroP1Position { get; }
+        int[] IntroSeats { get; }
+        bool CanPlaceIntroSeat(int seat);
+        IntroState RemoteIntro { get; }
+        bool TryIntroGround(StoryPoint candidate, out StoryPoint spot);
+        // Held means neutral input, frozen position, and hidden Ori/companion (not just a movement lock).
+        void SetIntroHeld(int seat, bool held);
+        void PlaceIntroSeat(int seat, StoryPoint position);
+        void PublishIntro(IntroState state);
+    }
+
+    internal sealed class IntroState
+    {
+        public uint Generation;
+        public bool Active, Woke;
+        public StoryPoint[] Spots;
+    }
+
+    internal static class IntroWire
+    {
+        public static void Write(BinaryWriter w, IntroState state)
+        {
+            w.Write(state.Generation); w.Write(state.Active); w.Write(state.Woke);
+            if (state.Woke) foreach (StoryPoint p in state.Spots) { w.Write(p.X); w.Write(p.Y); w.Write(p.Z); }
+        }
+        public static IntroState Read(BinaryReader r)
+        {
+            IntroState state = new IntroState { Generation = r.ReadUInt32(), Active = r.ReadBoolean(), Woke = r.ReadBoolean() };
+            if (state.Active && state.Woke) throw new InvalidDataException("invalid intro phase");
+            if (state.Woke)
+            {
+                state.Spots = new StoryPoint[4];
+                for (int i = 0; i < 4; i++)
+                {
+                    StoryPoint p = new StoryPoint(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    if (float.IsNaN(p.X) || float.IsInfinity(p.X) || float.IsNaN(p.Y) || float.IsInfinity(p.Y)
+                        || float.IsNaN(p.Z) || float.IsInfinity(p.Z)) throw new InvalidDataException("invalid intro spot");
+                    state.Spots[i] = p;
+                }
+            }
+            return state;
+        }
+    }
+
+    internal sealed class IntroRule
+    {
+        // Fixed identities, independent of player count or which seats already have an Ori.
+        // 3.5-unit slots leave tolerance for ground settling while guaranteeing a 3-unit gap.
+        public const float MinimumSpacing = 3f;
+        static readonly float[] Offsets = { 0f, 3.5f, -3.5f, 7f };
+        IntroState state = new IntroState();
+        readonly HashSet<int> placed = new HashSet<int>();
+        bool playing;
+        public bool Active { get { return state.Active; } }
+        public bool HoldsSeat(int seat)
+        { return seat >= 2 && seat <= 4 && (state.Active || state.Woke && !placed.Contains(seat)); }
+        static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+        public void Reset(IIntroHost host)
+        {
+            for (int seat = 1; seat <= 4; seat++) host.SetIntroHeld(seat, false);
+            state = new IntroState(); placed.Clear(); playing = false;
+        }
+        public void Tick(IIntroHost host)
+        {
+            if (host.IntroAuthority)
+            {
+                if (host.IntroPlaying && !playing)
+                {
+                    state = new IntroState { Active = true, Generation = state.Generation + 1 };
+                    placed.Clear();
+                }
+                playing = host.IntroPlaying;
+                // Logos end at the title, not at a new-game wake. A later save load is not an intro.
+                if (!playing && host.IntroAtTitle && (state.Active || state.Woke))
+                {
+                    state = new IntroState { Generation = state.Generation + 1 }; placed.Clear();
+                }
+                // SetToGame/SkipPrologue may precede Ori's creation, scene load and wake animation.
+                if (state.Active && !playing && host.IntroP1Free)
+                {
+                    StoryPoint anchor = host.IntroP1Position;
+                    StoryPoint[] spots = new StoryPoint[4]; spots[0] = anchor;
+                    for (int i = 1; i < 4; i++)
+                    {
+                        StoryPoint candidate = new StoryPoint(anchor.X + Offsets[i], anchor.Y, anchor.Z), ground;
+                        spots[i] = host.TryIntroGround(candidate, out ground) && Finite(ground.X) && Finite(ground.Y) && Finite(ground.Z)
+                            && Math.Abs(ground.X - candidate.X) < 0.1f && Math.Abs(ground.Y - anchor.Y) <= 4f ? ground : candidate;
+                    }
+                    state = new IntroState { Generation = state.Generation, Woke = true, Spots = spots };
+                }
+                host.PublishIntro(state);
+            }
+            else
+            {
+                // Guests skip their own new-game movie; only a host snapshot can release them.
+                IntroState remote = host.RemoteIntro ?? new IntroState { Active = true };
+                // Reliable snapshots may arrive late: an old hold must not rewind an observed wake.
+                if (remote.Generation > state.Generation || remote.Generation == state.Generation && !(state.Woke && !remote.Woke))
+                {
+                    if (state.Generation != remote.Generation) placed.Clear();
+                    state = remote;
+                }
+            }
+            if (state.Woke && !state.Active)
+                foreach (int seat in host.IntroSeats)
+                    if (seat >= 2 && seat <= 4 && !placed.Contains(seat) && host.CanPlaceIntroSeat(seat))
+                    {
+                        // A guest may still be restoring the host save when wake arrives. Do not reveal it
+                        // or consume its one placement until that restore can no longer overwrite the spot.
+                        host.SetIntroHeld(seat, false);
+                        host.PlaceIntroSeat(seat, state.Spots[seat - 1]); placed.Add(seat);
+                    }
+            for (int seat = 1; seat <= 4; seat++) host.SetIntroHeld(seat, HoldsSeat(seat));
+        }
+    }
+
     internal sealed class StoryStart
     {
         public uint Token;
