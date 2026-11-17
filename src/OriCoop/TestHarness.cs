@@ -516,15 +516,25 @@ namespace OriCoop
             P1.Mortality.Health.RestoreAllHealth(); P2.Mortality.Health.RestoreAllHealth();
             P1.Mortality.DamageReciever.MakeInvincible(10f); P2.Mortality.DamageReciever.MakeInvincible(10f);
             PickupBase best = null; float bestD = float.MaxValue;
-            // Include inactive ones: frustum-optimized pickups switch themselves off while off-screen.
-            foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+            // Include inactive ones: frustum-optimized pickups switch themselves off while off-screen. Skip template
+            // clones parked at the origin and anything far away: when the area had not streamed in yet, the old search
+            // took an inactive "healthContainerPickup(Clone)" at (0,0,0) ~290 units off and failed (2026-11-18, 1 run
+            // in 5). Wait a few seconds for a real one; otherwise report SKIP, not FAIL.
+            float searchEnd = Time.unscaledTime + 8f;
+            while (best == null)
             {
-                if (pb == null || pb.IsCollected || !pb.gameObject.scene.IsValid() || !pb.gameObject.scene.isLoaded) continue;
-                if (pb.transform.parent != null && !pb.transform.parent.gameObject.activeInHierarchy) continue;
-                float d = Vector3.Distance(pb.transform.position, P1.Position);
-                if (d < bestD) { bestD = d; best = pb; }
+                foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+                {
+                    if (pb == null || pb.IsCollected || !pb.gameObject.scene.IsValid() || !pb.gameObject.scene.isLoaded) continue;
+                    if (pb.transform.parent != null && !pb.transform.parent.gameObject.activeInHierarchy) continue;
+                    if (pb.transform.position == Vector3.zero) continue;
+                    float d = Vector3.Distance(pb.transform.position, P1.Position);
+                    if (d < 60f && d < bestD) { bestD = d; best = pb; }
+                }
+                if (best != null || Time.unscaledTime >= searchEnd) break;
+                float retryAt = Time.unscaledTime + 0.5f; while (Time.unscaledTime < retryAt) yield return null;
             }
-            if (best == null) { Skip("pickup: no uncollected pickup in loaded scenes"); yield break; }
+            if (best == null) { Skip("pickup: no uncollected pickup within 60 units of P1 in loaded scenes"); yield break; }
             Note("pickup: using " + best.name + " (" + best.GetType().Name + ") " + F(bestD) + " from P1");
             // P1 stays where it is (it must not touch the pickup); the leash is loosened so P2 can reach it.
             Vector3 pp = best.transform.position;
