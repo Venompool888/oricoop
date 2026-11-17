@@ -1486,6 +1486,7 @@ namespace OriCoop
                 Vector3 phaseAStart = Own.Position;
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "P3") goto P3;
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "WO") goto WO;   // phase WO only (world-physics)
+                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "CAM") goto CAM;   // phase CAM only (T-058 camera)
                 yield return Movement(h, "A", host);
                 yield return Wait(1.5f);
                 yield return Movement(h, "B", !host);
@@ -1618,6 +1619,8 @@ namespace OriCoop
             WO:
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_NO_WO") != "1")   // ORICOOP_NET_NO_WO=1 skips it (~2-3 min)
                     yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
+            CAM:
+                yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
             P3:
                 yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64);
                 yield return Safely(h, "P3", NetCutsceneTest.Run(h));
