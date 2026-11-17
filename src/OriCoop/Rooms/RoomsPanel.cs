@@ -57,7 +57,7 @@ namespace OriCoop.Rooms
             }
         }
 
-        public static void Open()
+        static void EnsureInstance()
         {
             if (Instance == null)
             {
@@ -81,6 +81,36 @@ namespace OriCoop.Rooms
                     if (Instance.Session != null) Instance.Session.Leave();
                 };
             }
+        }
+
+        internal static string[] L10nTestPages() { return new string[] { "rooms" }; }
+
+        internal static void L10nTestShow(string page, bool on)
+        {
+            if (!on)
+            {
+                if (Instance != null)
+                {
+                    Instance.visible = false;
+                    NativeModeMenu.RoomPanelVisible(false);
+                }
+                return;
+            }
+            EnsureInstance();
+            RoomsPanel p = Instance;
+            p.revision++;
+            p.busy = false;
+            p.steam = "0";
+            p.serviceName = L10n.T("rooms.service");
+            p.Show("list");
+            p.message = Offline;
+            p.visible = true;
+            NativeModeMenu.RoomPanelVisible(true);
+        }
+
+        public static void Open()
+        {
+            EnsureInstance();
             RoomsPanel p = Instance;
             if (p.Session != null && p.Session.Active) return;
             p.visible = true;
@@ -339,7 +369,8 @@ namespace OriCoop.Rooms
             buttons.Add(action);
             if (id != null && Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1") testDrawing[id] = action;
             GUI.SetNextControlName("rooms-button-" + index);
-            bool pressed = GUILayout.Button((index == focus ? "> " : "") + text, GUILayout.Height(36));
+            bool pressed = NativeGui.LayoutButton("rooms.button." + index,
+                (index == focus ? "> " : "") + text, GUI.skin.button, GUILayout.Height(36));
             if ((pressed || activate == index) && !busy)
             {
                 activate = -1;
@@ -352,12 +383,31 @@ namespace OriCoop.Rooms
         void OnGUI()
         {
             if (!visible) return;
+            NativeGui.BeginPage("rooms");
+            try { Draw(); }
+            finally { NativeGui.EndPage(); }
+        }
+
+        int labelIndex;
+
+        void Label(string text)
+        {
+            NativeGui.LayoutLabel("rooms.label." + labelIndex++, text, GUI.skin.label);
+        }
+
+        void Draw()
+        {
             GUI.depth = -200;
-            GUILayout.BeginArea(new Rect(Screen.width / 2 - 340, 35, 680, Screen.height - 70), GUI.skin.box);
-            GUILayout.Label(
+            labelIndex = 0;
+            Rect area = new Rect(Screen.width / 2 - 340, 35, 680, Screen.height - 70);
+            NativeGui.Panel("rooms.background", area, new Color(0.12f, 0.12f, 0.12f, 0.95f));
+            GUIStyle areaStyle = new GUIStyle(GUI.skin.box);
+            areaStyle.normal.background = null;
+            GUILayout.BeginArea(area, areaStyle);
+            Label(
                 L10n.F("rooms.title", serviceName));
-            if (!string.IsNullOrEmpty(message)) GUILayout.Label(message);
-            if (busy) GUILayout.Label(
+            if (!string.IsNullOrEmpty(message)) Label(message);
+            if (busy) Label(
                 L10n.T("rooms.connecting"));
             bool enabled = GUI.enabled;
             GUI.enabled = !busy;
@@ -378,8 +428,8 @@ namespace OriCoop.Rooms
             GUILayout.EndScrollView();
             GUI.enabled = enabled;
             // Back remains usable while a job is outstanding.
-            if (GUILayout.Button(
-                L10n.T("common.back"), GUILayout.Height(36))) Back();
+            if (NativeGui.LayoutButton("rooms.back", L10n.T("common.back"), GUI.skin.button,
+                GUILayout.Height(36))) Back();
             GUILayout.EndArea();
             if (Event.current.type == EventType.Repaint)
             {
@@ -397,25 +447,25 @@ namespace OriCoop.Rooms
 
         void DrawList()
         {
-            if (!online) GUILayout.Label(Offline);
+            if (!online) Label(Offline);
             foreach (RoomBackupInfo room in rooms.ToArray())
             {
-                GUILayout.Label(
+                Label(
                     L10n.F("rooms.save_count", room.Name, room.Saves.Count));
                 foreach (RoomBackupMember member in room.Members)
-                    GUILayout.Label(
+                    Label(
                         L10n.F("rooms.member", member.Seat, member.Nick));
                 RoomWire.Fields detail;
                 if (refreshed.TryGetValue(room.Id, out detail))
                 {
-                    GUILayout.Label(
+                    Label(
                         L10n.F("rooms.last_played", TimeText(detail.GetLong("played", 0))));
                     for (int i = 0; i < detail.GetLong("save.count", 0); i++)
                     {
                         string holder = detail.GetString("save." + i + ".holder");
                         if (holder.Length == 0) continue;
                         foreach (RoomBackupMember member in room.Members)
-                            if (member.Steam == holder) GUILayout.Label(
+                            if (member.Steam == holder) Label(
                                 L10n.F("rooms.playing", member.Nick));
                     }
                 }
@@ -460,27 +510,27 @@ namespace OriCoop.Rooms
         void DrawRoom()
         {
             if (info == null) return;
-            GUILayout.Label(
+            Label(
                 info.GetString("name"));
             string join = info.GetString("code");
             if (join.Length > 0)
-                GUILayout.Label(
+                Label(
                     L10n.F("rooms.share", join));
             for (int i = 0; i < info.GetLong("save.count", 0); i++)
             {
                 string prefix = "save." + i + ".";
                 string save = info.GetString(prefix + "id");
-                GUILayout.Label(
+                Label(
                     L10n.F("rooms.save_version", info.GetString(prefix + "name"), info.GetString(prefix + "version")));
-                GUILayout.Label(
+                Label(
                 FormatSummary(info.GetString(prefix + "summary")));
                 for (int seat = 1; seat <= 2; seat++)
-                    GUILayout.Label(
+                    Label(
                         L10n.F("rooms.seat_seconds", seat, info.GetLong(prefix + "secs.seat." + seat, 0)));
-                GUILayout.Label(
+                Label(
                     L10n.F("rooms.saved", info.GetLong(prefix + "secs.both", 0), MemberName(info.GetString(prefix + "by")), TimeText(info.GetLong(prefix + "at", 0))));
                 string holder = info.GetString(prefix + "holder");
-                if (holder.Length > 0) GUILayout.Label(
+                if (holder.Length > 0) Label(
                     L10n.F("rooms.playing", MemberName(holder)));
                 Button(L10n.T("rooms.continue"), delegate
                 {
@@ -527,7 +577,7 @@ namespace OriCoop.Rooms
                 editAssign = assign;
             });
             if (editAssign != null)
-                GUILayout.Label(
+                Label(
                     L10n.F("rooms.edit_hint", editCursor + 1));
         }
 
@@ -567,19 +617,19 @@ namespace OriCoop.Rooms
 
         void DrawCreate()
         {
-            GUILayout.Label(
+            Label(
                 L10n.T("rooms.name"));
             Field(roomName, 32, false, false, delegate(string text)
             {
                 roomName = text;
             });
-            GUILayout.Label(
+            Label(
                 L10n.T("rooms.password_min"));
             Field(password, 128, true, false, delegate(string text)
             {
                 password = text;
             });
-            GUILayout.Label(
+            Label(
                 L10n.T("rooms.choose_save"));
             for (int i = 0; i < SaveSlotsManager.SaveSlotCount; i++)
             {
@@ -611,13 +661,13 @@ namespace OriCoop.Rooms
 
         void DrawJoin()
         {
-            GUILayout.Label(
+            Label(
                 L10n.T("rooms.code"));
             Field(code, 6, false, true, delegate(string text)
             {
                 code = text.ToUpperInvariant();
             });
-            GUILayout.Label(
+            Label(
                 L10n.T("rooms.password"));
             Field(password, 128, true, false, delegate(string text)
             {
@@ -640,7 +690,7 @@ namespace OriCoop.Rooms
 
         void DrawPassword()
         {
-            GUILayout.Label(
+            Label(
                 L10n.T("rooms.password_again"));
             Field(password, 128, true, false, delegate(string text)
             {
@@ -662,7 +712,7 @@ namespace OriCoop.Rooms
 
         void DrawSlots()
         {
-            GUILayout.Label(
+            Label(
                 L10n.T("rooms.choose_slot"));
             for (int i = 0; i < SaveSlotsManager.SaveSlotCount; i++)
             {
@@ -707,7 +757,7 @@ namespace OriCoop.Rooms
                 case "forbidden": return L10n.T("rooms.err.forbidden");
                 case "busy": return L10n.T("rooms.err.busy");
                 case "not_host":
-                case "version_conflict": return RoomSession.ConflictMessage;
+                case "version_conflict": return RoomGame.ConflictMessage;
                 case "limit": return L10n.T("rooms.err.limit");
                 case "too_large": return L10n.T("rooms.err.too_large");
                 case "solo_off": return L10n.T("rooms.err.solo_off");

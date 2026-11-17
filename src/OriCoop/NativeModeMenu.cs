@@ -31,6 +31,7 @@ namespace OriCoop
         public static bool IsOpen { get { return s_root != null; } }
         public static string LastPage = "";
         public static readonly List<string> LastLabels = new List<string>();
+        internal static Func<bool> SuppressAutomaticMenu;
 
         static BepInEx.Configuration.ConfigEntry<bool> s_enabled;
         static bool s_bypass;
@@ -56,7 +57,7 @@ namespace OriCoop
                         "Ask single / local co-op / online in the game's own menu style right after choosing a save slot (before it loads). false = the old overlay screen after the save has loaded.");
                 if (Probe || LobbyProbeOn) return true;
                 if (s_enabled != null && !s_enabled.Value) return false;
-                return PlayMode.AskOnLoad && !TestHarness.Enabled && !NetPlay.Enabled;
+                return PlayMode.AskOnLoad && !(SuppressAutomaticMenu != null && SuppressAutomaticMenu()) && !NetPlay.Enabled;
             }
         }
 

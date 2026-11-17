@@ -10,6 +10,8 @@ namespace OriCoop.Rooms
         public int Slot = -1;
         public Action<byte[]> PickCopySlot;
         public Action Starting;
+        public static string ConflictMessage { get { return L10n.T("rooms.conflict"); } }
+        string IRoomGame.ConflictMessage { get { return ConflictMessage; } }
         public string LiveCode
         {
             get

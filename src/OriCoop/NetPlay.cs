@@ -24,10 +24,28 @@ namespace OriCoop
     {
         public const string ModVersion = "0.2.0-net2";
         public static int Sender { get; private set; }
+        public static bool HostOverride;
+        public static Func<int, byte, bool, Action<BinaryWriter>, bool> SendToOverride;
+        // C-server hook: (transport, isHost, target from Begin) -> peer, or null when the transport is not handled.
+        public static Func<string, bool, string, NetPeer> TransportFactory;
+        // Set by a factory transport (e.g. the C-server code after its welcome) so the lobby shows that room code.
+        public static string RoomCodeOverride;
+        static string s_factoryTarget = "";
         const byte MsgHello = 1, MsgStatus = 2, MsgFrames = 3, MsgSeat = 4, MsgLeft = 5, MsgTest = 99;
         // ---- message registry for the sync subsystems (each in its own file). Type ranges:
         //   1-9 NetPlay core, 10-19 save/world (WorldSync), 20-29 progress, 30-49 enemies, 50-59 story, 99 test.
         static readonly Dictionary<byte, Action<BinaryReader>> s_handlers = new Dictionary<byte, Action<BinaryReader>>();
+        static readonly HashSet<byte> s_forward = new HashSet<byte>();
+        static NetPlay()
+        {
+            Forward(75, 70, 71, 66, 67, Revive.MsgDowned, Revive.MsgRevive, Revive.MsgRevived,
+                Revive.MsgBothDown, Revive.MsgProgress, 53);
+        }
+        static readonly bool s_noForward = TestHarness.Enabled && Environment.GetEnvironmentVariable("ORICOOP_NET_NO_FORWARD") == "1";
+        public static void Forward(params byte[] types)
+        {
+            foreach (byte type in types) s_forward.Add(type);
+        }
         public static void On(byte type, Action<BinaryReader> handler)
         {
             s_handlers[type] = handler;
@@ -64,6 +82,7 @@ namespace OriCoop
         }
         public static void SendTo(int seat, byte type, bool reliable, Action<BinaryWriter> body)
         {
+            if (SendToOverride != null && SendToOverride(seat, type, reliable, body)) return;
             RemoteState remote;
             if (!IsHost || !s_remotes.TryGetValue(seat, out remote) || remote.Peer == null) return;
             byte[] message = Message(type, body);
@@ -85,8 +104,14 @@ namespace OriCoop
         }
         static void Broadcast(byte[] message, int length, bool reliable)
         {
-            if (s_hub == null) { if (s_peer != null) SendBytes(s_peer, message, length, reliable); return; }
-            foreach (RemoteState remote in s_remotes.Values) SendBytes(remote.Peer, message, length, reliable);
+            if (!HasHub) { if (s_peer != null) SendBytes(s_peer, message, length, reliable); return; }
+            foreach (RemoteState remote in s_remotes.Values) if (remote.Peer != null) SendBytes(remote.Peer, message, length, reliable);
+        }
+        internal static void Rebroadcast(BinaryReader reader)
+        {
+            if (!IsHost || s_factorySession) return;
+            byte[] message = ((MemoryStream)reader.BaseStream).ToArray();
+            Broadcast(message, message.Length, true);
         }
         // Main-thread events; the session spans the first Hello through the last departure.
         public static event Action SessionStarted, SessionEnded;
@@ -103,6 +128,7 @@ namespace OriCoop
         public static void Shutdown()
         {
             if (s_hub != null) { try { s_hub.Disconnect("partner quit the game"); } catch { } return; }
+            if (s_relayHub != null) { try { s_relayHub.Disconnect("partner quit the game"); } catch { } return; }
             if (Peer != null && Peer.State == PeerState.Connected) { try { Peer.Disconnect("partner quit the game"); Peer.Flush(); } catch { } }
         }
         const int Redundancy = 4;                 // frames per packet (current + 3 previous)
@@ -129,7 +155,7 @@ namespace OriCoop
         static ConfigEntry<float> s_snapDist, s_blend;
         static string s_modeNow = "off";
         public static bool Enabled { get { return s_modeNow == "host" || s_modeNow == "join"; } }
-        public static bool IsHost { get { return s_modeNow == "host"; } }
+        public static bool IsHost { get { return s_modeNow == "host" || HostOverride; } }
 
         // ---- session ----
         sealed class RemoteState
@@ -152,6 +178,7 @@ namespace OriCoop
             public float LastError, AvgError, MaxErrorRecent;
             public Vector3 LatestRemotePos;
             public bool HaveRemotePos;
+            public double LastHeardMs;     // QpcMs of the last message from this seat (server mode: no own peer)
             public Puppet Puppet;
             public float SpawnTryAt;
         }
@@ -181,9 +208,12 @@ namespace OriCoop
         }
         static NetPeer s_peer;
         static PeerHub s_hub;
+        static RelayHub s_relayHub;
+        static bool s_factorySession;
+        static bool HasHub { get { return s_hub != null || s_relayHub != null; } }
         static bool s_sessionStarted;
-        static bool WaitingForSeat { get { return !IsHost && !UsesRelay && !UsesSteam && Players.AssignedSeat == 0; } }
-        public static NetPeer Peer { get { return s_hub == null ? s_peer : Primary == null ? null : Primary.Peer; } }
+        static bool WaitingForSeat { get { return (s_factorySession || !IsHost && !UsesSteam) && Players.AssignedSeat == 0; } }
+        public static NetPeer Peer { get { return !HasHub ? s_peer : Primary == null ? null : Primary.Peer; } }
         static IDatagramTransport s_transport;
         public static bool RemoteHello { get { return Primary != null && Primary.Hello; } }
         public static bool RemoteInGameplay { get { return Primary != null && Primary.InGameplay; } }
@@ -212,6 +242,26 @@ namespace OriCoop
         public static float AvgError { get { return Primary == null ? 0 : Primary.AvgError; } }
         public static float MaxErrorRecent { get { return Primary == null ? 0 : Primary.MaxErrorRecent; } }
         public static Vector3 LatestRemotePos { get { return Primary == null ? Vector3.zero : Primary.LatestRemotePos; } }
+        public static IEnumerable<KeyValuePair<int, Vector3>> RemotePositions
+        {
+            get
+            {
+                foreach (RemoteState remote in s_remotes.Values)
+                    if (remote.HaveRemotePos) yield return new KeyValuePair<int, Vector3>(remote.Seat, remote.LatestRemotePos);
+            }
+        }
+        public static bool RemotePos(int seat, out Vector3 position)
+        {
+            RemoteState remote;
+            bool have = s_remotes.TryGetValue(seat, out remote) && remote.HaveRemotePos;
+            position = have ? remote.LatestRemotePos : Vector3.zero;
+            return have;
+        }
+        internal static bool NewestRemoteFrame(int seat, uint tick)
+        {
+            RemoteState remote;
+            return s_remotes.TryGetValue(seat, out remote) && remote.HaveRemotePos && remote.NewestTick == tick;
+        }
         public static bool HaveRemotePos { get { return Primary != null && Primary.HaveRemotePos; } }
         public static float LatenessSpreadMs { get { return Primary == null ? 0 : Primary.LatenessSpreadMs; } }
         public static float OneWayMs { get { return Primary == null ? 0 : Primary.OneWayMs; } }
@@ -300,7 +350,9 @@ namespace OriCoop
             s_steamLobby = rejoin;
             if (rejoin != 0) Plugin.Log.LogInfo("online co-op: retrying the Steam lobby " + rejoin);
             s_rtTransport = transport;
+            s_factorySession = TransportFactory != null && transport != "direct" && transport != "relay" && transport != "steam";
             target = (target ?? "").Trim();
+            s_factoryTarget = target;
             if (transport == "relay")
             {
                 int bar = target.IndexOf('|');
@@ -323,7 +375,7 @@ namespace OriCoop
         // Back to offline. Tells the partner, ends the session for every sync system, frees the socket.
         public static void End(string why)
         {
-            s_rtTransport = s_rtAddress = s_rtRoom = null; s_rtPort = 0;
+            s_rtTransport = s_rtAddress = s_rtRoom = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;
             if (!Enabled) return;
             bool wasConnected = Connected || s_sessionStarted || s_remotes.Count > 0;
@@ -351,13 +403,15 @@ namespace OriCoop
             get
             {
                 if (!Enabled) return Phase.Off;
+                // C-server: seated in the room with nobody else there yet = waiting for a partner, not connecting.
+                if (Peer != null && Peer.State == PeerState.Connected && s_factorySession && !RemoteHello && Players.AssignedSeat != 0) return Phase.Waiting;
                 if (Peer != null && Peer.State == PeerState.Connected) return RemoteHello ? Phase.Connected : Phase.Connecting;
                 if (Problem.Length > 0) return Phase.Retrying;
                 if (IsHost)
                 {
                     if (s_relay != null) return s_relay.Ready ? Phase.Waiting : Phase.Starting;
                     if (UsesSteam) return s_steam != null && s_steam.Ready ? Phase.Waiting : Phase.Starting;
-                    return s_hub != null || Peer != null ? Phase.Waiting : Phase.Starting;
+                    return HasHub || Peer != null ? Phase.Waiting : Phase.Starting;
                 }
                 return Peer != null ? Phase.Connecting : Phase.Starting;
             }
@@ -373,8 +427,14 @@ namespace OriCoop
             {
                 double worst = 0;
                 foreach (RemoteState remote in s_remotes.Values)
+                {
                     if (remote.Peer != null && remote.Peer.State == PeerState.Connected)
                         worst = Math.Max(worst, remote.Peer.Stats.LastReceiveAgeMs);
+                    // C-server: the server link stays alive while a partner goes silent; measure the partner itself.
+                    // Only partners in gameplay stream frames; one on the title or in a menu is quiet, not lost.
+                    else if (remote.Peer == null && s_factorySession && remote.InGameplay && remote.LastHeardMs > 0 && Connected)
+                        worst = Math.Max(worst, QpcMs() - remote.LastHeardMs);
+                }
                 if (worst == 0 && Peer != null && Peer.State == PeerState.Connected) worst = Peer.Stats.LastReceiveAgeMs;
                 return (float)worst;
             }
@@ -475,7 +535,7 @@ namespace OriCoop
         static bool s_pendingConnect;
         static string Env(string name, string fallback) { string e = Environment.GetEnvironmentVariable(name); return string.IsNullOrEmpty(e) ? fallback : e; }
         public static bool UsesRelay { get { return TransportName == "relay"; } }
-        public static string RoomCode { get { return s_relay != null ? (s_relay.RoomCode ?? "") : ""; } }
+        public static string RoomCode { get { return !string.IsNullOrEmpty(RoomCodeOverride) ? RoomCodeOverride : s_relay != null ? (s_relay.RoomCode ?? "") : ""; } }
 
         static IPEndPoint Resolve(string hostPort, int defaultPort)
         {
@@ -506,8 +566,14 @@ namespace OriCoop
             else s_relay = RelayTransport.Join(server, code);
             s_relay.Log += delegate(string message) { Plugin.Log.LogInfo("net: relay " + message); };
             s_transport = s_relay;
-            NewPeer();
-            if (IsHost) Peer.Listen();
+            if (IsHost)
+            {
+                s_relayHub = new RelayHub(s_relay);
+                s_relayHub.PeerCreated += p => ApplySimFromEnv(p.Sim);
+                s_relayHub.Connected += OnHubConnected;
+                s_relayHub.Disconnected += OnHubDisconnected;
+            }
+            else NewPeer();
             s_pendingConnect = !IsHost;
             Plugin.Log.LogInfo("net: relay " + server + (IsHost ? " (creating a room)" : " (joining room " + code + ")"));
         }
@@ -567,6 +633,17 @@ namespace OriCoop
             {
                 if (UsesRelay) { OpenRelay(); return; }
                 if (UsesSteam) { OpenSteam(); return; }
+                if (TransportFactory != null && TransportName != "direct")
+                {
+                    s_factorySession = true;
+                    s_peer = TransportFactory(TransportName, s_modeNow == "host", s_factoryTarget);
+                    if (s_peer == null) throw new InvalidOperationException("transport factory did not create " + TransportName);
+                    ApplySimFromEnv(s_peer.Sim);
+                    s_peer.Connected += OnConnected;
+                    s_peer.Disconnected += OnDisconnected;
+                    if (s_peer.State == PeerState.Connected) OnConnected();
+                    return;
+                }
                 if (IsHost)
                 {
                     s_hub = new PeerHub(Port);
@@ -595,8 +672,10 @@ namespace OriCoop
         static void Close()
         {
             if (s_hub != null) { s_hub.Dispose(); s_hub = null; }
+            if (s_relayHub != null) { s_relayHub.Dispose(); s_relayHub = null; }
             if (s_transport != null) { try { s_transport.Dispose(); } catch { } }
             s_transport = null; s_peer = null; s_relay = null; s_steam = null; s_pendingConnect = false; s_steamReadyLogged = false; s_lastRoom = "";
+            s_factorySession = false; s_reListen = false;
             ResetSession();
         }
 
@@ -623,7 +702,7 @@ namespace OriCoop
 
         public static void SetSim(int lag, int jitter, float loss, float dup)
         {
-            if (s_hub != null)
+            if (HasHub)
             {
                 foreach (RemoteState remote in s_remotes.Values)
                 {
@@ -640,6 +719,7 @@ namespace OriCoop
         {
             Plugin.Log.LogInfo("net: connected to " + Peer.Remote); Problem = "";
             ResetSession();
+            if (s_factorySession) return;
             int seat = IsHost ? 2 : 1;
             s_remotes.Add(seat, new RemoteState { Seat = seat, Peer = s_peer });
             if (!WaitingForSeat) SendReliable(MsgHello, w => w.Write(ModVersion));
@@ -689,6 +769,29 @@ namespace OriCoop
             if (s_remotes.Count == 0) EndSession();
         }
 
+        public static void AssignSeat(int seat)
+        {
+            Players.AssignedSeat = seat;
+            Plugin.Log.LogInfo("net: assigned P" + seat);
+            SendReliable(MsgHello, w => w.Write(ModVersion));
+        }
+
+        // Factory (C-server) sessions: nobody relays earlier Hello/Status to a seat that joins later (the hub's
+        // OnHubConnected does that for direct/relay), so each client introduces itself to every newly online seat.
+        public static void IntroduceTo(int seat)
+        {
+            SendTo(seat, MsgHello, true, w => w.Write(ModVersion));
+            bool inGame = LocalInGameplay();
+            string scene = LocalScene(inGame);
+            SendTo(seat, MsgStatus, true, w => { w.Write(inGame); w.Write(scene); });
+        }
+
+        public static void RemoteLeft(int seat)
+        {
+            RemoteState remote;
+            if (s_remotes.TryGetValue(seat, out remote)) Leave(remote, "partner left");
+        }
+
         static void EndSession()
         {
             if (!s_sessionStarted) return;
@@ -731,29 +834,33 @@ namespace OriCoop
             Send(type, true, body);
         }
 
+        static readonly Action s_inviteTick = SteamInviteHook.Tick, s_relayListTick = RelayList.Tick;
+        static readonly Action s_inviteDraw = SteamInviteHook.DrawGUI;
+        static readonly Action s_sendLocal = SendLocal, s_playRemote = PlayRemote;
+
         // ---------------------------------------------------------------- per frame (Runner.Update)
         public static void Update()
         {
             // Before the Enabled check: Steam invites must be caught (and acted on) while online play is off.
-            try { SteamInviteHook.Tick(); } catch (Exception e) { Plugin.Log.LogError(e); }
-            try { RelayList.Tick(); } catch (Exception e) { Plugin.Log.LogError(e); }
+            SubsystemGuard.Run("SteamInviteHook.Tick", s_inviteTick);
+            SubsystemGuard.Run("RelayList.Tick", s_relayListTick);
             if (!Enabled) return;
             if (Input.GetKeyDown(s_statsKey.Value)) s_showStats = !s_showStats;
             ReListenIfNeeded();
             if (s_relay != null && !PumpRelay()) return;
             if (UsesSteam && !PumpSteam()) return;
-            if (s_hub == null && (Peer == null || Peer.State == PeerState.Disconnected || (Peer.State == PeerState.Idle && !s_pendingConnect)))
+            if (!HasHub && (Peer == null || Peer.State == PeerState.Disconnected || (Peer.State == PeerState.Idle && !s_pendingConnect)))
             {
                 if (Time.realtimeSinceStartup >= s_retryAt) Open();
-                if (s_hub == null && Peer == null) return;
+                if (!HasHub && Peer == null) return;
             }
-            if (s_hub != null)
+            if (HasHub)
             {
-                s_hub.Poll();
+                if (s_hub != null) s_hub.Poll(); else s_relayHub.Poll();
                 foreach (RemoteState remote in new List<RemoteState>(s_remotes.Values)) ReadPeer(remote.Peer, remote);
-                s_hub.Flush();
+                if (s_hub != null) s_hub.Flush(); else s_relayHub.Flush();
             }
-            else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost ? Primary : null); }
+            else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
             if (!Connected || WaitingForSeat) return;
 
             bool inGame = LocalInGameplay();
@@ -817,31 +924,39 @@ namespace OriCoop
             Sender = r.ReadByte();
             try
             {
+                if (s_factorySession && type >= 176 && type <= 186)
+                {
+                    Action<BinaryReader> handler;
+                    if (s_handlers.TryGetValue(type, out handler)) handler(r); else KeepEarly(type, m);
+                    return;
+                }
                 if (type == MsgSeat)
                 {
-                    if (IsHost || UsesRelay || UsesSteam || Sender != 1) return;
-                    Players.AssignedSeat = r.ReadByte();
-                    Plugin.Log.LogInfo("net: assigned P" + Players.AssignedSeat + " by " + Peer.Remote);
-                    SendReliable(MsgHello, w => w.Write(ModVersion));
+                    if (IsHost || UsesSteam || Sender != 1) return;
+                    AssignSeat(r.ReadByte());
                     return;
                 }
                 if (WaitingForSeat) return;
-                if (source != null && Sender != source.Seat) return;
+                if (!s_factorySession && source != null && Sender != source.Seat) return;
                 if (type == MsgLeft)
                 {
-                    if (IsHost || UsesRelay || UsesSteam || Sender != 1) return;
-                    RemoteState leaving;
-                    if (s_remotes.TryGetValue(r.ReadByte(), out leaving)) Leave(leaving, "partner left");
+                    if (IsHost && !s_factorySession || UsesSteam || Sender != 1) return;
+                    RemoteLeft(r.ReadByte());
                     return;
                 }
                 if (Sender < 1 || Sender > Players.MaxSeats || Sender == Players.LocalSeat) return;
                 RemoteState remote;
                 if (!s_remotes.TryGetValue(Sender, out remote))
                 {
-                    if (IsHost) return;
-                    remote = new RemoteState { Seat = Sender, Peer = Sender == 1 ? s_peer : null };
+                    if (IsHost && !s_factorySession) return;
+                    remote = new RemoteState { Seat = Sender, Peer = !s_factorySession && Sender == 1 ? s_peer : null };
                     s_remotes.Add(Sender, remote);
                 }
+                remote.LastHeardMs = QpcMs();
+                // ORICOOP_NET_NO_FORWARD=1 (tests only): mutation check that the 4P checks fail without host forwarding.
+                if (IsHost && s_forward.Contains(type) && !s_noForward)
+                    foreach (RemoteState other in s_remotes.Values)
+                        if (other != remote && other.Peer != null) SendBytes(other.Peer, m, m.Length, reliable);
                 if (type == MsgHello)
                 {
                     remote.Version = r.ReadString(); remote.LastHello = m;
@@ -883,9 +998,9 @@ namespace OriCoop
                         Receive(remote, f);
                     }
                 }
-                if (s_hub != null && (type == MsgHello || type == MsgStatus || type == MsgFrames))
+                if (IsHost && (type == MsgHello || type == MsgStatus || type == MsgFrames))
                     foreach (RemoteState other in s_remotes.Values)
-                        if (other != remote) SendBytes(other.Peer, m, m.Length, reliable);
+                        if (other != remote && other.Peer != null) SendBytes(other.Peer, m, m.Length, reliable);
             }
             finally { Sender = previous; }
         }
@@ -904,8 +1019,8 @@ namespace OriCoop
         public static void FixedTick()
         {
             if (!Enabled) return;
-            try { SendLocal(); } catch (Exception e) { Plugin.Log.LogError(e); }
-            try { PlayRemote(); } catch (Exception e) { Plugin.Log.LogError(e); }
+            SubsystemGuard.Run("NetPlay.SendLocal", s_sendLocal);
+            SubsystemGuard.Run("NetPlay.PlayRemote", s_playRemote);
         }
 
         static sbyte Q(float v) { return (sbyte)Mathf.Clamp(Mathf.RoundToInt(v * 127f), -127, 127); }
@@ -961,7 +1076,7 @@ namespace OriCoop
             }
             w.Flush();
             Broadcast(s_buf, (int)ms.Position, false);
-            if (s_hub != null) s_hub.Flush(); else Peer.Flush();
+            if (s_hub != null) s_hub.Flush(); else if (s_relayHub != null) s_relayHub.Flush(); else Peer.Flush();
         }
 
         static void PlayRemote()
@@ -1071,7 +1186,7 @@ namespace OriCoop
         public static string StatusLine()
         {
             if (!Enabled) return "";
-            string st = Peer == null ? (s_hub != null ? "listening" : "starting") : Peer.State.ToString().ToLowerInvariant();
+            string st = Peer == null ? (HasHub ? "listening" : "starting") : Peer.State.ToString().ToLowerInvariant();
             string s = "NET " + (IsHost ? "host P1" : "guest P" + Players.LocalSeat) + " " + st;
             if (s_relay != null)
                 s += !s_relay.Ready ? " (relay: " + (IsHost ? "creating room" : "joining room") + ")"
@@ -1094,7 +1209,7 @@ namespace OriCoop
 
         public static void DrawGUI()
         {
-            try { SteamInviteHook.DrawGUI(); } catch (Exception e) { Plugin.Log.LogError(e); }
+            SubsystemGuard.Run("SteamInviteHook.DrawGUI", s_inviteDraw);
             if (!Enabled || !s_showStats) return;
             if (s_style == null)
             {

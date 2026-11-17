@@ -18,6 +18,27 @@ namespace OriCoop
         public static Plugin Instance;
         public static Harmony H;
 
+        static readonly Action s_traceFixed = CoopTrace.FixedTick, s_traceUpdate = CoopTrace.Tick;
+        static readonly Action s_keyboardRefresh = KeyboardOnlyP1.Refresh, s_netFixed = NetPlay.FixedTick;
+        static readonly Action s_netUpdate = NetPlay.Update, s_saveTick = SaveSync.Tick, s_worldTick = WorldSync.Tick;
+        static readonly Action s_progressTick = ProgressSync.Tick, s_enemyTick = EnemySync.Tick;
+        static readonly Action s_sessionTick = SessionRules.Tick, s_netHudTick = NetHud.Tick, s_skinTick = P2Skin.Tick;
+        static readonly Action s_menuTick = CoopMenu.Tick, s_zonesTick = P2Extras.TickZones, s_modeTick = PlayMode.Tick;
+        static readonly Action s_reviveTick = Revive.Tick, s_reviveOnlineTick = Revive.TickOnline;
+        static readonly Action s_nativeGuiLate = NativeGui.LateUpdate, s_reviveHud = ReviveHud.Update;
+        static readonly Action s_menuDraw = CoopMenu.Draw, s_netDraw = NetPlay.DrawGUI;
+        static readonly Action s_netHudDraw = NetHud.Draw, s_sessionDraw = SessionScreens.Draw;
+        static readonly Action s_localRefreshIds = P2Context.RefreshIds;
+        static readonly Action s_testThrow = TestThrow;
+
+        Action m_tick, m_lifecycle, m_sampleInput, m_sharedProgress, m_tickCamera;
+        Action m_onlineMirror, m_onlineRefreshIds, m_localMirror;
+        Action m_onlineHudLoop, m_onlineVisual, m_onlineHud, m_onlineCamera, m_localCamera, m_localVisual, m_localHud, m_lateCamera, m_joinHint;
+        Puppet m_latePuppet, m_tickPuppet;
+        SeinCharacter m_tickP1, m_tickP2;
+        int m_samplePad;
+        string m_testThrowName;
+
         ConfigEntry<int> m_pad;
         ConfigEntry<KeyCode> m_spawnKey, m_despawnKey;
         ConfigEntry<float> m_leash;
@@ -77,6 +98,17 @@ namespace OriCoop
         {
             Log = Logger;
             Instance = this;
+            m_tick = Tick; m_lifecycle = TickLifecycle; m_sampleInput = SampleInput;
+            m_sharedProgress = TickSharedProgress; m_tickCamera = TickCamera;
+            m_onlineMirror = MirrorOnlineProgress; m_onlineRefreshIds = RefreshOnlineIds; m_localMirror = MirrorLocalProgress;
+            m_onlineHudLoop = UpdateOnlineHuds; m_onlineVisual = CheckOnlineVisual; m_onlineHud = UpdateOnlineHud; m_onlineCamera = UpdateOnlineCamera;
+            m_localCamera = ApplyLocalCamera; m_localVisual = CheckLocalVisual; m_localHud = UpdateLocalHud;
+            m_lateCamera = UpdateLateCamera; m_joinHint = DrawJoinHint;
+            if (TestHarness.Enabled)
+            {
+                string testThrow = Environment.GetEnvironmentVariable("ORICOOP_TEST_THROW");
+                if (!string.IsNullOrEmpty(testThrow)) m_testThrowName = "TestThrow:" + testThrow;
+            }
             CoopTrace.Init(Config, BepInEx.Paths.BepInExRootPath);
             string logTag = Environment.GetEnvironmentVariable("ORICOOP_LOG_TAG");
             if (TestHarness.Enabled && !string.IsNullOrEmpty(logTag))
@@ -119,8 +151,11 @@ namespace OriCoop
             m_p1Pad.SettingChanged += (s, e) => KeyboardOnlyP1.P1Pad = m_p1Pad.Value;
             H = new Harmony("local.oricoop");
             H.PatchAll(typeof(Plugin).Assembly);
+            Seams.GameServices.Install();
+            NativeGui.PageChanged = L10nProbe.Where;   // test-side hooks wired here so production code never reads test flags
+            NativeModeMenu.SuppressAutomaticMenu = delegate { return TestHarness.Enabled; };
             SaveSync.Init(); WorldSync.Init(); ProgressSync.Init(); EnemySync.Init();
-            SessionRules.Init(); NetHud.Init();
+            SessionRules.Init(); NetHud.Init(); OriCoop.Authority.CServerLink.Install();
             P2Context.PatchProximityTypes(H);
             float tp = Time.realtimeSinceStartup; P2Context.PatchTouchTypes(H); Log.LogInfo("touch patching took " + (Time.realtimeSinceStartup - tp).ToString("F2") + " s");
             Log.LogInfo("Ori Local Co-op " + Version + " loaded; P2 pad " + m_pad.Value + (KeyboardOnlyP1.Enabled ? "; P1 keyboard/mouse only" : ""));
@@ -136,8 +171,8 @@ namespace OriCoop
 
         public class Runner : MonoBehaviour
         {
-            void FixedUpdate() { CoopTrace.FixedTick(); Instance.DoFixedUpdate(); }
-            void Update() { CoopTrace.Tick(); Instance.DoUpdate(); }
+            void FixedUpdate() { SubsystemGuard.Run("CoopTrace.FixedTick", s_traceFixed); Instance.DoFixedUpdate(); }
+            void Update() { SubsystemGuard.Run("CoopTrace.Tick", s_traceUpdate); Instance.DoUpdate(); }
             void LateUpdate() { Instance.DoLateUpdate(); }
             void OnGUI() { Instance.DoGUI(); }
             void OnDestroy() { Log.LogWarning("OriCoopRunner destroyed"); }
@@ -148,11 +183,12 @@ namespace OriCoop
 
         internal void DoFixedUpdate()
         {
-            try { KeyboardOnlyP1.Refresh(); } catch (Exception e) { Log.LogError(e); }
+            SubsystemGuard.Run("KeyboardOnlyP1.Refresh", s_keyboardRefresh);
             // Online: P2 is the partner's Ori, driven by their input from the network, not by a local pad.
-            if (NetPlay.Enabled) { NetPlay.FixedTick(); return; }
+            if (NetPlay.Enabled) { SubsystemGuard.Run("NetPlay.FixedTick", s_netFixed); return; }
             int pad =m_activePad >= 0 ? m_activePad : m_pad.Value;
-            P2Input.Sample(pad, P2Context.P2Input);
+            m_samplePad = pad;
+            SubsystemGuard.Run("P2Input.Sample", m_sampleInput);
             if (P2Input.Connected || !KeyboardOnlyP1.Enabled) return;
             // Keyboard-only P1: P1 does not need any pad, so P2 takes whichever one is plugged in.
             // Polling an empty XInput slot is slow, so scan at most once a second.
@@ -170,17 +206,27 @@ namespace OriCoop
 
         internal void DoUpdate()
         {
-            try { NetPlay.Update(); }
-            catch (Exception e) { Log.LogError(e); }
-            try { SaveSync.Tick(); WorldSync.Tick(); ProgressSync.Tick(); EnemySync.Tick(); } catch (Exception e) { Log.LogError(e); }
-            try { SessionRules.Tick(); NetHud.Tick(); } catch (Exception e) { Log.LogError(e); }
-            try { Tick(); }
-            catch (Exception e) { Log.LogError(e); }
-            try { P2Skin.Tick(); }
-            catch (Exception e) { Log.LogError(e); }
+            SubsystemGuard.Run("NetPlay.Update", s_netUpdate);
+            if (!string.IsNullOrEmpty(m_testThrowName)) SubsystemGuard.Run(m_testThrowName, s_testThrow);
+            SubsystemGuard.Run("SaveSync.Tick", s_saveTick);
+            SubsystemGuard.Run("WorldSync.Tick", s_worldTick);
+            SubsystemGuard.Run("ProgressSync.Tick", s_progressTick);
+            SubsystemGuard.Run("EnemySync.Tick", s_enemyTick);
+            SubsystemGuard.Run("SessionRules.Tick", s_sessionTick);
+            SubsystemGuard.Run("NetHud.Tick", s_netHudTick);
+            SubsystemGuard.Run("Plugin.Tick", m_tick);
+            SubsystemGuard.Run("P2Skin.Tick", s_skinTick);
         }
 
-        void Tick()
+        static void TestThrow() { throw new InvalidOperationException("test subsystem throw"); }
+        void SampleInput() { P2Input.Sample(m_samplePad, P2Context.P2Input); }
+        void TickSharedProgress() { SharedProgress.Sync(m_tickP1, m_tickP2); }
+        void TickCamera() { UpdateCamera(m_tickP1, m_tickP2); }
+        void MirrorOnlineProgress() { MirrorProgress(m_tickP1, m_tickPuppet.Sein); }
+        void RefreshOnlineIds() { P2Context.RefreshIds(m_tickPuppet); }
+        void MirrorLocalProgress() { MirrorProgress(m_tickP1, m_tickP2); }
+
+        void TickLifecycle()
         {
             foreach (Puppet puppet in new List<Puppet>(Players.Remotes))
                 if (puppet.Sein == null) DespawnPuppet(puppet);
@@ -194,16 +240,20 @@ namespace OriCoop
                 // P1 was re-instantiated (debug reinstantiate / new game); follow it.
                 P2Context.P1 = Characters.Sein;
             }
+        }
 
+        void Tick()
+        {
+            SubsystemGuard.Run("Plugin.TickLifecycle", m_lifecycle);
             if (P2Input.Connected != m_lastConnected)
             {
                 m_lastConnected = P2Input.Connected;
                 Log.LogInfo("Player 2 controller " + (m_lastConnected ? "connected" : "not connected") + " (pad " + (m_activePad >= 0 ? m_activePad : m_pad.Value) + ")");
             }
-            CoopMenu.Tick();
-            P2Extras.TickZones();
-            PlayMode.Tick();
-            KeyboardOnlyP1.Refresh();
+            SubsystemGuard.Run("CoopMenu.Tick", s_menuTick);
+            SubsystemGuard.Run("P2Extras.TickZones", s_zonesTick);
+            SubsystemGuard.Run("PlayMode.Tick", s_modeTick);
+            SubsystemGuard.Run("KeyboardOnlyP1.Refresh", s_keyboardRefresh);
             bool keySpawn = Input.GetKeyDown(m_spawnKey.Value);
             bool padSpawn = P2Input.StartLatched;
             P2Input.StartLatched = false;
@@ -221,6 +271,7 @@ namespace OriCoop
 
             SeinCharacter p1 = P2Context.P1, p2 = P2Context.P2;
             if (p1 == null) return;
+            m_tickP1 = p1; m_tickP2 = p2;
 
             // P2 follows P1's availability. Cutscenes that hide/disable P1, switch to another character (Naru,
             // the companion, baby Ori) or a P1 death delay park P2 out of sight; when P1 is back, P2 reappears
@@ -242,9 +293,14 @@ namespace OriCoop
                 if (m_mirrorTimer <= 0f)
                 {
                     m_mirrorTimer = 0.5f;
-                    foreach (Puppet puppet in Players.Remotes) { MirrorProgress(p1, puppet.Sein); P2Context.RefreshIds(puppet); }
+                    foreach (Puppet puppet in Players.Remotes)
+                    {
+                        m_tickPuppet = puppet;
+                        SubsystemGuard.Run("Plugin.MirrorProgress", m_onlineMirror);
+                        SubsystemGuard.Run("P2Context.RefreshIds", m_onlineRefreshIds);
+                    }
                 }
-                Revive.TickOnline();
+                SubsystemGuard.Run("Revive.TickOnline", s_reviveOnlineTick);
                 return;
             }
             if (!p1Available && p2.gameObject.activeSelf) { p2.gameObject.SetActive(false); P2Extras.SetCompanionActive(false); m_parked = true; Log.LogInfo("P2 parked (P1 unavailable)"); }
@@ -254,74 +310,94 @@ namespace OriCoop
 
             // Distance limits live in CoopCamera (screen-edge walls, glide-back); this is only a last-resort safety net
             // for things like falling out of the world.
-            Revive.Tick();   // local co-op downed / revive (a downed Ori stays at its skull: no leash, no edge walls)
+            SubsystemGuard.Run("Revive.Tick", s_reviveTick);   // local co-op downed / revive
             float leash = LeashOverride > 0f ? LeashOverride : m_leash.Value;
             if (!Revive.AnyDowned && Vector3.Distance(p1.Position, p2.Position) > leash && !CoopCamera.Regrouping) Teleport(p2, p1.Position);
 
-            SharedProgress.Sync(p1, p2);
+            SubsystemGuard.Run("SharedProgress.Sync", m_sharedProgress);
 
             m_mirrorTimer -= Time.unscaledDeltaTime;
-            if (m_mirrorTimer <= 0f) { m_mirrorTimer = 0.5f; MirrorProgress(p1, p2); P2Context.RefreshIds(); }
+            if (m_mirrorTimer <= 0f)
+            {
+                m_mirrorTimer = 0.5f;
+                SubsystemGuard.Run("Plugin.MirrorProgress", m_localMirror);
+                SubsystemGuard.Run("P2Context.RefreshIds", s_localRefreshIds);
+            }
 
-            UpdateCamera(p1, p2);
+            SubsystemGuard.Run("Plugin.UpdateCamera", m_tickCamera);
         }
 
         internal void DoLateUpdate()
         {
+            SubsystemGuard.Run("NativeGui.LateUpdate", s_nativeGuiLate);
             if (P2Context.P2 == null || P2Context.P1 == null) return;
             if (NetPlay.Enabled)
             {
-                try
-                {
-                    foreach (Puppet puppet in Players.Remotes)
-                    {
-                        P2Context.Enter(puppet);
-                        try { if (!m_parked) VisualInvariants.Check(P2Context.P1, puppet.Sein); }
-                        finally { P2Context.Exit(); }
-                        P2Hud.Update(puppet);
-                    }
-                    ReviveHud.Update();
-                    var cam = UI.Cameras.Current; // the game may retarget "the character" (P2 in P2 context); keep ours
-                    if (cam != null)
-                        foreach (Puppet puppet in Players.Remotes)
-                            if (cam.Target == puppet.Sein.Transform) cam.Target = P2Context.P1.Transform;
-                }
-                catch (Exception e) { Log.LogError(e); }
+                SubsystemGuard.Run("Plugin.UpdateOnlineHuds", m_onlineHudLoop);
+                SubsystemGuard.Run("ReviveHud.Update", s_reviveHud);
+                SubsystemGuard.Run("Plugin.UpdateOnlineCamera", m_onlineCamera);
                 return;
             }
-            try
-            {
-                CoopCamera.FocusOverride = Revive.OnlyAlive; // while one is down the camera frames the living one
-                CoopCamera.Apply(P2Context.P1, P2Context.P2, LeashOverride <= 0f && !Revive.AnyDowned);
-                if (!m_parked && !Revive.AnyDowned) VisualInvariants.Check(P2Context.P1, P2Context.P2);
-                P2Hud.Update(P2Context.P2);
-                ReviveHud.Update();
-                UpdateCamera(P2Context.P1, P2Context.P2);
-            }
-            catch (Exception e) { Log.LogError(e); }
+            SubsystemGuard.Run("CoopCamera.Apply", m_localCamera);
+            if (!m_parked && !Revive.AnyDowned) SubsystemGuard.Run("VisualInvariants.Check", m_localVisual);
+            SubsystemGuard.Run("P2Hud.Update", m_localHud);
+            SubsystemGuard.Run("ReviveHud.Update", s_reviveHud);
+            SubsystemGuard.Run("Plugin.UpdateCamera", m_lateCamera);
         }
 
+        void UpdateOnlineHuds()
+        {
+            foreach (Puppet puppet in Players.Remotes)
+            {
+                m_latePuppet = puppet;
+                SubsystemGuard.Run("VisualInvariants.Check", m_onlineVisual);
+                SubsystemGuard.Run("P2Hud.Update", m_onlineHud);
+            }
+        }
+        void CheckOnlineVisual()
+        {
+            P2Context.Enter(m_latePuppet);
+            try { if (!m_parked) VisualInvariants.Check(P2Context.P1, m_latePuppet.Sein); }
+            finally { P2Context.Exit(); }
+        }
+        void UpdateOnlineHud() { P2Hud.Update(m_latePuppet); }
+        void UpdateOnlineCamera()
+        {
+            var cam = UI.Cameras.Current;
+            if (cam != null)
+                foreach (Puppet puppet in Players.Remotes)
+                    if (cam.Target == puppet.Sein.Transform) cam.Target = P2Context.P1.Transform;
+        }
+        void ApplyLocalCamera()
+        {
+            CoopCamera.FocusOverride = Revive.OnlyAlive;
+            CoopCamera.Apply(P2Context.P1, P2Context.P2, LeashOverride <= 0f && !Revive.AnyDowned);
+        }
+        void CheckLocalVisual() { VisualInvariants.Check(P2Context.P1, P2Context.P2); }
+        void UpdateLocalHud() { P2Hud.Update(P2Context.P2); }
+        void UpdateLateCamera() { UpdateCamera(P2Context.P1, P2Context.P2); }
 
         // Screen overlays drawn here: the co-op menu (F8) and, without P2, the join hint. P2's health pips are in the
         // game world (P2Hud), not here. The hint follows the same rule as the pips: shown only while the game shows its
         // own HUD, so menus, maps, cutscenes and fades never get a mod overlay on top.
         internal void DoGUI()
         {
-            CoopMenu.Draw();
+            SubsystemGuard.Run("CoopMenu.Draw", s_menuDraw);
             if (CoopMenu.IsOpen) return;
-            NetPlay.DrawGUI();
-            try { NetHud.Draw(); } catch (Exception e) { Log.LogError(e); }
-            try { SessionScreens.Draw(); } catch (Exception e) { Log.LogError(e); }
-            if (P2Context.P2 == null && !TestHarness.Enabled && PlayMode.Current == PlayMode.Coop) DrawJoinHint();
+            SubsystemGuard.Run("NetPlay.DrawGUI", s_netDraw);
+            SubsystemGuard.Run("NetHud.Draw", s_netHudDraw);
+            SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
+            if ((L10nProbe.On && TestJoinHint) || (P2Context.P2 == null && !TestHarness.Enabled && PlayMode.Current == PlayMode.Coop)) SubsystemGuard.Run("Plugin.DrawJoinHint", m_joinHint);
         }
         GUIStyle m_hintStyle;
+        internal static bool TestJoinHint;
 
         // While in gameplay without P2, tell player 2 how to join (and whether their controller is seen).
         void DrawJoinHint()
         {
             SeinCharacter p1 = Characters.Sein;
-            if (p1 == null || !p1.gameObject.activeInHierarchy) return;
-            float a = P2Hud.GameHudOpacity();
+            if (!(L10nProbe.On && TestJoinHint) && (p1 == null || !p1.gameObject.activeInHierarchy)) return;
+            float a = L10nProbe.On && TestJoinHint ? 1f : P2Hud.GameHudOpacity();
             if (a <= 0.01f) return;
             if (m_hintStyle == null)
             {
@@ -331,7 +407,14 @@ namespace OriCoop
             }
             m_hintStyle.normal.textColor = new Color(1f, 0.85f, 0.4f, a);
             string pad = L10n.T(P2Input.Connected ? "p2.pad_found" : "p2.pad_missing");
-            GUI.Label(new Rect(16f, Screen.height - 40f, 900f, 30f), L10n.F("p2.join_hint", m_spawnKey.Value, pad), m_hintStyle);
+            NativeGui.BeginPage("p2.joinhint");
+            try
+            {
+                Rect r = new Rect(16f, Screen.height - 40f, 900f, 30f);
+                if (NativeGui.Available) NativeGui.Label("p2.joinhint.text", r, L10n.F("p2.join_hint", m_spawnKey.Value, pad), m_hintStyle.fontSize, m_hintStyle.alignment, m_hintStyle.normal.textColor);
+                else GUI.Label(r, L10n.F("p2.join_hint", m_spawnKey.Value, pad), m_hintStyle);
+            }
+            finally { NativeGui.EndPage(); }
         }
 
         void UpdateCamera(SeinCharacter p1, SeinCharacter p2)

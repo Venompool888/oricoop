@@ -24,6 +24,27 @@ namespace OriCoop
         public const int PageSettings = 0, PageModeSelect = 1, PageSetup = 2;
         public static bool IsOpen { get; private set; }
         public static int Page { get; private set; }
+        static string s_testPage = "";
+
+        internal static string[] L10nTestPages()
+        {
+            return new string[] { "coop.settings", "coop.mode", "coop.setup", "coop.hint" };
+        }
+
+        internal static void L10nTestShow(string page, bool on)
+        {
+            if (!on)
+            {
+                if (s_testPage == page) { Close(); s_testPage = ""; }
+                return;
+            }
+            s_testPage = page;
+            if (page == "coop.settings") Open();
+            else if (page == "coop.mode") OpenModeSelect();
+            else if (page == "coop.setup") OpenSetup();
+            else if (page == "coop.hint") Close();
+        }
+
         static int s_focus;
         static int s_waitFor;            // 0 none, 1 = choosing P1's controller, 2 = choosing P2's
         static int[] s_baseline = new int[4];
@@ -131,7 +152,7 @@ namespace OriCoop
                 if (Input.GetKeyDown(KeyCode.F8) || s_backHeld > 1f) { s_backHeld = 0f; Open(); }
                 return;
             }
-            if (!inGame) { Close(); return; }
+            if (!inGame && s_testPage == "") { Close(); return; }
             PollPads();
 
             if (s_waitFor != 0)
@@ -222,28 +243,39 @@ namespace OriCoop
 
         // ---- drawing --------------------------------------------------------------------------------------
         static Font s_font;
-        static GUIStyle s_title, s_text, s_row, s_rowFocus, s_small, s_box;
-        static Texture2D s_bg, s_focusBg;
-
-        static Texture2D Tex(Color c) { Texture2D t = new Texture2D(1, 1); t.SetPixel(0, 0, c); t.Apply(); t.hideFlags = HideFlags.HideAndDontSave; return t; }
+        static GUIStyle s_title, s_text, s_row, s_rowFocus, s_small;
 
         static void Styles()
         {
             if (s_title != null) return;
             int size = Mathf.Max(14, Screen.height / 42);
             try { s_font = Font.CreateDynamicFontFromOSFont(new string[] { "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial" }, size); } catch (Exception) { s_font = null; }
-            s_bg = Tex(new Color(0.05f, 0.07f, 0.12f, 0.92f));
-            s_focusBg = Tex(new Color(0.95f, 0.8f, 0.35f, 0.25f));
-            s_box = new GUIStyle(GUI.skin.box); s_box.normal.background = s_bg;
             s_text = new GUIStyle(GUI.skin.label); s_text.fontSize = size; s_text.wordWrap = true; s_text.richText = true;
             if (s_font != null) s_text.font = s_font;
             s_text.normal.textColor = new Color(0.92f, 0.94f, 1f);
             s_title = new GUIStyle(s_text); s_title.fontSize = (int)(size * 1.35f); s_title.fontStyle = FontStyle.Bold; s_title.normal.textColor = new Color(1f, 0.85f, 0.4f);
             s_small = new GUIStyle(s_text); s_small.fontSize = (int)(size * 0.8f); s_small.normal.textColor = new Color(0.7f, 0.75f, 0.85f);
             s_row = new GUIStyle(GUI.skin.button); s_row.fontSize = size; s_row.alignment = TextAnchor.MiddleLeft; s_row.richText = true;
+            s_row.normal.background = s_row.hover.background = s_row.active.background = s_row.focused.background = null;
             if (s_font != null) s_row.font = s_font;
             s_row.padding = new RectOffset(14, 14, 6, 6);
-            s_rowFocus = new GUIStyle(s_row); s_rowFocus.normal.background = s_focusBg; s_rowFocus.normal.textColor = new Color(1f, 0.9f, 0.5f);
+            s_rowFocus = new GUIStyle(s_row); s_rowFocus.normal.textColor = new Color(1f, 0.9f, 0.5f);
+        }
+
+        static bool RowButton(string id, string text, bool focused, float height)
+        {
+            GUIStyle style = focused ? s_rowFocus : s_row;
+            Rect r = GUILayoutUtility.GetRect(new GUIContent(text), style, GUILayout.Height(height));
+            Vector2 p = GUIUtility.GUIToScreenPoint(r.position);
+            Rect screen = new Rect(p.x, p.y, r.width, r.height);
+            NativeGui.Panel(id + ".background", screen, focused ? new Color(0.95f, 0.8f, 0.35f, 0.25f) : new Color(0.02f, 0.03f, 0.06f, 0.65f));
+            if (!NativeGui.Available) return GUI.Button(r, text, style);
+            Color color = style.normal.textColor * GUI.color * GUI.contentColor;
+            if (!GUI.enabled) color.a *= 0.5f;
+            if (GUI.enabled && r.Contains(Event.current.mousePosition))
+                NativeGui.Panel(id + ".hover", screen, new Color(color.r, color.g, color.b, 0.14f * color.a));
+            NativeGui.Label(id, style.padding.Remove(screen), text, style.fontSize, style.alignment, color);
+            return GUI.Button(r, GUIContent.none, GUIStyle.none);
         }
 
         static string PlayerOfPad(int i)
@@ -258,15 +290,25 @@ namespace OriCoop
         {
             if (!IsOpen)
             {
-                if (UI.MainMenuVisible && Characters.Sein != null)
+                if (s_testPage == "coop.hint" || (UI.MainMenuVisible && Characters.Sein != null))
                 {
                     Styles();
-                    GUI.Label(new Rect(16f, 12f, 900f, 40f),
-                        L10n.T("coop.settings_hint"), s_small);
+                    NativeGui.BeginPage("coop.hint");
+                    NativeGui.Label("coop.hint.text", new Rect(16f, 12f, 900f, 40f),
+                        L10n.T("coop.settings_hint"), s_small.fontSize, s_small.alignment, s_small.normal.textColor);
+                    NativeGui.EndPage();
                 }
                 return;
             }
             Styles();
+            string page = Page == PageModeSelect ? "coop.mode" : Page == PageSetup ? "coop.setup" : "coop.settings";
+            NativeGui.BeginPage(page);
+            try { DrawPage(page); }
+            finally { NativeGui.EndPage(); }
+        }
+
+        static void DrawPage(string page)
+        {
             if (Page == PageModeSelect) { DrawModeSelect(); return; }
             if (s_waitFor == 1)
             {
@@ -321,23 +363,23 @@ namespace OriCoop
             h = Mathf.Min(h, Screen.height - 20f);
 
             Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
-            GUI.Box(r, GUIContent.none, s_box);
+            NativeGui.Panel(page + ".background", r, new Color(0.05f, 0.07f, 0.12f, 0.92f));
             GUILayout.BeginArea(new Rect(r.x + 20f, r.y + 14f, r.width - 40f, r.height - 28f));
-            GUILayout.Label(title, s_title);
+            NativeGui.LayoutLabel(page + ".title", title, s_title);
             GUILayout.Space(4f);
-            GUILayout.Label(ctrlHint, s_small);
-            for (int i = 0; i < 4; i++) GUILayout.Label(padLines[i], s_text);
-            GUILayout.Label(kbLine, s_text);
+            NativeGui.LayoutLabel(page + ".controller_hint", ctrlHint, s_small);
+            for (int i = 0; i < 4; i++) NativeGui.LayoutLabel(page + ".pad." + i, padLines[i], s_text);
+            NativeGui.LayoutLabel(page + ".keyboard", kbLine, s_text);
             GUILayout.Space(8f);
             for (int i = 0; i < rows.Length; i++)
             {
-                if (GUILayout.Button(rows[i], i == s_focus ? s_rowFocus : s_row, GUILayout.Height(lineH * 1.15f)))
+                if (RowButton(page + ".row." + i, rows[i], i == s_focus, lineH * 1.15f))
                 { s_focus = i; if (s_waitFor == 0) Activate(i); }
             }
             GUILayout.Space(6f);
-            if (s_message != "") GUILayout.Label(s_message, s_text);
-            if (warn != "") GUILayout.Label(warn, s_text);
-            GUILayout.Label(footer, s_small);
+            if (s_message != "") NativeGui.LayoutLabel(page + ".message", s_message, s_text);
+            if (warn != "") NativeGui.LayoutLabel(page + ".warning", warn, s_text);
+            NativeGui.LayoutLabel(page + ".footer", footer, s_small);
             if (Event.current.type == EventType.Repaint)
             {
                 // Area starts 14 px below the panel top; keep 14 px under the last line.
@@ -360,10 +402,9 @@ namespace OriCoop
             float w = Mathf.Min(Screen.width - 40f, 680f), lineH = s_text.fontSize * 1.9f;
             float h = lineH * 9.4f;
             Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
-            GUI.Box(r, GUIContent.none, s_box);
+            NativeGui.Panel("coop.mode.background", r, new Color(0.05f, 0.07f, 0.12f, 0.92f));
             GUILayout.BeginArea(new Rect(r.x + 20f, r.y + 14f, r.width - 40f, r.height - 28f));
-            GUILayout.Label(
-                L10n.T("coop.play_how"), s_title);
+            NativeGui.LayoutLabel("coop.mode.title", L10n.T("coop.play_how"), s_title);
             GUILayout.Space(8f);
             string[] rows = {
                 L10n.F("coop.single_desc", s_small.fontSize),
@@ -371,12 +412,11 @@ namespace OriCoop
             };
             for (int i = 0; i < rows.Length; i++)
             {
-                if (GUILayout.Button(rows[i], i == s_focus ? s_rowFocus : s_row, GUILayout.Height(lineH * 2.1f)))
+                if (RowButton("coop.mode.row." + i, rows[i], i == s_focus, lineH * 2.1f))
                 { s_focus = i; Activate(i); }
             }
             GUILayout.Space(8f);
-            GUILayout.Label(
-                L10n.T("coop.play_hint"), s_small);
+            NativeGui.LayoutLabel("coop.mode.hint", L10n.T("coop.play_hint"), s_small);
             GUILayout.EndArea();
         }
     }

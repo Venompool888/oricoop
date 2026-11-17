@@ -1,0 +1,5 @@
+OriCoop\Seams\Seams.cs
+OriCoop\Saves\SaveWire.cs
+OriCoop\Saves\ISavesHost.cs
+OriCoop\Saves\SeatReadiness.cs
+OriCoop\Saves\LineageMachine.cs

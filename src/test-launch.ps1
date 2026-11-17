@@ -241,6 +241,14 @@ function Enter-CopyLock($copy, [string]$script) {
             $fs.Write($bytes, 0, $bytes.Length); $fs.Close()
             return $true
         } catch [System.IO.IOException] {
+            # Our own lock from an earlier script in this same PowerShell (kept until the process ends): reuse it.
+            $own = Read-LockInfo $copy.Lock
+            if ($own['pid'] -eq [string]$PID) {
+                $session = $(if ($env:ORICOOP_SESSION) { $env:ORICOOP_SESSION } else { 'unnamed session' })
+                $me = Get-Process -Id $PID
+                [IO.File]::WriteAllText($copy.Lock, "session=$session`r`nscript=$script`r`npid=$PID`r`npidStart=$($me.StartTime.ToUniversalTime().Ticks)`r`ntime=$([DateTime]::UtcNow.ToString('o'))`r`ncopy=$($copy.Name)`r`n")
+                return $true
+            }
             if ($attempt -eq 0 -and (Test-Path -LiteralPath $copy.Lock) -and (Test-LockStale $copy.Lock)) {
                 $old = Read-LockInfo $copy.Lock
                 Write-Host ('stale lock on copy ' + $copy.Name + ' removed (session=' + $old['session'] + ' time=' + $old['time'] + ')')
@@ -431,8 +439,19 @@ function Start-TestGame([string]$Arguments, [hashtable]$Vars = @{}, [string]$Tag
     foreach ($e in [Environment]::GetEnvironmentVariables().GetEnumerator()) { $all[[string]$e.Key] = [string]$e.Value }
     foreach ($key in $Vars.Keys) { $all[[string]$key] = [string]$Vars[$key] }
     $all['ORICOOP_QUIET'] = '1'
+    # No headless mode: with -batchmode (with or without -nographics) Ori throws "Graphics.SetRenderTarget called with
+    # bad depth RenderBuffer" every frame and never leaves the title flow (2026-11-17, docs\testing-rules.md).
+    if ($env:ORICOOP_TEST_HEADLESS) { Write-Host 'NOTE: ORICOOP_TEST_HEADLESS ignored: Ori cannot run in Unity batch mode (see docs\testing-rules.md).' }
     if ($Arguments -match '-screen-width\s+(\d+)' ) { $sw = $Matches[1]; if ($Arguments -match '-screen-height\s+(\d+)') { $all['ORICOOP_SCREEN'] = $sw + 'x' + $Matches[1] } }
     if ($NeedsSteam) { $all.Remove('ORICOOP_NO_STEAM') } else { $all['ORICOOP_NO_STEAM'] = '1' }
+    # Every test game writes the mod's live tagged log (ORICOOP_LOG_TAG; harness runs only); fail-fast watches it,
+    # because some suites write their result file only at the end.
+    if (-not $all['ORICOOP_LOG_TAG']) {
+        $all['ORICOOP_LOG_TAG'] = Get-ClientLogTag $Tag
+        $live = Get-ClientLog $Tag
+        if (Test-Path -LiteralPath $live) { Remove-Item -LiteralPath $live -Force -ErrorAction SilentlyContinue }
+    }
+    $script:TL_LiveLogs += Join-Path 'C:\OriCoop\test' ($all['ORICOOP_LOG_TAG'] + '.log')
     $pairs = @($all.Keys | Sort-Object | ForEach-Object { $_ + '=' + $all[$_] })
     Update-OwnerForeground
     $procId = [OriTestLaunch4]::Start($script:TL_TestExe, $Arguments, $WorkingDirectory, [string[]]$pairs, ($env:ORICOOP_TEST_PRIORITY -eq 'BelowNormal'))
@@ -555,12 +574,13 @@ function Set-TestWindowsQuiet {
     }
 }
 
+$script:TL_StoppedPids = New-Object 'System.Collections.Generic.List[int]'
 function Stop-TestGames {
     foreach ($p in $script:TL_Procs) {
         $alive = $false
         try { $alive = -not $p.HasExited } catch { continue }   # already disposed by the script = already handled
         if ($alive) {
-            try { $p.Kill(); [void]$p.WaitForExit(10000) }
+            try { $script:TL_StoppedPids.Add($p.Id); $p.Kill(); [void]$p.WaitForExit(10000) }
             catch [System.InvalidOperationException] { }   # disposed by the script: already exited and handled
             catch { Write-Host ('could not stop test game ' + $p.Id + ': ' + $_) }
         }
@@ -584,22 +604,69 @@ function Invoke-TestWatch([switch]$Force) {
 }
 
 # Waits for the given test games to exit (or the deadline), running the watchdog. Returns $true if all exited.
-function Wait-TestGames($Processes, [int]$TimeoutSec, [System.Diagnostics.Stopwatch]$Stopwatch = $null) {
+# Fail fast (default on; $env:ORICOOP_FAIL_FAST=0 for a full diagnostic run): with -ResultFiles, the first "] FAIL "
+# line in any of them starts a grace period ($env:ORICOOP_FAIL_FAST_GRACE, default 10 s, so the failing phase writes
+# its remaining checks and the tagged logs catch up), then this run's games are stopped and the suite reports FAIL.
+$script:TL_FailFastHit = $null
+$script:TL_LiveLogs = @()
+function Wait-TestGames($Processes, [int]$TimeoutSec, [System.Diagnostics.Stopwatch]$Stopwatch = $null, [string[]]$ResultFiles = @()) {
     if (-not $Stopwatch) { $Stopwatch = [System.Diagnostics.Stopwatch]::StartNew() }
+    $failFast = $ResultFiles.Count -gt 0 -and $env:ORICOOP_FAIL_FAST -ne '0'
+    $grace = 10; if ($env:ORICOOP_FAIL_FAST_GRACE) { $grace = [int]$env:ORICOOP_FAIL_FAST_GRACE }
+    $failAt = $null; $nextScan = 0
     while (@($Processes | Where-Object { -not $_.HasExited }).Count -gt 0 -and $Stopwatch.Elapsed.TotalSeconds -lt $TimeoutSec) {
         Invoke-TestWatch
+        if ($failFast -and -not $failAt -and $Stopwatch.Elapsed.TotalSeconds -ge $nextScan) {
+            $nextScan = $Stopwatch.Elapsed.TotalSeconds + 2
+            foreach ($f in @($ResultFiles) + @($script:TL_LiveLogs)) {
+                if (-not (Test-Path -LiteralPath $f)) { continue }
+                $hit = Select-String -LiteralPath $f -Pattern '\] FAIL |\] TEST FAIL ' -List -ErrorAction SilentlyContinue | Select-Object -First 1
+                if ($hit) { $failAt = $Stopwatch.Elapsed.TotalSeconds; $script:TL_FailFastHit = $hit.Line.Trim(); break }
+            }
+        }
+        if ($failAt -and $Stopwatch.Elapsed.TotalSeconds -ge $failAt + $grace) {
+            Write-Host ('FAIL-FAST: stopping after the first failure; set ORICOOP_FAIL_FAST=0 for a full run. Failures so far:')
+            foreach ($f in @($ResultFiles) + @($script:TL_LiveLogs)) {
+                if (Test-Path -LiteralPath $f) { Select-String -LiteralPath $f -Pattern '\] FAIL |\] TEST FAIL ' -ErrorAction SilentlyContinue | ForEach-Object { Write-Host ('  ' + (Split-Path -Leaf $f) + ': ' + ($_.Line -replace '^.*\] (TEST )?', '')) } }
+            }
+            Stop-TestGames
+            break
+        }
         Start-Sleep -Milliseconds 500
     }
     return (@($Processes | Where-Object { -not $_.HasExited }).Count -eq 0)
 }
 
-# Call in finally: kills only this run's games, restores display prefs.
+# Call in finally: kills only this run's games, restores display prefs. The copy lock is NOT released here: the
+# script still has to read its result files, and the next run would delete them (2026-11-17: 3 c-server runs lost).
+# The script calls Exit-TestRun as its LAST step, after reading its results. If it dies before that, the lock goes
+# stale as soon as this PowerShell exits (its pid is gone). A later script in the same PowerShell reuses it.
 function Complete-TestRun {
     Stop-TestGames
     try { Remove-TestClientLinks } catch { Write-Host ('could not unlink client junctions: ' + $_) }
     Restore-OriDisplayPrefs
-    Exit-CopyLock
     if ($script:TL_FocusFixes -gt 0) { 'focus: ' + $script:TL_FocusFixes + ' focus steal(s) by test windows undone' }
+}
+
+# Last line of every test script: releases the copy lock once the results have been read.
+function Exit-TestRun { Exit-CopyLock }
+
+# Why a result file is missing, for the "no result file" line of a suite.
+function Get-NoResultReason {
+    if ($script:TL_FailFastHit) { return 'fail-fast stopped the run after: ' + ($script:TL_FailFastHit -replace '^.*\] (TEST )?', '') }
+    if ($script:TL_LockFile) {
+        if (-not (Test-Path -LiteralPath $script:TL_LockFile)) { return 'the copy lock ' + $script:TL_LockFile + ' was removed during the run (taken over by another run?)' }
+        $i = Read-LockInfo $script:TL_LockFile
+        if ($i['pid'] -and $i['pid'] -ne [string]$PID) { return 'the copy lock was taken over during the run by ' + $i['session'] + ' (' + $i['script'] + ', ' + $i['time'] + ')' }
+    }
+    $crashed = @()
+    foreach ($p in $script:TL_Procs) {
+        $code = $null; try { $code = $p.ExitCode } catch { }
+        if ($code -ne $null -and $code -ne 0 -and -not $script:TL_StoppedPids.Contains($p.Id)) { $crashed += ('pid ' + $p.Id + ' exit code ' + $code) }
+    }
+    if ($crashed.Count) { return 'a game crashed or was killed from outside (' + ($crashed -join ', ') + ')' }
+    if ($script:TL_StoppedPids.Count) { return 'this run stopped its games (timeout) before they wrote results' }
+    return 'the game exited without writing it (see the live logs: ' + (@($script:TL_LiveLogs) -join ', ') + ')'
 }
 
 # Sleep that keeps the watchdog running.

@@ -5,6 +5,8 @@ using System.Security.Cryptography;
 using System.Text;
 using Game;
 using HarmonyLib;
+using OriCoop.Seams;
+using OriCoop.Saves;
 using UnityEngine;
 
 namespace OriCoop
@@ -23,22 +25,16 @@ namespace OriCoop
     //   never an unrelated non-empty slot) at the start and after every host save. Both files are then byte-identical,
     //   so "changed since the last sync" = file hash != the sidecar's synced hash.
     // - Any slot we overwrite is copied to OriCoop-backups first (last 5 per slot kept).
-    public static class CoopSaves
+    public static partial class CoopSaves
     {
-        const byte MsgOffer = 16, MsgReply = 17, MsgCommit = 18, MsgRequest = 19, MsgUpload = 23;
-        const byte ReqUpload = 1, ReqCancel = 2, ReqChoosing = 3;
         const int KeepBackups = 5, SlotCount = 10;
-        const float ReplyTimeout = 10f, UploadTimeout = 15f;
-
-        enum Stage { Idle, Offered, Choosing, Uploading, Adopting, Proceed, Cancelling, Done }
-        static Stage s_stage;
-        static float s_stageAt;
+        static LineageMachine s_machine;
 
         // Host side
         static CoopLink s_hostLink;
         static int s_hostSlot = -1;
         static string s_hostHash = "", s_hostSummary = "";
-        static Reply s_reply;
+        static LineageReply s_reply;
         static int s_focus;
         static bool s_partnerChanged, s_hostChanged;
 
@@ -61,33 +57,20 @@ namespace OriCoop
         public static int GuestPickedSlot = -1;
         public static int SessionSlot = -1;   // slot that holds the host's copy in THIS session (-1 none yet)
 
-        class Reply
-        {
-            public bool Found, FreeSlot;
-            public int Slot;
-            public string Hash = "", LastSync = "", Summary = "", PlayerId = "", Name = "";
-        }
-
         public static void Init()
         {
-            NetPlay.On(MsgOffer, ReceiveOffer);
-            NetPlay.On(MsgReply, ReceiveReply);
-            NetPlay.On(MsgCommit, ReceiveCommit);
-            NetPlay.On(MsgRequest, ReceiveRequest);
-            NetPlay.On(MsgUpload, ReceiveUpload);
-            NetPlay.SessionEnded += Reset;
+            s_machine = new LineageMachine(Services.Net, Services.Clock, new LineageActions());
+            s_machine.Init();
         }
 
         static void Reset()
         {
-            s_stage = Stage.Idle; s_reply = null; s_hostLink = null; s_hostSlot = -1;
+            s_reply = null; s_hostLink = null; s_hostSlot = -1;
             s_offerCoop = s_offerHostId = s_offerHostName = ""; s_guestMatch = -1;
             s_lastWrittenHash = null; s_noSlotToldOnce = s_savedToldOnce = false;
             GuestJoiningEmpty = false; GuestPickedSlot = -1; SessionSlot = -1; NoSlotForCopy = false;
             s_commitBytes = null; s_commitCoop = s_commitHostId = s_commitHostName = s_commitSaveId = null;
         }
-
-        static void SetStage(Stage s) { s_stage = s; s_stageAt = Time.realtimeSinceStartup; }
 
         // ---------------------------------------------------------------- files
 
@@ -169,7 +152,7 @@ namespace OriCoop
         {
             SaveHeader h = ReadHeader(bytes);
             if (h == null) return "?";
-            return L10n.F("saves.summary", AreaTitle(h.Area), h.Completion, h.Hours, h.Minutes, h.Seconds);
+            return SavesHost.Current.Format("saves.summary", AreaTitle(h.Area), h.Completion, h.Hours, h.Minutes, h.Seconds);
         }
 
         public sealed class CoopLink
@@ -193,7 +176,7 @@ namespace OriCoop
                     }
                     return l.Coop.Length > 0 ? l : null;
                 }
-                catch (Exception e) { Plugin.Log.LogWarning("coop save: reading link " + slot + ": " + e.Message); return null; }
+                catch (Exception e) { Services.Log.Warn("coop save: reading link " + slot + ": " + e.Message); return null; }
             }
 
             public void Write(int slot)
@@ -229,7 +212,7 @@ namespace OriCoop
             File.Copy(src, dst, true);
             if (File.Exists(LinkPath(slot))) File.Copy(LinkPath(slot), Path.ChangeExtension(dst, ".oricoop"), true);
             BackupsMade++;
-            Plugin.Log.LogInfo("coop save: backed up slot " + slot + " -> " + dst);
+            Services.Log.Info("coop save: backed up slot " + slot + " -> " + dst);
             string[] old = Directory.GetFiles(dir, "saveFile" + slot + "-*.sav");
             Array.Sort(old, StringComparer.Ordinal);
             for (int i = 0; i < old.Length - KeepBackups; i++)
@@ -240,7 +223,7 @@ namespace OriCoop
                     string side = Path.ChangeExtension(old[i], ".oricoop");
                     if (File.Exists(side)) File.Delete(side);
                 }
-                catch (Exception e) { Plugin.Log.LogWarning("coop save: pruning backup: " + e.Message); }
+                catch (Exception e) { Services.Log.Warn("coop save: pruning backup: " + e.Message); }
             }
         }
 
@@ -268,7 +251,7 @@ namespace OriCoop
                     SaveSlotInfo.CurrentInfoVersion = saved;
                 }
             }
-            catch (Exception e) { Plugin.Log.LogWarning("coop save: refreshing slot info: " + e.Message); }
+            catch (Exception e) { Services.Log.Warn("coop save: refreshing slot info: " + e.Message); }
         }
 
         // ---------------------------------------------------------------- identity
@@ -322,212 +305,19 @@ namespace OriCoop
 
         static string PartnerName(string sent)
         {
-            string steam = NetPlay.UsesSteam ? NetPlay.SteamPartnerName : "";
+            string steam = SavesHost.Current.UsesSteam ? SavesHost.Current.SteamPartnerName : "";
             return Clean(string.IsNullOrEmpty(steam) ? sent : steam);
         }
 
         // ---------------------------------------------------------------- host
-
-        // SaveSync asks before the first checkpoint: true once the save to play is settled.
-        public static bool HostGate()
-        {
-            switch (s_stage)
-            {
-                case Stage.Idle: HostOffer(); return false;
-                case Stage.Proceed: case Stage.Done: return true;
-                case Stage.Offered:
-                    if (Time.realtimeSinceStartup - s_stageAt > ReplyTimeout)
-                    {
-                        Plugin.Log.LogWarning("coop save: no lineage reply (older partner mod?); host save wins");
-                        Outcome = "legacy";
-                        NetHud.Toast(
-                    L10n.T("saves.check_timeout"), "");
-                        SetStage(Stage.Proceed);
-                        return true;
-                    }
-                    return false;
-                case Stage.Uploading:
-                    if (Time.realtimeSinceStartup - s_stageAt > UploadTimeout)
-                    {
-                        Plugin.Log.LogWarning("coop save: partner progress never arrived; host save wins");
-                        NetHud.Toast(
-                    L10n.T("saves.upload_timeout"), "");
-                        Decide(false);
-                    }
-                    return false;
-                default: return false;
-            }
-        }
-
-        static void HostOffer()
-        {
-            try
-            {
-                s_hostSlot = SaveSlotsManager.CurrentSlotIndex;
-                byte[] bytes = ReadSlot(s_hostSlot);
-                s_hostHash = Hash(bytes);
-                s_hostSummary = bytes == null ? L10n.T("saves.new_game") : Summary(bytes);
-                s_hostLink = bytes == null ? null : ValidLink(s_hostSlot, bytes);
-                if (s_hostLink == null)
-                {
-                    s_hostLink = new CoopLink();
-                    s_hostLink.Coop = Guid.NewGuid().ToString("N");
-                    SaveHeader h = ReadHeader(bytes);
-                    s_hostLink.SaveId = h != null ? h.Id : "";
-                    s_hostChanged = false;
-                }
-                else s_hostChanged = s_hostLink.Synced.Length > 0 && s_hostLink.Synced != s_hostHash;
-                CoopId = s_hostLink.Coop;
-                string coop = s_hostLink.Coop;
-                NetPlay.Send(MsgOffer, true, delegate(BinaryWriter w)
-                {
-                    w.Write((byte)1); w.Write(coop); w.Write(PlayerId); w.Write(LocalName); w.Write(s_hostHash); w.Write(s_hostSummary);
-                });
-                SetStage(Stage.Offered);
-                Plugin.Log.LogInfo("coop save: offered lineage " + coop + " slot " + s_hostSlot + " hash " + Short(s_hostHash) + " changedSinceSync=" + s_hostChanged);
-            }
-            catch (Exception e)
-            {
-                Plugin.Log.LogWarning("coop save: offer failed, host save wins: " + e);
-                SetStage(Stage.Proceed);
-            }
-        }
-
-        static void ReceiveReply(BinaryReader r)
-        {
-            if (!NetPlay.IsHost || s_stage != Stage.Offered) return;
-            Reply rep = new Reply();
-            rep.Found = r.ReadBoolean(); rep.Slot = r.ReadInt32(); rep.Hash = r.ReadString(); rep.LastSync = r.ReadString();
-            rep.Summary = r.ReadString(); rep.PlayerId = r.ReadString(); rep.Name = r.ReadString(); rep.FreeSlot = r.ReadBoolean();
-            s_reply = rep;
-            s_hostLink.Partner = PartnerName(rep.Name); s_hostLink.PartnerId = rep.PlayerId;
-            Plugin.Log.LogInfo("coop save: partner " + s_hostLink.Partner + " found=" + rep.Found + " slot=" + rep.Slot + " hash=" + Short(rep.Hash) + " host=" + Short(s_hostHash));
-            if (!rep.Found)
-            {
-                Outcome = "new";
-                NetHud.Toast(
-                    L10n.T("saves.new"), "");
-                if (!rep.FreeSlot) NetHud.Toast(
-                    L10n.T("saves.partner_no_slot"), "");
-                Decide(false);
-            }
-            else if (rep.Hash == s_hostHash)
-            {
-                Outcome = "same";
-                NetHud.Toast(
-                    L10n.T("saves.match"), "");
-                Decide(false);
-            }
-            else
-            {
-                DivergenceSeen = true;
-                s_partnerChanged = rep.LastSync.Length == 0 || rep.Hash != rep.LastSync;
-                s_focus = 0;
-                SetStage(Stage.Choosing);
-                NetPlay.Send(MsgRequest, true, delegate(BinaryWriter w) { w.Write(ReqChoosing); });
-                Plugin.Log.LogInfo("coop save: lineage diverged (hostChanged=" + s_hostChanged + " partnerChanged=" + s_partnerChanged + "); asking the host");
-            }
-        }
-
-        // Host's choice: false = host progress, true = partner progress.
-        static void Decide(bool partner)
-        {
-            if (partner)
-            {
-                SetStage(Stage.Uploading);
-                NetPlay.Send(MsgRequest, true, delegate(BinaryWriter w) { w.Write(ReqUpload); });
-                return;
-            }
-            if (s_stage == Stage.Choosing || s_stage == Stage.Uploading) Outcome = "diverged-host";
-            Commit();
-            SetStage(Stage.Proceed);
-        }
-
-        static void Cancel()
-        {
-            Outcome = "cancel";
-            NetPlay.Send(MsgRequest, true, delegate(BinaryWriter w) { w.Write(ReqCancel); });
-            SetStage(Stage.Cancelling);
-            NetHud.Toast(
-                    L10n.T("saves.cancelled"), "");
-            Plugin.Log.LogInfo("coop save: host cancelled at the divergence choice");
-        }
-
-        static void ReceiveUpload(BinaryReader r)
-        {
-            if (!NetPlay.IsHost || s_stage != Stage.Uploading) return;
-            int n = r.ReadInt32();
-            byte[] bytes = n > 0 && n <= r.BaseStream.Length - r.BaseStream.Position ? r.ReadBytes(n) : new byte[0];   // length is remote input
-            if (n <= 0 || bytes.Length != n || ReadHeader(bytes) == null)
-            {
-                NetHud.Toast(
-                    L10n.T("saves.invalid_progress"), "");
-                Decide(false); return;
-            }
-            try
-            {
-                Backup(s_hostSlot);
-                WriteSlotFile(s_hostSlot, bytes);
-                s_hostHash = Hash(bytes);
-                SaveHeader h = ReadHeader(bytes);
-                s_hostLink.SaveId = h.Id;
-                Outcome = "diverged-partner";
-                SetStage(Stage.Adopting);
-                Plugin.Log.LogInfo("coop save: adopting partner progress " + n + " bytes hash " + Short(s_hostHash));
-                SaveSync.HostAdopt(bytes);
-            }
-            catch (Exception e)
-            {
-                Plugin.Log.LogWarning("coop save: adopting partner progress failed: " + e);
-                NetHud.Toast(
-                    L10n.T("saves.load_failed"), "");
-                Decide(false);
-            }
-        }
-
-        // SaveSync finished loading the partner's progress on the host.
-        public static void HostAdoptFinished()
-        {
-            if (s_stage != Stage.Adopting) return;
-            try { AdoptedHours = SaveSlotsManager.CurrentSaveSlot.Hours; } catch (Exception) { }
-            NetHud.Toast(
-                    L10n.T("saves.using_partner"), "");
-            Commit();
-            SetStage(Stage.Proceed);
-        }
-
-        // Send the host's slot file to the guest and record the sync in the host's own link.
-        static void Commit()
-        {
-            if (!NetPlay.IsHost || !NetPlay.Connected || s_hostLink == null) return;
-            try
-            {
-                byte[] bytes = ReadSlot(s_hostSlot);
-                string hash = Hash(bytes);
-                SaveHeader h = ReadHeader(bytes);
-                if (h != null) s_hostLink.SaveId = h.Id;
-                s_hostLink.Synced = hash;
-                s_hostLink.SyncedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
-                if (bytes != null) s_hostLink.Write(s_hostSlot);
-                s_hostHash = hash; LastCommitHash = hash; Commits++;
-                string coop = s_hostLink.Coop, saveId = s_hostLink.SaveId;
-                NetPlay.Send(MsgCommit, true, delegate(BinaryWriter w)
-                {
-                    w.Write(coop); w.Write(PlayerId); w.Write(LocalName); w.Write(saveId);
-                    w.Write(bytes != null); if (bytes != null) { w.Write(bytes.Length); w.Write(bytes); }
-                });
-                Plugin.Log.LogInfo("coop save: commit " + (bytes == null ? "(no file yet)" : bytes.Length + " bytes hash " + Short(hash)) + " to " + s_hostLink.Partner);
-            }
-            catch (Exception e) { Plugin.Log.LogWarning("coop save: commit failed: " + e); }
-        }
 
         [HarmonyPatch(typeof(SaveGameController), "PerformSave")]
         static class HostSavedPatch
         {
             static void Postfix()
             {
-                if (!NetPlay.Enabled || !NetPlay.IsHost || !NetPlay.Connected) return;
-                if (s_stage != Stage.Proceed && s_stage != Stage.Done) return;
+                if (!Services.Net.Enabled || !Services.Net.IsHost || !Services.Net.Connected) return;
+                if (s_machine.Stage != LineageStage.Proceed && s_machine.Stage != LineageStage.Done) return;
                 if (SaveSlotsManager.CurrentSlotIndex != s_hostSlot) return;
                 Commit();
             }
@@ -535,79 +325,9 @@ namespace OriCoop
 
         // ---------------------------------------------------------------- guest
 
-        static void ReceiveOffer(BinaryReader r)
-        {
-            if (NetPlay.IsHost) return;
-            r.ReadByte();
-            s_offerCoop = r.ReadString(); s_offerHostId = r.ReadString(); s_offerHostName = PartnerName(r.ReadString());
-            r.ReadString(); r.ReadString();
-            CoopId = s_offerCoop;
-            s_guestMatch = -1;
-            string hash = "", last = "", summary = "";
-            bool free = false;
-            int current = SafeCurrentSlot();
-            for (int i = 0; i < SlotCount; i++)
-            {
-                byte[] bytes = ReadSlot(i);
-                if (bytes == null) { if (i != current || GuestJoiningEmpty) free = true; continue; }
-                CoopLink l = ValidLink(i, bytes);
-                if (l != null && l.Coop == s_offerCoop && s_guestMatch < 0)
-                { s_guestMatch = i; hash = Hash(bytes); last = l.Synced; summary = Summary(bytes); }
-            }
-            bool found = s_guestMatch >= 0; int slot = s_guestMatch;
-            NetPlay.Send(MsgReply, true, delegate(BinaryWriter w)
-            {
-                w.Write(found); w.Write(slot); w.Write(hash); w.Write(last); w.Write(summary);
-                w.Write(PlayerId); w.Write(LocalName); w.Write(free);
-            });
-            Plugin.Log.LogInfo("coop save: host " + s_offerHostName + " offered " + s_offerCoop + "; local match slot " + slot + " hash " + Short(hash));
-        }
-
-        static void ReceiveRequest(BinaryReader r)
-        {
-            if (NetPlay.IsHost) return;
-            byte kind = r.ReadByte();
-            if (kind == ReqChoosing)
-                NetHud.Toast(
-                    L10n.T("saves.waiting_choice"), "");
-            else if (kind == ReqCancel)
-            {
-                CancelledByHost = true;
-                NetHud.Toast(
-                    L10n.T("saves.host_cancelled"), "");
-            }
-            else if (kind == ReqUpload)
-            {
-                byte[] bytes = s_guestMatch >= 0 ? ReadSlot(s_guestMatch) : null;
-                NetPlay.Send(MsgUpload, true, delegate(BinaryWriter w)
-                {
-                    if (bytes == null) { w.Write(0); return; }
-                    w.Write(bytes.Length); w.Write(bytes);
-                });
-                Plugin.Log.LogInfo("coop save: host chose partner progress; sent slot " + s_guestMatch + " (" + (bytes == null ? 0 : bytes.Length) + " bytes)");
-            }
-        }
-
         static int SafeCurrentSlot()
         {
             try { return SaveSlotsManager.Instance != null ? SaveSlotsManager.CurrentSlotIndex : -1; } catch (Exception) { return -1; }
-        }
-
-        static void ReceiveCommit(BinaryReader r)
-        {
-            if (NetPlay.IsHost) return;
-            string coop = r.ReadString(), hostId = r.ReadString(), hostName = PartnerName(r.ReadString()), saveId = r.ReadString();
-            bool has = r.ReadBoolean();
-            byte[] bytes = null;
-            if (has) { int n = r.ReadInt32(); if (n < 0 || n > r.BaseStream.Length - r.BaseStream.Position) return; bytes = r.ReadBytes(n); if (bytes.Length != n) return; }
-            CoopId = coop;
-            if (bytes == null || ReadHeader(bytes) == null)
-            {
-                Plugin.Log.LogInfo("coop save: host has no save file yet; nothing to keep");
-                return;
-            }
-            s_commitCoop = coop; s_commitHostId = hostId; s_commitHostName = hostName; s_commitSaveId = saveId; s_commitBytes = bytes;
-            KeepCopy(-1);
         }
 
         // Last commit from the host this session: a guest still on the title may only learn its slot later
@@ -634,10 +354,10 @@ namespace OriCoop
                 if (slot < 0)
                 {
                     // A guest joining from the title is asked for a slot instead (GuestJoin.NeedSlotChoice).
-                    if (!s_noSlotToldOnce && !GuestJoiningEmpty) NetHud.Toast(
-                    L10n.T("saves.no_slot"), "");
+                    if (!s_noSlotToldOnce && !GuestJoiningEmpty) SavesHost.Current.Toast(
+                    SavesHost.Current.Translate("saves.no_slot"), "");
                     if (!GuestJoiningEmpty) s_noSlotToldOnce = true;
-                    Plugin.Log.LogWarning("coop save: no linked or empty slot; not keeping a copy");
+                    Services.Log.Warn("coop save: no linked or empty slot; not keeping a copy");
                     return;
                 }
                 string hash = Hash(bytes);
@@ -652,12 +372,12 @@ namespace OriCoop
                 l.Write(slot);
                 s_lastWrittenHash = hash; s_guestMatch = slot; GuestSlot = SessionSlot = slot; GuestWrites++; LastCommitHash = hash;
                 if (!s_savedToldOnce)
-                    NetHud.Toast(
-                        L10n.F("saves.saved_slot", slot + 1, hostName), "");
+                    SavesHost.Current.Toast(
+                        SavesHost.Current.Format("saves.saved_slot", slot + 1, hostName), "");
                 s_savedToldOnce = true;
-                Plugin.Log.LogInfo("coop save: kept host progress in slot " + slot + " hash " + Short(hash) + " lineage " + coop);
+                Services.Log.Info("coop save: kept host progress in slot " + slot + " hash " + Short(hash) + " lineage " + coop);
             }
-            catch (Exception e) { Plugin.Log.LogWarning("coop save: keeping a copy failed: " + e); }
+            catch (Exception e) { Services.Log.Warn("coop save: keeping a copy failed: " + e); }
         }
 
         // The linked slot if there is one, else the first empty slot (never the slot the guest itself is playing).
@@ -691,16 +411,11 @@ namespace OriCoop
 
         public static void Tick()
         {
-            if (s_stage == Stage.Cancelling && Time.realtimeSinceStartup - s_stageAt > 0.6f)
+            if (s_machine.Tick()) return;
+            if (s_machine.Stage != LineageStage.Choosing) return;
+            if (TestChoice.Length > 0 && TestReady && Services.Clock.RealTime - s_machine.StageAt > 1f)
             {
-                SetStage(Stage.Done);
-                NetPlay.End("co-op save choice cancelled");
-                return;
-            }
-            if (s_stage != Stage.Choosing) return;
-            if (TestChoice.Length > 0 && TestReady && Time.realtimeSinceStartup - s_stageAt > 1f)
-            {
-                Plugin.Log.LogInfo("coop save: test choice " + TestChoice);
+                Services.Log.Info("coop save: test choice " + TestChoice);
                 Choose(TestChoice == "partner" ? 1 : TestChoice == "cancel" ? 2 : 0);
                 return;
             }
@@ -716,21 +431,23 @@ namespace OriCoop
 
         static void Choose(int option)
         {
-            if (s_stage != Stage.Choosing) return;
-            if (option == 0) Decide(false);
-            else if (option == 1) Decide(true);
-            else Cancel();
+            if (s_machine.Stage != LineageStage.Choosing) return;
+            if (option == 0) s_machine.Decide(false);
+            else if (option == 1) s_machine.Decide(true);
+            else s_machine.Cancel();
         }
 
-        public static bool DialogOpen { get { return s_stage == Stage.Choosing; } }
+        public static bool DialogOpen { get { return s_machine != null && s_machine.Stage == LineageStage.Choosing; } }
 
+        internal static bool TestShow;
+        static int s_element;
         static GUIStyle s_title, s_titleEn, s_item, s_itemEn, s_body, s_bodyEn;
         static Texture2D s_scrim, s_line;
 
         [HarmonyPatch(typeof(NetHud), "Draw")]
         static class DrawPatch
         {
-            static void Postfix() { try { if (DialogOpen) DrawDialog(); } catch (Exception e) { Plugin.Log.LogError(e); } }
+            static void Postfix() { try { if (DialogOpen || (SavesHost.Current.LocalizationProbeOn && TestShow)) DrawDialog(); } catch (Exception e) { Services.Log.Error(e.ToString()); } }
         }
 
         static GUIStyle Style(int size, FontStyle fs)
@@ -748,6 +465,8 @@ namespace OriCoop
 
         static void Text(Rect r, string s, GUIStyle st, Color c)
         {
+            string id = "saves.dialog.text." + s_element++;
+            if (NativeGui.Available) { NativeGui.Label(id, r, s, st.fontSize, st.alignment, c); return; }
             Color prev = st.normal.textColor;
             st.normal.textColor = new Color(0.01f, 0.03f, 0.05f, 0.75f);
             GUI.Label(new Rect(r.x, r.y + 2f, r.width, r.height), s, st);
@@ -761,52 +480,59 @@ namespace OriCoop
 
         static void DrawDialog()
         {
-            float scale = Mathf.Clamp(Screen.height / 1080f, 0.45f, 2f);
-            int px = Mathf.RoundToInt(48f * scale);
-            if (s_title == null || s_title.fontSize != px)
+            NativeGui.BeginPage("saves.dialog"); s_element = 0;
+            try
             {
-                s_title = Style(px, FontStyle.Normal); s_titleEn = Style(Mathf.RoundToInt(24f * scale), FontStyle.Normal);
-                s_item = Style(Mathf.RoundToInt(38f * scale), FontStyle.Normal); s_itemEn = Style(Mathf.RoundToInt(22f * scale), FontStyle.Normal);
-                s_body = Style(Mathf.RoundToInt(26f * scale), FontStyle.Normal); s_bodyEn = Style(Mathf.RoundToInt(19f * scale), FontStyle.Normal);
+                float scale = Mathf.Clamp(Screen.height / 1080f, 0.45f, 2f);
+                int px = Mathf.RoundToInt(48f * scale);
+                if (s_title == null || s_title.fontSize != px)
+                {
+                    s_title = Style(px, FontStyle.Normal); s_titleEn = Style(Mathf.RoundToInt(24f * scale), FontStyle.Normal);
+                    s_item = Style(Mathf.RoundToInt(38f * scale), FontStyle.Normal); s_itemEn = Style(Mathf.RoundToInt(22f * scale), FontStyle.Normal);
+                    s_body = Style(Mathf.RoundToInt(26f * scale), FontStyle.Normal); s_bodyEn = Style(Mathf.RoundToInt(19f * scale), FontStyle.Normal);
+                }
+                if (s_scrim == null) { s_scrim = Solid(new Color(0.008f, 0.031f, 0.055f, 0.78f)); s_line = Solid(new Color(0.39f, 0.87f, 0.96f, 0.85f)); }
+                GUI.color = Color.white;
+                if (NativeGui.Available) NativeGui.Panel("saves.dialog.scrim", new Rect(0, 0, Screen.width, Screen.height), new Color(0.008f, 0.031f, 0.055f, 0.78f));
+                else GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), s_scrim);
+                float y = Screen.height * 0.12f, w = Screen.width;
+                Text(new Rect(0, y, w, 56f * scale), SavesHost.Current.Translate("saves.diverged"), s_title, Warm);
+                y += 110f * scale;
+                string partner = SavesHost.Current.LocalizationProbeOn && TestShow ? SavesHost.Current.Translate("steam.friend") : s_hostLink != null ? s_hostLink.Partner : "?";
+                Text(new Rect(0, y, w, 32f * scale), Who(), s_body, Zh);
+                y += 76f * scale;
+                float colW = Mathf.Min(560f * scale, w * 0.44f);
+                float lx = w * 0.5f - colW - 20f * scale, rx = w * 0.5f + 20f * scale;
+                Column(lx, y, colW, scale, SavesHost.Current.Translate("saves.host"), SavesHost.Current.LocalizationProbeOn && TestShow ? SavesHost.Current.Translate("saves.new_game") : s_hostSummary, s_hostChanged);
+                Column(rx, y, colW, scale, SavesHost.Current.Format("saves.partner", partner), SavesHost.Current.LocalizationProbeOn && TestShow ? SavesHost.Current.Translate("saves.new_game") : s_reply != null ? s_reply.Summary : "?", s_partnerChanged);
+                y += 140f * scale;
+                Option(0, y, scale, SavesHost.Current.Translate("saves.use_host")); y += 84f * scale;
+                Option(1, y, scale, SavesHost.Current.Translate("saves.use_partner")); y += 84f * scale;
+                Option(2, y, scale, SavesHost.Current.Translate("saves.cancel")); y += 96f * scale;
+                Text(new Rect(0, y, w, 28f * scale), SavesHost.Current.Translate("saves.backup_note"), s_bodyEn, Zh);
+                Text(new Rect(0, Screen.height - 56f * scale, w - 60f * scale, 30f * scale),
+                    SavesHost.Current.Translate("saves.prompts"), s_bodyEn, Zh);
             }
-            if (s_scrim == null) { s_scrim = Solid(new Color(0.008f, 0.031f, 0.055f, 0.78f)); s_line = Solid(new Color(0.39f, 0.87f, 0.96f, 0.85f)); }
-            GUI.color = Color.white;
-            GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), s_scrim);
-            float y = Screen.height * 0.12f, w = Screen.width;
-            Text(new Rect(0, y, w, 56f * scale), L10n.T("saves.diverged"), s_title, Warm);
-            y += 110f * scale;
-            string partner = s_hostLink != null ? s_hostLink.Partner : "?";
-            Text(new Rect(0, y, w, 32f * scale), Who(), s_body, Zh);
-            y += 76f * scale;
-            float colW = Mathf.Min(560f * scale, w * 0.44f);
-            float lx = w * 0.5f - colW - 20f * scale, rx = w * 0.5f + 20f * scale;
-            Column(lx, y, colW, scale, L10n.T("saves.host"), s_hostSummary, s_hostChanged);
-            Column(rx, y, colW, scale, L10n.F("saves.partner", partner), s_reply != null ? s_reply.Summary : "?", s_partnerChanged);
-            y += 140f * scale;
-            Option(0, y, scale, L10n.T("saves.use_host")); y += 84f * scale;
-            Option(1, y, scale, L10n.T("saves.use_partner")); y += 84f * scale;
-            Option(2, y, scale, L10n.T("saves.cancel")); y += 96f * scale;
-            Text(new Rect(0, y, w, 28f * scale), L10n.T("saves.backup_note"), s_bodyEn, Zh);
-            Text(new Rect(0, Screen.height - 56f * scale, w - 60f * scale, 30f * scale),
-                L10n.T("saves.prompts"), s_bodyEn, Zh);
+            finally { NativeGui.EndPage(); }
         }
 
         static string Who()
         {
-            if (s_hostChanged && s_partnerChanged) return L10n.T("saves.both_changed");
-            if (s_hostChanged) return L10n.T("saves.host_changed");
-            if (s_partnerChanged) return L10n.T("saves.partner_changed");
-            return L10n.T("saves.sync_incomplete");
+            if (s_hostChanged && s_partnerChanged) return SavesHost.Current.Translate("saves.both_changed");
+            if (s_hostChanged) return SavesHost.Current.Translate("saves.host_changed");
+            if (s_partnerChanged) return SavesHost.Current.Translate("saves.partner_changed");
+            return SavesHost.Current.Translate("saves.sync_incomplete");
         }
 
         static void Column(float x, float y, float colW, float scale, string text, string summary, bool changed)
         {
             GUI.color = new Color(1f, 1f, 1f, 0.35f);
-            GUI.DrawTexture(new Rect(x, y, colW, 2f), s_line);
+            if (NativeGui.Available) NativeGui.Panel("saves.dialog.column." + s_element++, new Rect(x, y, colW, 2f), new Color(0.39f, 0.87f, 0.96f, 0.85f * 0.35f));
+            else GUI.DrawTexture(new Rect(x, y, colW, 2f), s_line);
             GUI.color = Color.white;
             Text(new Rect(x, y + 8f * scale, colW, 34f * scale), text, s_item, Zh);
             Text(new Rect(x, y + 72f * scale, colW, 30f * scale), summary, s_body, ZhOn);
-            Text(new Rect(x, y + 102f * scale, colW, 24f * scale), changed ? L10n.T("saves.changed") : L10n.T("saves.unchanged"), s_bodyEn, changed ? Warm : En);
+            Text(new Rect(x, y + 102f * scale, colW, 24f * scale), changed ? SavesHost.Current.Translate("saves.changed") : SavesHost.Current.Translate("saves.unchanged"), s_bodyEn, changed ? Warm : En);
         }
 
         static void Option(int idx, float y, float scale, string text)
@@ -814,17 +540,24 @@ namespace OriCoop
             float w = 520f * scale, h = 76f * scale;
             Rect r = new Rect((Screen.width - w) * 0.5f, y, w, h);
             Event e = Event.current;
-            if (e != null && r.Contains(e.mousePosition))
-            {
-                if (e.type == EventType.MouseMove) s_focus = idx;
-                if (e.type == EventType.MouseDown) { s_focus = idx; Choose(idx); e.Use(); }
-            }
+            if (e != null && r.Contains(e.mousePosition) && e.type == EventType.MouseMove) s_focus = idx;
             bool on = s_focus == idx;
-            Text(new Rect(r.x, r.y, r.width, 40f * scale), text, s_item, on ? ZhOn : Zh);
+            if (NativeGui.Available)
+            {
+                if (NativeGui.Button("saves.dialog.option." + idx, r, "", s_item.fontSize, on, on ? ZhOn : Zh))
+                { s_focus = idx; Choose(idx); }
+            }
+            else
+            {
+                if (e != null && r.Contains(e.mousePosition) && e.type == EventType.MouseDown) { s_focus = idx; Choose(idx); e.Use(); }
+            }
+            Text(new Rect(r.x, r.y, r.width, 40f * scale), text, s_item, s_focus == idx ? ZhOn : Zh);
             if (on)
             {
                 GUI.color = Color.white;
-                GUI.DrawTexture(new Rect(Screen.width * 0.5f - 170f * scale, y + 70f * scale, 340f * scale, 2f * Mathf.Max(1f, scale)), s_line);
+                Rect line = new Rect(Screen.width * 0.5f - 170f * scale, y + 70f * scale, 340f * scale, 2f * Mathf.Max(1f, scale));
+                if (NativeGui.Available) NativeGui.Panel("saves.dialog.option.line." + idx, line, new Color(0.39f, 0.87f, 0.96f, 0.85f));
+                else GUI.DrawTexture(line, s_line);
             }
         }
 
@@ -841,9 +574,9 @@ namespace OriCoop
                     if (info == null || __instance.AreaName == null) return;
                     CoopLink l = ValidLink(__instance.SaveSlotIndex, null);
                     if (l == null) return;
-                    L10n.Set(__instance.AreaName, delegate { return L10n.F("saves.slot_label", __instance.SaveSlotIndex + 1, SaveSlotsScreenshotManager.Instance.FindAreaName(info.AreaName), info.Completion, L10n.F("saves.slot_tag", Clean(l.Partner))); });
+                    SavesHost.Current.SetText(__instance.AreaName, delegate { return SavesHost.Current.Format("saves.slot_label", __instance.SaveSlotIndex + 1, SaveSlotsScreenshotManager.Instance.FindAreaName(info.AreaName), info.Completion, SavesHost.Current.Format("saves.slot_tag", Clean(l.Partner))); });
                 }
-                catch (Exception e) { Plugin.Log.LogWarning("coop save: slot marker: " + e.Message); }
+                catch (Exception e) { Services.Log.Warn("coop save: slot marker: " + e.Message); }
             }
         }
 
@@ -856,7 +589,11 @@ namespace OriCoop
             [HarmonyPriority(Priority.Last)]
             static void Postfix(List<Vector3> ___m_cameraPositions)
             {
-                if (SaveSync.HostAdopting && NetPlay.HaveRemotePos) ___m_cameraPositions.Remove(NetPlay.LatestRemotePos);
+                if (SaveSync.HostAdopting && SavesHost.Current.HaveRemotePosition)
+                {
+                    SavePosition p = SavesHost.Current.LatestRemotePosition;
+                    ___m_cameraPositions.Remove(new Vector3(p.X, p.Y, p.Z));
+                }
             }
         }
 
@@ -866,7 +603,7 @@ namespace OriCoop
             static void Postfix(int index)
             {
                 try { if (File.Exists(LinkPath(index))) File.Delete(LinkPath(index)); }
-                catch (Exception e) { Plugin.Log.LogWarning("coop save: removing link: " + e.Message); }
+                catch (Exception e) { Services.Log.Warn("coop save: removing link: " + e.Message); }
             }
         }
 

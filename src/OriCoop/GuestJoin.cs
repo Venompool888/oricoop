@@ -1,6 +1,8 @@
 using System;
 using Game;
 using HarmonyLib;
+using OriCoop.Seams;
+using OriCoop.Saves;
 using UnityEngine;
 
 namespace OriCoop
@@ -36,7 +38,7 @@ namespace OriCoop
         // From NativeModeMenu.NewGamePatch (prefix of SaveSlotsUI.SetDifficulty). true = skip the new game.
         public static bool Intercept(SaveSlotsUI ui)
         {
-            if (!NetPlay.Enabled || NetPlay.IsHost || ui == null || s_waiting || Loading) return false;
+            if (!Services.Net.Enabled || Services.Net.IsHost || ui == null || s_waiting || Loading) return false;
             try
             {
                 GameObject diff = Traverse.Create(ui).Field("m_difficultyScreen").GetValue<GameObject>();
@@ -48,19 +50,19 @@ namespace OriCoop
                     Traverse.Create(ui).Field("m_difficultyScreen").SetValue(null);
                 }
             }
-            catch (Exception e) { Plugin.Log.LogWarning("guest join: closing the difficulty screen: " + e.Message); }
+            catch (Exception e) { Services.Log.Warn("guest join: closing the difficulty screen: " + e.Message); }
             ui.Active = false;
             Start(ui, SaveSlotsManager.CurrentSlotIndex, false);
-            Plugin.Log.LogInfo("guest join: empty slot " + s_slot + " picked while joining: no new game; waiting for the host's save");
+            Services.Log.Info("guest join: empty slot " + s_slot + " picked while joining: no new game; waiting for the host's save");
             return true;
         }
 
         // Title 加入 path: the guest is connected and never picked a slot. false = not an online guest / already busy.
         public static bool BeginNoSlot()
         {
-            if (!NetPlay.Enabled || NetPlay.IsHost || s_waiting || Loading) return false;
+            if (!Services.Net.Enabled || Services.Net.IsHost || s_waiting || Loading) return false;
             Start(null, -1, true);
-            Plugin.Log.LogInfo("guest join: joining from the title without a save slot; waiting for the host's save");
+            Services.Log.Info("guest join: joining from the title without a save slot; waiting for the host's save");
             return true;
         }
 
@@ -68,14 +70,14 @@ namespace OriCoop
         public static void UseSlot(int slot)
         {
             if (!s_waiting || !NeedSlotChoice) return;
-            if (!CoopSaves.KeepCopyIn(slot)) { Plugin.Log.LogWarning("guest join: keeping the copy in chosen slot " + slot + " failed"); return; }
+            if (!CoopSaves.KeepCopyIn(slot)) { Services.Log.Warn("guest join: keeping the copy in chosen slot " + slot + " failed"); return; }
             s_slot = slot; NeedSlotChoice = false;
-            Plugin.Log.LogInfo("guest join: co-op copy kept in chosen slot " + slot);
+            Services.Log.Info("guest join: co-op copy kept in chosen slot " + slot);
         }
 
         static void Start(SaveSlotsUI ui, int slot, bool noSlot)
         {
-            s_ui = ui; s_slot = slot; s_noSlot = noSlot; s_since = Time.realtimeSinceStartup;
+            s_ui = ui; s_slot = slot; s_noSlot = noSlot; s_since = Services.Clock.RealTime;
             s_waiting = true; NeedSlotChoice = false; s_toldTitleWait = false;
             CoopSaves.GuestJoiningEmpty = true; CoopSaves.GuestPickedSlot = noSlot ? -1 : slot;
             Intercepts++;
@@ -84,15 +86,15 @@ namespace OriCoop
 
         public static void Tick()
         {
-            if (!NetPlay.Enabled) { if (s_waiting) Abort("guest.ended", "session ended"); Loading = false; return; }
+            if (!Services.Net.Enabled) { if (s_waiting) Abort("guest.ended", "session ended"); Loading = false; return; }
             if (!s_waiting) return;
-            if (NeedSlotChoice) { s_since = Time.realtimeSinceStartup; return; }   // the player is choosing; no timeout
+            if (NeedSlotChoice) { s_since = Services.Clock.RealTime; return; }   // the player is choosing; no timeout
             // The title's load action only works once the title is up: run while it still boots (screen Undefined),
             // it sets the Game state but no scene loads and no Ori appears (nettest -GuestNoSlot, 2026-11-15).
             if (SaveSync.HavePendingCheckpoint && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.Undefined)
             {
-                if (!s_toldTitleWait) { s_toldTitleWait = true; Plugin.Log.LogInfo("guest join: checkpoint here; waiting for the title to finish loading"); }
-                s_since = Time.realtimeSinceStartup;
+                if (!s_toldTitleWait) { s_toldTitleWait = true; Services.Log.Info("guest join: checkpoint here; waiting for the title to finish loading"); }
+                s_since = Services.Clock.RealTime;
                 return;
             }
             if (SaveSync.HavePendingCheckpoint)
@@ -102,13 +104,13 @@ namespace OriCoop
                 if (CoopSaves.SessionSlot < 0 && s_noSlot && CoopSaves.HaveCommit && CoopSaves.NoSlotForCopy)
                 {
                     NeedSlotChoice = true;
-                    Plugin.Log.LogInfo("guest join: every save slot is in use and none is linked: asking for a slot to overwrite");
+                    Services.Log.Info("guest join: every save slot is in use and none is linked: asking for a slot to overwrite");
                     return;
                 }
                 Load(CoopSaves.SessionSlot >= 0 ? CoopSaves.SessionSlot : FallbackSlot());
                 return;
             }
-            if (Time.realtimeSinceStartup - s_since > WaitLimit)
+            if (Services.Clock.RealTime - s_since > WaitLimit)
                 Abort("guest.no_save", "no checkpoint in " + WaitLimit + " s");
         }
 
@@ -137,9 +139,9 @@ namespace OriCoop
                 SaveSlotsManager.BackupIndex = -1;
                 SaveSlotsManager.FindOrCreateSaveSlot(slot);
                 if (!SaveSync.BeginTitleLoad()) { Fail(ui, "guest.load_failed", "checkpoint not available"); return; }
-                if (NativeModeMenu.Pending == PlayMode.Undecided) NativeModeMenu.Pending = PlayMode.Single;
+                SavesHost.Current.EnsureSinglePlayerPending();
                 TitleLoads++; Loading = true;
-                Plugin.Log.LogInfo("guest join: loading the host's checkpoint from the title into slot " + slot
+                Services.Log.Info("guest join: loading the host's checkpoint from the title into slot " + slot
                     + (slot == CoopSaves.SessionSlot ? " (co-op copy)" : " (no co-op copy)") + (s_noSlot ? ", no slot was picked" : ""));
                 ui.UsedSaveSlotPressedAction.Perform(null);
                 s_ui = null;
@@ -160,11 +162,11 @@ namespace OriCoop
             s_waiting = false; s_ui = null; NeedSlotChoice = false;
             CoopSaves.GuestJoiningEmpty = false; CoopSaves.GuestPickedSlot = -1;
             Aborts++; LastAbort = why;
-            Plugin.Log.LogWarning("guest join: not loading the host's save (" + why + ")" + (noSlot ? "" : "; back to the save slots"));
-            if (NetPlay.Enabled && NetPlay.Connected) NetHud.Toast(
-                L10n.F("guest.still_connected", L10n.T(key)), "");
-            else NetHud.Toast(
-                L10n.T(key), "");
+            Services.Log.Warn("guest join: not loading the host's save (" + why + ")" + (noSlot ? "" : "; back to the save slots"));
+            if (Services.Net.Enabled && Services.Net.Connected) SavesHost.Current.Toast(
+                SavesHost.Current.Format("guest.still_connected", SavesHost.Current.Translate(key)), "");
+            else SavesHost.Current.Toast(
+                SavesHost.Current.Translate(key), "");
             if (!noSlot && ui != null) ui.Active = true;
         }
     }

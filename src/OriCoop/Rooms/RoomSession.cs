@@ -21,6 +21,10 @@ namespace OriCoop.Rooms
         {
             get;
         }
+        string ConflictMessage
+        {
+            get;
+        }
         int WriteRoomSlot(string room, string save, long version, byte[] data);
         void UpdateVersion(int slot, string room, string save, long version);
         void Host(int slot, string relay);
@@ -32,7 +36,6 @@ namespace OriCoop.Rooms
 
     public sealed class RoomSession
     {
-        public static string ConflictMessage { get { return L10n.T("rooms.conflict"); } }
         readonly RoomClient client;
         readonly RoomJobs jobs;
         readonly RoomLocalStore store;
@@ -339,7 +342,7 @@ namespace OriCoop.Rooms
                     {
                         UploadStopped = true;
                         queued = null;
-                        game.Message(ConflictMessage);
+                        game.Message(game.ConflictMessage);
                     }
                     else Fail(r.Error);
                     if (queued != null && !UploadStopped) SendUpload();

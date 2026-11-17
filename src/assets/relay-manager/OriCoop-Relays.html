@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>OriCoop 中继管理 · Relay Manager</title>
+  <title data-i18n="pageTitle"></title>
   <style>
     /* --- Ori Forest Theme Palette (ori-palette.md) --- */
     :root {
@@ -98,6 +98,30 @@
     header {
       text-align: center;
       margin-bottom: 26px;
+    }
+
+    .language-switch {
+      display: flex;
+      justify-content: flex-end;
+      align-items: center;
+      gap: 6px;
+      margin-bottom: 8px;
+      font-size: 12px;
+      color: var(--secondary-text);
+    }
+
+    .language-switch button {
+      padding: 2px 4px;
+      font-size: 12px;
+      background: transparent;
+      border-color: transparent;
+      color: var(--secondary-text);
+      box-shadow: none;
+    }
+
+    .language-switch button[aria-pressed="true"] {
+      color: var(--cyan-glow);
+      text-decoration: underline;
     }
 
     .title-banner {
@@ -720,59 +744,54 @@
   <div class="container">
     <!-- Header -->
     <header>
+      <div class="language-switch">
+        <button type="button" data-lang="zh" data-i18n="languageZh"></button>
+        <span aria-hidden="true">|</span>
+        <button type="button" data-lang="en" data-i18n="languageEn"></button>
+      </div>
       <div class="title-banner">
-        <h1>OriCoop 中继管理 <span class="sep">·</span> <span class="en-sub">Relay Manager</span></h1>
-        <p class="subtitle">Ori and the Blind Forest 联机中继服务器配置 <span class="sep">·</span> Mod Relay Config</p>
+        <h1 data-i18n="heading"></h1>
+        <p class="subtitle" data-i18n="subtitle"></p>
       </div>
     </header>
 
     <!-- File Connection Panel -->
-    <section class="panel" aria-label="文件配置 · File Configuration">
+    <section class="panel" data-i18n-aria-label="filePanelLabel">
       <div class="file-bar">
         <div class="file-bar-header">
           <div class="status-indicator">
             <span class="status-dot" id="statusDot"></span>
-            <span id="statusText">未连接配置文件 <span class="sep">·</span> <span class="en-sub">Config not connected</span></span>
+            <span id="statusText"><span data-i18n="disconnected"></span></span>
             <span class="status-save-time" id="saveTimeLabel"></span>
           </div>
           <div class="file-bar-actions">
-            <button type="button" class="btn-primary" id="btnOpenFile">
-              打开配置文件 <span class="sep">·</span> <span class="en-sub">Open config file</span>
-            </button>
-            <button type="button" class="btn-secondary" id="btnReconnect" style="display: none;">
-              继续使用上次的文件 <span class="sep">·</span> <span class="en-sub">Reconnect</span>
-            </button>
+            <button type="button" class="btn-primary" id="btnOpenFile" data-i18n="openFile"></button>
+            <button type="button" class="btn-secondary" id="btnReconnect" style="display: none;" data-i18n="reconnect"></button>
           </div>
         </div>
 
         <div class="path-guide-box">
-          <span>文件路径 <span class="sep">·</span> File path:</span>
-          <span class="path-code">游戏目录\BepInEx\config\oricoop-relays.txt (game starts once to create it)</span>
+          <span><span data-i18n="filePath"></span></span>
+          <span class="path-code"><span data-i18n="pathGuide"></span></span>
         </div>
       </div>
     </section>
 
     <!-- Paste & Add Panel -->
-    <section class="panel" aria-label="添加中继 · Add Relay">
+    <section class="panel" data-i18n-aria-label="addPanelLabel">
       <div class="paste-section">
-        <h2 class="section-title">
-          <span>添加中继服务器</span>
-          <span class="sep">·</span>
-          <span class="en-sub">Add Relay Server</span>
-        </h2>
+        <h2 class="section-title" data-i18n="addRelay"></h2>
         <div class="paste-row">
           <input type="text" id="pasteInput" class="input-text"
-                 placeholder="粘贴链接或地址，例如 oricoop://host:port 或 host:port"
-                 aria-label="中继链接或地址 · Relay link or address" spellcheck="false" autocomplete="off" />
-          <button type="button" class="btn-primary" id="btnPasteAdd">
-            粘贴并添加 <span class="sep">·</span> <span class="en-sub">Paste & add</span>
-          </button>
+                 data-i18n-placeholder="pastePlaceholder"
+                 data-i18n-aria-label="relayAddressLabel" spellcheck="false" autocomplete="off" />
+          <button type="button" class="btn-primary" id="btnPasteAdd" data-i18n="pasteAdd"></button>
         </div>
 
         <!-- Room Code Info Display -->
         <div class="alert-box alert-info" id="roomCodeBox" role="status">
           <span id="roomCodeMsg"></span>
-          <button type="button" class="btn-success" id="btnCopyRoomCode">复制房间码 · Copy</button>
+          <button type="button" class="btn-success" id="btnCopyRoomCode" data-i18n="copyRoomCode"></button>
         </div>
 
         <!-- Validation Error Display -->
@@ -783,43 +802,34 @@
     </section>
 
     <!-- Relay List Panel -->
-    <section class="panel" aria-label="中继服务器列表 · Relay Server List">
-      <h2 class="section-title" style="margin-bottom: 12px;">
-        <span>中继服务器列表</span>
-        <span class="sep">·</span>
-        <span class="en-sub">Relay List</span>
-      </h2>
+    <section class="panel" data-i18n-aria-label="listPanelLabel">
+      <h2 class="section-title" style="margin-bottom: 12px;" data-i18n="relayList"></h2>
 
       <div class="list-header" aria-hidden="true">
-        <div>使用中 · Active</div>
-        <div>名称 · Name</div>
-        <div>地址 · Address</div>
-        <div style="text-align: right;">操作 · Action</div>
+        <div><span data-i18n="active"></span></div>
+        <div><span data-i18n="name"></span></div>
+        <div><span data-i18n="address"></span></div>
+        <div style="text-align: right;"><span data-i18n="action"></span></div>
       </div>
 
-      <div class="relay-item-list" id="relayList" role="radiogroup" aria-label="可用中继列表 · Available relays">
+      <div class="relay-item-list" id="relayList" role="radiogroup" data-i18n-aria-label="availableRelaysLabel">
         <!-- Rendered rows -->
       </div>
 
       <!-- Playtime Note -->
       <div class="playtime-note">
         <span class="note-icon">✦</span>
-        <div>联机中修改不会打断当前连接：游戏会在所有中继联机断开后再使用新设置。<span class="sep">·</span> <span class="en-sub">Changes made while playing apply after the current relay session ends.</span></div>
+        <div><span data-i18n="playtimeNote"></span></div>
       </div>
 
       <!-- Fallback section for Firefox / unsupported browsers -->
       <div class="fallback-section" id="fallbackArea">
-        <p class="fallback-desc">
-          当前浏览器不支持直接修改本地文件（如 Firefox）。您可以在此管理并在完成后下载文件。<span class="sep">·</span>
-          <span class="en-sub">Your browser does not support direct file access (e.g. Firefox). You can manage relays here and download the file when done.</span>
-        </p>
-        <textarea id="fallbackTextarea" class="fallback-textarea" readonly aria-label="配置文件内容 · Config file content"></textarea>
+        <p class="fallback-desc" data-i18n="fallbackDescription"></p>
+        <textarea id="fallbackTextarea" class="fallback-textarea" readonly data-i18n-aria-label="configContentLabel"></textarea>
         <div class="fallback-actions">
-          <button type="button" class="btn-primary" id="btnDownload">
-            下载文件 <span class="sep">·</span> <span class="en-sub">Download config</span>
-          </button>
+          <button type="button" class="btn-primary" id="btnDownload" data-i18n="download"></button>
           <label class="btn-secondary" style="cursor: pointer;">
-            导入已有文件 <span class="sep">·</span> <span class="en-sub">Import file</span>
+            <span data-i18n="importFile"></span>
             <input type="file" id="importFileInput" accept=".txt" style="display: none;" />
           </label>
         </div>
@@ -831,11 +841,217 @@
   <div class="toast-container" id="toastContainer" aria-live="polite"></div>
 
   <script>
+    const I18N = {
+      "zh": {
+        "pageTitle": "OriCoop 中继管理",
+        "heading": "OriCoop 中继管理",
+        "subtitle": "Ori and the Blind Forest 联机中继服务器配置",
+        "openFile": "打开配置文件",
+        "reconnect": "继续使用上次的文件",
+        "addRelay": "添加中继服务器",
+        "pasteAdd": "粘贴并添加",
+        "copyRoomCode": "复制房间码",
+        "relayList": "中继服务器列表",
+        "fallbackDescription": "当前浏览器不支持直接修改本地文件（如 Firefox）。您可以在此管理并在完成后下载文件。",
+        "download": "下载文件",
+        "disconnected": "未连接配置文件",
+        "filePath": "文件路径",
+        "pathGuide": "游戏目录\\BepInEx\\config\\oricoop-relays.txt（启动一次游戏后生成）",
+        "active": "使用中",
+        "name": "名称",
+        "address": "地址",
+        "action": "操作",
+        "playtimeNote": "联机中修改不会打断当前连接：游戏会在所有中继联机断开后再使用新设置。",
+        "importFile": "导入已有文件",
+        "filePanelLabel": "文件配置",
+        "addPanelLabel": "添加中继",
+        "relayAddressLabel": "中继链接或地址",
+        "listPanelLabel": "中继服务器列表",
+        "availableRelaysLabel": "可用中继列表",
+        "configContentLabel": "配置文件内容",
+        "pastePlaceholder": "粘贴链接或地址，例如 oricoop://host:port 或 host:port",
+        "inputEmpty": "输入不能为空",
+        "hostSpaces": "主机地址不能包含空格",
+        "portRange": "端口号必须在 1-65535 之间",
+        "unsupportedProtocol": "不支持的协议，仅支持 oricoop:// 或直接输入 host:port",
+        "invalidAddress": "地址或链接格式无效（例如 203.0.113.5:47020 或 oricoop://host:port）",
+        "hostEmpty": "主机地址不能为空",
+        "savedAt": "已保存 {0}",
+        "fileLoaded": "已连接配置文件",
+        "readFailed": "读取文件失败 {0}",
+        "downloadToSave": "请下载文件",
+        "openToSave": "未保存：先打开配置文件",
+        "writeFailed": "保存失败 {0}",
+        "refreshed": "已从磁盘刷新",
+        "relayExists": "中继已存在，已设为使用中",
+        "relayAdded": "已添加中继并设为使用中",
+        "selectRelayTitle": "设为使用中",
+        "selectRelayLabel": "设为当前中继 {0}",
+        "relaySwitched": "已切换当前使用中继",
+        "namePlaceholder": "备注名称（可选）",
+        "relayNameLabel": "中继名称",
+        "deleteRelayLabel": "删除该中继",
+        "confirmDelete": "确定",
+        "cancelDelete": "取消",
+        "relayDeleted": "已删除中继",
+        "clipboardEmpty": "剪贴板为空且未输入内容，请直接粘贴（Ctrl+V）后添加",
+        "roomCodeCopied": "房间码已复制到剪贴板",
+        "copyFailed": "复制失败，请手动选择复制",
+        "fileApiUnsupported": "浏览器不支持文件选择API",
+        "openFailed": "打开文件失败 {0}",
+        "permissionDenied": "未授予读写权限",
+        "reconnectFailed": "恢复文件连接失败 {0}",
+        "fileDownloaded": "文件已下载",
+        "configImported": "配置已导入 {0}",
+        "importFailed": "导入失败 {0}",
+        "emptyList": "暂无中继服务器，请通过上方输入框添加",
+        "emptyListOpenFirst": "先打开配置文件",
+        "delete": "删除",
+        "connected": "已连接：{0}",
+        "fallbackMode": "本地备用模式（浏览器不支持直接读写）",
+        "roomCode": "房间码 ",
+        "roomCodeHint": " 可在游戏里输入",
+        "select": "选择",
+        "fileType": "OriCoop 中继配置 (*.txt)",
+        "idbUnsupported": "浏览器不支持 IndexedDB",
+        "errorDetail": "{0}",
+        "languageZh": "中文",
+        "languageEn": "English",
+        "configHeader": "# OriCoop relay servers. * = the one in use. Edit with OriCoop-Relays.html or by hand."
+      },
+      "en": {
+        "pageTitle": "OriCoop Relay Manager",
+        "heading": "OriCoop Relay Manager",
+        "subtitle": "Relay server configuration for Ori and the Blind Forest co-op",
+        "openFile": "Open config file",
+        "reconnect": "Reconnect to previous file",
+        "addRelay": "Add relay server",
+        "pasteAdd": "Paste & add",
+        "copyRoomCode": "Copy room code",
+        "relayList": "Relay servers",
+        "fallbackDescription": "Your browser does not support direct file access (e.g. Firefox). Manage your relays here, then download the config file when done.",
+        "download": "Download config",
+        "disconnected": "Config file not connected",
+        "filePath": "File path:",
+        "pathGuide": "Game folder\\BepInEx\\config\\oricoop-relays.txt (start the game once to create it)",
+        "active": "Active",
+        "name": "Name",
+        "address": "Address",
+        "action": "Actions",
+        "playtimeNote": "Changes made while playing apply after all relay sessions have disconnected.",
+        "importFile": "Import file",
+        "filePanelLabel": "File Configuration",
+        "addPanelLabel": "Add Relay",
+        "relayAddressLabel": "Relay link or address",
+        "listPanelLabel": "Relay Server List",
+        "availableRelaysLabel": "Available relays",
+        "configContentLabel": "Config file content",
+        "pastePlaceholder": "Paste a link or address, e.g. oricoop://host:port or host:port",
+        "inputEmpty": "Input cannot be empty",
+        "hostSpaces": "Host cannot contain spaces",
+        "portRange": "Port must be between 1 and 65535",
+        "unsupportedProtocol": "Use an oricoop:// link or a host:port address.",
+        "invalidAddress": "Invalid address or link format",
+        "hostEmpty": "Host cannot be empty",
+        "savedAt": "Saved {0}",
+        "fileLoaded": "Config file loaded",
+        "readFailed": "Failed to read file: {0}",
+        "downloadToSave": "Download the file to save",
+        "openToSave": "Not saved: open the config file first",
+        "writeFailed": "Failed to write file: {0}",
+        "refreshed": "Refreshed from disk",
+        "relayExists": "This relay is already in the list. It is now active.",
+        "relayAdded": "Relay added and set as active",
+        "selectRelayTitle": "Select as active relay",
+        "selectRelayLabel": "Set as active relay: {0}",
+        "relaySwitched": "Active relay switched",
+        "namePlaceholder": "Name (optional)",
+        "relayNameLabel": "Relay name",
+        "deleteRelayLabel": "Delete relay",
+        "confirmDelete": "Confirm",
+        "cancelDelete": "Cancel",
+        "relayDeleted": "Relay deleted",
+        "clipboardEmpty": "Nothing to add. Paste a link or address (Ctrl+V), then try again.",
+        "roomCodeCopied": "Room code copied",
+        "copyFailed": "Could not copy the room code. Select and copy it manually.",
+        "fileApiUnsupported": "File System Access API not supported",
+        "openFailed": "Failed to open file: {0}",
+        "permissionDenied": "Read/write permission not granted",
+        "reconnectFailed": "Reconnect failed: {0}",
+        "fileDownloaded": "File downloaded",
+        "configImported": "Config imported: {0}",
+        "importFailed": "Import failed: {0}",
+        "emptyList": "No relay servers yet. Add one above.",
+        "emptyListOpenFirst": "Open the config file first",
+        "delete": "Delete",
+        "connected": "Connected: {0}",
+        "fallbackMode": "Fallback mode (direct file access unavailable)",
+        "roomCode": "Room code ",
+        "roomCodeHint": " can be entered in game",
+        "select": "Select",
+        "fileType": "OriCoop relay config (*.txt)",
+        "idbUnsupported": "IndexedDB is not supported",
+        "errorDetail": "{0}",
+        "languageZh": "中文",
+        "languageEn": "English",
+        "configHeader": "# OriCoop relay servers. * = the one in use. Edit with OriCoop-Relays.html or by hand."
+      }
+    };
+    // END I18N
+
+    let language = navigator.language.toLowerCase().startsWith("zh") ? "zh" : "en";
+    try {
+      const saved = localStorage.getItem("oricoop-relays-lang");
+      if (saved === "zh" || saved === "en") language = saved;
+    } catch (e) {}
+
+    function t(key, ...args) {
+      return I18N[language][key].replace(/\{(\d+)\}/g, (_, index) => String(args[index]));
+    }
+
+    function localize(element, key, ...args) {
+      element.dataset.i18n = key;
+      element.i18nArgs = args;
+      element.textContent = t(key, ...args);
+    }
+
+    function localizeAttribute(element, attribute, key, ...args) {
+      element.setAttribute("data-i18n-" + attribute, key);
+      element.i18nAttributeArgs = element.i18nAttributeArgs || {};
+      element.i18nAttributeArgs[attribute] = args;
+      element.setAttribute(attribute, t(key, ...args));
+    }
+
+    function applyLanguage() {
+      document.documentElement.lang = language === "zh" ? "zh-CN" : "en";
+      document.querySelectorAll("[data-i18n]").forEach(element => {
+        element.textContent = t(element.dataset.i18n, ...(element.i18nArgs || []));
+      });
+      for (const attribute of ["placeholder", "title", "aria-label"]) {
+        document.querySelectorAll("[data-i18n-" + attribute + "]").forEach(element => {
+          element.setAttribute(attribute, t(element.getAttribute("data-i18n-" + attribute),
+            ...(element.i18nAttributeArgs?.[attribute] || [])));
+        });
+      }
+      document.querySelectorAll("[data-lang]").forEach(button => {
+        button.setAttribute("aria-pressed", String(button.dataset.lang === language));
+      });
+    }
+
+    document.querySelectorAll("[data-lang]").forEach(button => {
+      button.addEventListener("click", () => {
+        language = button.dataset.lang;
+        try { localStorage.setItem("oricoop-relays-lang", language); } catch (e) {}
+        applyLanguage();
+      });
+    });
+    applyLanguage();
+
     /* =====================================================================
        OriCoop Relay Manager - Offline Live Config Manager
        ===================================================================== */
 
-    const CONFIG_HEADER = "# OriCoop relay servers. * = the one in use. Edit with OriCoop-Relays.html or by hand.";
+    const CONFIG_HEADER = t("configHeader");
     const DEFAULT_PORT = 47020;
     const DB_NAME = "OriCoopRelaysDB";
     const DB_VERSION = 1;
@@ -845,6 +1061,7 @@
     // Application State
     let relays = [];
     let fileHandle = null;
+    let fileReady = false; // config file read successfully (not just picked)
     let lastFileText = "";
     let isWriting = false;
     let currentRoomCode = null;
@@ -938,16 +1155,24 @@
       return lines.join("\n") + "\n";
     }
 
+    // Empty list prompt: before a config file has been read the first step is to
+    // open it (the config path is shown above). Without the File System Access
+    // API there is nothing to open, so the fallback/import hint is kept.
+    function emptyListKey(fileReady, canUseFileApi) {
+      if (!canUseFileApi) return "emptyList";
+      return fileReady ? "emptyList" : "emptyListOpenFirst";
+    }
+
     function parseLinkOrAddress(input) {
       let str = (input || "").trim();
       if (!str) {
-        throw new Error("输入不能为空 · Input cannot be empty");
+        throw Object.assign(new Error(t("inputEmpty")), { i18nKey: "inputEmpty" });
       }
 
       // Pre-check for spaces in host part (before ? query parameters)
       const mainPart = str.split("?")[0];
       if (/\s/.test(mainPart)) {
-        throw new Error("主机地址不能包含空格 · Host cannot contain spaces");
+        throw Object.assign(new Error(t("hostSpaces")), { i18nKey: "hostSpaces" });
       }
 
       // Check port validity in mainPart before new URL to provide clear port error
@@ -960,7 +1185,7 @@
         if (portCandidate) {
           const p = Number(portCandidate);
           if (!Number.isInteger(p) || p < 1 || p > 65535) {
-            throw new Error("端口号必须在 1-65535 之间 · Port must be between 1 and 65535");
+            throw Object.assign(new Error(t("portRange")), { i18nKey: "portRange" });
           }
         }
       }
@@ -973,16 +1198,16 @@
         if (str.includes("://")) {
           urlObj = new URL(str);
           if (urlObj.protocol.toLowerCase() !== "oricoop:") {
-            throw new Error("不支持的协议，仅支持 oricoop:// 或直接输入 host:port · Unsupported protocol, only oricoop:// or plain host:port is accepted");
+            throw Object.assign(new Error(t("unsupportedProtocol")), { i18nKey: "unsupportedProtocol" });
           }
         } else {
           urlObj = new URL("oricoop://" + str);
         }
       } catch (err) {
-        if (err.message && (err.message.includes("不支持的协议") || err.message.includes("不能包含空格") || err.message.includes("端口号必须在"))) {
+        if (err.i18nKey) {
           throw err;
         }
-        throw new Error("地址或链接格式无效（例如 203.0.113.5:47020 或 oricoop://host:port） · Invalid address or link format");
+        throw Object.assign(new Error(t("invalidAddress")), { i18nKey: "invalidAddress" });
       }
 
       const queryName = urlObj.searchParams.get("name");
@@ -1002,17 +1227,17 @@
       let portStr = urlObj.port;
 
       if (!host) {
-        throw new Error("主机地址不能为空 · Host cannot be empty");
+        throw Object.assign(new Error(t("hostEmpty")), { i18nKey: "hostEmpty" });
       }
       if (/\s/.test(host)) {
-        throw new Error("主机地址不能包含空格 · Host cannot contain spaces");
+        throw Object.assign(new Error(t("hostSpaces")), { i18nKey: "hostSpaces" });
       }
 
       let port = DEFAULT_PORT;
       if (portStr) {
         const p = Number(portStr);
         if (!Number.isInteger(p) || p < 1 || p > 65535) {
-          throw new Error("端口号必须在 1-65535 之间 · Port must be between 1 and 65535");
+          throw Object.assign(new Error(t("portRange")), { i18nKey: "portRange" });
         }
         port = p;
       }
@@ -1102,6 +1327,16 @@
       try { parseLinkOrAddress("relay server.com:47020"); } catch(e) { threw = true; }
       if (!threw) throw new Error("SelfTest 5c: host with spaces must throw");
 
+      // 6. Empty-list prompt: ask to open the config file until one was read
+      if (emptyListKey(false, true) !== "emptyListOpenFirst") throw new Error("SelfTest 6a: missing open-file prompt");
+      if (emptyListKey(true, true) !== "emptyList") throw new Error("SelfTest 6b: loaded file must offer to add");
+      if (emptyListKey(false, false) !== "emptyList") throw new Error("SelfTest 6c: fallback must offer to add");
+      for (const lang of ["zh", "en"]) {
+        if (!I18N[lang] || !I18N[lang].emptyListOpenFirst) {
+          throw new Error("SelfTest 6d: emptyListOpenFirst missing in " + lang);
+        }
+      }
+
       return true;
     }
 
@@ -1116,7 +1351,7 @@
     function openIDB() {
       return new Promise((resolve, reject) => {
         if (!window.indexedDB) {
-          reject(new Error("IndexedDB not supported"));
+          reject(new Error(t("idbUnsupported")));
           return;
         }
         const req = indexedDB.open(DB_NAME, DB_VERSION);
@@ -1171,17 +1406,16 @@
 
     function updateSaveTimestamp() {
       const nowStr = formatTime(new Date());
-      saveTimeLabel.textContent = "已保存 · Saved " + nowStr;
+      localize(saveTimeLabel, "savedAt", nowStr);
     }
 
     function setConnectionStatus(connected, filename = "") {
       if (connected) {
         statusDot.className = "status-dot connected";
-        statusText.innerHTML = '已连接 <span class="sep">·</span> <span class="en-sub"></span>';
-        statusText.querySelector(".en-sub").textContent = "Connected: " + (filename || "oricoop-relays.txt");   // file name as text, never markup
+        localize(statusText, "connected", filename || "oricoop-relays.txt");
       } else {
         statusDot.className = "status-dot";
-        statusText.innerHTML = '未连接配置文件 <span class="sep">·</span> <span class="en-sub">Config not connected</span>';
+        localize(statusText, "disconnected");
       }
     }
 
@@ -1191,14 +1425,17 @@
         const text = await file.text();
         lastFileText = text;
         relays = parseConfigFile(text);
+        fileReady = true;
         renderRelayList();
         setConnectionStatus(true, file.name);
         btnReconnect.style.display = "none";
         updateSaveTimestamp();
-        showToast("已连接配置文件 · Config file loaded", "success");
+        showToast("fileLoaded", "success");
       } catch (err) {
         console.error("Load file error:", err);
-        showToast("读取文件失败 · Failed to read file: " + err.message, "error");
+        fileReady = false;
+        renderRelayList();
+        showToast("readFailed", "error", err.message);
       }
     }
 
@@ -1213,9 +1450,7 @@
 
       if (!fileHandle) {
         // Nothing was written: say so instead of "Saved".
-        saveTimeLabel.textContent = fallbackTextarea
-          ? "请下载文件 · Download the file to save"
-          : "未保存：先打开配置文件 · Not saved: open the config file first";
+        localize(saveTimeLabel, fallbackTextarea ? "downloadToSave" : "openToSave");
         return;
       }
 
@@ -1229,7 +1464,7 @@
       } catch (err) {
         isWriting = false;
         console.error("Write error:", err);
-        showToast("保存失败 · Failed to write file: " + err.message, "error");
+        showToast("writeFailed", "error", err.message);
       }
     }
 
@@ -1250,7 +1485,7 @@
           relays = parseConfigFile(text);
           renderRelayList();
           updateSaveTimestamp();
-          showToast("已从磁盘刷新 · Refreshed from disk", "info");
+          showToast("refreshed", "info");
         }
       } catch (err) {
         // Disk or permission error
@@ -1261,12 +1496,13 @@
        UI Actions: Add, Edit, Delete, Select
        ===================================================================== */
 
-    function showError(msg) {
-      if (!msg) {
+    function showError(key, ...args) {
+      if (!key) {
         errorBox.classList.remove("visible");
         errorMsg.textContent = "";
+        delete errorMsg.dataset.i18n;
       } else {
-        errorMsg.textContent = msg;
+        localize(errorMsg, key, ...args);
         errorBox.classList.add("visible");
       }
     }
@@ -1277,15 +1513,23 @@
         currentRoomCode = null;
       } else {
         currentRoomCode = code;
-        roomCodeMsg.innerHTML = '房间码 <span class="room-code-tag">' + code + '</span> 可在游戏里输入 <span class="sep">·</span> <span class="en-sub">Room code can be entered in game</span>';
+        roomCodeMsg.replaceChildren();
+        const label = document.createElement("span");
+        localize(label, "roomCode");
+        const tag = document.createElement("span");
+        tag.className = "room-code-tag";
+        tag.textContent = code;
+        const hint = document.createElement("span");
+        localize(hint, "roomCodeHint");
+        roomCodeMsg.append(label, tag, hint);
         roomCodeBox.classList.add("visible");
       }
     }
 
-    function showToast(message, type = "info") {
+    function showToast(key, type = "info", ...args) {
       const toast = document.createElement("div");
       toast.className = "toast";
-      toast.textContent = message;
+      localize(toast, key, ...args);
       if (type === "error") {
         toast.style.borderColor = "var(--controller-b)";
       } else if (type === "success") {
@@ -1329,7 +1573,7 @@
           }
           await writeToFile();
           renderRelayList();
-          showToast("中继已存在，已设为使用中 · Relay already exists, marked as active", "info");
+          showToast("relayExists", "info");
         } else {
           // Add new entry and select it
           relays.forEach((r) => { r.selected = false; });
@@ -1341,12 +1585,12 @@
           });
           await writeToFile();
           renderRelayList();
-          showToast("已添加中继并设为使用中 · Relay added and marked active", "success");
+          showToast("relayAdded", "success");
         }
 
         pasteInput.value = "";
       } catch (err) {
-        showError(err.message);
+        showError(err.i18nKey || "errorDetail", ...(err.i18nKey ? [] : [err.message]));
         pasteInput.focus();
         pasteInput.select();
       }
@@ -1358,7 +1602,7 @@
       if (relays.length === 0) {
         const empty = document.createElement("div");
         empty.className = "empty-state";
-        empty.innerHTML = '暂无中继服务器，请通过上方输入框添加 <span class="sep">·</span> <span class="en-sub">No relay servers yet. Add one above.</span>';
+        localize(empty, emptyListKey(fileReady, !!window.showOpenFilePicker));
         relayList.appendChild(empty);
         return;
       }
@@ -1370,24 +1614,24 @@
         // Column 1: Radio Selection
         const radioCol = document.createElement("label");
         radioCol.className = "radio-col";
-        radioCol.title = "设为使用中 · Select as active relay";
+        localizeAttribute(radioCol, "title", "selectRelayTitle");
 
         const radio = document.createElement("input");
         radio.type = "radio";
         radio.name = "activeRelayRadio";
         radio.checked = !!entry.selected;
-        radio.setAttribute("aria-label", "设为当前中继 · Set as active relay: " + (entry.name || entry.host));
+        localizeAttribute(radio, "aria-label", "selectRelayLabel", (entry.name || entry.host));
 
         radio.addEventListener("change", async () => {
           relays.forEach((r, i) => { r.selected = i === idx; });
           await writeToFile();
           renderRelayList();
-          showToast("已切换当前使用中继 · Active relay switched", "info");
+          showToast("relaySwitched", "info");
         });
 
         const radioLabel = document.createElement("span");
         radioLabel.className = "radio-label";
-        radioLabel.textContent = entry.selected ? "使用中" : "选择";
+        localize(radioLabel, entry.selected ? "active" : "select");
 
         radioCol.appendChild(radio);
         radioCol.appendChild(radioLabel);
@@ -1401,8 +1645,8 @@
         nameInput.type = "text";
         nameInput.className = "name-input";
         nameInput.value = entry.name || "";
-        nameInput.placeholder = "备注名称（可选） · Name (optional)";
-        nameInput.setAttribute("aria-label", "中继名称 · Relay name");
+        localizeAttribute(nameInput, "placeholder", "namePlaceholder");
+        localizeAttribute(nameInput, "aria-label", "relayNameLabel");
 
         // Save on change or blur
         const saveNameChange = async () => {
@@ -1438,8 +1682,8 @@
         const btnDelete = document.createElement("button");
         btnDelete.type = "button";
         btnDelete.className = "btn-danger";
-        btnDelete.innerHTML = '删除 <span class="sep">·</span> <span class="en-sub">Delete</span>';
-        btnDelete.setAttribute("aria-label", "删除该中继 · Delete relay");
+        localize(btnDelete, "delete");
+        localizeAttribute(btnDelete, "aria-label", "deleteRelayLabel");
 
         btnDelete.addEventListener("click", () => {
           // Switch to inline confirmation
@@ -1451,12 +1695,12 @@
           const btnYes = document.createElement("button");
           btnYes.type = "button";
           btnYes.className = "confirm-btn-yes";
-          btnYes.textContent = "确定 · Yes";
+          localize(btnYes, "confirmDelete");
 
           const btnNo = document.createElement("button");
           btnNo.type = "button";
           btnNo.className = "confirm-btn-no";
-          btnNo.textContent = "取消 · No";
+          localize(btnNo, "cancelDelete");
 
           btnYes.addEventListener("click", async () => {
             const wasSelected = entry.selected;
@@ -1466,7 +1710,7 @@
             }
             await writeToFile();
             renderRelayList();
-            showToast("已删除中继 · Relay deleted", "info");
+            showToast("relayDeleted", "info");
           });
 
           btnNo.addEventListener("click", () => {
@@ -1511,7 +1755,7 @@
       }
 
       if (!text) {
-        showError("剪贴板为空且未输入内容，请直接粘贴（Ctrl+V）后添加 · Clipboard is empty, please paste (Ctrl+V) and try again");
+        showError("clipboardEmpty");
         pasteInput.focus();
         return;
       }
@@ -1537,9 +1781,9 @@
       if (currentRoomCode) {
         try {
           await navigator.clipboard.writeText(currentRoomCode);
-          showToast("房间码已复制到剪贴板 · Room code copied", "success");
+          showToast("roomCodeCopied", "success");
         } catch (e) {
-          showToast("复制失败，请手动选择复制 · Copy failed, please select manually", "error");
+          showToast("copyFailed", "error");
         }
       }
     });
@@ -1547,13 +1791,13 @@
     // Open Config File Button (File System Access API)
     btnOpenFile.addEventListener("click", async () => {
       if (!window.showOpenFilePicker) {
-        showToast("浏览器不支持文件选择API · File System Access API not supported", "error");
+        showToast("fileApiUnsupported", "error");
         return;
       }
       try {
         const [handle] = await window.showOpenFilePicker({
           types: [{
-            description: "OriCoop Relay Config (*.txt)",
+            description: t("fileType"),
             accept: { "text/plain": [".txt"] }
           }],
           multiple: false
@@ -1565,7 +1809,7 @@
       } catch (err) {
         if (err.name !== "AbortError") {
           console.error("Open file error:", err);
-          showToast("打开文件失败 · Failed to open file: " + err.message, "error");
+          showToast("openFailed", "error", err.message);
         }
       }
     });
@@ -1583,11 +1827,11 @@
           fileHandle = storedHandle;
           await loadFromFile(storedHandle);
         } else {
-          showToast("未授予读写权限 · Read/write permission not granted", "error");
+          showToast("permissionDenied", "error");
         }
       } catch (err) {
         console.error("Reconnect error:", err);
-        showToast("恢复文件连接失败 · Reconnect failed: " + err.message, "error");
+        showToast("reconnectFailed", "error", err.message);
         btnReconnect.style.display = "none";
       }
     });
@@ -1604,7 +1848,7 @@
       a.click();
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
-      showToast("文件已下载 · File downloaded", "success");
+      showToast("fileDownloaded", "success");
     });
 
     // Fallback: Import file input
@@ -1615,9 +1859,9 @@
         const text = await file.text();
         relays = parseConfigFile(text);
         renderRelayList();
-        showToast("配置已导入 · Config imported: " + file.name, "success");
+        showToast("configImported", "success", file.name);
       } catch (err) {
-        showToast("导入失败 · Import failed: " + err.message, "error");
+        showToast("importFailed", "error", err.message);
       }
       e.target.value = "";
     });
@@ -1636,7 +1880,7 @@
         fallbackArea.classList.add("visible");
         btnOpenFile.style.display = "none";
         btnReconnect.style.display = "none";
-        statusText.innerHTML = '本地备用模式（浏览器不支持直接读写） <span class="sep">·</span> <span class="en-sub">Fallback mode</span>';
+        localize(statusText, "fallbackMode");
         renderRelayList();
         return;
       }

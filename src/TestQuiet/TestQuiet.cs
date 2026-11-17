@@ -37,12 +37,30 @@ namespace OriCoop.TestQuiet
             {
                 new Harmony("local.oricoop.testquiet").PatchAll(typeof(SteamSkip));
             }
-            if (m_quiet || noSteam) Logger.LogInfo("TestQuiet: quiet=" + m_quiet + " noSteam=" + noSteam);
-            if (!m_quiet) enabled = false;
+            float sc;
+            if (float.TryParse(Environment.GetEnvironmentVariable("ORICOOP_TIMESCALE") ?? "", System.Globalization.NumberStyles.Float,
+                System.Globalization.CultureInfo.InvariantCulture, out sc) && sc >= 1f && sc <= 8f) m_scale = sc;
+            if (m_quiet || noSteam) Logger.LogInfo("TestQuiet: quiet=" + m_quiet + " noSteam=" + noSteam + " timeScale x" + m_scale);
+            if (!m_quiet && m_scale == 1f) enabled = false;
+        }
+
+        // ORICOOP_TIMESCALE=N (test speed-up, opt-in per suite): multiply the game's own Time.timeScale by N. The game
+        // sets timeScale itself (loading 0.5, pause 0, normal 1); any value that differs from the one we wrote last is
+        // taken as the game's new base. Only for suites whose checks do not depend on real time (no latency/timeouts).
+        float m_scale = 1f, m_base = 1f, m_applied = -1f;
+        void Update() { ApplyScale(); }
+        void ApplyScale()
+        {
+            if (m_scale == 1f) return;
+            float cur = Time.timeScale;
+            if (Mathf.Abs(cur - m_applied) > 0.0001f) m_base = cur;
+            m_applied = Mathf.Min(100f, m_base * m_scale);
+            if (Time.timeScale != m_applied) Time.timeScale = m_applied;
         }
 
         void LateUpdate()
         {
+            ApplyScale();
             if (AudioListener.volume != 0f) AudioListener.volume = 0f;
             if (m_w > 0 && Time.realtimeSinceStartup >= m_nextSize && (Screen.width != m_w || Screen.height != m_h || Screen.fullScreen))
             {

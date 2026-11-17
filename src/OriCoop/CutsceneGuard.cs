@@ -173,7 +173,8 @@ namespace OriCoop
             if (!Off && s_actionLockSince >= 0 && now - s_actionLockSince >= 20f)
             { gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++; Log("repair stale LockInputByAction (held 20 s)"); }
             if (P2Context.Inside || own == null || gc == null || gc.IsLoadingGame || gc.GameplaySuspended
-                || Game.UI.MainMenuVisible || StorySync.StoryActive) { s_freeSince = -1f; return; }
+                || Game.UI.MainMenuVisible || StorySync.StoryActive
+                || PedestalWindow) { s_freeSince = -1f; return; }   // a pedestal/lever cutscene runs natively: hands off
             bool free = (StorySync.TakeoverMaskPublic() & 191) == 0;
             if (!free) s_freeSince = -1f;
             else if (s_freeSince < 0) s_freeSince = now;

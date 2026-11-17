@@ -23,6 +23,8 @@ if ($WithGlyphs -and (Test-Path "$game\BepInEx\plugins\OriPSGlyphs.dll")) { Copy
 Copy-Item (Join-Path $root 'TWO-PC-TEST.md') "$stage\OriCoop-README-online.md"
 # Relay server manager, opened from the game folder; it edits BepInEx\config\oricoop-relays.txt (RelayList.cs).
 Copy-Item (Join-Path $PSScriptRoot 'assets\relay-manager\OriCoop-Relays.html') "$stage\OriCoop-Relays.html"
+# Licence notices for the bundled BepInEx / HarmonyX / MonoMod / Mono.Cecil (LGPL-2.1 and MIT require them).
+Copy-Item (Join-Path $PSScriptRoot 'assets\kit\THIRD-PARTY-LICENSES.txt') "$stage\THIRD-PARTY-LICENSES.txt"
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)

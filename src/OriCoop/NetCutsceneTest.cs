@@ -272,6 +272,8 @@ namespace OriCoop
                 + " showUI=" + Game.UI.SeinUI.ShowUI + " letterbox=" + Letterbox.ShowLetterboxes + " hud=" + P2Hud.GameHudOpacity().ToString("F2")
                 + " camDist=" + CutsceneGuard.CameraDistance().ToString("F1") + " boxes=" + OpenBoxes()
                 + " fader=" + (UI.Fader == null ? "null" : UI.Fader.CurrentState.ToString())
+                + " saveReady=" + SaveSync.Ready + " inGameplay=" + NetPlay.LocalInGameplay() + " progressReady=" + ProgressSync.Ready
+                + " loading=" + GameController.Instance.IsLoadingGame
                 + " wallJump=" + Ability + " lockInput=" + GameController.Instance.LockInput + "/" + GameController.Instance.LockInputByAction;
         }
         static void CheckRestored(TestHarness h, string label)
@@ -376,6 +378,29 @@ namespace OriCoop
             }
             finally { input.Stop(); UnityEngine.Object.Destroy(go); UnityEngine.Object.Destroy(s_dummy); s_dummy = null; }
         }
+        // Relay run (a7612ee): the guest's NetPlay.LocalInGameplay() stayed false after a half-run scene story and
+        // the host's WallJump=false never reached it. Snapshots must not depend on it: force it false on the guest
+        // (loading flag) while the host clears and restores WallJump.
+        static IEnumerator ProgressWhileNotInGameplay(TestHarness h)
+        {
+            yield return Settle();
+            bool before = Ability;
+            if (!NetPlay.IsHost) GameController.Instance.IsLoadingGame = true;
+            try
+            {
+                yield return Barrier(h, 6);
+                if (NetPlay.IsHost) Own.PlayerAbilities.SetAbility(AbilityType.WallJump, !before);
+                float end = Now + 5f;
+                while (Ability == before && Now < end) yield return null;
+                h.Check(Ability != before, "CUT progress reaches the guest while it is not 'in gameplay' (WallJump " + before + " -> " + Ability + ")");
+                yield return Barrier(h, 7);
+            }
+            finally { if (!NetPlay.IsHost) GameController.Instance.IsLoadingGame = false; }
+            if (NetPlay.IsHost) Own.PlayerAbilities.SetAbility(AbilityType.WallJump, before);
+            float back = Now + 5f;
+            while (Ability != before && Now < back) yield return null;
+            yield return Barrier(h, 8);
+        }
         static bool s_fadeCallback;
         // a86950a's black-fade repair cancelled any fade begun while the player was free after a story, so fades that
         // continue from their fade-in callback (SaveSync's checkpoint reload, deaths, doors) never continued.
@@ -423,6 +448,7 @@ namespace OriCoop
                 if (!NetPlay.IsHost && Remote.ContainsKey(1)) original = Remote[1].Ability;
                 if (!leverOnly)
                 {
+                    yield return Step(h, 5, ProgressWhileNotInGameplay(h));
                     yield return Step(h, 3, Setup(h));
                     if (s_pedestal == null || !Remote.ContainsKey(2) || !Remote[2].Found) yield break;
                     yield return Step(h, 10, Pedestal(h, "host", true, 11));

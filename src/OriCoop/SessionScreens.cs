@@ -1,8 +1,10 @@
 using System;
-using System.Reflection;
 using Game;
 using HarmonyLib;
 using UnityEngine;
+
+using OriCoop.Seams;
+using OriCoop.Rules;
 
 namespace OriCoop
 {
@@ -13,12 +15,8 @@ namespace OriCoop
     //    host's checkpoint is loaded, or shows a clear failure message.
     public static class SessionScreens
     {
+        static IRulesHost Host { get { return SessionRules.Host; } }
         public enum SavePhase { None, Waiting, Receiving, Loading, Failed }
-
-        static readonly FieldInfo F_started = AccessTools.Field(typeof(SaveSync), "s_started");
-        static readonly FieldInfo F_pending = AccessTools.Field(typeof(SaveSync), "s_pending");
-        static readonly FieldInfo F_loading = AccessTools.Field(typeof(SaveSync), "s_loading");
-        static readonly FieldInfo F_disabled = AccessTools.Field(typeof(SaveSync), "s_disabled");
 
         public static SavePhase Phase { get; private set; }
         public static float Progress { get; private set; }      // 0..1 while receiving, -1 when unknown
@@ -27,27 +25,22 @@ namespace OriCoop
         static bool s_failureShown, s_reflectionWarned;
         static float s_failedAt, s_phaseSince;
 
-        static bool Flag(FieldInfo f)
-        {
-            if (f == null) { WarnReflection(); return false; }
-            return (bool)f.GetValue(null);
-        }
         static void WarnReflection()
         {
             if (s_reflectionWarned) return;
             s_reflectionWarned = true;
-            Plugin.Log.LogWarning("net: SessionScreens cannot read SaveSync state (fields renamed?); save screen disabled");
+            Services.Log.Warn("net: SessionScreens cannot read SaveSync state (fields renamed?); save screen disabled");
         }
 
         public static void Tick()
         {
             // Keep the player loop (and with it NetPlay.Update and keepalives) running unfocused.
-            if (NetPlay.Enabled && !Application.runInBackground) { Application.runInBackground = true; BackgroundFixes++; }
+            if (Services.Net.Enabled && !Application.runInBackground) { Application.runInBackground = true; BackgroundFixes++; }
             SavePhase next = ComputeSavePhase();
             if (next != Phase)
             {
                 if (Phase == SavePhase.None && next != SavePhase.None) SaveScreensShown++;
-                Plugin.Log.LogInfo("net: save screen " + Phase + " -> " + next);
+                Services.Log.Info("net: save screen " + Phase + " -> " + next);
                 Phase = next; s_phaseSince = Time.realtimeSinceStartup;
             }
         }
@@ -55,18 +48,18 @@ namespace OriCoop
         static SavePhase ComputeSavePhase()
         {
             Progress = -1f;
-            if (!NetPlay.Enabled || NetPlay.IsHost) { s_failureShown = false; return SavePhase.None; }
-            if (F_started == null || F_pending == null || F_loading == null || F_disabled == null) { WarnReflection(); return SavePhase.None; }
-            bool disabled = Flag(F_disabled), loading = Flag(F_loading), started = Flag(F_started);
-            bool pending = F_pending.GetValue(null) != null;
+            if (!Services.Net.Enabled || Services.Net.IsHost) { s_failureShown = false; return SavePhase.None; }
+            if (!Host.SaveFieldsAvailable) { WarnReflection(); return SavePhase.None; }
+            bool disabled = Host.SaveDisabled, loading = Host.SaveLoading, started = Host.SaveStarted;
+            bool pending = Host.SavePending;
             if (Phase == SavePhase.Failed)
             {
                 // Dismissed by any key after a moment, or after 15 s.
                 float shown = Time.realtimeSinceStartup - s_failedAt;
-                if ((shown > 1.5f && Input.anyKeyDown) || shown > 15f || !NetPlay.Connected) return SavePhase.None;
+                if ((shown > 1.5f && Input.anyKeyDown) || shown > 15f || !Services.Net.Connected) return SavePhase.None;
                 return SavePhase.Failed;
             }
-            if (!NetPlay.Connected) return SavePhase.None;
+            if (!Services.Net.Connected) return SavePhase.None;
             if (disabled)
             {
                 if (Phase != SavePhase.None && !s_failureShown)
@@ -75,17 +68,17 @@ namespace OriCoop
             }
             s_failureShown = false;
             if (loading) return SavePhase.Loading;
-            if (!started || SaveSync.Ready) return SavePhase.None;
+            if (!started || Services.Session.Ready) return SavePhase.None;
             // A guest still on the title / slot screen picks a slot first; SaveSync loads the host's
             // save once they are in gameplay. Only cover the screen from then on.
             // Exception: a guest that picked an empty slot waits on the title for the host's save (GuestJoin.cs).
             // (Not while it asks which slot to overwrite: that slot list must stay visible and usable.)
-            if (!NetPlay.LocalInGameplay() && !(GuestJoin.Waiting && !GuestJoin.NeedSlotChoice)) return SavePhase.None;
+            if (!Services.Session.LocalInGameplay && !(Host.GuestWaiting && !Host.GuestNeedsSlot)) return SavePhase.None;
             if (pending) return SavePhase.Loading;
             int have, total;
-            if (NetPlay.Peer != null && NetPlay.Peer.IncomingProgress(out have, out total) && total > 4)
+            if (Host.IncomingProgress(out have, out total) && total > 4)
             { Progress = Mathf.Clamp01(have / (float)total); return SavePhase.Receiving; }
-            return NetPlay.RemoteInGameplay ? SavePhase.Receiving : SavePhase.Waiting;
+            return Host.RemoteInGameplay ? SavePhase.Receiving : SavePhase.Waiting;
         }
 
         // ---------------------------------------------------------------- focus
@@ -96,13 +89,13 @@ namespace OriCoop
             [HarmonyPriority(Priority.First)]
             static bool Prefix(bool focusStatus)
             {
-                if (!NetPlay.Enabled) return true;
+                if (!Services.Net.Enabled) return true;
                 // Vanilla shows the resume screen (SuspendAll) and turns runInBackground off two
                 // frames later, which freezes Unity and times the partner out. Online: neither.
                 Application.runInBackground = true;
                 GameController.IsFocused = focusStatus;
                 FocusEvents++;
-                Plugin.Log.LogInfo("net: window focus " + (focusStatus ? "gained" : "lost") + "; game keeps running");
+                Services.Log.Info("net: window focus " + (focusStatus ? "gained" : "lost") + "; game keeps running");
                 return false;
             }
         }
@@ -113,7 +106,7 @@ namespace OriCoop
         {
             static bool Prefix()
             {
-                if (!NetPlay.Enabled) return true;
+                if (!Services.Net.Enabled) return true;
                 SuppressedResumeScreens++;
                 return false;
             }
@@ -125,21 +118,25 @@ namespace OriCoop
         static class BlockWhileLoading
         {
             // Never lock the partner's puppet: it replays the host's input inside P2Context.
-            static void Postfix(ref bool __result) { if (Blocking && !P2Context.Inside) __result = true; }
+            static void Postfix(ref bool __result) { if (Blocking && !Host.Inside) __result = true; }
         }
         [HarmonyPatch(typeof(SeinController), "get_InputLocked")]
         static class BlockOwnWhileLoading
         {
             static void Postfix(SeinController __instance, ref bool __result)
             {
-                if (!Blocking || P2Context.Inside) return;
-                SeinCharacter own = P2Context.P1 != null ? P2Context.P1 : Characters.Sein;
+                if (!Blocking || Host.Inside) return;
+                SeinCharacter own = Host.P1 != null ? Host.P1 : Characters.Sein;
                 if (own != null && __instance == own.Controller) __result = true;
             }
         }
 
         // ---------------------------------------------------------------- drawing
 
+        internal static string TestPage = "";
+        static string s_page;
+        static int s_element;
+        static void Begin(string page) { s_page = page; s_element = 0; Host.BeginPage(page); }
         static Texture2D s_solid;
         static GUIStyle s_titleZh, s_titleEn, s_bodyZh, s_bodyEn, s_small;
         static float s_styleScale;
@@ -169,6 +166,8 @@ namespace OriCoop
         }
         static void Text(Rect r, string text, GUIStyle style, Color c)
         {
+            string id = s_page + ".text." + s_element++;
+            if (Host.NativeGuiAvailable) { Host.Label(id, r, text, style.fontSize, style.alignment, c); return; }
             Color prev = style.normal.textColor;
             style.normal.textColor = new Color(0.01f, 0.03f, 0.05f, 0.75f * c.a);
             GUI.Label(new Rect(r.x, r.y + 2f, r.width, r.height), text, style);
@@ -177,21 +176,36 @@ namespace OriCoop
         }
         static void Fill(Rect r, Color c)
         {
+            string id = s_page + ".panel." + s_element++;
+            if (Host.NativeGuiAvailable) { Host.Panel(id, r, c); return; }
             Color prev = GUI.color; GUI.color = c; GUI.DrawTexture(r, s_solid); GUI.color = prev;
         }
 
         public static void Draw()
         {
-            if (!NetPlay.Enabled) return;
+            if (!Services.Net.Enabled && !(Host.L10nProbeOn && TestPage.Length > 0)) return;
             try
             {
                 float scale = Screen.height / 1080f;
                 EnsureStyles(scale);
-                if (Blocking) { DrawSaveScreen(scale); return; }
-                if (SessionRules.PausedByPartner) DrawPartnerPaused(scale);
-                else if (SessionRules.LocalPaused && NetPlay.PartnerHere) DrawBothPausedHint(scale);
+                if (Host.L10nProbeOn && TestPage.Length > 0)
+                {
+                    Begin(TestPage);
+                    try { if (TestPage == "session.save") DrawSaveScreen(scale); else DrawPartnerPaused(scale); }
+                    finally { Host.EndPage(); }
+                    return;
+                }
+                if (Blocking) { Begin("session.save"); try { DrawSaveScreen(scale); } finally { Host.EndPage(); } return; }
+                if (!SessionRules.PausedByPartner && !(SessionRules.LocalPaused && Host.PartnerHere)) return;
+                Begin("session.paused");
+                try
+                {
+                    if (SessionRules.PausedByPartner) DrawPartnerPaused(scale);
+                    else if (SessionRules.LocalPaused && Host.PartnerHere) DrawBothPausedHint(scale);
+                }
+                finally { Host.EndPage(); }
             }
-            catch (Exception e) { Plugin.Log.LogError("SessionScreens Draw error: " + e); }
+            catch (Exception e) { Services.Log.Error("SessionScreens Draw error: " + e); }
         }
 
         static void DrawPartnerPaused(float scale)
@@ -203,34 +217,34 @@ namespace OriCoop
             float pulse = 0.6f + 0.4f * Mathf.Sin(Time.realtimeSinceStartup * 2.2f);
             float lineW = 520f * scale;
             Fill(new Rect((Screen.width - lineW) * 0.5f, y + h - 3f * scale, lineW, 2f * scale), new Color(Glow.r, Glow.g, Glow.b, 0.55f * pulse));
-            Text(new Rect(0, y + 22f * scale, Screen.width, 60f * scale), L10n.T("session.paused"), s_titleZh, Ink);
-            Text(new Rect(0, y + h + 14f * scale, Screen.width, 26f * scale), L10n.T("session.resume_help"), s_small, new Color(InkDim.r, InkDim.g, InkDim.b, 0.9f));
+            Text(new Rect(0, y + 22f * scale, Screen.width, 60f * scale), Host.Text("session.paused"), s_titleZh, Ink);
+            Text(new Rect(0, y + h + 14f * scale, Screen.width, 26f * scale), Host.Text("session.resume_help"), s_small, new Color(InkDim.r, InkDim.g, InkDim.b, 0.9f));
         }
 
         static void DrawBothPausedHint(float scale)
         {
-            Text(new Rect(0, 24f * scale, Screen.width, 28f * scale), L10n.T("session.both_paused"), s_small, new Color(Ink.r, Ink.g, Ink.b, 0.85f));
+            Text(new Rect(0, 24f * scale, Screen.width, 28f * scale), Host.Text("session.both_paused"), s_small, new Color(Ink.r, Ink.g, Ink.b, 0.85f));
         }
 
         static void DrawSaveScreen(float scale)
         {
             float t = Time.realtimeSinceStartup;
-            float fade = Mathf.Clamp01((t - s_phaseSince) / 0.3f);
+            float fade = Host.L10nProbeOn && TestPage == "session.save" ? 1f : Mathf.Clamp01((t - s_phaseSince) / 0.3f);
             if (Phase == SavePhase.Failed) fade = 1f;
             Fill(new Rect(0, 0, Screen.width, Screen.height), new Color(0.012f, 0.03f, 0.055f, 0.93f));
             float cy = Screen.height * 0.42f;
             if (Phase == SavePhase.Failed)
             {
-                Text(new Rect(0, cy - 70f * scale, Screen.width, 60f * scale), L10n.T("session.failed"), s_titleZh, Warn);
-                Text(new Rect(0, cy + 50f * scale, Screen.width, 30f * scale), L10n.T("session.failed_help"), s_bodyZh, Ink);
+                Text(new Rect(0, cy - 70f * scale, Screen.width, 60f * scale), Host.Text("session.failed"), s_titleZh, Warn);
+                Text(new Rect(0, cy + 50f * scale, Screen.width, 30f * scale), Host.Text("session.failed_help"), s_bodyZh, Ink);
                 if (t - s_failedAt > 1.5f)
-                    Text(new Rect(0, Screen.height - 90f * scale, Screen.width, 28f * scale), L10n.T("session.continue"), s_small, Ink);
+                    Text(new Rect(0, Screen.height - 90f * scale, Screen.width, 28f * scale), Host.Text("session.continue"), s_small, Ink);
                 return;
             }
             string text;
-            if (Phase == SavePhase.Waiting) { text = L10n.T("session.waiting"); }
-            else if (Phase == SavePhase.Receiving) { text = L10n.T("session.receiving"); }
-            else { text = L10n.T("session.loading"); }
+            if (Phase == SavePhase.Waiting) { text = Host.Text("session.waiting"); }
+            else if (Phase == SavePhase.Receiving) { text = Host.Text("session.receiving"); }
+            else { text = Host.Text("session.loading"); }
             Color ink = new Color(Ink.r, Ink.g, Ink.b, fade), dim = new Color(InkDim.r, InkDim.g, InkDim.b, fade);
             DrawSpinner(Screen.width * 0.5f, cy - 110f * scale, scale, fade);
             Text(new Rect(0, cy - 60f * scale, Screen.width, 60f * scale), text, s_titleZh, ink);
@@ -240,7 +254,7 @@ namespace OriCoop
             if (Phase == SavePhase.Receiving && Progress >= 0f)
             {
                 Fill(new Rect(x, y, w * Progress, bh), new Color(Glow.r, Glow.g, Glow.b, 0.9f * fade));
-                Text(new Rect(0, y + 12f * scale, Screen.width, 26f * scale), L10n.F("session.progress", Mathf.RoundToInt(Progress * 100f)), s_small, dim);
+                Text(new Rect(0, y + 12f * scale, Screen.width, 26f * scale), Host.Format("session.progress", Mathf.RoundToInt(Progress * 100f)), s_small, dim);
             }
             else
             {
@@ -248,7 +262,7 @@ namespace OriCoop
                 float a = Mathf.Max(x, x + p), b = Mathf.Min(x + w, x + p + seg);
                 if (b > a) Fill(new Rect(a, y, b - a, bh), new Color(Glow.r, Glow.g, Glow.b, 0.8f * fade));
             }
-            string help = Phase == SavePhase.Waiting ? L10n.T("session.waiting_help") : L10n.T("session.loading_help");
+            string help = Phase == SavePhase.Waiting ? Host.Text("session.waiting_help") : Host.Text("session.loading_help");
             Text(new Rect(0, Screen.height - 110f * scale, Screen.width, 28f * scale), help, s_bodyZh, ink);
         }
 

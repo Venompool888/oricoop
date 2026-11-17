@@ -40,6 +40,17 @@ namespace OriCoop
         static float s_disconnectWaitSec;
         static int s_modalFocus; // 0: 继续单人, 1: 回到标题
         static float s_ignoreModalNavUntil;
+        static string s_testPage;
+
+        static string[] L10nTestPages()
+        {
+            return new[] { "hud.signal", "hud.chips", "hud.waiting", "hud.solo", "hud.toast", "hud.disconnect" };
+        }
+
+        static void L10nTestShow(string page, bool on)
+        {
+            s_testPage = on ? page : null;
+        }
 
         // XInput polling for modal dialog
         static XInputState s_xState = new XInputState();
@@ -397,13 +408,29 @@ namespace OriCoop
 
         public static void Draw()
         {
-            if (!NetPlay.Enabled) return;
+            bool sample = L10nProbe.On && !string.IsNullOrEmpty(s_testPage);
+            if (!NetPlay.Enabled && !sample) return;
 
             try
             {
                 float scale = Screen.height / 1080f;
                 InitTextures();
                 EnsureStyles(scale);
+
+                if (sample)
+                {
+                    if (s_testPage == "hud.signal")
+                    {
+                        DrawSignalBars(scale, 1f, true);
+                        DrawPartnerIndicators(scale, 1f, true);
+                    }
+                    else if (s_testPage == "hud.chips") DrawStatusChips(scale, 1f, true);
+                    else if (s_testPage == "hud.waiting") DrawHostWaitingChip(scale, 1f, true);
+                    else if (s_testPage == "hud.solo") DrawCollapsedChip(scale, 1f);
+                    else if (s_testPage == "hud.toast") DrawToast(scale, true);
+                    else if (s_testPage == "hud.disconnect") DrawDisconnectModal(scale, true);
+                    return;
+                }
 
                 float hudOpacity = P2Hud.GameHudOpacity();
 
@@ -458,141 +485,179 @@ namespace OriCoop
             return L10n.F("hud.signal.lost", seconds);
         }
 
-        static void DrawSignalBars(float scale, float hudAlpha)
+        static void DrawSignalBars(float scale, float hudAlpha, bool sample = false)
         {
-            float rightMargin = 40f * scale;
-            float topY = 24f * scale;
-
-            float barW = 6f * scale;
-            float[] barHeights = new float[] { 8f * scale, 14f * scale, 20f * scale, 26f * scale };
-            float barGap = 4f * scale;
-            float totalBarsW = 4f * barW + 3f * barGap; // 36 * scale
-            float barsX = Screen.width - rightMargin - totalBarsW;
-
-            int lit = SignalBars(NetPlay.Connected, NetPlay.SignalLost, NetPlay.RttMs, NetPlay.LossPercent);
-            Color litColor = SignalColor(NetPlay.SignalLost, NetPlay.RttMs, hudAlpha);
-
-            // Draw bars
-            for (int i = 0; i < 4; i++)
+            NativeGui.BeginPage("hud.signal");
+            try
             {
-                float bh = barHeights[i];
-                float bx = barsX + i * (barW + barGap);
-                float by = topY + 26f * scale - bh; // align bottoms
-                Color barColor = (i < lit) ? litColor : new Color(0.25f, 0.32f, 0.36f, 0.45f * hudAlpha);
-                DrawSolidRect(new Rect(bx, by, barW, bh), barColor);
+                float rightMargin = 40f * scale;
+                float topY = 24f * scale;
+
+                float barW = 6f * scale;
+                float[] barHeights = new float[] { 8f * scale, 14f * scale, 20f * scale, 26f * scale };
+                float barGap = 4f * scale;
+                float totalBarsW = 4f * barW + 3f * barGap; // 36 * scale
+                float barsX = Screen.width - rightMargin - totalBarsW;
+
+                int lit = sample ? 4 : SignalBars(NetPlay.Connected, NetPlay.SignalLost, NetPlay.RttMs, NetPlay.LossPercent);
+                Color litColor = SignalColor(!sample && NetPlay.SignalLost, sample ? 42f : NetPlay.RttMs, hudAlpha);
+
+                // Draw bars
+                for (int i = 0; i < 4; i++)
+                {
+                    float bh = barHeights[i];
+                    float bx = barsX + i * (barW + barGap);
+                    float by = topY + 26f * scale - bh; // align bottoms
+                    Color barColor = (i < lit) ? litColor : new Color(0.25f, 0.32f, 0.36f, 0.45f * hudAlpha);
+                    NativeGui.Panel("hud.signal.bar." + i, new Rect(bx, by, barW, bh), barColor);
+                }
+
+                // Latency text ("-- ms" while silent: the last RTT would be stale, lag test ②)
+                string rttText = sample ? "42 ms" : NetPlay.Connected && !NetPlay.SignalLost ? (Mathf.RoundToInt(NetPlay.RttMs) + " ms") : "-- ms";
+                Rect textR = new Rect(barsX - 110f * scale, topY, 100f * scale, 26f * scale);
+                Color textC = new Color(0.867f, 0.918f, 0.898f, hudAlpha);
+                DrawText("hud.signal.rtt", textR, rttText, s_signalText, textC);
+
+                // Who I am in this session: "P1 主机" (host) or "P2 伙伴" (guest), in the role's colour.
+                int me = sample ? 1 : Roles.Mine;
+                float rttW = s_signalText.CalcSize(new GUIContent(rttText)).x;
+                float roleRight = barsX - 10f * scale - rttW - 14f * scale;
+                Color mc = Roles.ColorOf(me);
+                string roleText = sample ? L10n.F("hud.role.host", "P1")
+                    : L10n.F(me == 1 ? "hud.role.host" : "hud.role.partner", Roles.Tag(me));
+                DrawText("hud.signal.role", new Rect(roleRight - 160f * scale, topY, 160f * scale, 26f * scale), roleText,
+                    s_signalText, new Color(mc.r, mc.g, mc.b, hudAlpha));
+
+                // Tiny "中继 relay" tag if relay-forwarded
+                if (sample || (NetPlay.UsesRelay && !NetPlay.RelayDirect && NetPlay.Connected))
+                {
+                    Rect tagR = new Rect(barsX - 110f * scale, topY + 24f * scale, 100f * scale, 20f * scale);
+                    DrawText("hud.signal.relay", tagR, L10n.T("hud.relay"), s_tagStyle, new Color(0.39f, 0.87f, 0.91f, hudAlpha));
+                }
             }
-
-            // Latency text ("-- ms" while silent: the last RTT would be stale, lag test ②)
-            string rttText = NetPlay.Connected && !NetPlay.SignalLost ? (Mathf.RoundToInt(NetPlay.RttMs) + " ms") : "-- ms";
-            Rect textR = new Rect(barsX - 110f * scale, topY, 100f * scale, 26f * scale);
-            Color textC = new Color(0.867f, 0.918f, 0.898f, hudAlpha);
-            DrawShadowedText(textR, rttText, s_signalText, textC);
-
-            // Who I am in this session: "P1 主机" (host) or "P2 伙伴" (guest), in the role's colour.
-            int me = Roles.Mine;
-            float rttW = s_signalText.CalcSize(new GUIContent(rttText)).x;
-            float roleRight = barsX - 10f * scale - rttW - 14f * scale;
-            Color mc = Roles.ColorOf(me);
-            DrawShadowedText(new Rect(roleRight - 160f * scale, topY, 160f * scale, 26f * scale), L10n.F(me == 1 ? "hud.role.host" : "hud.role.partner", Roles.Tag(me)),
-                s_signalText, new Color(mc.r, mc.g, mc.b, hudAlpha));
-
-            // Tiny "中继 relay" tag if relay-forwarded
-            if (NetPlay.UsesRelay && !NetPlay.RelayDirect && NetPlay.Connected)
-            {
-                Rect tagR = new Rect(barsX - 110f * scale, topY + 24f * scale, 100f * scale, 20f * scale);
-                DrawShadowedText(tagR, L10n.T("hud.relay"), s_tagStyle, new Color(0.39f, 0.87f, 0.91f, hudAlpha));
-            }
+            finally { NativeGui.EndPage(); }
         }
 
-        static void DrawStatusChips(float scale, float hudAlpha)
+        static void DrawStatusChips(float scale, float hudAlpha, bool sample = false)
         {
-            string lost = SignalLostText();
-            string statusLine = lost.Length > 0 ? lost
-                : StorySync.Watching ? L10n.T("hud.watching")
-                : SessionRules.PartnerInMenu ? L10n.T("hud.partner.menu") : "";
+            NativeGui.BeginPage("hud.chips");
+            try
+            {
+                string lost = sample ? "" : SignalLostText();
+                string statusLine = sample ? L10n.T("hud.watching") : lost.Length > 0 ? lost
+                    : StorySync.Watching ? L10n.T("hud.watching")
+                    : SessionRules.PauseText;
 
-            if (string.IsNullOrEmpty(statusLine)) return;
+                if (string.IsNullOrEmpty(statusLine)) return;
 
-            GUIContent c = new GUIContent(statusLine);
-            Vector2 sz = s_chipStyle.CalcSize(c);
-            float padX = 14f * scale;
-            float padY = 6f * scale;
-            float w = sz.x + padX * 2f;
-            float h = sz.y + padY * 2f;
+                GUIContent c = new GUIContent(statusLine);
+                Vector2 sz = s_chipStyle.CalcSize(c);
+                float padX = 14f * scale;
+                float padY = 6f * scale;
+                float w = sz.x + padX * 2f;
+                float h = sz.y + padY * 2f;
 
-            float rightMargin = 40f * scale;
-            float topY = 62f * scale;
-            Rect chipR = new Rect(Screen.width - rightMargin - w, topY, w, h);
+                float rightMargin = 40f * scale;
+                float topY = 62f * scale;
+                Rect chipR = new Rect(Screen.width - rightMargin - w, topY, w, h);
 
-            Color bgC = new Color(0.027f, 0.075f, 0.122f, 0.8f * hudAlpha);
-            DrawSolidRect(chipR, bgC);
-            DrawRectOutline(chipR, new Color(0.39f, 0.87f, 0.91f, 0.6f * hudAlpha), 1.5f * scale);
+                Color bgC = new Color(0.027f, 0.075f, 0.122f, 0.8f * hudAlpha);
+                NativeGui.Panel("hud.chips.background", chipR, bgC);
+                DrawRectOutline("hud.chips.outline", chipR, new Color(0.39f, 0.87f, 0.91f, 0.6f * hudAlpha), 1.5f * scale);
 
-            Color textC = new Color(0.95f, 0.88f, 0.65f, hudAlpha);
-            DrawShadowedText(new Rect(chipR.x + padX, chipR.y + padY, sz.x, sz.y), statusLine, s_chipStyle, textC);
+                Color textC = new Color(0.95f, 0.88f, 0.65f, hudAlpha);
+                DrawText("hud.chips.text", new Rect(chipR.x + padX, chipR.y + padY, sz.x, sz.y), statusLine, s_chipStyle, textC);
+            }
+            finally { NativeGui.EndPage(); }
         }
 
-        static void DrawHostWaitingChip(float scale, float hudAlpha)
+        static void DrawHostWaitingChip(float scale, float hudAlpha, bool sample = false)
         {
-            if (!NetPlay.IsHost || NetPlay.PartnerHere) return;
-
-            string line = "";
-            if (NetPlay.UsesRelay)
+            NativeGui.BeginPage("hud.waiting");
+            try
             {
-                string code = NetPlay.RoomCode;
-                string spaced = (!string.IsNullOrEmpty(code) && code.Length >= 6) ? (code.Substring(0, 3) + " " + code.Substring(3)) : (code ?? "");
-                line = L10n.F("hud.room", string.IsNullOrEmpty(spaced) ? L10n.T("hud.room.loading") : spaced);
-            }
-            else if (NetPlay.UsesSteam)
-            {
-                line = L10n.F("hud.invite", "F5");
-            }
-            else // direct
-            {
-                string[] addrs = NetPlay.LocalAddresses();
-                string addr = (addrs != null && addrs.Length > 0) ? addrs[0] : "127.0.0.1";
-                line = L10n.F("hud.address", addr + ":" + NetPlay.ConfigPort);
-            }
+                if (!sample && (!NetPlay.IsHost || NetPlay.PartnerHere)) return;
 
-            GUIContent c = new GUIContent(line);
-            Vector2 sz = s_chipStyle.CalcSize(c);
-            float padX = 16f * scale;
-            float padY = 8f * scale;
-            float w = sz.x + padX * 2f;
-            float h = sz.y + padY * 2f;
+                string line = "";
+                if (sample) line = L10n.F("hud.room", "K7F Q2M") + "\n" + L10n.F("hud.invite", "F5");
+                else if (NetPlay.UsesRelay)
+                {
+                    string code = NetPlay.RoomCode;
+                    string spaced = (!string.IsNullOrEmpty(code) && code.Length >= 6) ? (code.Substring(0, 3) + " " + code.Substring(3)) : (code ?? "");
+                    line = L10n.F("hud.room", string.IsNullOrEmpty(spaced) ? L10n.T("hud.room.loading") : spaced);
+                }
+                else if (NetPlay.UsesSteam)
+                {
+                    line = L10n.F("hud.invite", "F5");
+                }
+                else // direct
+                {
+                    string[] addrs = NetPlay.LocalAddresses();
+                    string addr = (addrs != null && addrs.Length > 0) ? addrs[0] : "127.0.0.1";
+                    line = L10n.F("hud.address", addr + ":" + NetPlay.ConfigPort);
+                }
 
-            Rect r = new Rect(30f * scale, 24f * scale, w, h);
-            Color bgC = new Color(0.027f, 0.075f, 0.122f, 0.85f * hudAlpha);
-            DrawSolidRect(r, bgC);
-            DrawRectOutline(r, new Color(0.39f, 0.87f, 0.91f, 0.6f * hudAlpha), 1.5f * scale);
+                GUIContent c = new GUIContent(line);
+                Vector2 sz = s_chipStyle.CalcSize(c);
+                float padX = 16f * scale;
+                float padY = 8f * scale;
+                float w = sz.x + padX * 2f;
+                float h = sz.y + padY * 2f;
 
-            Color textC = new Color(0.867f, 0.918f, 0.898f, hudAlpha);
-            DrawShadowedText(new Rect(r.x + padX, r.y + padY, sz.x, sz.y), line, s_chipStyle, textC);
+                Rect r = new Rect(30f * scale, 24f * scale, w, h);
+                Color bgC = new Color(0.027f, 0.075f, 0.122f, 0.85f * hudAlpha);
+                NativeGui.Panel("hud.waiting.background", r, bgC);
+                DrawRectOutline("hud.waiting.outline", r, new Color(0.39f, 0.87f, 0.91f, 0.6f * hudAlpha), 1.5f * scale);
+
+                Color textC = new Color(0.867f, 0.918f, 0.898f, hudAlpha);
+                DrawText("hud.waiting.text", new Rect(r.x + padX, r.y + padY, sz.x, sz.y), line, s_chipStyle, textC);
+            }
+            finally { NativeGui.EndPage(); }
         }
 
         static void DrawCollapsedChip(float scale, float hudAlpha)
         {
-            string line = L10n.T("hud.solo.reconnecting");
-            GUIContent c = new GUIContent(line);
-            Vector2 sz = s_chipStyle.CalcSize(c);
-            float padX = 16f * scale;
-            float padY = 8f * scale;
-            float w = sz.x + padX * 2f;
-            float h = sz.y + padY * 2f;
+            NativeGui.BeginPage("hud.solo");
+            try
+            {
+                string line = L10n.T("hud.solo.reconnecting");
+                GUIContent c = new GUIContent(line);
+                Vector2 sz = s_chipStyle.CalcSize(c);
+                float padX = 16f * scale;
+                float padY = 8f * scale;
+                float w = sz.x + padX * 2f;
+                float h = sz.y + padY * 2f;
 
-            Rect r = new Rect(30f * scale, 24f * scale, w, h);
-            Color bgC = new Color(0.027f, 0.075f, 0.122f, 0.85f * hudAlpha);
-            DrawSolidRect(r, bgC);
-            DrawRectOutline(r, new Color(0.95f, 0.65f, 0.55f, 0.8f * hudAlpha), 1.5f * scale);
+                Rect r = new Rect(30f * scale, 24f * scale, w, h);
+                Color bgC = new Color(0.027f, 0.075f, 0.122f, 0.85f * hudAlpha);
+                NativeGui.Panel("hud.solo.background", r, bgC);
+                DrawRectOutline("hud.solo.outline", r, new Color(0.95f, 0.65f, 0.55f, 0.8f * hudAlpha), 1.5f * scale);
 
-            Color textC = new Color(0.95f, 0.85f, 0.75f, hudAlpha);
-            DrawShadowedText(new Rect(r.x + padX, r.y + padY, sz.x, sz.y), line, s_chipStyle, textC);
+                Color textC = new Color(0.95f, 0.85f, 0.75f, hudAlpha);
+                DrawText("hud.solo.text", new Rect(r.x + padX, r.y + padY, sz.x, sz.y), line, s_chipStyle, textC);
+            }
+            finally { NativeGui.EndPage(); }
         }
 
-        static void DrawPartnerIndicators(float scale, float hudAlpha)
+        static void DrawPartnerIndicators(float scale, float hudAlpha, bool sample = false)
         {
-            if (!NetPlay.PartnerHere) return;
-            foreach (Puppet puppet in Players.Remotes) DrawPartnerIndicator(puppet, scale, hudAlpha);
+            NativeGui.BeginPage("hud.signal");
+            try
+            {
+                if (sample)
+                {
+                    string label = "P2 42 m \u2192";
+                    Vector2 sz = s_arrowStyle.CalcSize(new GUIContent(label));
+                    Color rc = Roles.ColorOf(2);
+                    DrawText("hud.signal.partner.2", new Rect(Screen.width - 80f * scale - sz.x * 0.5f,
+                        Screen.height * 0.5f - sz.y * 0.5f, sz.x, sz.y), label, s_arrowStyle,
+                        new Color(rc.r, rc.g, rc.b, hudAlpha));
+                    return;
+                }
+                if (!NetPlay.PartnerHere) return;
+                foreach (Puppet puppet in Players.Remotes) DrawPartnerIndicator(puppet, scale, hudAlpha);
+            }
+            finally { NativeGui.EndPage(); }
         }
 
         static void DrawPartnerIndicator(Puppet puppet, float scale, float hudAlpha)
@@ -653,88 +718,94 @@ namespace OriCoop
 
                 Rect r = new Rect(edge.x - sz.x * 0.5f, edge.y - sz.y * 0.5f, sz.x, sz.y);
                 Color rc = Roles.ColorOf(puppet.Seat);
-                DrawShadowedText(r, label, s_arrowStyle, new Color(rc.r, rc.g, rc.b, hudAlpha));
+                DrawText("hud.signal.partner." + puppet.Seat, r, label, s_arrowStyle, new Color(rc.r, rc.g, rc.b, hudAlpha));
             }
         }
 
-        static void DrawToast(float scale)
+        static void DrawToast(float scale, bool sample = false)
         {
-            if (!s_hasCurrentToast) return;
+            NativeGui.BeginPage("hud.toast");
+            try
+            {
+                if (!sample && !s_hasCurrentToast) return;
 
-            float elapsed = Time.realtimeSinceStartup - s_currentToast.StartTime;
-            float alpha = 1f;
-            if (elapsed < 0.35f) alpha = Mathf.Clamp01(elapsed / 0.35f);
-            else if (elapsed > s_currentToast.Duration - 0.5f) alpha = Mathf.Clamp01((s_currentToast.Duration - elapsed) / 0.5f);
+                float elapsed = sample ? 1f : Time.realtimeSinceStartup - s_currentToast.StartTime;
+                float alpha = 1f;
+                if (elapsed < 0.35f) alpha = Mathf.Clamp01(elapsed / 0.35f);
+                else if (!sample && elapsed > s_currentToast.Duration - 0.5f) alpha = Mathf.Clamp01((s_currentToast.Duration - elapsed) / 0.5f);
 
-            float topY = 50f * scale;
+                float topY = 50f * scale;
 
-            Color textC = new Color(0.867f, 0.918f, 0.898f, alpha);
+                Color textC = new Color(0.867f, 0.918f, 0.898f, alpha);
 
-            DrawShadowedText(new Rect(0, topY, Screen.width, 48f * scale), s_currentToast.Text, s_toastZh, textC);
+                DrawText("hud.toast.text", new Rect(0, topY, Screen.width, 48f * scale), sample ? L10n.T("hud.reconnected") : s_currentToast.Text, s_toastZh, textC);
+            }
+            finally { NativeGui.EndPage(); }
         }
 
-        static void DrawDisconnectModal(float scale)
+        static void DrawDisconnectModal(float scale, bool sample = false)
         {
-            // Scrim
-            GUI.color = Color.white;
-            GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), s_scrimTex, ScaleMode.StretchToFill);
+            NativeGui.BeginPage("hud.disconnect");
+            try
+            {
+                // Scrim
+                NativeGui.Texture("hud.disconnect.scrim", new Rect(0, 0, Screen.width, Screen.height), s_scrimTex, Color.white);
 
-            float cx = Screen.width * 0.5f;
-            float topY = 180f * scale;
+                float cx = Screen.width * 0.5f;
+                float topY = 180f * scale;
 
-            // Title
-            DrawShadowedText(new Rect(0, topY, Screen.width, 64f * scale), L10n.T("hud.disconnect.title"), s_modalTitleZh, new Color(0.95f, 0.65f, 0.55f));
+                // Title
+                DrawText("hud.disconnect.title", new Rect(0, topY, Screen.width, 64f * scale), L10n.T("hud.disconnect.title"), s_modalTitleZh, new Color(0.95f, 0.65f, 0.55f));
 
-            // Spinner & Reconnecting counter
-            float spinY = topY + 90f * scale;
-            DrawSpinner(cx - 150f * scale, spinY + 20f * scale, scale);
-            int sec = Mathf.FloorToInt(s_disconnectWaitSec);
-            string reconnecting = L10n.F("hud.disconnect.reconnecting", sec);
-            DrawShadowedText(new Rect(cx - 100f * scale, spinY, 300f * scale, 40f * scale), reconnecting, s_modalHelperZh, new Color(0.867f, 0.918f, 0.898f));
+                // Spinner & Reconnecting counter
+                float spinY = topY + 90f * scale;
+                DrawSpinner(cx - 150f * scale, spinY + 20f * scale, scale);
+                int sec = sample ? 10 : Mathf.FloorToInt(s_disconnectWaitSec);
+                string reconnecting = L10n.F("hud.disconnect.reconnecting", sec);
+                DrawText("hud.disconnect.countdown", new Rect(cx - 100f * scale, spinY, 300f * scale, 40f * scale), reconnecting, s_modalHelperZh, new Color(0.867f, 0.918f, 0.898f));
 
-            // Options: [0: 继续单人] [1: 回到标题]
-            float optY = spinY + 70f * scale;
-            DrawDisconnectOption(0, cx, optY, L10n.T("hud.disconnect.solo"), scale, s_modalFocus == 0);
-            DrawDisconnectOption(1, cx, optY + 90f * scale, L10n.T("hud.disconnect.back"), scale, s_modalFocus == 1);
+                // Options: [0: 继续单人] [1: 回到标题]
+                float optY = spinY + 70f * scale;
+                DrawDisconnectOption(0, cx, optY, L10n.T("hud.disconnect.solo"), scale, sample || s_modalFocus == 0, sample);
+                DrawDisconnectOption(1, cx, optY + 90f * scale, L10n.T("hud.disconnect.back"), scale, !sample && s_modalFocus == 1, sample);
 
-            // Solo progress note
-            float noteY = optY + 190f * scale;
-            DrawShadowedText(new Rect(0, noteY, Screen.width, 30f * scale), L10n.T("hud.disconnect.note"), s_modalHelperZh, new Color(0.867f, 0.918f, 0.898f));
+                // Solo progress note
+                float noteY = optY + 190f * scale;
+                DrawText("hud.disconnect.note", new Rect(0, noteY, Screen.width, 30f * scale), L10n.T("hud.disconnect.note"), s_modalHelperZh, new Color(0.867f, 0.918f, 0.898f));
 
-            // Prompts
-            float promptY = Screen.height - 60f * scale;
-            float rightX = Screen.width - 80f * scale;
-            string promptText = L10n.F("hud.disconnect.prompt", "<color=#91C95B>(A)</color>", "<color=#D76659>(B)</color>");
-            GUIContent pContent = new GUIContent(promptText);
-            Vector2 pSz = s_promptStyle.CalcSize(pContent);
-            DrawShadowedText(new Rect(rightX - pSz.x, promptY, pSz.x, pSz.y), promptText, s_promptStyle, new Color(0.867f, 0.918f, 0.898f));
+                // Prompts
+                float promptY = Screen.height - 60f * scale;
+                float rightX = Screen.width - 80f * scale;
+                string promptText = L10n.F("hud.disconnect.prompt", "<color=#91C95B>(A)</color>", "<color=#D76659>(B)</color>");
+                GUIContent pContent = new GUIContent(promptText);
+                Vector2 pSz = s_promptStyle.CalcSize(pContent);
+                DrawText("hud.disconnect.prompt", new Rect(rightX - pSz.x, promptY, pSz.x, pSz.y), promptText, s_promptStyle, new Color(0.867f, 0.918f, 0.898f));
+            }
+            finally { NativeGui.EndPage(); }
         }
 
-        static void DrawDisconnectOption(int idx, float cx, float y, string text, float scale, bool selected)
+        static void DrawDisconnectOption(int idx, float cx, float y, string text, float scale, bool selected, bool sample)
         {
             float w = 420f * scale;
             float h = 76f * scale;
             Rect r = new Rect(cx - w * 0.5f, y, w, h);
 
-            if (r.Contains(Event.current.mousePosition))
-            {
-                if (Event.current.type == EventType.MouseMove) s_modalFocus = idx;
-                if (Event.current.type == EventType.MouseDown)
-                {
-                    s_modalFocus = idx;
-                    ActivateModalOption(idx);
-                }
-            }
+            if (!sample && r.Contains(Event.current.mousePosition) && Event.current.type == EventType.MouseMove)
+                s_modalFocus = idx;
 
             Color textColor = selected ? new Color(0.945f, 0.988f, 1.0f) : new Color(0.867f, 0.918f, 0.898f);
 
-            DrawShadowedText(r, text, s_modalItemZh, textColor);
+            if (NativeGui.Button("hud.disconnect.option." + idx, r, text, s_modalItemZh.fontSize, selected, textColor) && !sample)
+            {
+                s_modalFocus = idx;
+                ActivateModalOption(idx);
+            }
 
             if (selected)
             {
                 float streakW = Mathf.Clamp(340f * scale, 240f, 440f);
-                GUI.color = Color.white;
-                GUI.DrawTexture(new Rect(cx - streakW * 0.5f, y + 70f * scale, streakW, 12f * scale), s_glowStreak);
+                NativeGui.Texture("hud.disconnect.option.glow." + idx,
+                    new Rect(cx - streakW * 0.5f, y + 70f * scale, streakW, 12f * scale), s_glowStreak, Color.white);
             }
         }
 
@@ -755,40 +826,22 @@ namespace OriCoop
                 float dotSize = (3f + frac * 5f) * scale;
 
                 Color c = new Color(0.39f, 0.87f, 0.96f, alpha);
-                GUI.color = c;
-                GUI.DrawTexture(new Rect(px - dotSize * 0.5f, py - dotSize * 0.5f, dotSize, dotSize), s_dotTex);
+                NativeGui.Texture("hud.disconnect.spinner." + i,
+                    new Rect(px - dotSize * 0.5f, py - dotSize * 0.5f, dotSize, dotSize), s_dotTex, c);
             }
-            GUI.color = Color.white;
         }
 
-        static void DrawShadowedText(Rect r, string text, GUIStyle style, Color textColor)
+        static void DrawText(string id, Rect r, string text, GUIStyle style, Color textColor)
         {
-            style.clipping = TextClipping.Overflow;   // descenders (g, p, y) must not be cut by tight rects
-            Color prev = style.normal.textColor;
-            style.normal.textColor = new Color(0.01f, 0.03f, 0.05f, 0.75f);
-            GUI.Label(new Rect(r.x, r.y + 2f, r.width, r.height), text, style);
-            style.normal.textColor = textColor;
-            GUI.Label(r, text, style);
-            style.normal.textColor = prev;
+            NativeGui.Label(id, r, text, style.fontSize, style.alignment, textColor);
         }
 
-        static void DrawSolidRect(Rect r, Color c)
+        static void DrawRectOutline(string id, Rect r, Color c, float thickness)
         {
-            Color prev = GUI.color;
-            GUI.color = c;
-            GUI.DrawTexture(r, s_solidTex);
-            GUI.color = prev;
-        }
-
-        static void DrawRectOutline(Rect r, Color c, float thickness)
-        {
-            Color prev = GUI.color;
-            GUI.color = c;
-            GUI.DrawTexture(new Rect(r.x, r.y, r.width, thickness), s_solidTex);
-            GUI.DrawTexture(new Rect(r.x, r.yMax - thickness, r.width, thickness), s_solidTex);
-            GUI.DrawTexture(new Rect(r.x, r.y + thickness, thickness, r.height - thickness * 2f), s_solidTex);
-            GUI.DrawTexture(new Rect(r.xMax - thickness, r.y + thickness, thickness, r.height - thickness * 2f), s_solidTex);
-            GUI.color = prev;
+            NativeGui.Panel(id + ".top", new Rect(r.x, r.y, r.width, thickness), c);
+            NativeGui.Panel(id + ".bottom", new Rect(r.x, r.yMax - thickness, r.width, thickness), c);
+            NativeGui.Panel(id + ".left", new Rect(r.x, r.y + thickness, thickness, r.height - thickness * 2f), c);
+            NativeGui.Panel(id + ".right", new Rect(r.xMax - thickness, r.y + thickness, thickness, r.height - thickness * 2f), c);
         }
     }
 }

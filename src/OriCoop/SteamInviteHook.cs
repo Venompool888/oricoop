@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using Game;
 using OriCoop.Net;
 using UnityEngine;
@@ -32,6 +32,7 @@ namespace OriCoop
         static ulong s_announced;          // lobby whose "can't join now" state was logged
         static float s_failUntil;
         static GUIStyle s_style;
+        internal static bool TestShow;
 
         public static void Tick()
         {
@@ -156,18 +157,30 @@ namespace OriCoop
         public static void DrawGUI()
         {
             string text;
-            if (!Banner(out text)) return;
-            if (s_style == null)
+            if (L10nProbe.On && TestShow) text = L10n.F("steam.joining", L10n.T("steam.friend"), "...");
+            else if (!Banner(out text)) return;
+            NativeGui.BeginPage("steam.invite");
+            try
             {
-                s_style = new GUIStyle(GUI.skin.box);
-                s_style.alignment = TextAnchor.MiddleCenter;
-                s_style.wordWrap = true;
-                s_style.normal.textColor = new Color(0.867f, 0.918f, 0.898f);
+                if (s_style == null)
+                {
+                    s_style = new GUIStyle(GUI.skin.box);
+                    s_style.alignment = TextAnchor.MiddleCenter;
+                    s_style.wordWrap = true;
+                    s_style.normal.textColor = new Color(0.867f, 0.918f, 0.898f);
+                }
+                s_style.fontSize = Mathf.Max(12, Screen.height / 45);
+                float w = Mathf.Min(Screen.width - 40f, Screen.height * 1.4f);
+                float h = s_style.fontSize * 4.2f;
+                Rect r = new Rect((Screen.width - w) * 0.5f, Screen.height * 0.06f, w, h);
+                if (NativeGui.Available)
+                {
+                    NativeGui.Panel("steam.invite.panel", r, new Color(0.01f, 0.03f, 0.06f, 0.8f));
+                    NativeGui.Label("steam.invite.text", r, text, s_style.fontSize, s_style.alignment, s_style.normal.textColor);
+                }
+                else GUI.Box(r, text, s_style);
             }
-            s_style.fontSize = Mathf.Max(12, Screen.height / 45);
-            float w = Mathf.Min(Screen.width - 40f, Screen.height * 1.4f);
-            float h = s_style.fontSize * 4.2f;
-            GUI.Box(new Rect((Screen.width - w) * 0.5f, Screen.height * 0.06f, w, h), text, s_style);
+            finally { NativeGui.EndPage(); }
         }
     }
 }

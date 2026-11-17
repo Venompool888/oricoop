@@ -1,0 +1,8 @@
+OriCoop\Seams\Seams.cs
+OriCoop\Enemies\EnemyAuthority.cs
+OriCoop\Enemies\EnemyWire.cs
+OriCoop\Authority\IAuthority.cs
+OriCoop\Authority\EnemyLeasePolicy.cs
+OriCoop\Authority\CsWire.cs
+OriCoop\Authority\Arbiter.cs
+OriCoop\Authority\AuthorityClient.cs

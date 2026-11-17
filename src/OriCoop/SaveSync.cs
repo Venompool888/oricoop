@@ -7,6 +7,8 @@ using System.Reflection;
 using System.Reflection.Emit;
 using Game;
 using HarmonyLib;
+using OriCoop.Seams;
+using OriCoop.Saves;
 using UnityEngine;
 
 namespace OriCoop
@@ -14,11 +16,8 @@ namespace OriCoop
     // 10: checkpoint bytes and an informational live position; 11: guest loaded and joined the host.
     public static class SaveSync
     {
-        const byte SaveMessage = 10, LoadedMessage = 11;
-        const int MaximumSaveBytes = 4 * 1024 * 1024 - 64;
         static bool s_started, s_loading, s_disabled, s_restartFinished, s_restoreFinished, s_hostAdopt;
-        sealed class GuestState { public bool Sent, Ready; }
-        static readonly Dictionary<int, GuestState> s_guests = new Dictionary<int, GuestState>();
+        static readonly SeatReadiness s_guests = new SeatReadiness();
         static byte[] s_pending;
         static byte[] s_loadingBytes;
         static byte[] s_titleLoadBytes;   // guest joining from an empty slot: PerformLoad reads these (GuestJoin.cs)
@@ -35,21 +34,21 @@ namespace OriCoop
 
         public static void Init()
         {
-            NetPlay.On(SaveMessage, Receive);
-            NetPlay.On(LoadedMessage, delegate(BinaryReader r)
+            SavesHost.Current = new GameSavesHost();
+            Services.Net.On(SaveWire.SaveMessage, Receive);
+            Services.Net.On(SaveWire.LoadedMessage, delegate(BinaryReader r)
             {
-                GuestState guest;
-                int seat = NetPlay.Sender;
-                if (!NetPlay.IsHost || !s_guests.TryGetValue(seat, out guest) || !guest.Sent || guest.Ready) return;
-                guest.Ready = true; UpdateHostReady();
-                Plugin.Log.LogInfo("net: guest save loaded; sending full world and progress");
-                WorldSync.SendSnapshot(seat);
-                ProgressSync.SendSnapshot(seat);
+                int seat = Services.Net.Sender;
+                if (!Services.Net.IsHost || !s_guests.Loaded(seat)) return;
+                SaveWire.ReadLoaded(r); UpdateHostReady();
+                Services.Log.Info("net: guest save loaded; sending full world and progress");
+                SavesHost.Current.SendWorldSnapshot(seat);
+                SavesHost.Current.SendProgressSnapshot(seat);
             });
-            NetPlay.SessionStarted += Start;
-            NetPlay.SessionEnded += Reset;
-            NetPlay.PlayerJoined += delegate(int seat) { if (NetPlay.IsHost) s_guests[seat] = new GuestState(); };
-            NetPlay.PlayerLeft += delegate(int seat) { if (NetPlay.IsHost) { s_guests.Remove(seat); UpdateHostReady(); } };
+            Services.Net.SessionStarted += Start;
+            Services.Net.SessionEnded += Reset;
+            Services.Net.PlayerJoined += delegate(int seat) { if (Services.Net.IsHost) s_guests.Join(seat); };
+            Services.Net.PlayerLeft += delegate(int seat) { if (Services.Net.IsHost) { s_guests.Leave(seat); UpdateHostReady(); } };
             CoopSaves.Init();
         }
 
@@ -77,45 +76,44 @@ namespace OriCoop
         public static bool ReadyForSeat(int seat)
         {
             if (!Ready) return false;
-            if (!NetPlay.IsHost) return Ready;
-            GuestState guest;
-            return s_guests.TryGetValue(seat, out guest) && guest.Ready;
+            return s_guests.ReadyForSeat(seat, Services.Net.IsHost, Ready);
         }
 
         static void UpdateHostReady()
         {
             Ready = false;
             if (s_disabled) return;
-            foreach (GuestState guest in s_guests.Values) if (guest.Ready) { Ready = true; break; }
+            Ready = s_guests.AnyReady;
         }
 
         static void ResetGuests()
         {
-            foreach (GuestState guest in s_guests.Values) guest.Sent = guest.Ready = false;
+            s_guests.ResetGuests();
             Ready = false;
         }
 
+        static readonly Action s_coopSavesTick = CoopSaves.Tick, s_guestJoinTick = GuestJoin.Tick;
+
         public static void Tick()
         {
-            CoopSaves.Tick();
-            GuestJoin.Tick();
-            if (!NetPlay.Connected || !s_started || s_disabled) return;
-            if (NetPlay.IsHost && !s_hostAdopt)
+            SubsystemGuard.Run("CoopSaves.Tick", s_coopSavesTick);
+            SubsystemGuard.Run("GuestJoin.Tick", s_guestJoinTick);
+            if (!Services.Net.Connected || !s_started || s_disabled) return;
+            if (Services.Net.IsHost && !s_hostAdopt)
             {
                 // Co-op save lineage first (CoopSaves): the host may adopt the partner's progress before the
                 // first checkpoint goes out.
-                bool unsent = false;
-                foreach (GuestState guest in s_guests.Values) if (!guest.Sent) { unsent = true; break; }
-                if (unsent && NetPlay.LocalInGameplay() && CoopSaves.HostGate())
+                bool unsent = s_guests.HasUnsent;
+                if (unsent && SavesHost.Current.LocalInGameplay() && CoopSaves.HostGate())
                 {
-                    foreach (KeyValuePair<int, GuestState> guest in s_guests)
-                        if (!guest.Value.Sent) SendCheckpoint(guest.Key);
+                    foreach (int seat in s_guests.Seats)
+                        if (!s_guests.IsSent(seat)) SendCheckpoint(seat);
                 }
-                else if (unsent && s_adoptedAt > 0f && Time.realtimeSinceStartup > s_diagAt)
+                else if (unsent && s_adoptedAt > 0f && Services.Clock.RealTime > s_diagAt)
                 {
-                    s_diagAt = Time.realtimeSinceStartup + 3f;
+                    s_diagAt = Services.Clock.RealTime + 3f;
                     SeinCharacter s = Characters.Sein;
-                    Plugin.Log.LogInfo("net: host waiting to send after adopt: sein=" + (s != null) + " active=" + (s != null && s.gameObject.activeInHierarchy)
+                    Services.Log.Info("net: host waiting to send after adopt: sein=" + (s != null) + " active=" + (s != null && s.gameObject.activeInHierarchy)
                         + " loadingGame=" + GameController.Instance.IsLoadingGame + " title=" + (GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen())
                         + " state=" + (GameStateMachine.Instance == null ? "?" : GameStateMachine.Instance.CurrentState.ToString())
                         + " seinObjects=" + UnityEngine.Object.FindObjectsOfType(typeof(SeinCharacter)).Length);
@@ -131,13 +129,13 @@ namespace OriCoop
                 return;
             }
             // Let the player's title/slot load settle before entering the native return-to-menu path.
-            if (s_pending != null && !s_loading && NetPlay.LocalInGameplay())
+            if (s_pending != null && !s_loading && SavesHost.Current.LocalInGameplay())
             {
                 s_loadingBytes = s_pending;
                 s_pending = null;
                 s_loading = true;
                 s_restartFinished = s_restoreFinished = false;
-                s_joinStartedAt = Time.realtimeSinceStartup;
+                s_joinStartedAt = Services.Clock.RealTime;
                 s_loadWatch = Stopwatch.StartNew();
                 try
                 {
@@ -152,7 +150,7 @@ namespace OriCoop
 
         static void BeginRestart()
         {
-            if (!NetPlay.Connected || !s_loading || s_disabled) return;
+            if (!Services.Net.Connected || !s_loading || s_disabled) return;
             try { GameController.Instance.RestartGame(); }
             catch (Exception e) { Disable("native restart", e); }
         }
@@ -170,7 +168,7 @@ namespace OriCoop
                 SaveGameController save = GameController.Instance.SaveGameController;
                 if (!save.LoadFromBytes(bytes)) throw new InvalidDataException("LoadFromBytes returned false");
                 save.RestoreCheckpoint();
-                Plugin.Log.LogInfo("net: loading host checkpoint after native teardown " + bytes.Length + " bytes");
+                Services.Log.Info("net: loading host checkpoint after native teardown " + bytes.Length + " bytes");
             }
             catch (Exception e) { Disable("checkpoint load after restart", e); }
         }
@@ -180,10 +178,11 @@ namespace OriCoop
             SeinCharacter own = Characters.Sein;
             if (own == null || GameController.Instance.IsLoadingGame) return;
             if (InstantLoadScenesController.Instance.IsLoading) return;
-            float elapsed = Time.realtimeSinceStartup - s_loadFinishedAt;
-            if (NetPlay.HaveRemotePos && NetPlay.NewestRemoteTick != s_joinFrame)
+            float elapsed = Services.Clock.RealTime - s_loadFinishedAt;
+            if (SavesHost.Current.HaveRemotePosition && SavesHost.Current.NewestRemoteTick != s_joinFrame)
             {
-                HostJoinPosition = NetPlay.LatestRemotePos;
+                SavePosition p = SavesHost.Current.LatestRemotePosition;
+                HostJoinPosition = new Vector3(p.X, p.Y, p.Z);
                 Plugin.Teleport(own, HostJoinPosition + Vector3.right);
                 GuestJoinDistance = Vector3.Distance(own.Position, HostJoinPosition);
                 GuestJoinElapsed = elapsed; JoinedHost = true;
@@ -198,17 +197,17 @@ namespace OriCoop
                     InstantLoadScenesController.Instance.LoadScenesAtPosition(delegate
                     {
                         GameController.Instance.IsLoadingGame = false;
-                        Plugin.Log.LogInfo("net: guest local scenes ready at live host join position");
+                        Services.Log.Info("net: guest local scenes ready at live host join position");
                     }, true, false);
                     InstantLoadScenesController.Instance.FreezeIfLoadingScenes();
                 }
-                else Plugin.Log.LogWarning("net: live host join position has no local scene boundary; using normal local streaming");
+                else Services.Log.Warn("net: live host join position has no local scene boundary; using normal local streaming");
                 FinishJoin();
             }
             else if (elapsed >= 2f)
             {
                 GuestJoinElapsed = elapsed; JoinedHost = false;
-                Plugin.Log.LogWarning("net: no fresh host frame within 2 s after save load; join placement failed");
+                Services.Log.Warn("net: no fresh host frame within 2 s after save load; join placement failed");
                 FinishJoin(); // Expose failure to W instead of hanging the session.
             }
         }
@@ -216,9 +215,9 @@ namespace OriCoop
         static void FinishJoin()
         {
             s_loading = s_restoreFinished = false; Ready = true;
-            Plugin.Log.LogInfo("net: guest join liveHost=" + HostJoinPosition + " distance=" + GuestJoinDistance
+            Services.Log.Info("net: guest join liveHost=" + HostJoinPosition + " distance=" + GuestJoinDistance
                 + " elapsedAfterLoadMs=" + (GuestJoinElapsed * 1000f) + " placed=" + JoinedHost);
-            NetPlay.Send(LoadedMessage, true, delegate(BinaryWriter w) { });
+            Services.Net.Send(SaveWire.LoadedMessage, true, SaveWire.WriteLoaded);
         }
 
         // Host only: load the partner's progress (chosen at a co-op save divergence) through the same native
@@ -227,7 +226,7 @@ namespace OriCoop
 
         public static void HostAdopt(byte[] bytes)
         {
-            if (!NetPlay.IsHost || s_loading || s_disabled || bytes == null) return;
+            if (!Services.Net.IsHost || s_loading || s_disabled || bytes == null) return;
             s_hostAdopt = true; s_pending = bytes; ResetGuests();
         }
 
@@ -235,9 +234,9 @@ namespace OriCoop
         // Clear readiness before sending so LoadedMessage requests a fresh world/progress snapshot.
         public static void PushCheckpointNow()
         {
-            if (!NetPlay.Enabled || !NetPlay.Connected || !NetPlay.IsHost || !s_started || s_disabled) return;
+            if (!Services.Net.Enabled || !Services.Net.Connected || !Services.Net.IsHost || !s_started || s_disabled) return;
             ResetGuests();
-            foreach (int seat in s_guests.Keys) SendCheckpoint(seat);
+            foreach (int seat in s_guests.Seats) SendCheckpoint(seat);
         }
 
         static void SendCheckpoint(int seat)
@@ -246,19 +245,17 @@ namespace OriCoop
             {
                 Stopwatch watch = Stopwatch.StartNew();
                 byte[] bytes = GameController.Instance.SaveGameController.SaveToBytes();
-                if (bytes.Length > MaximumSaveBytes) throw new InvalidDataException("save exceeds NetPeer's 4 MB limit");
+                if (bytes.Length > SaveWire.MaximumSaveBytes) throw new InvalidDataException("save exceeds NetPeer's 4 MB limit");
                 // The concrete PlatformMovement serializer prefixes velocity and four contact normals
                 // before base Position (decomp PlatformMovementRigidbodyMoonCharacterControllerPenetrate:463).
                 // Never infer a checkpoint position by reading the first twelve bytes of that archive.
                 HostCheckpointPosition = Characters.Sein.Position; HaveCheckpointPosition = true;
-                NetPlay.SendTo(seat, SaveMessage, true, delegate(BinaryWriter w)
+                Services.Net.SendTo(seat, SaveWire.SaveMessage, true, delegate(BinaryWriter w)
                 {
-                    w.Write(HaveCheckpointPosition);
-                    w.Write(HostCheckpointPosition.x); w.Write(HostCheckpointPosition.y); w.Write(HostCheckpointPosition.z);
-                    w.Write(bytes.Length); w.Write(bytes);
+                    SaveWire.WriteSave(w, HaveCheckpointPosition, HostCheckpointPosition.x, HostCheckpointPosition.y, HostCheckpointPosition.z, bytes);
                 });
-                s_guests[seat].Sent = true;
-                Plugin.Log.LogInfo("net: sent checkpoint " + bytes.Length + " bytes in " + watch.ElapsedMilliseconds
+                s_guests.MarkSent(seat);
+                Services.Log.Info("net: sent checkpoint " + bytes.Length + " bytes in " + watch.ElapsedMilliseconds
                     + " ms; live host sample=" + HostCheckpointPosition);
             }
             catch (Exception e) { Disable("checkpoint transfer", e); }
@@ -266,21 +263,19 @@ namespace OriCoop
 
         static void Receive(BinaryReader r)
         {
-            if (NetPlay.IsHost || s_loading || s_pending != null || s_disabled) return;
-            HaveCheckpointPosition = r.ReadBoolean();
-            HostCheckpointPosition = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-            int size = r.ReadInt32();
-            if (size < 1 || size > MaximumSaveBytes || size != r.BaseStream.Length - r.BaseStream.Position)
-                throw new InvalidDataException("invalid checkpoint size " + size);
-            s_pending = r.ReadBytes(size);
+            if (Services.Net.IsHost || s_loading || s_pending != null || s_disabled) return;
+            HaveCheckpointPosition = SaveWire.ReadHasPosition(r);
+            SavePosition p = SaveWire.ReadCoordinates(r);
+            HostCheckpointPosition = new Vector3(p.X, p.Y, p.Z);
+            s_pending = SaveWire.ReadSaveBytes(r);
             Ready = false; JoinedHost = false;
-            Plugin.Log.LogInfo("net: received checkpoint " + size + " bytes; waiting for gameplay load path");
+            Services.Log.Info("net: received checkpoint " + s_pending.Length + " bytes; waiting for gameplay load path");
         }
 
         // Guest joining from an empty slot (GuestJoin.cs): no game runs yet, so there is nothing to tear down. The
         // game's own load-from-title action runs and its PerformLoad reads the host's checkpoint (TitleLoadPatch);
         // FinishLoading then places the guest beside the host exactly as after a teardown reload.
-        public static bool HavePendingCheckpoint { get { return !NetPlay.IsHost && s_started && s_pending != null && !s_loading && !s_disabled; } }
+        public static bool HavePendingCheckpoint { get { return !Services.Net.IsHost && s_started && s_pending != null && !s_loading && !s_disabled; } }
 
         public static bool BeginTitleLoad()
         {
@@ -288,7 +283,7 @@ namespace OriCoop
             s_titleLoadBytes = s_pending; s_pending = null;
             s_loading = true;
             s_restartFinished = s_restoreFinished = false;
-            s_joinStartedAt = Time.realtimeSinceStartup;
+            s_joinStartedAt = Services.Clock.RealTime;
             s_loadWatch = Stopwatch.StartNew();
             return true;
         }
@@ -312,7 +307,7 @@ namespace OriCoop
                     if (!__instance.LoadFromBytes(bytes)) throw new InvalidDataException("LoadFromBytes returned false");
                     __instance.RestoreCheckpoint();
                     __result = true;
-                    Plugin.Log.LogInfo("net: loading host checkpoint from the title " + bytes.Length + " bytes into slot " + SaveSlotsManager.CurrentSlotIndex);
+                    Services.Log.Info("net: loading host checkpoint from the title " + bytes.Length + " bytes into slot " + SaveSlotsManager.CurrentSlotIndex);
                 }
                 catch (Exception e) { __result = false; Disable("checkpoint load from the title", e); }
                 return false;
@@ -323,12 +318,12 @@ namespace OriCoop
         {
             // Do not invent an alternate serializer/load path if the game's API fails.
             s_disabled = true; Ready = false;
-            Plugin.Log.LogWarning("net: SaveSync DISABLED (" + item + "): " + e);
+            Services.Log.Warn("net: SaveSync DISABLED (" + item + "): " + e);
         }
 
         static void RecordFileWrite()
         {
-            if (NetPlay.Enabled && !NetPlay.IsHost) GuestSaveWrites++;
+            if (Services.Net.Enabled && !Services.Net.IsHost) GuestSaveWrites++;
         }
 
         [HarmonyPatch(typeof(RestoreCheckpointController), "FinishLoading")]
@@ -336,12 +331,12 @@ namespace OriCoop
         {
             static void Postfix()
             {
-                if (!NetPlay.Connected || (NetPlay.IsHost && !s_hostAdopt) || !s_loading || s_disabled) return;
-                if (NetPlay.IsHost)
+                if (!Services.Net.Connected || (Services.Net.IsHost && !s_hostAdopt) || !s_loading || s_disabled) return;
+                if (Services.Net.IsHost)
                 {
                     s_loading = s_restartFinished = s_restoreFinished = false; s_hostAdopt = false;
-                    s_adoptedAt = Time.realtimeSinceStartup;
-                    Plugin.Log.LogInfo("net: host loaded the partner's progress in " + (s_loadWatch == null ? 0 : s_loadWatch.ElapsedMilliseconds) + " ms; sein="
+                    s_adoptedAt = Services.Clock.RealTime;
+                    Services.Log.Info("net: host loaded the partner's progress in " + (s_loadWatch == null ? 0 : s_loadWatch.ElapsedMilliseconds) + " ms; sein="
                         + (Characters.Sein == null ? "null" : Characters.Sein.Position.ToString()) + " p1=" + (P2Context.P1 == null ? "null" : "set"));
                     CoopSaves.HostAdoptFinished();
                     return;
@@ -350,9 +345,9 @@ namespace OriCoop
                 if (own == null) { Disable("FinishLoading", new InvalidOperationException("no local Sein")); return; }
                 GuestLoadPosition = own.Position;
                 GuestLoads++;
-                s_restoreFinished = true; s_loadFinishedAt = Time.realtimeSinceStartup;
-                s_joinFrame = NetPlay.NewestRemoteTick;
-                Plugin.Log.LogInfo("net: host checkpoint restored in " + (s_loadWatch == null ? 0 : s_loadWatch.ElapsedMilliseconds)
+                s_restoreFinished = true; s_loadFinishedAt = Services.Clock.RealTime;
+                s_joinFrame = SavesHost.Current.NewestRemoteTick;
+                Services.Log.Info("net: host checkpoint restored in " + (s_loadWatch == null ? 0 : s_loadWatch.ElapsedMilliseconds)
                     + " ms; guest=" + GuestLoadPosition + "; awaiting fresh host position");
             }
         }
@@ -362,21 +357,21 @@ namespace OriCoop
         [HarmonyPatch(typeof(Plugin), "SpawnPuppet")]
         static class JoinSpawnGate
         {
-            static bool Prefix(int seat) { return !NetPlay.Enabled || ReadyForSeat(seat); }
+            static bool Prefix(int seat) { return !Services.Net.Enabled || ReadyForSeat(seat); }
         }
 
         [HarmonyPatch(typeof(NetPlay), "LocalInGameplay")]
         static class ReloadGameplayGate
         {
             static void Postfix(ref bool __result)
-            { if (NetPlay.Enabled && (!NetPlay.IsHost || s_hostAdopt) && s_loading) __result = false; }
+            { if (Services.Net.Enabled && (!Services.Net.IsHost || s_hostAdopt) && s_loading) __result = false; }
         }
 
         [HarmonyPatch(typeof(GameController), "RestartingCleanupNextFrame")]
         static class NativeTeardownFinished
         {
             static void Postfix(ref IEnumerator __result)
-            { if (s_loading && (!NetPlay.IsHost || s_hostAdopt)) __result = ObserveRestart(__result); }
+            { if (s_loading && (!Services.Net.IsHost || s_hostAdopt)) __result = ObserveRestart(__result); }
         }
 
         static IEnumerator ObserveRestart(IEnumerator original)
@@ -394,7 +389,7 @@ namespace OriCoop
                 if (complete && s_loading && !s_disabled)
                 {
                     s_restartFinished = true;
-                    Plugin.Log.LogInfo("net: native restart teardown complete in " + (Time.realtimeSinceStartup - s_joinStartedAt) + " s");
+                    Services.Log.Info("net: native restart teardown complete in " + (Services.Clock.RealTime - s_joinStartedAt) + " s");
                 }
             }
         }
@@ -408,7 +403,7 @@ namespace OriCoop
                 if (!s_loading || act == null || DelegateRegisters == null) return;
                 List<Action> registered = DelegateRegisters.GetValue(__instance) as List<Action>;
                 if (registered != null && !registered.Contains(act))
-                    Plugin.Log.LogWarning("net: missing teardown subscription " + act.Method.DeclaringType.FullName
+                    Services.Log.Warn("net: missing teardown subscription " + act.Method.DeclaringType.FullName
                         + "." + act.Method.Name + " target=" + act.Target + " @ " + new StackTrace(1, true));
                 // Keep the original error if a different lifecycle defect remains.
             }
@@ -419,9 +414,9 @@ namespace OriCoop
         {
             static bool Prefix()
             {
-                if (!NetPlay.Enabled || NetPlay.IsHost) return true;
+                if (!Services.Net.Enabled || Services.Net.IsHost) return true;
                 GuestSaveAttempts++;
-                Plugin.Log.LogInfo("net: guest PerformSave suppressed (attempt " + GuestSaveAttempts + ")");
+                Services.Log.Info("net: guest PerformSave suppressed (attempt " + GuestSaveAttempts + ")");
                 return false;
             }
         }
@@ -431,9 +426,9 @@ namespace OriCoop
         {
             static bool Prefix()
             {
-                if (!NetPlay.Enabled || NetPlay.IsHost) return true;
+                if (!Services.Net.Enabled || Services.Net.IsHost) return true;
                 GuestFileAttempts++;
-                Plugin.Log.LogInfo("net: guest SaveToFile suppressed (attempt " + GuestFileAttempts + ")");
+                Services.Log.Info("net: guest SaveToFile suppressed (attempt " + GuestFileAttempts + ")");
                 return false;
             }
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
@@ -457,9 +452,9 @@ namespace OriCoop
             }
             static bool Prefix()
             {
-                if (!NetPlay.Enabled || NetPlay.IsHost) return true;
+                if (!Services.Net.Enabled || Services.Net.IsHost) return true;
                 GuestBackupAttempts++;
-                Plugin.Log.LogInfo("net: guest save backup suppressed (attempt " + GuestBackupAttempts + ")");
+                Services.Log.Info("net: guest save backup suppressed (attempt " + GuestBackupAttempts + ")");
                 return false;
             }
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)

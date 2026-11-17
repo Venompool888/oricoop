@@ -6,38 +6,34 @@ using Core;
 using Game;
 using HarmonyLib;
 using UnityEngine;
+using OriCoop.Enemies;
+using OriCoop.Seams;
+using OriCoop.Authority;
 
 namespace OriCoop
 {
     // E3 protocol: 30 presence, 31 authority, 32 frozen handoff, 33 snapshots,
     // 34 lifecycle, 35 symbols, 36 damage, 37 projectile hit, 38 projectile spawn.
-    // Host arbitrates epochs. A guest NEVER infers authority from silence.
+    // P2P uses the legacy arbiter; C-server uses the granted lease owner and epoch.
+    // A guest NEVER infers authority from silence.
     public static class EnemySync
     {
         const byte Presence = 30, Authority = 31, Handoff = 32, Snapshots = 33,
             Life = 34, Symbols = 35, Hit = 36, OriHit = 37, Shot = 38, EnemyFx = 67;
         const float Budget = 6144f;
-        sealed class State
+        sealed class State : EnemyState
         {
-            public uint Tick, Generation; public Vector3 Position; public Vector2 Velocity;
-            public bool Alive, Killed, NeedsRespawn, Left, DealerActive, TargetActive; public float Health, Respawn;
-            public string StateName = "", Animation = ""; public float StateTime, AnimationTime;
-            public bool ShouldStomp, HasVisualAngle; public float VisualAngle; public byte[] Controller = new byte[0];
-            public byte[] TraceMovement = new byte[0];
-            public ulong[] Applied = new ulong[0];
+            public new Vector3 Position; public Vector2 Velocity;
         }
-        sealed class Actor
+        sealed class Actor : EnemyAuthority
         {
             public string Key; public MoonGuid Scene, Id; public Vector3 Origin;
             public string SceneName = "", ClassName = "", LastRemoval = "", LastDeath = "";
             public RespawningPlaceholder Placeholder; public Enemy Entity;
             public GameObject KamikazeExplosion; public float KamikazeDamage;
             public int EntityInstanceId; public fsm.StateMachine Machine;
-            public bool Known, HostOwner = true, Frozen, RemoteLoaded, Loaded, SentLoaded, SentPresence;
-            public bool ExpectFirstSnapshot;
-            public bool PendingTakeover; public uint Epoch = 1, PendingEpoch, Generation;
             public State Latest = new State(); public byte[] RestoreController;
-            public float Priority, LastSent, Arrival, DeathTime = -1, NextPresence, NextTrace;
+            public float Priority, LastSent, Arrival, DeathTime = -1, NextTrace;
             public float RenderTick;
             public bool TestSettings, TestRespawnOnScreen; public float TestRespawnTime, TestMinDistance;
             public ulong LastHit; public readonly List<State> Buffer = new List<State>();
@@ -60,7 +56,7 @@ namespace OriCoop
         static readonly Dictionary<Damage, DamageStamp> s_damage = new Dictionary<Damage, DamageStamp>();
         static readonly Queue<Damage> s_damageOrder = new Queue<Damage>();
         static readonly Dictionary<string, ushort> s_symbols = new Dictionary<string, ushort>();
-        static readonly Dictionary<ushort, string> s_remoteSymbols = new Dictionary<ushort, string>();
+        static readonly Dictionary<uint, string> s_remoteSymbols = new Dictionary<uint, string>();
         static readonly Dictionary<string, TextureAnimationWithTransitions> s_animations = new Dictionary<string, TextureAnimationWithTransitions>();
         static readonly Dictionary<string, GameObject> s_prefabs = new Dictionary<string, GameObject>();
         static readonly Dictionary<string, GameObject> s_fxPrefabs = new Dictionary<string, GameObject>();
@@ -73,27 +69,36 @@ namespace OriCoop
         static readonly HashSet<ulong> s_victimHits = new HashSet<ulong>();
         static readonly List<ProjectileIdentity> s_copies = new List<ProjectileIdentity>();
         static readonly Dictionary<SceneManagerScene, bool> s_pins = new Dictionary<SceneManagerScene, bool>();
+        static IEnemyHost s_host;
         static Actor s_active; static int s_attackDepth; static bool s_applying, s_spawning, s_session, s_restoringController, s_puppetDeath;
         static float s_fxWindow; static int s_fxCount; static DifficultyMode s_difficulty;
         static uint s_sequence; static float s_scanAt, s_streamAt, s_logAt, s_tokenTime, s_tokens;
-        static Vector3 s_pinPosition; static bool s_havePin;
+        static readonly List<Vector3> s_pinPositions = new List<Vector3>();
         public static long BytesSent, BytesReceived, EstimatedWireBytesSent;
         public static int Unmirrored, KeptScenes, UnresolvedProjectiles;
         public static int DeathEffects, OwnerDeathEffects, FxSent, FxReceived;
         public static float StreamMilliseconds;
-        static bool Active { get { return NetPlay.Enabled && NetPlay.Connected && NetPlay.RemoteHello && s_session; } }
-        static bool Mine(Actor a) { return a.Known && !a.Frozen && a.HostOwner == NetPlay.IsHost; }
+        static bool Active { get { return Services.Net.Enabled && Services.Net.Connected && s_host.RemoteHello && s_session; } }
+        static bool Mine(Actor a) { RefreshOwnership(a); return a.Mine(s_host.LocalSeat); }
         static string Key(MoonGuid scene, MoonGuid id) { return scene.ToString() + ":" + id.ToString(); }
-        static ulong NextId() { return ((ulong)Players.LocalSeat << 32) | ++s_sequence; }
-        static float Now { get { return Time.realtimeSinceStartup; } }
-        static SeinCharacter Local { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
+        static ulong NextId() { return ((ulong)s_host.LocalSeat << 32) | ++s_sequence; }
+        static float Now { get { return Services.Clock.RealTime; } }
+        static SeinCharacter Local { get { return s_host.Local; } }
 
         public static void Init()
         {
-            NetPlay.On(Presence, ReadPresence); NetPlay.On(Authority, ReadAuthority); NetPlay.On(Handoff, ReadHandoff);
-            NetPlay.On(Snapshots, ReadSnapshots); NetPlay.On(Life, ReadLife); NetPlay.On(Symbols, ReadSymbol);
-            NetPlay.On(Hit, ReadHit); NetPlay.On(OriHit, ReadOriHit); NetPlay.On(Shot, ReadShot); NetPlay.On(EnemyFx, ReadEnemyFx);
-            NetPlay.SessionStarted += Begin; NetPlay.SessionEnded += Reset;
+            s_host = new GameEnemyHost();
+            Services.Net.On(Presence, ReadPresence); Services.Net.On(Authority, ReadAuthority); Services.Net.On(Handoff, ReadHandoff);
+            Services.Net.On(Snapshots, ReadSnapshots); Services.Net.On(Life, ReadLife); Services.Net.On(Symbols, ReadSymbol);
+            Services.Net.On(Hit, ReadHit); Services.Net.On(OriHit, ReadOriHit); Services.Net.On(Shot, ReadShot); Services.Net.On(EnemyFx, ReadEnemyFx);
+            Services.Net.Forward(Snapshots, Life, Symbols, Shot);
+            Services.Net.SessionStarted += Begin; Services.Net.SessionEnded += Reset;
+            Services.Net.PlayerLeft += RemoveSeat;
+            Services.Net.PlayerJoined += delegate(int seat)
+            {
+                foreach (KeyValuePair<string, ushort> symbol in s_symbols)
+                    Send(Symbols, true, w => { w.Write(symbol.Value); w.Write(symbol.Key); });
+            };
             // Patch only game simulation callbacks. Render/animation and damage dealers keep ticking.
             MethodInfo guard = typeof(EnemySync).GetMethod("SimulationPrefix", BindingFlags.Static | BindingFlags.NonPublic);
             MethodInfo finish = typeof(EnemySync).GetMethod("SimulationFinalizer", BindingFlags.Static | BindingFlags.NonPublic);
@@ -113,7 +118,7 @@ namespace OriCoop
                     if (actor && m.Name == "Start" && !m.IsAbstract && !m.IsGenericMethodDefinition && s_patched.Add(m))
                     {
                         HarmonyMethod context = new HarmonyMethod(start); context.priority = Priority.First;
-                        Plugin.H.Patch(m, context, null, null, new HarmonyMethod(startFinish), null); continue;
+                        s_host.Patch(m, context, new HarmonyMethod(startFinish)); continue;
                     }
                     bool callback = m.Name == "FixedUpdate" || m.Name == "Update" || m.Name == "LateUpdate"
                         || (t == typeof(KamikazeSootEnemy) && m.Name == "SelfDestruct")
@@ -122,19 +127,22 @@ namespace OriCoop
                             || m.Name == "Explode" || m.Name == "OnDamageDealt" || m.Name == "OnRecieveDamage"));
                     if (!callback || m.IsAbstract || m.IsGenericMethodDefinition || !s_patched.Add(m)) continue;
                     HarmonyMethod first = new HarmonyMethod(guard); first.priority = Priority.First;
-                    Plugin.H.Patch(m, first, null, null, new HarmonyMethod(finish), null);
+                    s_host.Patch(m, first, new HarmonyMethod(finish));
                 }
             }
         }
         static void Begin()
         {
-            Reset(); s_session = true; s_tokens = Budget / 4f; s_tokenTime = Now;
+            Reset();
+            EnemyAuthority.StartSession(NetRoute.ServerMode);
+            s_session = true; s_tokens = Budget / 4f; s_tokenTime = Now;
             if (DifficultyController.Instance != null)
-            { s_difficulty = DifficultyController.Instance.Difficulty; Plugin.Log.LogInfo("E3T difficulty=" + s_difficulty); }
+            { s_difficulty = DifficultyController.Instance.Difficulty; Services.Log.Info("E3T difficulty=" + s_difficulty); }
         }
         static void Reset()
         {
-            foreach (Actor a in s_actors.Values) RestoreBodies(a);
+            foreach (Actor a in s_actors.Values) { EnemyAuthority.Policy.Release(a.Key); RestoreBodies(a); }
+            EnemyAuthority.Policy = null;
             foreach (ProjectileIdentity p in s_copies) if (p != null) InstantiateUtility.Destroy(p.gameObject);
             ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear();
             s_symbols.Clear(); s_remoteSymbols.Clear(); s_pendingHits.Clear(); s_shots.Clear(); s_victimHits.Clear(); s_copies.Clear();
@@ -142,25 +150,25 @@ namespace OriCoop
             s_fxPrefabs.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
             s_scanAt = s_streamAt = s_logAt = 0; BytesSent = BytesReceived = EstimatedWireBytesSent = 0; Unmirrored = KeptScenes = UnresolvedProjectiles = 0;
         }
-        static void Send(byte type, bool reliable, Action<BinaryWriter> body)
+        static void Send(byte type, bool reliable, Action<BinaryWriter> body, int seat = 0)
         {
-            NetPlay.Send(type, reliable, delegate(BinaryWriter w) {
+            Action<BinaryWriter> write = delegate(BinaryWriter w) {
                 long before = w.BaseStream.Position; body(w); long bytes = w.BaseStream.Position - before + 1; BytesSent += bytes;
                 // NetPeer data header + message framing; retransmits and ACK-only datagrams are transport stats.
                 EstimatedWireBytesSent += bytes + (reliable ? 32 * Math.Max(1, (bytes + 999) / 1000) : 22);
-            });
+            };
+            if (seat == 0) Services.Net.Send(type, reliable, write); else Services.Net.SendTo(seat, type, reliable, write);
         }
         static Actor ReadId(BinaryReader r)
         {
             MoonGuid scene = new MoonGuid(r), id = new MoonGuid(r); string key = Key(scene, id); Actor a;
             if (!s_actors.TryGetValue(key, out a)) { a = new Actor(); a.Key = key; a.Scene = scene; a.Id = id; s_actors.Add(key, a); }
+            RefreshOwnership(a);
             return a;
         }
         static void WriteId(BinaryWriter w, Actor a) { w.Write(a.Scene.ToByteArray()); w.Write(a.Id.ToByteArray()); }
         static Vector3 ReadVector(BinaryReader r) { return new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()); }
         static void WriteVector(BinaryWriter w, Vector3 v) { w.Write(v.x); w.Write(v.y); w.Write(v.z); }
-        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
-        static short Q(float v) { return (short)Math.Max(short.MinValue, Math.Min(short.MaxValue, Math.Round(v * 100.0))); }
         static ushort Symbol(string value)
         {
             if (string.IsNullOrEmpty(value)) return 0; ushort id;
@@ -169,22 +177,23 @@ namespace OriCoop
             id = (ushort)(s_symbols.Count + 1); s_symbols.Add(value, id);
             Send(Symbols, true, delegate(BinaryWriter w) { w.Write(id); w.Write(value); }); return id;
         }
-        static void ReadSymbol(BinaryReader r) { ushort id = r.ReadUInt16(); string value = r.ReadString(); if (value.Length > 1024) throw new InvalidDataException("E3 symbol too long"); s_remoteSymbols[id] = value; }
-        static string RemoteSymbol(ushort id) { string s; return s_remoteSymbols.TryGetValue(id, out s) ? s : ""; }
-        static void Warn(string s) { if (s_warned.Add(s)) Plugin.Log.LogWarning("E3 " + s); }
+        static uint SymbolKey(int seat, ushort id) { return ((uint)seat << 16) | id; }
+        static void ReadSymbol(BinaryReader r) { ushort id = r.ReadUInt16(); string value = r.ReadString(); if (value.Length > 1024) throw new InvalidDataException("E3 symbol too long"); s_remoteSymbols[SymbolKey(Services.Net.Sender, id)] = value; }
+        static string RemoteSymbol(ushort id) { string s; return s_remoteSymbols.TryGetValue(SymbolKey(Services.Net.Sender, id), out s) ? s : ""; }
+        static void Warn(string s) { if (s_warned.Add(s)) Services.Log.Warn("E3 " + s); }
         static void Trace(string evt, Actor a, string extra)
         {
             Probe p = Inspect(a.Key); string state = p.StateName ?? "";
             int dot = state.LastIndexOf('.'); if (dot >= 0) state = state.Substring(dot + 1);
-            Plugin.Log.LogInfo("E3T " + DateTime.Now.ToString("HH:mm:ss.fff") + " t=" + Time.realtimeSinceStartup.ToString("F2")
-                + " seat=" + Players.LocalSeat + " " + evt + " key=" + a.Key.Substring(Math.Max(0, a.Key.Length - 8))
+            Services.Log.Info("E3T " + DateTime.Now.ToString("HH:mm:ss.fff") + " t=" + Services.Clock.RealTime.ToString("F2")
+                + " seat=" + s_host.LocalSeat + " " + evt + " key=" + a.Key.Substring(Math.Max(0, a.Key.Length - 8))
                 + " class=" + p.ClassName + " pos=" + p.Position.ToString("F1") + " hp=" + p.Health
-                + " owner=" + (a.HostOwner ? "host" : "guest") + " epoch=" + a.Epoch + " generation=" + a.Generation
+                + " owner=P" + a.OwnerSeat + " epoch=" + a.Epoch + " generation=" + a.Generation
                 + " state=" + state + " " + extra);
             // Same events on the shared coop-trace timeline; id= is the E3 key on both ends so merge-coop-logs pairs them.
-            if (evt != "state" || CoopTrace.SampleDue("enemy"))
-                CoopTrace.Event("enemy", "e3." + evt.Replace(' ', '.'), "id", a.Key, "class", p.ClassName, "pos", p.Position, "hp", p.Health,
-                    "owner", a.HostOwner ? "host" : "guest", "mine", Mine(a), "epoch", a.Epoch, "gen", a.Generation, "state", state, "info", extra);
+            if (evt != "state" || s_host.TraceSampleDue())
+                s_host.TraceEvent("e3." + evt.Replace(' ', '.'), "id", a.Key, "class", p.ClassName, "pos", p.Position, "hp", p.Health,
+                    "owner", "P" + a.OwnerSeat, "mine", Mine(a), "epoch", a.Epoch, "gen", a.Generation, "state", state, "info", extra);
         }
 
         static readonly Type[] MirroredTypes = { typeof(JumperEnemy), typeof(RammingEnemy), typeof(SpitterEnemy),
@@ -214,12 +223,18 @@ namespace OriCoop
             if (!s_actors.TryGetValue(key, out a))
             {
                 a = new Actor(); a.Key = key; a.Id = new MoonGuid(p.MoonGuid); a.Scene = new MoonGuid(root.MetaData.SceneMoonGuid);
-                a.Known = NetPlay.IsHost; a.HostOwner = true; a.Latest.Position = p.Position; s_actors.Add(key, a);
+                a.Known = Services.Net.IsHost; a.OwnerSeat = 1; a.Latest.Position = p.Position; s_actors.Add(key, a);
             }
             a.Placeholder = p; a.Origin = p.Position; a.Loaded = true; a.SceneName = root.MetaData.SceneName;
+            if (EnemyAuthority.Policy.UsesLeases)
+            {
+                Rect bounds = root.MetaData.SceneBounds;
+                if (bounds.width > 0 || bounds.height > 0) a.SceneRadius = bounds.size.magnitude * 0.5f;
+            }
             // ReadId can create this record before the first local scan/Bind. A loaded host
             // placeholder establishes initial host authority before any body can be frozen.
-            if (NetPlay.IsHost && !a.Known) { a.Known = true; a.HostOwner = true; }
+            if (!EnemyAuthority.Policy.UsesLeases && Services.Net.IsHost && !a.Known) { a.Known = true; a.OwnerSeat = 1; }
+            RefreshOwnership(a);
             Bind(a); return a;
         }
         static Actor For(Component component)
@@ -285,18 +300,18 @@ namespace OriCoop
             if (a == null) return true;
             s_active = a;
             bool run = s_applying || a.Entity == null || !Supported(a.Entity) || (Mine(a) && a.RestoreController == null);
-            if (run && !__state.Attack && a.Entity != null && !P2Context.Inside && P2Context.P2IsNearer(a.Entity.Position))
-            { P2Context.Enter(); __state.Entered = true; }
+            if (run && !__state.Attack && a.Entity != null && !s_host.Inside && s_host.P2IsNearer(a.Entity.Position))
+            { s_host.Enter(s_host.NearestPuppet(a.Entity.Position)); __state.Entered = true; }
             return run;
         }
         static void StartPrefix(Component __instance, out bool __state)
         {
             __state = false; if (!Active) return; Actor a = For(__instance);
-            if (a != null && a.Entity != null && !P2Context.Inside && P2Context.P2IsNearer(a.Entity.Position))
-            { P2Context.Enter(); __state = true; }
+            if (a != null && a.Entity != null && !s_host.Inside && s_host.P2IsNearer(a.Entity.Position))
+            { s_host.Enter(s_host.NearestPuppet(a.Entity.Position)); __state = true; }
         }
         static Exception ContextFinalizer(Exception __exception, bool __state)
-        { if (__state) P2Context.Exit(); return __exception; }
+        { if (__state) s_host.Exit(); return __exception; }
         [HarmonyPatch(typeof(fsm.StateMachine), "ChangeState")]
         static class PuppetStateMachine
         {
@@ -313,14 +328,14 @@ namespace OriCoop
         {
             if (__state != null)
             {
-                if (__state.Entered) P2Context.Exit();
+                if (__state.Entered) s_host.Exit();
                 s_active = __state.Previous; if (__state.PuppetAttack) s_attackDepth--;
             }
             return __exception;
         }
         static State Capture(Actor a, bool controller)
         {
-            State s = new State(); s.Tick = NetPlay.LocalTick; s.Generation = a.Generation;
+            State s = new State(); s.Tick = s_host.LocalTick; s.Generation = a.Generation;
             if (controller) { s.Applied = new ulong[a.Applied.Count]; a.Applied.CopyTo(s.Applied); }
             s.Position = a.Latest.Position; s.Health = a.Latest.Health;
             RespawningPlaceholder p = a.Placeholder;
@@ -361,46 +376,20 @@ namespace OriCoop
             }
             return s;
         }
-        static byte Flags(State s) { return (byte)((s.Alive ? 1 : 0) | (s.Killed ? 2 : 0) | (s.Left ? 4 : 0) | (s.NeedsRespawn ? 8 : 0) | (s.DealerActive ? 16 : 0) | (s.TargetActive ? 32 : 0)); }
-        static void ReadFlags(State s, byte f) { s.Alive = (f & 1) != 0; s.Killed = (f & 2) != 0; s.Left = (f & 4) != 0; s.NeedsRespawn = (f & 8) != 0; s.DealerActive = (f & 16) != 0; s.TargetActive = (f & 32) != 0; }
+        static EnemyVector ToWire(Vector3 v) { return new EnemyVector(v.x, v.y, v.z); }
+        static Vector3 FromWire(EnemyVector v) { return new Vector3(v.X, v.Y, v.Z); }
+        static readonly Func<string, ushort> s_wireSymbol = Symbol;
+        static readonly Func<ushort, string> s_wireRemoteSymbol = RemoteSymbol;
+        static byte Flags(State s) { return EnemyWire.Flags(s); }
         static void WriteState(BinaryWriter w, Actor a, State s, bool full)
         {
-            w.Write(s.Tick); w.Write(s.Generation); Vector3 delta = s.Position - a.Origin;
-            bool wide = Math.Abs(delta.x) > 327 || Math.Abs(delta.y) > 327 || Math.Abs(delta.z) > 327 || Math.Abs(s.Velocity.x) > 327 || Math.Abs(s.Velocity.y) > 327;
-            w.Write(wide);
-            if (wide) { WriteVector(w, s.Position); w.Write(s.Velocity.x); w.Write(s.Velocity.y); }
-            else { w.Write(Q(delta.x)); w.Write(Q(delta.y)); w.Write(Q(delta.z)); w.Write(Q(s.Velocity.x)); w.Write(Q(s.Velocity.y)); }
-            w.Write(s.Health); w.Write(Flags(s));
-            if (!full) { w.Write(Symbol(s.StateName)); w.Write(Symbol(s.Animation)); w.Write((ushort)(Math.Max(0, s.AnimationTime) * 1000f % 65536f)); }
-            else
-            {
-                w.Write(s.Respawn); w.Write(s.StateName); w.Write(s.Animation); w.Write(s.StateTime); w.Write(s.AnimationTime);
-                w.Write((ushort)s.Controller.Length); w.Write(s.Controller);
-                w.Write((ushort)s.TraceMovement.Length); w.Write(s.TraceMovement);
-                w.Write(s.Applied.Length); foreach (ulong id in s.Applied) w.Write(id);
-                w.Write((byte)(s.ShouldStomp ? 1 : 0));
-            }
-            w.Write((byte)(s.HasVisualAngle ? 1 : 0)); if (s.HasVisualAngle) w.Write(s.VisualAngle);
+            EnemyState wire = s; wire.Position = ToWire(s.Position); wire.VelocityX = s.Velocity.x; wire.VelocityY = s.Velocity.y;
+            EnemyWire.WriteState(w, ToWire(a.Origin), wire, full, s_wireSymbol);
         }
         static State ReadState(BinaryReader r, Actor a, bool full)
         {
-            State s = new State(); s.Tick = r.ReadUInt32(); s.Generation = r.ReadUInt32(); bool wide = r.ReadBoolean();
-            if (wide) { s.Position = ReadVector(r); s.Velocity = new Vector2(r.ReadSingle(), r.ReadSingle()); }
-            else { s.Position = a.Origin + new Vector3(r.ReadInt16() / 100f, r.ReadInt16() / 100f, r.ReadInt16() / 100f); s.Velocity = new Vector2(r.ReadInt16() / 100f, r.ReadInt16() / 100f); }
-            s.Health = r.ReadSingle(); ReadFlags(s, r.ReadByte());
-            if (!full) { s.StateName = RemoteSymbol(r.ReadUInt16()); s.Animation = RemoteSymbol(r.ReadUInt16()); s.AnimationTime = r.ReadUInt16() / 1000f; }
-            else
-            {
-                s.Respawn = r.ReadSingle(); s.StateName = r.ReadString(); s.Animation = r.ReadString(); s.StateTime = r.ReadSingle(); s.AnimationTime = r.ReadSingle();
-                int length = r.ReadUInt16(); if (length > 1024) throw new InvalidDataException("E3 controller too large");
-                s.Controller = r.ReadBytes(length); if (s.Controller.Length != length) throw new EndOfStreamException();
-                length = r.ReadUInt16(); if (length > 1024) throw new InvalidDataException("E3 movement too large");
-                s.TraceMovement = r.ReadBytes(length); if (s.TraceMovement.Length != length) throw new EndOfStreamException();
-                int hits = r.ReadInt32(); if (hits < 0 || hits > 65536) throw new InvalidDataException("E3 hit history too large");
-                s.Applied = new ulong[hits]; for (int i = 0; i < hits; i++) s.Applied[i] = r.ReadUInt64();
-                s.ShouldStomp = (r.ReadByte() & 1) != 0;
-            }
-            s.HasVisualAngle = (r.ReadByte() & 1) != 0; if (s.HasVisualAngle) s.VisualAngle = r.ReadSingle(); return s;
+            State s = new State(); EnemyWire.ReadState(r, ToWire(a.Origin), full, s_wireRemoteSymbol, s);
+            s.Position = FromWire(((EnemyState)s).Position); s.Velocity = new Vector2(s.VelocityX, s.VelocityY); return s;
         }
         static void SetPlaceholder(Actor a, State s)
         {
@@ -451,7 +440,7 @@ namespace OriCoop
                     DeathEffects++;
                 }
             }
-            catch (Exception e) { Plugin.Log.LogWarning("E3 puppet death effect failed: " + e); }
+            catch (Exception e) { Services.Log.Warn("E3 puppet death effect failed: " + e); }
             finally { s_puppetDeath = puppetDeath; s_applying = applying; }
         }
         [HarmonyPatch(typeof(OrbSpawner), "SpawnOrbs")]
@@ -459,65 +448,106 @@ namespace OriCoop
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool AcceptState(State prior, State next, bool newSource = false)
         {
-            return next.Generation > prior.Generation || (next.Generation == prior.Generation
-                && (newSource || (int)(next.Tick - prior.Tick) > 0) && (!prior.Killed || next.Killed));
+            return EnemyOwnership.AcceptState(prior.Generation, prior.Tick, prior.Killed, next.Generation, next.Tick, next.Killed, newSource);
         }
 
         static void Announce(Actor a)
         {
             Send(Presence, true, delegate(BinaryWriter w) { WriteId(w, a); WriteVector(w, a.Origin); w.Write(a.Loaded); });
-            a.SentLoaded = a.Loaded; a.SentPresence = true; a.NextPresence = Now + 2f;
+            a.PresenceSent(delegate { return Now; });
         }
         static void ReadPresence(BinaryReader r)
         {
-            Actor a = ReadId(r); a.Origin = ReadVector(r); a.RemoteLoaded = r.ReadBoolean();
-            if (!NetPlay.IsHost) return;
-            // Scan before granting: reliable explicit absence is the only permission for guest AI.
+            Actor a = ReadId(r); a.Origin = ReadVector(r); bool loaded = r.ReadBoolean();
+            if (!Services.Net.IsHost) return;
+            a.Presence(Services.Net.Sender, loaded);
+            // Position alone never grants authority: the chosen seat must report the scene loaded.
             Scan(); Decide(a);
         }
         static void Decide(Actor a)
         {
-            if (!NetPlay.IsHost || a.PendingTakeover) return;
-            bool desired = a.Loaded || !a.RemoteLoaded;
-            if (!a.Known) { a.Known = true; a.HostOwner = true; }
-            if (a.HostOwner == desired) { Grant(a, false); return; }
-            a.PendingEpoch = a.Epoch + 1;
-            if (!a.HostOwner)
+            if (EnemyAuthority.Policy.UsesLeases) { RefreshOwnership(a); return; }
+            if (!Services.Net.IsHost || a.PendingTakeover) return;
+            int desired = PolicyDesiredOwner(a);
+            int decision = a.BeginDecision(desired, s_host.LocalSeat);
+            if (decision == 0) { Grant(a, false); return; }
+            if (decision == 1)
             {
-                a.PendingTakeover = true; a.Frozen = true;
-                Send(Authority, true, delegate(BinaryWriter w) { WriteId(w, a); w.Write((byte)0); w.Write(a.PendingEpoch); });
+                Send(Authority, true, delegate(BinaryWriter w) { WriteId(w, a); EnemyWire.WriteAuthority(w, 0, a.PendingEpoch, desired); }, a.OwnerSeat);
             }
             else
             {
                 a.Latest = a.Loaded ? Capture(a, true) : a.Latest;
-                a.Frozen = true; a.HostOwner = false; a.Epoch = a.PendingEpoch;
-                a.ExpectFirstSnapshot = true; a.Buffer.Clear();
+                a.CompleteLocalTransfer(delegate { return Now; }); a.Buffer.Clear();
                 FreezeBodies(a); Grant(a, true); a.Frozen = false;
             }
-            Trace("owner change", a, "Decide desired=" + (desired ? "host" : "guest"));
+            Trace("owner change", a, "Decide desired=P" + desired);
+        }
+        static int PolicyDesiredOwner(Actor a)
+        { return EnemyAuthority.Policy.DesiredOwner(a.Key, delegate { return DesiredOwner(a); }); }
+        static void RefreshOwnership(Actor a)
+        {
+            if (!a.RefreshPolicy(a.Key)) return;
+            a.Buffer.Clear();
+            if (a.NeedsInitialLeaseState(s_host.LocalSeat))
+            {
+                if (a.SeedInitialLease(s_host.LocalSeat, a.Entity != null, delegate {
+                    a.Hits.Clear(); a.Applied.Clear(); a.Latest = Capture(a, true); SendLife(a, 1);
+                })) RestoreBodies(a);
+                // With no entity yet, preserve native checkpoint/respawn data until Bind captures it.
+                return;
+            }
+            if (a.Mine(s_host.LocalSeat)) Resume(a); else FreezeBodies(a);
+        }
+        static float OwnerDistance(Actor a, int seat, Vector3 position)
+        {
+            if (seat == s_host.LocalSeat) return a.Loaded && Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity;
+            Vector3 remote;
+            return a.LoadedSeats.Contains(seat) && s_host.RemotePos(seat, out remote) ? Vector3.Distance(position, remote) : float.PositiveInfinity;
+        }
+        static int DesiredOwner(Actor a)
+        {
+            int remoteCount = s_host.RemoteCount;
+            if (remoteCount <= 1)
+                return EnemyOwnership.DesiredOwner(remoteCount, a.Loaded, a.LoadedSeats, a.OwnerSeat, 1, null, a.OwnerChangedAt, null, null, null);
+            return DesiredMultiOwner(a, remoteCount);
+        }
+        static int DesiredMultiOwner(Actor a, int remoteCount)
+        {
+            Vector3 position = Mine(a) && a.Entity != null ? a.Entity.Position : a.Latest.Position;
+            return EnemyOwnership.DesiredOwner(remoteCount, a.Loaded, a.LoadedSeats, a.OwnerSeat, s_host.LocalSeat,
+                delegate { return Now; }, a.OwnerChangedAt, delegate(int seat) { return OwnerDistance(a, seat, position); },
+                delegate { return Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity; }, RemoteDistances(a, position));
+        }
+        static IEnumerable<KeyValuePair<int, float>> RemoteDistances(Actor a, Vector3 position)
+        {
+            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions)
+                if (a.LoadedSeats.Contains(remote.Key))
+                    yield return new KeyValuePair<int, float>(remote.Key, Vector3.Distance(position, remote.Value));
         }
         static void Grant(Actor a, bool transfer)
         {
             State s = Mine(a) && a.Placeholder != null ? Capture(a, true) : a.Latest;
             Send(Authority, true, delegate(BinaryWriter w) {
-                WriteId(w, a); w.Write((byte)1); w.Write(a.Epoch); w.Write(a.HostOwner); WriteVector(w, a.Origin); WriteState(w, a, s, true);
+                WriteId(w, a); EnemyWire.WriteAuthority(w, 1, a.Epoch, a.OwnerSeat); WriteVector(w, a.Origin); WriteState(w, a, s, true);
             });
         }
         static void ReadAuthority(BinaryReader r)
         {
-            Actor a = ReadId(r); byte operation = r.ReadByte(); uint epoch = r.ReadUInt32();
+            Actor a = ReadId(r); EnemyTransfer transfer = EnemyWire.ReadAuthority(r);
+            byte operation = transfer.Operation; uint epoch = transfer.Epoch; int owner = transfer.Owner;
             if (operation == 0)
             {
-                if (NetPlay.IsHost || epoch <= a.Epoch) return;
+                if (!a.CanFreeze(Services.Net.Sender, s_host.LocalSeat, epoch)) return;
                 State s = a.Placeholder != null ? Capture(a, true) : a.Latest;
                 a.Frozen = true; FreezeBodies(a);
-                Send(Handoff, true, delegate(BinaryWriter w) { WriteId(w, a); w.Write(epoch); WriteState(w, a, s, true); }); return;
+                Send(Handoff, true, delegate(BinaryWriter w) { WriteId(w, a); EnemyWire.WriteHandoff(w, epoch, owner); WriteState(w, a, s, true); }); return;
             }
-            bool host = r.ReadBoolean(); a.Origin = ReadVector(r); State state = ReadState(r, a, true);
-            if (NetPlay.IsHost || epoch < a.Epoch) return;
-            bool changed = !a.Known || a.HostOwner != host || epoch != a.Epoch;
-            if (!changed && !host) return; // A presence refresh cannot rewind the guest's own simulation.
-            a.Known = true; a.HostOwner = host; a.Epoch = epoch; a.Frozen = false;
+            a.Origin = ReadVector(r); State state = ReadState(r, a, true);
+            if (!a.CanAcceptGrant(Services.Net.IsHost, Services.Net.Sender, epoch)) return;
+            bool changed = a.GrantChanged(owner, epoch);
+            if (!changed && owner == s_host.LocalSeat) return; // A presence refresh cannot rewind the owner's simulation.
+            a.ApplyGrant(owner, epoch);
             ReceiveState(a, state, changed);
             if (changed && !Mine(a)) a.ExpectFirstSnapshot = true;
             if (Mine(a)) Resume(a); else FreezeBodies(a);
@@ -525,11 +555,31 @@ namespace OriCoop
         }
         static void ReadHandoff(BinaryReader r)
         {
-            Actor a = ReadId(r); uint epoch = r.ReadUInt32(); State s = ReadState(r, a, true);
-            if (!NetPlay.IsHost || !a.PendingTakeover || epoch != a.PendingEpoch) return;
-            a.HostOwner = true; a.Epoch = epoch; a.PendingTakeover = false;
-            ReceiveState(a, s, true); a.Frozen = false; Resume(a); Grant(a, true);
+            Actor a = ReadId(r); EnemyTransfer transfer = EnemyWire.ReadHandoff(r); uint epoch = transfer.Epoch; int owner = transfer.Owner; State s = ReadState(r, a, true);
+            if (!a.CanAcceptHandoff(Services.Net.IsHost, Services.Net.Sender, epoch, owner)) return;
+            a.CompleteHandoff(owner, epoch, delegate { return Now; });
+            ReceiveState(a, s, true); a.Frozen = false;
+            if (Mine(a)) Resume(a); else { a.ExpectFirstSnapshot = true; FreezeBodies(a); }
+            Grant(a, true);
             Trace("owner change", a, "ReadHandoff");
+        }
+        static void RemoveSeat(int seat)
+        {
+            List<uint> symbols = new List<uint>();
+            foreach (uint key in s_remoteSymbols.Keys) if ((key >> 16) == seat) symbols.Add(key);
+            foreach (uint key in symbols) s_remoteSymbols.Remove(key);
+            foreach (Actor a in new List<Actor>(s_actors.Values))
+            {
+                int left = a.SeatLeft(seat, Services.Net.IsHost, delegate { return Now; });
+                if (EnemyAuthority.Policy.UsesLeases) { RefreshOwnership(a); continue; }
+                if (!Services.Net.IsHost) continue;
+                if (left == 1)
+                {
+                    ReceiveState(a, a.Latest, true); a.Frozen = false; Resume(a); Grant(a, true);
+                }
+                else if (left == 2) Grant(a, true);
+                if (a.OwnerSeat != PolicyDesiredOwner(a)) Decide(a);
+            }
         }
         static void Resume(Actor a)
         {
@@ -569,7 +619,7 @@ namespace OriCoop
             for (int i = 0; i < count; i++)
             {
                 Actor a = ReadId(r); uint epoch = r.ReadUInt32(); State s = ReadState(r, a, false);
-                if (a.Known && !Mine(a) && !a.Frozen && a.Epoch == epoch && a.HostOwner != NetPlay.IsHost) ReceiveState(a, s, false, a.ExpectFirstSnapshot);
+                if (a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, true)) ReceiveState(a, s, false, a.ExpectFirstSnapshot);
             }
             BytesReceived += r.BaseStream.Position - before + 1;
         }
@@ -581,9 +631,8 @@ namespace OriCoop
         static void ReadLife(BinaryReader r)
         {
             Actor a = ReadId(r); uint epoch = r.ReadUInt32(); byte kind = r.ReadByte(); ulong hit = r.ReadUInt64(); a.Origin = ReadVector(r); State s = ReadState(r, a, true);
-            if (!a.Known || Mine(a) || a.Frozen || epoch != a.Epoch || a.HostOwner == NetPlay.IsHost) return;
-            if (s.Generation < a.Generation || (!a.ExpectFirstSnapshot && s.Generation == a.Generation && (int)(s.Tick - a.Latest.Tick) < 0)) return;
-            if (s.Generation == a.Generation && a.Latest.Killed && !s.Killed) return;
+            if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, true)) return;
+            if (!EnemyOwnership.AcceptLife(a.Generation, a.Latest.Tick, a.Latest.Killed, a.ExpectFirstSnapshot, s.Generation, s.Tick, s.Killed)) return;
             a.LastHit = hit; ReceiveState(a, s, true);
             if (kind == 2) a.DeathTime = Now;
         }
@@ -669,7 +718,7 @@ namespace OriCoop
             static bool Prefix(Entity __instance)
             {
                 Actor a = Active ? For(__instance) : null;
-                return a == null || !Mine(a) || !NetPlay.HaveRemotePos || Vector3.Distance(__instance.Position, NetPlay.LatestRemotePos) >= 28f;
+                return a == null || !Mine(a) || RemoteDistance(__instance.Position) >= 28f;
             }
         }
         [HarmonyPatch(typeof(NearSeinTrigger), "FixedUpdate")]
@@ -681,10 +730,10 @@ namespace OriCoop
                 __state = false; if (!Active) return true; Actor a = For(__instance);
                 if (a == null) return true;
                 if (a.Entity != null && Supported(a.Entity) && !Mine(a)) return false;
-                if (!P2Context.Inside && P2Context.P2IsNearer(__instance.transform.position)) { P2Context.Enter(); __state = true; }
+                if (!s_host.Inside && s_host.P2IsNearer(__instance.transform.position)) { s_host.Enter(s_host.NearestPuppet(__instance.transform.position)); __state = true; }
                 return true;
             }
-            static Exception Finalizer(Exception __exception, bool __state) { if (__state) P2Context.Exit(); return __exception; }
+            static Exception Finalizer(Exception __exception, bool __state) { if (__state) s_host.Exit(); return __exception; }
         }
         [HarmonyPatch(typeof(SeeSeinTrigger), "FixedUpdate")]
         static class EnemySeesPartner
@@ -695,7 +744,7 @@ namespace OriCoop
                 __state = false; if (!Active) return true; Actor a = For(__instance);
                 if (a == null) return true;
                 if (a.Entity != null && Supported(a.Entity) && !Mine(a)) return false;
-                if (!P2Context.Inside && P2Context.P2IsNearer(__instance.transform.position)) { P2Context.Enter(); __state = true; }
+                if (!s_host.Inside && s_host.P2IsNearer(__instance.transform.position)) { s_host.Enter(s_host.NearestPuppet(__instance.transform.position)); __state = true; }
                 return true;
             }
             static Exception Finalizer(Exception __exception, bool __state) { return ContextFinalizer(__exception, __state); }
@@ -708,10 +757,10 @@ namespace OriCoop
             {
                 __state = false; if (!Active) return true; Actor a = For(__instance); if (a == null) return true;
                 if (a.Entity != null && Supported(a.Entity) && !Mine(a)) return false;
-                Puppet nearest = Players.NearestPuppet(__instance.transform.position);
-                SeinCharacter player = nearest != null ? nearest.Sein : Local;
+                object nearest = s_host.NearestPuppet(__instance.transform.position);
+                SeinCharacter player = nearest != null ? s_host.PuppetSein(nearest) : Local;
                 s_horizontalPlayer.SetValue(__instance, player.Controller.Transform);
-                if (nearest != null && !P2Context.Inside) { P2Context.Enter(nearest); __state = true; }
+                if (nearest != null && !s_host.Inside) { s_host.Enter(nearest); __state = true; }
                 return true;
             }
             static Exception Finalizer(Exception __exception, bool __state) { return ContextFinalizer(__exception, __state); }
@@ -728,9 +777,9 @@ namespace OriCoop
             if (s_damage.TryGetValue(d, out s)) return s;
             s = new DamageStamp(); s.Id = NextId();
             GameObject sender = d.Sender; SpiritFlameProjectile flame = sender == null ? null : sender.GetComponent<SpiritFlameProjectile>();
-            s.Puppet = PlayerDamage(d.Type) && (s_attackDepth > 0 || P2Context.Inside
-                || (sender != null && (P2Context.BelongsToP2(sender.transform) || IsPuppetAttack(sender)))
-                || (flame != null && flame.Sein == P2Context.P2 && P2Context.P2 != null));
+            s.Puppet = PlayerDamage(d.Type) && (s_attackDepth > 0 || s_host.Inside
+                || (sender != null && (s_host.BelongsToP2(sender.transform) || IsPuppetAttack(sender)))
+                || (flame != null && s_host.IsRemoteSein(flame.Sein)));
             s_damage[d] = s; s_damageOrder.Enqueue(d);
             while (s_damageOrder.Count > 8192) s_damage.Remove(s_damageOrder.Dequeue());
             return s;
@@ -747,18 +796,20 @@ namespace OriCoop
         }
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool AcceptOwnerHit(Actor a, ulong hit) { return a.Applied.Add(hit); }
-        static void WriteDamage(BinaryWriter w, Damage d)
+        static OriCoop.Enemies.EnemyDamage ToWire(Damage d)
         {
-            w.Write(d.Amount); w.Write((int)d.Type); w.Write(d.Force.x); w.Write(d.Force.y); WriteVector(w, d.Position);
+            OriCoop.Enemies.EnemyDamage value = new OriCoop.Enemies.EnemyDamage(); value.Amount = d.Amount; value.Type = (int)d.Type;
+            value.ForceX = d.Force.x; value.ForceY = d.Force.y; value.Position = ToWire(d.Position); return value;
         }
+        static void WriteDamage(BinaryWriter w, Damage d) { EnemyWire.WriteDamage(w, ToWire(d)); }
         static Damage ReadDamage(BinaryReader r)
         { return ReadDamageValue(r, Local == null ? null : Local.gameObject); }
         static Damage ReadDamageValue(BinaryReader r, GameObject sender)
         {
-            float amount = r.ReadSingle(); DamageType type = (DamageType)r.ReadInt32(); Vector2 force = new Vector2(r.ReadSingle(), r.ReadSingle()); Vector3 pos = ReadVector(r);
-            if (float.IsNaN(amount) || float.IsInfinity(amount) || amount < 0) throw new InvalidDataException("E3 invalid damage");
-            return new Damage(amount, force, pos, type, sender);
+            return FromWire(EnemyWire.ReadDamage(r), sender);
         }
+        static Damage FromWire(OriCoop.Enemies.EnemyDamage d, GameObject sender)
+        { return new Damage(d.Amount, new Vector2(d.ForceX, d.ForceY), FromWire(d.Position), (DamageType)d.Type, sender); }
         static bool Route(Actor a, Damage d)
         {
             if (!Active || a == null) return true;
@@ -781,7 +832,7 @@ namespace OriCoop
                 if (Mine(a)) ApplyHit(a, p.Damage, p.Id);
                 else
                 {
-                    Send(Hit, true, delegate(BinaryWriter w) { WriteId(w, a); w.Write(a.Epoch); w.Write(p.Generation); w.Write(p.Id); WriteDamage(w, p.Damage); });
+                    SendHit(a, p.Generation, p.Id, p.Damage);
                     Trace("hit-send", a, "hit=" + p.Id + " sourceSeat=" + (p.Id >> 32) + " amount=" + p.Damage.Amount);
                 }
                 s_pendingHits.RemoveAt(i);
@@ -789,17 +840,24 @@ namespace OriCoop
         }
         static void ReadHit(BinaryReader r)
         {
-            Actor a = ReadId(r); uint epoch = r.ReadUInt32(), generation = r.ReadUInt32(); ulong id = r.ReadUInt64(); Damage d = ReadDamage(r);
+            Actor a = ReadId(r); EnemyHit hit = EnemyWire.ReadHit(r); uint epoch = hit.Epoch, generation = hit.Generation; ulong id = hit.Id;
+            Damage d = FromWire(hit.Damage, Local == null ? null : Local.gameObject);
             Trace("hit-recv", a, "hit=" + id + " sourceSeat=" + (id >> 32) + " amount=" + d.Amount);
-            if (generation != a.Generation || a.Applied.Contains(id)) return;
-            if (a.Frozen || (!Mine(a) && epoch < a.Epoch))
+            int decision = EnemyOwnership.HitDecision(a.Generation, generation, a.Applied.Contains(id), a.Frozen, Mine(a), epoch, a.Epoch, Services.Net.IsHost);
+            if (decision == 1)
             { if (!Remember(a, id)) return; PendingHit p = new PendingHit(); p.Actor = a; p.Generation = generation; p.Id = id; p.Damage = d; s_pendingHits.Add(p); return; }
-            if (Mine(a) && epoch == a.Epoch) ApplyHit(a, d, id);
+            if (decision == 2) ApplyHit(a, d, id);
+            else if (decision == 3 && Remember(a, id)) SendHit(a, generation, id, d);
+        }
+        static void SendHit(Actor a, uint generation, ulong id, Damage damage)
+        {
+            Send(Hit, true, delegate(BinaryWriter w) { WriteId(w, a); EnemyHit hit = new EnemyHit(); hit.Epoch = a.Epoch; hit.Generation = generation; hit.Id = id; hit.Damage = ToWire(damage); EnemyWire.WriteHit(w, hit); },
+                Services.Net.IsHost ? a.OwnerSeat : 0);
         }
         static void ApplyHit(Actor a, Damage damage, ulong id)
         {
             if (a.Entity == null || a.Entity.DamageReciever == null || a.Latest.Killed)
-            { Plugin.Log.LogWarning("net: E3 hit unavailable id=" + id + " " + Describe(a.Key)); return; }
+            { Services.Log.Warn("net: E3 hit unavailable id=" + id + " " + Describe(a.Key)); return; }
             if (a.Applied.Contains(id)) return;
             // Applying a network hit suppresses echoing, but never receiver deduplication. The
             // game's damage broadcast may re-enter this receiver through other components.
@@ -848,7 +906,7 @@ namespace OriCoop
                 float after = __instance == null ? float.NaN : __instance.Health;
                 Trace("damage", __state.Actor, "hit=" + __state.Id + " sourceSeat=" + (__state.Id >> 32)
                     + " amount=" + __state.Amount + " before=" + __state.Before + " after=" + after);
-                Plugin.Log.LogInfo("net: E3 damage hit=" + __state.Id + " amount=" + __state.Amount + " type=" + __state.Type
+                Services.Log.Info("net: E3 damage hit=" + __state.Id + " amount=" + __state.Amount + " type=" + __state.Type
                     + " before=" + __state.Before + " after=" + after + " delta=" + (__state.Before - after) + " " + Describe(__state.Actor.Key));
             }
         }
@@ -857,7 +915,17 @@ namespace OriCoop
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool InPartnerScreen(Vector3 position, Vector3 partner)
         { return Math.Abs(position.x - partner.x) <= 26f && Math.Abs(position.y - partner.y) <= 18f; }
-        static bool NearPartner(Vector3 position) { return NetPlay.HaveRemotePos && InPartnerScreen(position, NetPlay.LatestRemotePos); }
+        static bool NearPartner(Vector3 position)
+        {
+            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) if (InPartnerScreen(position, remote.Value)) return true;
+            return false;
+        }
+        static float RemoteDistance(Vector3 position)
+        {
+            float distance = float.PositiveInfinity;
+            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) distance = Mathf.Min(distance, Vector3.Distance(position, remote.Value));
+            return distance;
+        }
         static bool Protect(Actor a)
         { return a != null && Mine(a) && a.Entity != null && Supported(a.Entity) && !a.Latest.Killed && NearPartner(a.Entity.Position); }
         [HarmonyPatch(typeof(RespawningPlaceholder), "get_IsOnScreen")]
@@ -894,7 +962,7 @@ namespace OriCoop
                 Actor a = Track(__instance); if (a == null) return;
                 a.LastRemoval = __instance.EntityIsDead ? "death" : "destroy-instance alive";
                 Trace("despawn", a, a.LastRemoval);
-                Plugin.Log.LogInfo("net: E3 remove " + Describe(a.Key));
+                Services.Log.Info("net: E3 remove " + Describe(a.Key));
             }
         }
         [HarmonyPatch(typeof(RespawningPlaceholder), "UpdateSpawnState")]
@@ -920,7 +988,7 @@ namespace OriCoop
                 __state = Mine(a) && a.Entity != null && a.Entity.DamageReciever != null && a.Entity.DamageReciever.DeathAction != null;
                 a.LastDeath = damage.Type + ":" + damage.Amount;
                 Trace("death", a, "hit=" + a.LastHit + " type=" + damage.Type + " amount=" + damage.Amount);
-                Plugin.Log.LogInfo("net: E3 died hit=" + a.LastHit + " type=" + damage.Type + " amount=" + damage.Amount + " " + Describe(a.Key));
+                Services.Log.Info("net: E3 died hit=" + a.LastHit + " type=" + damage.Type + " amount=" + damage.Amount + " " + Describe(a.Key));
             }
             static void Postfix(RespawningPlaceholder __instance, bool __state)
             {
@@ -938,7 +1006,7 @@ namespace OriCoop
                 if (!Active) return; Actor a = Track(__instance); if (a == null) return;
                 if (Mine(a)) a.Latest = Capture(a, true);
                 a.Loaded = false; a.Placeholder = null; Announce(a);
-                if (NetPlay.IsHost) Decide(a);
+                if (Services.Net.IsHost) Decide(a);
             }
         }
 
@@ -961,7 +1029,7 @@ namespace OriCoop
             if (playerAttack)
             {
                 PuppetAttack tag = instance.GetComponent<PuppetAttack>(); if (tag == null) tag = instance.AddComponent<PuppetAttack>();
-                tag.IsPuppet = s_attackDepth > 0 || (P2Context.Inside && s_active == null);
+                tag.IsPuppet = s_attackDepth > 0 || (s_host.Inside && s_active == null);
             }
             Projectile projectile = instance.GetComponent<Projectile>();
             if (s_active == null || !Mine(s_active) || prefab == null) return;
@@ -1000,7 +1068,7 @@ namespace OriCoop
             Actor a = ReadId(r); uint epoch = r.ReadUInt32(); ulong id = r.ReadUInt64(); string name = r.ReadString();
             Vector3 position = ReadVector(r); Quaternion rotation = new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
             float damage = r.ReadSingle();
-            if (!a.Known || Mine(a) || epoch != a.Epoch) return;
+            if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, false)) return;
             GameObject prefab;
             if (!s_fxPrefabs.TryGetValue(name, out prefab) || prefab == null)
             {
@@ -1051,8 +1119,10 @@ namespace OriCoop
                 ProjectileIdentity tag = p.GetComponent<ProjectileIdentity>(); if (tag == null) tag = p.gameObject.AddComponent<ProjectileIdentity>();
                 tag.Cosmetic = false; string prefab = PrefabKey(shot.Prefab); s_prefabs[prefab] = shot.Prefab;
                 DamageDealer dealer = p.GetComponent<DamageDealer>(); float damage = dealer == null ? 0 : dealer.Damage; DamageType type = dealer == null ? DamageType.Projectile : dealer.DamageType;
-                Send(Shot, true, delegate(BinaryWriter w) { WriteId(w, shot.Actor); w.Write(shot.Actor.Epoch); w.Write(tag.Id); w.Write(prefab);
-                    WriteVector(w, p.Position); WriteVector(w, p.SpeedVector); w.Write(p.Gravity); w.Write(p.MaximumLiveTime); w.Write(damage); w.Write((int)type); });
+                Send(Shot, true, delegate(BinaryWriter w) { WriteId(w, shot.Actor); EnemyShot value = new EnemyShot();
+                    value.Epoch = shot.Actor.Epoch; value.Id = tag.Id; value.Prefab = prefab; value.Position = ToWire(p.Position);
+                    value.Velocity = ToWire(p.SpeedVector); value.Gravity = p.Gravity; value.Lifetime = p.MaximumLiveTime;
+                    value.Damage = damage; value.Type = (int)type; EnemyWire.WriteShot(w, value); });
             }
             s_shots.Clear();
         }
@@ -1070,9 +1140,10 @@ namespace OriCoop
         }
         static void ReadShot(BinaryReader r)
         {
-            Actor a = ReadId(r); uint epoch = r.ReadUInt32(); ulong id = r.ReadUInt64(); string key = r.ReadString(); Vector3 pos = ReadVector(r), velocity = ReadVector(r);
-            float gravity = r.ReadSingle(), lifetime = r.ReadSingle(), damage = r.ReadSingle(); DamageType type = (DamageType)r.ReadInt32();
-            if (!a.Known || Mine(a) || epoch != a.Epoch) return;
+            Actor a = ReadId(r); EnemyShot shot = EnemyWire.ReadShot(r); uint epoch = shot.Epoch; ulong id = shot.Id; string key = shot.Prefab;
+            Vector3 pos = FromWire(shot.Position), velocity = FromWire(shot.Velocity);
+            float gravity = shot.Gravity, lifetime = shot.Lifetime, damage = shot.Damage; DamageType type = (DamageType)shot.Type;
+            if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, false)) return;
             GameObject prefab = FindPrefab(key);
             if (prefab == null) { UnresolvedProjectiles++; Warn("projectile prefab unresolved " + key + "; owner hit forwarding remains active"); return; }
             s_spawning = true;
@@ -1097,9 +1168,10 @@ namespace OriCoop
             {
                 if (!Active || s_applying) return true;
                 ProjectileIdentity tag = ProjectileTag(damage); if (tag == null || tag.Id == 0) return true;
-                if (P2Context.BelongsToP2(__instance))
+                if (s_host.BelongsToP2(__instance))
                 {
-                    if (!tag.Cosmetic) Send(OriHit, true, delegate(BinaryWriter w) { w.Write(tag.Id); WriteDamage(w, damage); });
+                    int victim = s_host.SeatOf(__instance);
+                    if (!tag.Cosmetic) Send(OriHit, true, delegate(BinaryWriter w) { w.Write((byte)victim); w.Write(tag.Id); WriteDamage(w, damage); }, Services.Net.IsHost ? victim : 0);
                     return false; // NetPlay's existing invulnerability stays in place.
                 }
                 return s_victimHits.Add(tag.Id);
@@ -1113,12 +1185,17 @@ namespace OriCoop
                 if (!Active) return true; ProjectileIdentity tag = __instance.GetComponentInParent<ProjectileIdentity>();
                 if (tag == null || !tag.Cosmetic) return true;
                 SeinDamageReciever victim = target == null ? null : target.GetComponent<SeinDamageReciever>();
-                return victim != null && !P2Context.BelongsToP2(victim);
+                return victim != null && !s_host.BelongsToP2(victim);
             }
         }
         static void ReadOriHit(BinaryReader r)
         {
-            ulong id = r.ReadUInt64(); Damage d = ReadDamage(r);
+            int victim = r.ReadByte(); ulong id = r.ReadUInt64(); Damage d = ReadDamage(r);
+            if (victim != s_host.LocalSeat)
+            {
+                if (Services.Net.IsHost) Send(OriHit, true, w => { w.Write((byte)victim); w.Write(id); WriteDamage(w, d); }, victim);
+                return;
+            }
             if (Local == null || !s_victimHits.Add(id)) return;
             s_applying = true; try { Local.Mortality.DamageReciever.OnRecieveDamage(d); } finally { s_applying = false; }
         }
@@ -1136,30 +1213,34 @@ namespace OriCoop
         }
         static void ReleasePins()
         {
-            if (Scenes.Manager != null && s_havePin)
+            if (Scenes.Manager != null && s_pinPositions.Count > 0)
             {
                 Dictionary<SceneManagerScene, bool> before = new Dictionary<SceneManagerScene, bool>();
                 foreach (SceneManagerScene scene in Scenes.Manager.ActiveScenes) before[scene] = scene.PreventUnloading;
-                Scenes.Manager.AllowUnloadingOnScenes(s_pinPosition);
+                foreach (Vector3 position in s_pinPositions) Scenes.Manager.AllowUnloadingOnScenes(position);
                 foreach (KeyValuePair<SceneManagerScene, bool> pair in before) pair.Key.PreventUnloading = pair.Value;
             }
             foreach (KeyValuePair<SceneManagerScene, bool> pair in s_pins) if (pair.Key != null) pair.Key.PreventUnloading = pair.Value;
-            s_pins.Clear(); s_havePin = false; KeptScenes = 0;
+            s_pins.Clear(); s_pinPositions.Clear(); KeptScenes = 0;
         }
         static void StreamPartner()
         {
-            if (!NetPlay.IsHost || !NetPlay.HaveRemotePos || Scenes.Manager == null) return;
+            if (!Services.Net.IsHost || Scenes.Manager == null) return;
             System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
-            ReleasePins(); s_pinPosition = NetPlay.LatestRemotePos; s_havePin = true;
-            Rect rect = new Rect(s_pinPosition.x - 22f, s_pinPosition.y - 14f, 44f, 28f);
+            ReleasePins();
             Dictionary<SceneManagerScene, bool> before = new Dictionary<SceneManagerScene, bool>();
             foreach (SceneManagerScene scene in Scenes.Manager.ActiveScenes) before[scene] = scene.PreventUnloading;
-            Scenes.Manager.AdditivelyLoadScenesInsideRect(rect, true, true, true);
-            foreach (SceneManagerScene scene in Scenes.Manager.ActiveScenes)
+            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions)
             {
-                if (scene.MetaData == null || !scene.MetaData.IsInTotal(rect)) continue;
-                bool original; if (!before.TryGetValue(scene, out original)) original = false;
-                s_pins[scene] = original; scene.PreventUnloading = true;
+                s_pinPositions.Add(remote.Value);
+                Rect rect = new Rect(remote.Value.x - 22f, remote.Value.y - 14f, 44f, 28f);
+                Scenes.Manager.AdditivelyLoadScenesInsideRect(rect, true, true, true);
+                foreach (SceneManagerScene scene in Scenes.Manager.ActiveScenes)
+                {
+                    if (scene.MetaData == null || !scene.MetaData.IsInTotal(rect) || s_pins.ContainsKey(scene)) continue;
+                    bool original; if (!before.TryGetValue(scene, out original)) original = false;
+                    s_pins[scene] = original; scene.PreventUnloading = true;
+                }
             }
             // Included background/collision scenes must stay active as well as their parent scene.
             foreach (SceneManagerScene scene in new List<SceneManagerScene>(s_pins.Keys))
@@ -1168,7 +1249,11 @@ namespace OriCoop
                         if (included.MetaData != null && included.MetaData.SceneMoonGuid == id && !s_pins.ContainsKey(included))
                         { bool original; if (!before.TryGetValue(included, out original)) original = false; s_pins[included] = original; included.PreventUnloading = true; }
             Vector3 localTarget = Scenes.Manager.CurrentCameraTargetPosition;
-            try { Scenes.Manager.SetTargetPositions(s_pinPosition); Scenes.Manager.EnableDisabledScenesAtPosition(false); }
+            try
+            {
+                foreach (Vector3 position in s_pinPositions)
+                { Scenes.Manager.SetTargetPositions(position); Scenes.Manager.EnableDisabledScenesAtPosition(false); }
+            }
             finally { Scenes.Manager.SetTargetPositions(localTarget); Scenes.Manager.UpdatePosition(); }
             foreach (SceneManagerScene scene in s_pins.Keys) scene.PreventUnloading = true;
             KeptScenes = s_pins.Count;
@@ -1178,14 +1263,17 @@ namespace OriCoop
         static class PartnerSceneFocus
         {
             static void Postfix(List<Vector3> ___m_cameraPositions)
-            { if (Active && NetPlay.IsHost && NetPlay.HaveRemotePos) ___m_cameraPositions.Add(NetPlay.LatestRemotePos); }
+            {
+                if (Active && Services.Net.IsHost)
+                    foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) ___m_cameraPositions.Add(remote.Value);
+            }
         }
         [HarmonyPatch(typeof(ScenesManager), "UnloadScene")]
         static class PartnerSceneKeepActive
         {
             static bool Prefix(SceneManagerScene scene, ref bool __result)
             {
-                if (!Active || !NetPlay.IsHost || !s_pins.ContainsKey(scene) || scene.MetaData == null || !scene.MetaData.CanBeLoaded) return true;
+                if (!Active || !Services.Net.IsHost || !s_pins.ContainsKey(scene) || scene.MetaData == null || !scene.MetaData.CanBeLoaded) return true;
                 __result = false; return false;
             }
         }
@@ -1193,8 +1281,8 @@ namespace OriCoop
         {
             if (!Active) return;
             if (DifficultyController.Instance != null && s_difficulty != DifficultyController.Instance.Difficulty)
-            { s_difficulty = DifficultyController.Instance.Difficulty; Plugin.Log.LogInfo("E3T difficulty=" + s_difficulty); }
-            if (!SaveSync.Ready || Local == null) return;
+            { s_difficulty = DifficultyController.Instance.Difficulty; Services.Log.Info("E3T difficulty=" + s_difficulty); }
+            if (!Services.Session.Ready || Local == null) return;
             if (Now >= s_streamAt) { s_streamAt = Now + 0.5f; StreamPartner(); }
             if (Now >= s_scanAt)
             {
@@ -1206,8 +1294,14 @@ namespace OriCoop
                         if (Mine(a)) a.Latest = Capture(a, true);
                         a.Placeholder = null;
                     }
-                    if (!a.SentPresence || a.SentLoaded != a.Loaded || Now >= a.NextPresence) Announce(a);
-                    if (NetPlay.IsHost && a.HostOwner != (a.Loaded || !a.RemoteLoaded)) Decide(a);
+                    if (a.PresenceDue(delegate { return Now; })) Announce(a);
+                    if (EnemyAuthority.Policy.UsesLeases)
+                    {
+                        Vector3 position = a.Entity != null ? a.Entity.Position : a.Origin;
+                        a.UpdateInterest(a.Key, Vector3.Distance(position, Local.Position), a.SceneRadius);
+                        RefreshOwnership(a);
+                    }
+                    else if (Services.Net.IsHost && a.OwnerSeat != PolicyDesiredOwner(a)) Decide(a);
                 }
             }
             float dt = Mathf.Max(0, Now - s_tokenTime); s_tokenTime = Now; s_tokens = Mathf.Min(Budget / 4f, s_tokens + dt * Budget);
@@ -1215,7 +1309,7 @@ namespace OriCoop
             foreach (Actor a in s_actors.Values)
             {
                 if (a.Entity != null && Now >= a.NextTrace && (Vector3.Distance(a.Entity.Position, Local.Position) <= 30f
-                    || (NetPlay.HaveRemotePos && Vector3.Distance(a.Entity.Position, NetPlay.LatestRemotePos) <= 30f)))
+                    || RemoteDistance(a.Entity.Position) <= 30f))
                 {
                     a.NextTrace = Now + 1f;
                     Trace("state", a, Mine(a) ? "velocity=" + Capture(a, false).Velocity.ToString("F1") : "age=" + (Now - a.Arrival).ToString("F2"));
@@ -1224,10 +1318,11 @@ namespace OriCoop
                 {
                     if (a.RestoreController != null) Resume(a);
                     if (a.Loaded && a.Placeholder != null && a.Placeholder.CurrentEntity == null && !a.Placeholder.EntityIsDead
-                        && NetPlay.HaveRemotePos && Vector3.Distance(a.Origin, NetPlay.LatestRemotePos) < 26f)
+                        && RemoteDistance(a.Origin) < 26f)
                     { a.Placeholder.Spawn(); Bind(a); }
                     if (a.Entity == null || a.Placeholder == null || !a.Loaded) continue;
-                    float distance = NetPlay.HaveRemotePos ? Vector3.Distance(a.Entity.Position, NetPlay.LatestRemotePos) : 50f;
+                    float distance = RemoteDistance(a.Entity.Position);
+                    if (float.IsPositiveInfinity(distance)) distance = 50f;
                     if (distance < 28f && !a.Entity.InsideFrustum) a.Entity.OnFrustumEnter();
                     a.Priority += dt * (1f + 40f / (distance + 2f) + (a.Entity.IsOnScreen() ? 2f : 0f));
                     if (Now - a.LastSent >= 0.049f) candidates.Add(a);
@@ -1248,12 +1343,13 @@ namespace OriCoop
             FlushHits(); FlushShots();
             for (int i = s_copies.Count - 1; i >= 0; i--)
             { ProjectileIdentity p = s_copies[i]; if (p == null || Now >= p.Expires || !p.gameObject.activeInHierarchy) { if (p != null && p.gameObject.activeInHierarchy) InstantiateUtility.Destroy(p.gameObject); s_copies.RemoveAt(i); } }
-            if (Now >= s_logAt) { s_logAt = Now + 5f; Plugin.Log.LogInfo("E3 " + Diagnostics()); }
+            if (Now >= s_logAt) { s_logAt = Now + 5f; Services.Log.Info("E3 " + Diagnostics()); }
         }
         public static string Diagnostics() { return "actors=" + s_actors.Count + " ownerOnlyNoPlaceholder=" + Unmirrored + " scenesKept=" + KeptScenes + " streamMs=" + StreamMilliseconds.ToString("F2") + " txBytes=" + BytesSent + " rxSnapshotBytes=" + BytesReceived + " projectileUnresolved=" + UnresolvedProjectiles; }
         public struct Probe
         {
             public bool Present, Known, Owner, Dead, HasSnapshot, Mirrored, PlaceholderLoaded; public uint Epoch, Generation;
+            public int OwnerSeat;
             public string ClassName, StateName, LiveState, SceneName, LastRemoval, LastDeath;
             public float Health, DeathTime, RenderTick; public Vector3 Position, OwnerPosition, Origin;
         }
@@ -1333,7 +1429,7 @@ namespace OriCoop
         {
             Probe p = new Probe(); p.Health = float.NaN; Actor a;
             if (string.IsNullOrEmpty(key) || !s_actors.TryGetValue(key, out a)) return p;
-            p.Present = a.Entity != null && a.Entity.gameObject.activeInHierarchy; p.Known = a.Known; p.Owner = Mine(a); p.Epoch = a.Epoch;
+            p.Present = a.Entity != null && a.Entity.gameObject.activeInHierarchy; p.Known = a.Known; p.Owner = Mine(a); p.OwnerSeat = a.OwnerSeat; p.Epoch = a.Epoch;
             p.Dead = a.Latest.Killed; p.Health = a.Entity != null && a.Entity.DamageReciever != null ? a.Entity.DamageReciever.Health : a.Latest.Health;
             if (!p.Present && !p.Dead) p.Health = float.NaN;
             p.Origin = a.Origin; p.ClassName = a.ClassName; p.SceneName = a.SceneName; p.LastRemoval = a.LastRemoval; p.LastDeath = a.LastDeath;
@@ -1364,12 +1460,12 @@ namespace OriCoop
         {
             Actor a; if (string.IsNullOrEmpty(key) || !s_actors.TryGetValue(key, out a) || a.Entity == null) return "no entity";
             Enemy e = a.Entity; JumperEnemy j = e as JumperEnemy;
-            Puppet near = Players.NearestPuppet(e.Position);
+            object near = s_host.NearestPuppet(e.Position);
             return "active=" + e.gameObject.activeInHierarchy + " suspended=" + e.IsSuspended + " frustum=" + e.InsideFrustum
                 + " mNearSein=" + (e.Controller == null ? "-" : s_nearSein.GetValue(e.Controller).ToString())
-                + " p2Nearer=" + P2Context.P2IsNearer(e.Position) + " remoteDist=" + (NetPlay.HaveRemotePos ? Vector3.Distance(e.Position, NetPlay.LatestRemotePos).ToString("F1") : "-")
+                + " p2Nearer=" + s_host.P2IsNearer(e.Position) + " remoteDist=" + (float.IsPositiveInfinity(RemoteDistance(e.Position)) ? "-" : RemoteDistance(e.Position).ToString("F1"))
                 + " localDist=" + (Local == null ? "-" : Vector3.Distance(e.Position, Local.Position).ToString("F1"))
-                + " puppetCanMove=" + (near == null || near.Sein == null ? "-" : near.Sein.Controller.CanMove.ToString())
+                + " puppetCanMove=" + (near == null || s_host.PuppetSein(near) == null ? "-" : s_host.PuppetSein(near).Controller.CanMove.ToString())
                 + (j == null ? "" : " chargeRange=" + j.Settings.ChargeRange + " outOfZone=" + j.OutOfJumpingZone() + " stomp=" + j.Settings.HasStompExplosion);
         }
         public static string FindTestEnemyOfClass(Vector3 near, string className, HashSet<string> rejected)

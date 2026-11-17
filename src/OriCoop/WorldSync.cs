@@ -64,6 +64,11 @@ namespace OriCoop
         static float s_digestResyncAt, s_digestBackoff = DigestBackoffMin;
         const float DigestBackoffMin = 10f, DigestBackoffMax = 60f;
         public static int DigestResyncs, DigestResyncsDeferred;
+        // A single mismatching round is usually a change still in flight (the digest crossed e.g. a "pedestal play"
+        // message, or one PC loaded a scene a moment earlier); only a mismatch in two consecutive rounds (~5 s apart)
+        // requests a full resync.
+        static int s_mismatchStreak;
+        public static int DigestMismatchesIgnored;
         public static bool Applying;
         public static bool LastDigestMatch;
         public static float LastDigestAt;
@@ -100,7 +105,7 @@ namespace OriCoop
             s_pendingSnapshots.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             s_digestSequence = s_receivedDigest = 0;
-            s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin;
+            s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; s_mismatchStreak = 0;
         }
 
         public static void Tick()
@@ -831,13 +836,18 @@ namespace OriCoop
             Plugin.Log.LogInfo(LastDigestMatch ? "net: world digest match" : "net: world digest MISMATCH "
                 + localCount + " objects (remote=" + count + ", world=" + localHash.ToString("X16") + "/"
                 + hash.ToString("X16") + ", progress=" + ProgressSync.Hash().ToString("X16") + "/" + progress.ToString("X16") + ")");
-            if (LastDigestMatch) { s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; }
+            if (LastDigestMatch) { s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; s_mismatchStreak = 0; }
+            else if (!NetPlay.IsHost && ++s_mismatchStreak < 2)
+            {
+                DigestMismatchesIgnored++;
+                Plugin.Log.LogInfo("net: digest mismatch once; resync only if the next round still differs");
+            }
             else if (!NetPlay.IsHost)
             {
                 float now = Time.realtimeSinceStartup;
                 if (now >= s_digestResyncAt)
                 {
-                    DigestResyncs++; RequestResync("digest mismatch");
+                    DigestResyncs++; s_mismatchStreak = 0; RequestResync("digest mismatch");
                     s_digestResyncAt = now + s_digestBackoff; s_digestBackoff = Mathf.Min(DigestBackoffMax, s_digestBackoff * 2f);
                 }
                 else

@@ -8,10 +8,14 @@ using Game;
 using HarmonyLib;
 using UnityEngine;
 
+using OriCoop.Seams;
+using OriCoop.Rules;
+
 namespace OriCoop
 {
     public static class SessionRules
     {
+        internal static IRulesHost Host { get; private set; }
         const byte MenuMessage = 53;
         sealed class MenuDebt
         {
@@ -25,33 +29,53 @@ namespace OriCoop
         static List<ISuspendable> s_remoteHeld;
         static readonly FieldInfo RegisteredField = AccessTools.Field(typeof(SuspensionManager), "s_suspendedIterate");
         public static bool PausedByPartner { get { return s_remoteHeld != null; } }
-        public static bool LocalPaused { get { return Online && s_paused; } }
+        public static bool LocalPaused { get { return MenuPresence.LocalPaused(Online, s_paused); } }
         public static int RemotePauses;
         static SeinCharacter s_held, s_dead;
         static Vector3 s_anchor;
         static float s_respawnAt;
-        public static bool PartnerInMenu;
+        static readonly MenuPresence s_menuSeats = new MenuPresence();
+        public static bool PartnerInMenu
+        {
+            get { return s_menuSeats.HasPartner(Host.LocalSeat); }
+        }
+        public static bool InMenu(int seat) { return s_menuSeats.InMenu(seat); }
+        public static string PauseText
+        {
+            get
+            {
+                int first = s_menuSeats.FirstSeat;
+                return first == 0 ? "" : Host.Format("pause.by", "P" + first);
+            }
+        }
         public static int Disconnects, Sessions;
         public static int GuardedShaderWrites;
         static readonly HashSet<string> ShaderCallers = new HashSet<string>();
         public static bool Respawning { get { return s_dead != null; } }
-        static bool Online { get { return NetPlay.Enabled && NetPlay.Connected; } }
-        static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
-        public static bool LocalLocked { get { return Online && (s_menu || Respawning || StorySync.Watching); } }
+        static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
+        static SeinCharacter Own { get { return Host.P1 != null ? Host.P1 : Characters.Sein; } }
+        public static bool LocalLocked { get { return Online && (s_menu || Respawning || Host.StoryWatching); } }
 
         public static void Init()
         {
-            NetPlay.On(MenuMessage, delegate(BinaryReader r) { PartnerInMenu = r.ReadBoolean(); });
-            NetPlay.SessionStarted += Started; NetPlay.SessionEnded += Ended;
-            StorySync.Init();
+            Host = new GameRulesHost();
+            Services.Net.On(MenuMessage, delegate(BinaryReader r)
+            {
+                s_menuSeats.Receive(Services.Net.Sender, r);
+            });
+            Services.Net.SessionStarted += Started; Services.Net.SessionEnded += Ended;
+            Services.Net.PlayerLeft += delegate(int seat) { s_menuSeats.Set(seat, false); };
+            Services.Net.PlayerJoined += delegate(int seat)
+            { RefreshMenu(); if (s_paused) Services.Net.Send(MenuMessage, true, w => w.Write(true)); };
+            Host.InitStory();
         }
         static void Started()
         {
             PruneScreens();
             ReleaseRemotePause(false);
-            Sessions++; PartnerInMenu = false; s_reported = false;
-            s_hold = false; s_held = null; StorySync.Reset();
-            NetHud.OnSessionStarted();
+            Sessions++; s_menuSeats.Clear(); s_reported = false;
+            s_hold = false; s_held = null; Host.ResetStory();
+            Host.SessionStarted();
             // A menu/focus screen opened offline owns a real suspend reference. Retire exactly that
             // reference now and remember that its eventual close must no longer Resume it.
             foreach (MenuDebt d in Menus.Values)
@@ -64,10 +88,10 @@ namespace OriCoop
         static void Ended()
         {
             ReleaseRemotePause(false);
-            Disconnects++; PartnerInMenu = false; s_menu = s_paused = s_reported = s_hold = false; s_held = null;
-            StorySync.Reset();
+            Disconnects++; s_menuSeats.Clear(); s_menu = s_paused = s_reported = s_hold = false; s_held = null;
+            Host.ResetStory();
             if (s_dead != null) RespawnGuest(false);
-            NetHud.OnSessionEnded();
+            Host.SessionEnded();
             // Keep the skip ledger until the corresponding close, even when disconnected.
         }
         static void MenuSuspend(HashSet<ISuspendable> excluded, MenuScreenManager menu)
@@ -115,19 +139,25 @@ namespace OriCoop
                 if (pair.Key != null && pair.Key.MainMenuVisible && pair.Value.Skipped + pair.Value.Vanilla > 0)
                 { s_menu = true; if (pair.Value.Vanilla > 0) s_paused = true; }
             foreach (ResumeGameController screen in Focus.Keys) if (screen != null) s_menu = true;
+            s_menuSeats.Set(Host.LocalSeat, s_paused);
             // MenuMessage now means "this player explicitly paused": only a menu that really
             // suspended this game counts. Focus loss never pauses online (SessionScreens).
             if (Online && s_paused != s_reported)
             {
                 s_reported = s_paused;
                 bool paused = s_paused;
-                NetPlay.Send(MenuMessage, true, delegate(BinaryWriter w) { w.Write(paused); });
+                Services.Net.Send(MenuMessage, true, delegate(BinaryWriter w) { w.Write(paused); });
             }
         }
         static void ApplyRemotePause()
         {
-            bool want = Online && PartnerInMenu && SaveSync.Ready && Characters.Sein != null && !Respawning
-                && NetPlay.LocalInGameplay();
+            bool online = Online;
+            bool partner = online && PartnerInMenu;
+            bool ready = partner && Services.Session.Ready;
+            bool hasPlayer = ready && Characters.Sein != null;
+            bool respawning = hasPlayer && Respawning;
+            bool gameplay = hasPlayer && !respawning && Services.Session.LocalInGameplay;
+            bool want = MenuPresence.WantRemotePause(online, partner, ready, hasPlayer, respawning, gameplay);
             if (want == (s_remoteHeld != null)) return;
             if (!want) { ReleaseRemotePause(Online); return; }
             // Freeze everything the pause menu would freeze, but leave the menu hierarchy running
@@ -139,15 +169,15 @@ namespace OriCoop
             foreach (ISuspendable s in all)
                 if (s as Component != null && !keep.Contains(s)) { SuspensionManager.Suspend(s); s_remoteHeld.Add(s); }
             RemotePauses++;
-            Plugin.Log.LogInfo("net: partner paused the game; suspended " + s_remoteHeld.Count + " objects here");
+            Services.Log.Info("net: a player paused the game; suspended " + s_remoteHeld.Count + " objects here");
         }
         static void ReleaseRemotePause(bool announce)
         {
             if (s_remoteHeld == null) return;
             List<ISuspendable> held = s_remoteHeld; s_remoteHeld = null;
             foreach (ISuspendable s in held) if (s as Component != null) SuspensionManager.Resume(s);
-            Plugin.Log.LogInfo("net: remote pause released (" + held.Count + " objects)");
-            if (announce && !PartnerInMenu) NetHud.Toast(L10n.T("session.resumed"));
+            Services.Log.Info("net: remote pause released (" + held.Count + " objects)");
+            if (announce && !PartnerInMenu) Host.Toast(Host.Text("session.resumed"));
         }
         static void PruneScreens()
         {
@@ -169,14 +199,21 @@ namespace OriCoop
             }
             if (focus.Count > 0 && Focus.Count == 0) ResumeGameController.IsGameSuspended = false;
         }
+        static readonly Action s_refreshMenu = RefreshMenu, s_respawnGuest = RespawnGuestIfDue;
+        static readonly Action s_remotePause = ApplyRemotePause, s_screensTick = SessionScreens.Tick;
+        static readonly Action s_storyTick = TickStory, s_holdLocal = HoldLocal;
+        static void TickStory() { Host.TickStory(); }
+
         public static void Tick()
         {
-            RefreshMenu();
-            if (s_dead != null && Time.realtimeSinceStartup >= s_respawnAt) RespawnGuest(Online);
-            ApplyRemotePause();
-            SessionScreens.Tick();
-            StorySync.Tick(); HoldLocal();
+            SubsystemGuard.Run("SessionRules.RefreshMenu", s_refreshMenu);
+            SubsystemGuard.Run("SessionRules.RespawnGuest", s_respawnGuest);
+            SubsystemGuard.Run("SessionRules.ApplyRemotePause", s_remotePause);
+            SubsystemGuard.Run("SessionScreens.Tick", s_screensTick);
+            SubsystemGuard.Run("StorySync.Tick", s_storyTick);
+            SubsystemGuard.Run("SessionRules.HoldLocal", s_holdLocal);
         }
+        static void RespawnGuestIfDue() { if (s_dead != null && Time.realtimeSinceStartup >= s_respawnAt) RespawnGuest(Online); }
         static void HoldLocal()
         {
             SeinCharacter own = Own;
@@ -188,7 +225,7 @@ namespace OriCoop
         public static bool HandleOwnDeathOnline(SeinDamageReciever receiver)
         {
             SeinCharacter own = Own;
-            if (!Online || own == null || receiver != own.Mortality.DamageReciever || NetPlay.IsHost) return false;
+            if (!Online || own == null || receiver != own.Mortality.DamageReciever || Services.Net.IsHost) return false;
             if (s_dead != null) return true;
             // Skip the entire vanilla OnKill: no DisableLate, OnPlayerDeath, or restore coroutine
             // is allowed to rewind the guest's copy. Only our short fade owns this local death.
@@ -202,7 +239,17 @@ namespace OriCoop
             SeinCharacter own = s_dead; s_dead = null; s_hold = false;
             if (own == null) return;
             own.Active = true;
-            if (besideHost && NetPlay.HaveRemotePos) Plugin.Teleport(own, NetPlay.LatestRemotePos + Vector3.right);
+            if (besideHost)
+            {
+                Vector3 position;
+                if (!Revive.IsDowned(Revive.SeinAt(1)) && Host.RemotePos(1, out position))
+                    Host.Teleport(own, position + Vector3.right);
+                else
+                {
+                    SeinCharacter teammate = Revive.NearestLiving(own.Position, own);
+                    if (teammate != null) Host.Teleport(own, teammate.Position + Vector3.right);
+                }
+            }
             own.Speed = Vector3.zero; own.Mortality.DamageReciever.enabled = true;
             own.Mortality.Health.RestoreAllHealth();
             own.Mortality.DamageReciever.SpriteMaterialTintColor(new Color(0, 0, 0, 0));
@@ -210,7 +257,8 @@ namespace OriCoop
             GoThroughPlatformHandler platforms = own.GetComponent<GoThroughPlatformHandler>();
             if (platforms != null) platforms.UpdateColliders();
             own.PlatformBehaviour.CapsuleController.EnableCollider(true);
-            Plugin.Log.LogInfo("net: guest respawn without checkpoint at " + own.Position);
+            if (besideHost) PartnerFx.PlayRevive(own, own.Position);
+            Services.Log.Info("net: guest respawn without checkpoint at " + own.Position);
         }
         // Replace just these call sites. Never intercept the global SuspendAll/ResumeAll methods:
         // death, story text, PauseGameAction, and every other native suspension keep their semantics.
@@ -260,7 +308,7 @@ namespace OriCoop
         [HarmonyPatch(typeof(GameController), "get_InputLocked")]
         static class NeutralFrames
         {
-            static void Postfix(ref bool __result) { if (!P2Context.Inside && LocalLocked) __result = true; }
+            static void Postfix(ref bool __result) { if (!Host.Inside && LocalLocked) __result = true; }
         }
         [HarmonyPatch(typeof(SeinController), "get_InputLocked")]
         static class LockOwnInput
@@ -272,14 +320,14 @@ namespace OriCoop
         static class KeepOwnStill
         {
             static void Postfix(SeinController __instance)
-            { if (Own != null && __instance == Own.Controller && !P2Context.Inside) HoldLocal(); }
+            { if (Own != null && __instance == Own.Controller && !Host.Inside) HoldLocal(); }
         }
         [HarmonyPatch(typeof(RestoreCheckpointController), "FinishLoading")]
         static class HostRestored
         {
             static void Postfix()
             {
-                if (Online && NetPlay.IsHost && SaveSync.Ready) SaveSync.PushCheckpointNow();
+                if (Online && Services.Net.IsHost && Services.Session.Ready) Host.PushCheckpoint();
                 s_hold = false;
             }
         }
@@ -291,7 +339,7 @@ namespace OriCoop
         {
             static bool Prefix(Renderer gameObject)
             {
-                if (!NetPlay.Enabled) return true;
+                if (!Services.Net.Enabled) return true;
                 if (gameObject != null && gameObject.sharedMaterial != null) return true;
                 GuardedShaderWrites++;
                 string caller = "unknown";
@@ -302,17 +350,9 @@ namespace OriCoop
                     if (type != null && typeof(LegacyAnimator).IsAssignableFrom(type))
                     { caller = type.Name + "." + method.Name; break; }
                 }
-                if (ShaderCallers.Add(caller)) Plugin.Log.LogInfo("net: skipped invalid material write from " + caller
+                if (ShaderCallers.Add(caller)) Services.Log.Info("net: skipped invalid material write from " + caller
                     + "; renderer=" + (gameObject == null ? "destroyed/null" : gameObject.name + " material destroyed/null"));
                 return false;
-            }
-        }
-        [HarmonyPatch(typeof(NetPlay), "DrawGUI")]
-        static class Status
-        {
-            static void Postfix()
-            {
-                // NetHud owns the status display and toasts now.
             }
         }
     }

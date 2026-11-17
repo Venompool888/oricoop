@@ -6,6 +6,9 @@ using Game;
 using HarmonyLib;
 using UnityEngine;
 
+using OriCoop.Seams;
+using OriCoop.Rules;
+
 namespace OriCoop
 {
     // Partner visuals (playtest 2026-11-16, P4):
@@ -20,6 +23,7 @@ namespace OriCoop
     //   66 PuppetFx  owner -> others   { byte seat, byte kind (0 hurt, 1 down), byte damageType, byte flags (1 badly hurt), float drop, float forceX }  reliable
     public static class PartnerFx
     {
+        static IRulesHost Host { get { return SessionRules.Host; } }
         public const byte MsgPuppetFx = 66;
         public const byte KindHurt = 0, KindDown = 1;
         public const float GlowSeconds = 0.55f, FadeSeconds = 0.4f;
@@ -35,17 +39,17 @@ namespace OriCoop
 
         static void Log(string msg)
         {
-            Plugin.Log.LogInfo("[fx " + DateTime.Now.ToString("HH:mm:ss.fff") + " t=" + Time.time.ToString("F2") + "] " + msg);
+            Services.Log.Info("[fx " + DateTime.Now.ToString("HH:mm:ss.fff") + " t=" + Time.time.ToString("F2") + "] " + msg);
         }
 
         public static void EnsureRegistered()
         {
             if (s_registered) return;
             s_registered = true;
-            NetPlay.On(MsgPuppetFx, OnNetPuppetFx);
+            Services.Net.On(MsgPuppetFx, OnNetPuppetFx);
         }
 
-        static bool Online { get { return NetPlay.Enabled && NetPlay.Connected && P2Context.P1 != null; } }
+        static bool Online { get { return Services.Net.Enabled && Services.Net.Connected && Host.P1 != null; } }
 
         // ---- owner side: our Ori was hurt / went down ---------------------------------------------------------------
         struct Before { public SeinCharacter Sein; public float Health; public bool Downed; public Vector3 Pos; public bool Badly; }
@@ -91,7 +95,7 @@ namespace OriCoop
             static void Postfix(SeinDamageReciever __instance, Damage damage, Before __state)
             {
                 try { After(__instance, damage, __state); }
-                catch (Exception e) { Plugin.Log.LogWarning("[fx] hurt watch failed: " + e.Message); }
+                catch (Exception e) { Services.Log.Warn("[fx] hurt watch failed: " + e.Message); }
             }
         }
 
@@ -103,8 +107,8 @@ namespace OriCoop
             bool downNow = Revive.IsDowned(s);
             float drop = b.Health - now;
             if (!downNow && drop <= 0f) return;      // not accepted (invincible, immortal, puppet, ...)
-            if (NetPlay.Enabled && Players.OfSein(s) != null) return; // an online puppet: its owner's game reports it
-            bool isOwn = s == P2Context.P1;
+            if (Services.Net.Enabled && Host.IsPuppet(s)) return; // an online puppet: its owner's game reports it
+            bool isOwn = s == Host.P1;
             DamageType type = damage != null ? damage.Type : DamageType.Spikes;
             float forceX = damage != null ? damage.Force.x : 0f;
 
@@ -113,19 +117,19 @@ namespace OriCoop
                 // The game's OnKill was skipped (downed instead): play its death burst ourselves.
                 PlayDeath(s, b.Pos, type, Mathf.Max(drop, 1f));
                 LocalDownPlayed++;
-                Log("P" + Players.SeatOf(s) + " down: death burst played locally at " + b.Pos + " (" + type + ")");
-                CoopTrace.Event("player", "down.fx", "who", "P" + Players.SeatOf(s), "local", 1, "pos", b.Pos, "type", type);
+                Log("P" + Host.SeatOf(s) + " down: death burst played locally at " + b.Pos + " (" + type + ")");
+                Host.Trace("player", "down.fx", "who", "P" + Host.SeatOf(s), "local", 1, "pos", b.Pos, "type", type);
             }
             if (!isOwn || !Online) return;
             EnsureRegistered();
-            int seat = Players.LocalSeat;
+            int seat = Host.LocalSeat;
             if (now <= 0f) downNow = true;           // a real death (both down): the game shows ours, the partner sees the burst
             byte kind = downNow ? KindDown : KindHurt;
             float d = drop;
-            NetPlay.Send(MsgPuppetFx, true, w => { w.Write((byte)seat); w.Write(kind); w.Write((byte)type); w.Write((byte)(b.Badly ? 1 : 0)); w.Write(d); w.Write(forceX); });
+            Services.Net.Send(MsgPuppetFx, true, w => { w.Write((byte)seat); w.Write(kind); w.Write((byte)type); w.Write((byte)(b.Badly ? 1 : 0)); w.Write(d); w.Write(forceX); });
             if (downNow) DownSent++; else HurtSent++;
             Log("sent " + (downNow ? "down" : "hurt") + " seat=" + seat + " drop=" + d.ToString("F1") + " type=" + type + " forceX=" + forceX.ToString("F1"));
-            CoopTrace.Event("player", downNow ? "down.send" : "hurt.send", "who", "P" + seat, "drop", d, "type", type, "badly", b.Badly, "forceX", forceX);
+            Host.Trace("player", downNow ? "down.send" : "hurt.send", "who", "P" + seat, "drop", d, "type", type, "badly", b.Badly, "forceX", forceX);
         }
 
         // ---- other side: replay on the puppet ------------------------------------------------------------------------
@@ -139,16 +143,16 @@ namespace OriCoop
             float forceX = r.ReadSingle();
             if (kind == KindDown) DownReceived++; else HurtReceived++;
             SeinCharacter s = Revive.SeinAt(seat);
-            if (s == null || s == P2Context.P1) { Log("got " + kind + " for seat " + seat + " but no puppet"); return; }
+            if (s == null || s == Host.P1) { Log("got " + kind + " for seat " + seat + " but no puppet"); return; }
             try
             {
                 if (kind == KindDown) { PlayDeath(s, s.Position, type, Mathf.Max(drop, 1f)); DownPlayed++; }
                 else PlayHurt(s, type, badly, drop, forceX);
                 Log("partner P" + seat + " " + (kind == KindDown ? "down: death burst" : "hurt: flash + animation") + " played on the puppet (drop=" + drop.ToString("F1") + ", " + type + ")");
-                if (kind == KindDown) CoopTrace.Event("player", "down.fx", "who", "P" + seat, "local", 0, "pos", s.Position, "type", type);
-                else CoopTrace.Event("player", "hurt.anim", "who", "P" + seat, "played", 1, "state", LastHurtStateOn, "anim", LastHurtAnimOn, "drop", drop, "type", type);
+                if (kind == KindDown) Host.Trace("player", "down.fx", "who", "P" + seat, "local", 0, "pos", s.Position, "type", type);
+                else Host.Trace("player", "hurt.anim", "who", "P" + seat, "played", 1, "state", LastHurtStateOn, "anim", LastHurtAnimOn, "drop", drop, "type", type);
             }
-            catch (Exception e) { Plugin.Log.LogWarning("[fx] puppet " + kind + " failed: " + e); }
+            catch (Exception e) { Services.Log.Warn("[fx] puppet " + kind + " failed: " + e); }
         }
 
         static readonly System.Reflection.FieldInfo s_hurtTime = AccessTools.Field(typeof(SeinDamageReciever), "m_hurtTimeRemaining");
@@ -232,7 +236,7 @@ namespace OriCoop
                 }
                 catch (Exception) { }
             }
-            SeinCharacter src = P2Context.P1 ?? s;
+            SeinCharacter src = Host.P1 ?? s;
             // Not cached: a named provider may only be loaded later.
             return src != null && src.SoulFlame != null ? src.SoulFlame.SoulFlameReadySoundProvider : null;
         }
@@ -246,7 +250,7 @@ namespace OriCoop
                 RevivesPlayed++;
                 LastReviveAt = Time.time;
                 GameObject glowPrefab = s.Mortality.Health.RespawnEffect;
-                if (glowPrefab == null && P2Context.P1 != null) glowPrefab = P2Context.P1.Mortality.Health.RespawnEffect;
+                if (glowPrefab == null && Host.P1 != null) glowPrefab = Host.P1.Mortality.Health.RespawnEffect;
                 if (glowPrefab != null)
                 {
                     InstantiateUtility.Instantiate(glowPrefab, at, Quaternion.identity);
@@ -261,10 +265,10 @@ namespace OriCoop
                 }
                 Runner.Get().StartCoroutine(Reappear(s));
                 if (ReviveHook != null) { try { ReviveHook(s); } catch (Exception) { } }
-                CoopTrace.Event("player", "revive.fx", "who", "P" + Players.SeatOf(s), "pos", at, "glow", glowPrefab != null ? glowPrefab.name : "none", "sound", sp != null ? sp.name : "none");
-                Log("revive P" + Players.SeatOf(s) + " at " + at + ": glow=" + (glowPrefab != null ? glowPrefab.name : "none") + " sound=" + (sp != null ? sp.name : "none"));
+                Host.Trace("player", "revive.fx", "who", "P" + Host.SeatOf(s), "pos", at, "glow", glowPrefab != null ? glowPrefab.name : "none", "sound", sp != null ? sp.name : "none");
+                Log("revive P" + Host.SeatOf(s) + " at " + at + ": glow=" + (glowPrefab != null ? glowPrefab.name : "none") + " sound=" + (sp != null ? sp.name : "none"));
             }
-            catch (Exception e) { Plugin.Log.LogWarning("[fx] revive effect failed: " + e); }
+            catch (Exception e) { Services.Log.Warn("[fx] revive effect failed: " + e); }
         }
 
         // One running revive sequence per Ori; a newer one takes over the renderers the older one hid.
@@ -304,7 +308,7 @@ namespace OriCoop
         // Downed again during the glow: Revive now hides this Ori; give it the renderers we hid so its restore shows them.
         static void HandBackToRevive(SeinCharacter s, FxState st)
         {
-            Revive.Downed d = Revive.DownedAtSeat(Players.SeatOf(s));
+            Revive.Downed d = Revive.DownedAtSeat(Host.SeatOf(s));
             if (d != null) { foreach (Renderer r in st.Hidden) if (r != null && !d.Hidden.Contains(r)) d.Hidden.Add(r); }
             else foreach (Renderer r in st.Hidden) if (r != null) r.enabled = true;
             st.Hidden.Clear();
@@ -317,13 +321,13 @@ namespace OriCoop
         {
             try
             {
-                SeinCharacter p1 = P2Context.P1;
+                SeinCharacter p1 = Host.P1;
                 Renderer mine = p1 != null ? p1.PlatformBehaviour.Visuals.SpriteRenderer : null;
                 if (mine == null) return;
-                foreach (Puppet p in Players.Remotes)
+                foreach (SeinCharacter remote in Host.RemoteCharacters)
                 {
-                    if (p == null || p.Sein == null) continue;
-                    Renderer r = p.Sein.PlatformBehaviour.Visuals.SpriteRenderer;
+                    if (remote == null) continue;
+                    Renderer r = remote.PlatformBehaviour.Visuals.SpriteRenderer;
                     if (r != null && r.sharedMaterial == mine.sharedMaterial) { Material own = r.material; own.name += " (puppet fx)"; MaterialsSeparated++; }
                 }
             }

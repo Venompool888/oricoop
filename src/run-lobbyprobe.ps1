@@ -21,3 +21,4 @@ try {
 finally { if ($relay -and -not $relay.HasExited) { $relay | Stop-Process -Force -Confirm:$false }; Complete-TestRun }
 Get-Content (Join-Path $TL_GameDir 'BepInEx\LogOutput.log') | Select-String 'LOBBYPROBE|online lobby|online co-op|net: relay|Exception' | Select-Object -Last 40
 Get-ChildItem $dir -Filter *.png | Select-Object Name, Length
+Exit-TestRun   # release the test copy only now, after the results were read

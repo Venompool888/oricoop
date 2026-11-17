@@ -4,6 +4,8 @@ using System.Collections.Generic;
 using System.IO;
 using Game;
 using UnityEngine;
+using OriCoop.Authority;
+using OriCoop.Enemies;
 
 namespace OriCoop
 {
@@ -14,8 +16,16 @@ namespace OriCoop
         {
             public string Key; public Vector3 Origin, Position; public float Health;
             public DifficultyMode Difficulty; public bool Ready;
+            public int Seat, OwnerSeat; public uint Epoch; public bool Owner, Dead;
+            public float Tick;
+            public EnemyTickPosition[] Samples = new EnemyTickPosition[0];
         }
+        static string s_comparisonKey;
+        static uint s_comparisonEpoch;
+        static readonly List<EnemyTickPosition> s_ownerPositions = new List<EnemyTickPosition>();
         static readonly Dictionary<int, Packet> s_partnerSteps = new Dictionary<int, Packet>();
+        static readonly Dictionary<int, Packet> s_localSteps = new Dictionary<int, Packet>();
+        static Packet LocalReport(int step) { return s_localSteps[step + s_offset]; }
         // Each pass (no lag / 200 ms RTT) uses its own barrier step range so a fast peer can't be confused with the last pass.
         static int s_offset; static string s_tag = "E5";
         static bool Has(int step) { return s_partnerSteps.ContainsKey(step + s_offset); }
@@ -30,6 +40,13 @@ namespace OriCoop
             p.Origin = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
             p.Position = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
             p.Health = r.ReadSingle(); p.Difficulty = (DifficultyMode)r.ReadInt32(); p.Ready = r.ReadBoolean(); s_partnerSteps[step] = p;
+            p.Seat = r.ReadInt32(); p.Owner = r.ReadBoolean(); p.OwnerSeat = r.ReadInt32(); p.Epoch = r.ReadUInt32();
+            p.Dead = r.ReadBoolean();
+            p.Tick = r.ReadSingle(); int count = r.ReadUInt16();
+            if (count > 256) throw new InvalidDataException("E5 owner comparison history too large");
+            p.Samples = new EnemyTickPosition[count];
+            for (int i = 0; i < count; i++) p.Samples[i] = new EnemyTickPosition(r.ReadSingle(),
+                new EnemyVector(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
         }
         static IEnumerator Wait(float seconds) { float end = Now + seconds; while (Now < end) yield return null; }
         static bool FamilyAhead(int step)
@@ -38,20 +55,100 @@ namespace OriCoop
                 if (received > step + s_offset && received >= 100 + s_offset && received < 240 + s_offset) return true;
             return false;
         }
-        static IEnumerator Barrier(TestHarness h, int step, string key, bool family = false)
+        static IEnumerator Barrier(TestHarness h, int step, string key, bool family = false, float timeout = 30f)
         {
+            CaptureOwnerPosition(key);
             EnemySync.Probe p = EnemySync.Inspect(key); Vector3 origin = s_barrierAt.HasValue ? s_barrierAt.Value : p.Origin;
+            Packet report = new Packet { Key = key ?? "", Owner = p.Owner, Dead = p.Dead, Position = p.Position,
+                Ready = p.Present && (family || p.Mirrored) && p.Known && !p.Dead && ExpectedRole(p),
+                Seat = Players.LocalSeat, OwnerSeat = p.OwnerSeat, Epoch = p.Epoch,
+                Tick = p.Owner ? NetPlay.LocalTick : p.RenderTick,
+                Samples = NetRoute.ServerMode && key == s_comparisonKey && p.Owner && p.Epoch == s_comparisonEpoch
+                    ? s_ownerPositions.ToArray() : new EnemyTickPosition[0] };
+            s_localSteps[step + s_offset] = report;
             NetPlay.Send(MsgBarrier, true, delegate(BinaryWriter w) {
                 w.Write(step + s_offset); w.Write(key ?? "");
                 w.Write(origin.x); w.Write(origin.y); w.Write(origin.z);
                 w.Write(p.Position.x); w.Write(p.Position.y); w.Write(p.Position.z);
                 w.Write(p.Health); w.Write((int)DifficultyController.Instance.Difficulty);
-                w.Write(p.Present && (family || p.Mirrored) && p.Known && !p.Dead && p.Owner == NetPlay.IsHost);
+                w.Write(p.Present && (family || p.Mirrored) && p.Known && !p.Dead && ExpectedRole(p));
+                w.Write(Players.LocalSeat); w.Write(p.Owner); w.Write(p.OwnerSeat); w.Write(p.Epoch);
+                w.Write(p.Dead);
+                w.Write(report.Tick); w.Write((ushort)report.Samples.Length);
+                foreach (EnemyTickPosition sample in report.Samples)
+                { w.Write(sample.Tick); w.Write(sample.Position.X); w.Write(sample.Position.Y); w.Write(sample.Position.Z); }
             });
-            float end = Now + 30f;
-            while (NetPlay.Connected && !Has(step) && Now < end && (!family || !FamilyAhead(step))) yield return null;
+            float end = Now + timeout;
+            while (NetPlay.Connected && !Has(step) && Now < end && (!family || !FamilyAhead(step)))
+            { CaptureOwnerPosition(key); yield return null; }
             h.Check(Has(step), s_tag + " barrier " + step + " reached by both");
         }
+        static void CaptureOwnerPosition(string key)
+        {
+            if (!NetRoute.ServerMode || key != s_comparisonKey) return;
+            EnemySync.Probe p = EnemySync.Inspect(key);
+            if (!p.Owner || !p.Present) return;
+            if (s_comparisonEpoch != p.Epoch) { s_ownerPositions.Clear(); s_comparisonEpoch = p.Epoch; }
+            float tick = NetPlay.LocalTick;
+            if (s_ownerPositions.Count != 0 && s_ownerPositions[s_ownerPositions.Count - 1].Tick >= tick) return;
+            s_ownerPositions.Add(new EnemyTickPosition(tick, new EnemyVector(p.Position.x, p.Position.y, p.Position.z)));
+            if (s_ownerPositions.Count > 256) s_ownerPositions.RemoveAt(0);
+        }
+        static IEnumerator CompareJumper(TestHarness h, Packet chosen, Vector3 final)
+        {
+            if (!NetRoute.ServerMode)
+            {
+                yield return Barrier(h, 13, chosen.Key);
+                if (Has(13)) h.Check(Agreement(chosen.Key, 13) && Vector3.Distance(final, Part[13].Position) < 5f,
+                    s_tag + "a peers agree on owner/epoch and positions differ <5");
+                yield break;
+            }
+            float end = Now + 6f;
+            for (int attempt = 0; attempt < 12 && Now < end; attempt++)
+            {
+                // Unique rounds keep both peers deciding from the same immutable reports.
+                int step = 13 + attempt * 10000;
+                yield return Barrier(h, step, chosen.Key, false, Mathf.Min(2f, end - Now));
+                if (!Has(step)) yield break;
+                Packet local = LocalReport(step), remote = Part[step];
+                bool agreed = Agreement(chosen.Key, step);
+                Packet owner = local.Owner ? local : remote, mirror = local.Owner ? remote : local;
+                EnemyVector expected = new EnemyVector();
+                bool covered = agreed && EnemyOwnership.TryPosition(owner.Samples, mirror.Tick, out expected);
+                float error = float.PositiveInfinity;
+                if (covered)
+                {
+                    error = Vector3.Distance(new Vector3(expected.X, expected.Y, expected.Z), mirror.Position);
+                }
+                h.Note(s_tag + "a compare round=" + attempt + " owner=" + local.OwnerSeat + " epoch=" + local.Epoch
+                    + " peerOwner=" + remote.OwnerSeat + " peerEpoch=" + remote.Epoch + " mirrorTick=" + F(mirror.Tick)
+                    + " covered=" + covered + " matchedError=" + F(error));
+                if (agreed && local.Ready && remote.Ready && covered && error < 5f)
+                {
+                    h.Check(true, s_tag + "a peers agree on owner/epoch and positions differ <5 at matched owner tick");
+                    yield break;
+                }
+                if (Now < end) yield return Wait(Mathf.Min(0.15f, end - Now));
+            }
+            h.Check(false, s_tag + "a owner/epoch agreement and matched positions did not converge within 6s");
+        }
+        static bool ExpectedRole(EnemySync.Probe p)
+        { return EnemyOwnership.ExpectedRole(NetRoute.ServerMode, NetPlay.IsHost, Players.LocalSeat, p.Owner, p.OwnerSeat); }
+        static bool OwnerHere(string key)
+        { return NetRoute.ServerMode ? EnemySync.Inspect(key).Owner : NetPlay.IsHost; }
+        static bool OwnerHere(Packet chosen)
+        { return NetRoute.ServerMode ? chosen.OwnerSeat == Players.LocalSeat : NetPlay.IsHost; }
+        static bool Agreement(string key, int step)
+        {
+            Packet local = LocalReport(step), partner = Part[step];
+            return local.Key == key && partner.Key == key && EnemyOwnership.PeerAgreement(NetRoute.ServerMode, NetPlay.IsHost,
+                local.Seat, local.Owner, local.OwnerSeat, local.Epoch, partner.Seat, partner.Owner, partner.OwnerSeat, partner.Epoch);
+        }
+        static bool SameGrant(Packet chosen, EnemySync.Probe p)
+        { return !NetRoute.ServerMode || (p.OwnerSeat == chosen.OwnerSeat && p.Epoch == chosen.Epoch); }
+        static bool BothSameGrant(Packet chosen, int step)
+        { return !NetRoute.ServerMode || (LocalReport(step).OwnerSeat == chosen.OwnerSeat && LocalReport(step).Epoch == chosen.Epoch
+            && Part[step].OwnerSeat == chosen.OwnerSeat && Part[step].Epoch == chosen.Epoch); }
         static string Find(Vector3 near, string className, HashSet<string> rejected)
         {
             if (className != "")
@@ -138,10 +235,11 @@ namespace OriCoop
                 yield return null;
             }
             yield return Wait(1f); yield return Barrier(h, step, chosen.Key);
-            EnemySync.Probe p = EnemySync.Inspect(chosen.Key);
-            chosen.Ready = p.Present && p.Mirrored && p.Known && !p.Dead && p.Owner == NetPlay.IsHost
-                && Has(step) && Part[step].Ready;
-            h.Check(chosen.Ready, s_tag + " mirrored enemy present on both peers with host authority");
+            chosen.Ready = LocalReport(step).Ready && Has(step) && Part[step].Ready && Agreement(chosen.Key, step);
+            chosen.OwnerSeat = LocalReport(step).OwnerSeat; chosen.Epoch = LocalReport(step).Epoch;
+            h.Check(chosen.Ready, s_tag + (NetRoute.ServerMode
+                ? " mirrored enemy present; exactly one owner and matching owner/epoch"
+                : " mirrored enemy present on both peers with host authority"));
         }
         static IEnumerator Jumper(TestHarness h)
         {
@@ -153,15 +251,22 @@ namespace OriCoop
                 yield return Choose(h, chosen, "JumperEnemy", null, 10);
                 if (string.IsNullOrEmpty(chosen.Key)) { h.Note(s_tag + "a skipped: no JumperEnemy found in loaded/saved test areas"); yield break; }
                 chosen.Origin = NetPlay.IsHost ? EnemySync.Inspect(chosen.Key).Position : Part[10].Position;
-                yield return Ready(h, chosen, 11, NetPlay.IsHost ? -19.5f : 1.5f);
+                float side = NetRoute.ServerMode ? (NetPlay.IsHost ? -6f : 6f) : (NetPlay.IsHost ? -19.5f : 1.5f);
+                yield return Ready(h, chosen, 11, side);
                 if (!chosen.Ready) yield break;
-                if (NetPlay.IsHost) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
+                bool owner = OwnerHere(chosen);
+                s_comparisonKey = chosen.Key; s_comparisonEpoch = 0; s_ownerPositions.Clear();
+                if (owner && SameGrant(chosen, EnemySync.Inspect(chosen.Key))) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
                 yield return Barrier(h, 12, chosen.Key);
+                if (!Has(12)) yield break;
+                bool stable = BothSameGrant(chosen, 12) && Agreement(chosen.Key, 12);
                 HashSet<string> states = new HashSet<string>(); float travel = 0f;
                 Vector3 previous = EnemySync.Inspect(chosen.Key).Position;
                 for (int i = 0; i < 60; i++)
                 {
                     EnemySync.Probe p = EnemySync.Inspect(chosen.Key); states.Add(p.StateName);
+                    CaptureOwnerPosition(chosen.Key);
+                    stable &= SameGrant(chosen, p);
                     if (i % 20 == 0) h.Note(s_tag + "a ai " + EnemySync.DebugAi(chosen.Key));
                     if (p.Present) { travel += Vector3.Distance(previous, p.Position); previous = p.Position; }
                     yield return Wait(0.1f);
@@ -171,14 +276,14 @@ namespace OriCoop
                     if (state != null && (state.IndexOf("JumperEnemyChargingState", StringComparison.Ordinal) >= 0
                         || state.IndexOf("JumperEnemyFallState", StringComparison.Ordinal) >= 0)) active = true;
                 h.Note(s_tag + "a travel=" + F(travel) + " states=" + string.Join(",", new List<string>(states).ToArray()));
-                if (NetPlay.IsHost) h.Check(active && travel > 1.5f, s_tag + "a owner targets nearby guest and travels >1.5");
-                else h.Check(EnemySync.Inspect(chosen.Key).Mirrored && travel > 1.5f, s_tag + "a guest jumper mirrored and travels >1.5");
+                if (owner) h.Check(stable && active && travel > 1.5f, s_tag + "a owner AI simulates and travels >1.5");
+                else h.Check(stable && EnemySync.Inspect(chosen.Key).Mirrored && travel > 1.5f, s_tag + "a mirror jumper travels >1.5");
                 Vector3 final = EnemySync.Inspect(chosen.Key).Position;
-                yield return Barrier(h, 13, chosen.Key);
-                if (Has(13)) h.Check(Vector3.Distance(final, Part[13].Position) < 5f, s_tag + "a final peer positions differ <5 (frog may be mid-jump)");
+                yield return CompareJumper(h, chosen, final);
             }
             finally
             {
+                s_comparisonKey = null; s_ownerPositions.Clear();
                 if (!string.IsNullOrEmpty(chosen.Key)) EnemySync.EndTestEnemy(chosen.Key);
                 Own.Mortality.DamageReciever.IsImmortal = immortal; Plugin.Teleport(Own, saved);
             }
@@ -195,17 +300,24 @@ namespace OriCoop
                 if (string.IsNullOrEmpty(chosen.Key)) yield break;
                 yield return Ready(h, chosen, 21, NetPlay.IsHost ? -10f : 10f);
                 if (!chosen.Ready) yield break;
-                if (NetPlay.IsHost) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
+                bool owner = OwnerHere(chosen);
+                if (owner && SameGrant(chosen, EnemySync.Inspect(chosen.Key))) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
                 yield return Wait(0.5f); yield return Barrier(h, 22, chosen.Key);
-                float baseline = NetPlay.IsHost ? EnemySync.Inspect(chosen.Key).Health : Part[22].Health;
-                if (NetPlay.IsHost) EnemySync.TestAttack(chosen.Key, 2f, false);
+                if (!Has(22)) yield break;
+                bool agreed = BothSameGrant(chosen, 22) && Agreement(chosen.Key, 22);
+                h.Check(agreed, s_tag + "b peers agree on one owner/epoch before damage");
+                if (!agreed) yield break;
+                float baseline = owner ? EnemySync.Inspect(chosen.Key).Health : Part[22].Health;
+                if (owner) EnemySync.TestAttack(chosen.Key, 2f, false);
                 yield return Wait(1f); float afterHost = EnemySync.Inspect(chosen.Key).Health;
                 yield return Barrier(h, 23, chosen.Key);
-                if (!NetPlay.IsHost) EnemySync.TestAttack(chosen.Key, 3f, false);
+                if (!owner) EnemySync.TestAttack(chosen.Key, 3f, false);
                 yield return Wait(1f); float afterGuest = EnemySync.Inspect(chosen.Key).Health;
-                h.Note(s_tag + "b baseline=" + F(baseline) + " hostDelta=" + F(baseline - afterHost) + " guestDelta=" + F(afterHost - afterGuest));
+                h.Note(s_tag + "b baseline=" + F(baseline) + " ownerDelta=" + F(baseline - afterHost) + " mirrorDelta=" + F(afterHost - afterGuest));
                 h.Check(Mathf.Abs(baseline - afterGuest - 5f) < 0.01f, s_tag + "b health dropped exactly 5 on this peer");
                 yield return Barrier(h, 24, chosen.Key);
+                if (Has(24)) h.Check(BothSameGrant(chosen, 24) && Agreement(chosen.Key, 24),
+                    s_tag + "b peers keep one agreed owner/epoch during damage");
             }
             finally
             {
@@ -235,10 +347,10 @@ namespace OriCoop
                     rejected.Add(chosen.Key);
                     yield return Ready(h, chosen, step + 2, NetPlay.IsHost ? -10f : 10f);
                     if (!chosen.Ready) yield break;
-                    if (NetPlay.IsHost) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
+                    if (OwnerHere(chosen) && SameGrant(chosen, EnemySync.Inspect(chosen.Key))) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
                     yield return Wait(0.5f);
                     int deaths = EnemySync.DeathEffects, ownerDeaths = EnemySync.OwnerDeathEffects;
-                    bool owner = EnemySync.Inspect(chosen.Key).Owner;
+                    bool owner = OwnerHere(chosen);
                     bool hasDeathAction = false;
                     if (owner)
                         foreach (RespawningPlaceholder placeholder in RespawningPlaceholder.All)
@@ -246,7 +358,11 @@ namespace OriCoop
                                 && placeholder.CurrentEntity != null && placeholder.CurrentEntity.DamageReciever != null)
                                 hasDeathAction = placeholder.CurrentEntity.DamageReciever.DeathAction != null;
                     yield return Barrier(h, step + 3, chosen.Key);
-                    if ((round == 0) == NetPlay.IsHost) EnemySync.TestAttack(chosen.Key, 1000f, false);
+                    if (!Has(step + 3)) yield break;
+                    bool agreed = BothSameGrant(chosen, step + 3) && Agreement(chosen.Key, step + 3);
+                    h.Check(agreed, s_tag + "c peers agree on one owner/epoch before kill");
+                    if (!agreed) yield break;
+                    if ((round == 0) == (NetRoute.ServerMode ? owner : NetPlay.IsHost)) EnemySync.TestAttack(chosen.Key, 1000f, false);
                     float end = Now + 1.5f;
                     while (Now < end && (EnemySync.Inspect(chosen.Key).Present
                         || (owner ? EnemySync.OwnerDeathEffects == ownerDeaths : EnemySync.DeathEffects == deaths))) yield return null;
@@ -255,6 +371,8 @@ namespace OriCoop
                     else if (!hasDeathAction) h.Note(s_tag + "c owner candidate has no DeathAction");
                     else h.Check(EnemySync.OwnerDeathEffects > ownerDeaths, s_tag + "c kill " + round + " owner death effect");
                     yield return Barrier(h, step + 4, chosen.Key);
+                    if (Has(step + 4)) h.Check(Agreement(chosen.Key, step + 4),
+                        s_tag + "c peers agree on one owner/epoch after kill");
                     EnemySync.EndTestEnemy(chosen.Key);
                 }
             }
@@ -353,8 +471,8 @@ namespace OriCoop
             while (Now < end)
             {
                 EnemySync.Probe p = EnemySync.Inspect(chosen.Key);
-                if (p.Present && p.Known && !p.Dead && p.Owner == NetPlay.IsHost) yield break;
-                if (NetPlay.IsHost && p.PlaceholderLoaded && p.Known && p.Owner && !p.Present) EnemySync.EnsureSpawned(chosen.Key);
+                if (p.Present && p.Known && !p.Dead && ExpectedRole(p)) yield break;
+                if (OwnerHere(chosen.Key) && p.PlaceholderLoaded && p.Known && p.Owner && !p.Present) EnemySync.EnsureSpawned(chosen.Key);
                 if (Now >= loadAt) { EnemySync.LoadTestArea(chosen.Origin); loadAt = Now + 0.25f; }
                 yield return null;
             }
@@ -374,7 +492,7 @@ namespace OriCoop
                 if (chosen.Key == "") { h.Note(s_tag + " " + cls + " skipped: not in the test save's areas"); yield break; }
                 if (cls == "FishEnemy") { h.Note(s_tag + " " + cls + " skipped: only engages a player in the water, which is poisoned in the test save"); yield break; }
                 chosen.Origin = NetPlay.IsHost ? found[cls].Origin : Part[step].Origin;
-                // Only the guest moves next to the enemy; the host stays where it is (far away) and keeps ownership by streaming the guest's scenes.
+                // Only the guest moves (avoiding host checkpoint reloads). Ownership is independent in server mode.
                 int deathsAtPlace = EnemySync.DeathEffects; bool suicidal = cls == "DropSlugEnemy" || cls == "KamikazeSootEnemy";
                 bool placed = true; if (!NetPlay.IsHost) { EnemySync.LoadTestArea(chosen.Origin); Plugin.Teleport(Own, chosen.Origin + new Vector3(1.5f, 1f, 0)); yield return Wait(1.5f); Vector3 spot; placed = SafeSpot(chosen.Origin, out spot); if (placed) Plugin.Teleport(Own, spot); else h.Note(s_tag + " " + cls + " no safe ground beside it; staying at the spawn point"); }
                 if (P2Context.P2 == null) { float back = Now + 15f; while (P2Context.P2 == null && Now < back) yield return null; }
@@ -383,66 +501,82 @@ namespace OriCoop
                 yield return Barrier(h, step + 1, chosen.Key, true);
                 if (!Has(step + 1)) yield break;
                 EnemySync.Probe p = EnemySync.Inspect(chosen.Key);
-                bool ready = p.Present && p.Known && !p.Dead && p.Owner == NetPlay.IsHost && Part[step + 1].Ready;
-                if (suicidal && p.Dead)
+                bool agreed = Agreement(chosen.Key, step + 1);
+                chosen.OwnerSeat = LocalReport(step + 1).OwnerSeat; chosen.Epoch = LocalReport(step + 1).Epoch;
+                bool owner = OwnerHere(chosen);
+                bool ready = LocalReport(step + 1).Ready && Part[step + 1].Ready && agreed;
+                if (suicidal && (LocalReport(step + 1).Dead || Part[step + 1].Dead))
                 {
                     // It already dropped/rolled onto the guest and blew itself up (nobody attacked it): that is the attack. Before
                     // the fix it never noticed the guest (SeeSeinTrigger / AI looked only at P1, 100+ units away).
-                    if (NetPlay.IsHost) h.Check(true, s_tag + " " + cls + " owner AI engages the guest (self-destructed beside it)");
-                    else h.Check(EnemySync.DeathEffects > deathsAtPlace, s_tag + " " + cls + " self-destruct death burst played on the guest");
+                    float deathWait = Now + 2f;
+                    while (!EnemySync.Inspect(chosen.Key).Dead && Now < deathWait) yield return null;
+                    if (owner) h.Check(agreed, s_tag + " " + cls + " agreed owner AI self-destructed beside a player");
+                    else h.Check(agreed && EnemySync.DeathEffects > deathsAtPlace, s_tag + " " + cls + " self-destruct death burst played on the mirror");
                     yield return Barrier(h, step + 5, chosen.Key, true); yield break;
                 }
-                h.Check(ready, s_tag + " " + cls + " present on both peers with host authority");
-                if (!ready) h.Note(s_tag + " " + cls + " presence present=" + p.Present + " known=" + p.Known + " dead=" + p.Dead + " owner=" + p.Owner + " loaded=" + p.PlaceholderLoaded + " partnerReady=" + Part[step + 1].Ready + " pos=" + p.Position + " own=" + Own.Position + " " + EnemySync.DebugAi(chosen.Key));
+                h.Check(ready, s_tag + " " + cls + (NetRoute.ServerMode
+                    ? " present on both peers with exactly one agreed owner/epoch" : " present on both peers with host authority"));
+                if (!ready) h.Note(s_tag + " " + cls + " presence present=" + p.Present + " known=" + p.Known + " dead=" + p.Dead
+                    + " owner=" + p.Owner + " ownerSeat=" + p.OwnerSeat + " epoch=" + p.Epoch
+                    + " peerOwnerSeat=" + Part[step + 1].OwnerSeat + " peerEpoch=" + Part[step + 1].Epoch
+                    + " loaded=" + p.PlaceholderLoaded + " partnerReady=" + Part[step + 1].Ready + " pos=" + p.Position + " own=" + Own.Position + " " + EnemySync.DebugAi(chosen.Key));
                 if (!ready) yield break;
-                if (NetPlay.IsHost) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
+                if (owner && SameGrant(chosen, EnemySync.Inspect(chosen.Key))) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
                 yield return Barrier(h, step + 2, chosen.Key, true);
                 if (!Has(step + 2)) yield break;
-                bool mirrored = Array.IndexOf(Families, cls) < 9, mirrorSeen = p.Mirrored, engaged = false;
+                bool mirrored = Array.IndexOf(Families, cls) < 9, mirrorSeen = p.Mirrored, engaged = false, stable = true;
                 float travel = 0f, nearest = float.PositiveInfinity;
                 Vector3 previous = p.Position; HashSet<string> states = new HashSet<string>();
                 for (int i = 0; i < 80; i++)
                 {
                     p = EnemySync.Inspect(chosen.Key); engaged |= EnemySync.Engaged(chosen.Key);
-                    if (NetPlay.IsHost && i % 20 == 0) h.Note(s_tag + " " + cls + " ai " + EnemySync.DebugAi(chosen.Key));
+                    stable &= SameGrant(chosen, p);
+                    if (owner && i % 20 == 0) h.Note(s_tag + " " + cls + " ai " + EnemySync.DebugAi(chosen.Key));
                     states.Add(EnemySync.LiveStateName(chosen.Key));
                     if (p.Present)
                     {
                         mirrorSeen &= p.Mirrored;
                         travel += Vector3.Distance(previous, p.Position); previous = p.Position;
-                        nearest = Mathf.Min(nearest, Vector3.Distance(p.Position, NetPlay.IsHost ? NetPlay.LatestRemotePos : Own.Position));
+                        nearest = Mathf.Min(nearest, Vector3.Distance(p.Position, owner ? NetPlay.LatestRemotePos : Own.Position));
                     }
                     yield return Wait(0.1f);
                 }
                 h.Note(s_tag + " " + cls + " engaged=" + engaged + " travel=" + F(travel) + " minGuestDistance=" + F(nearest)
                     + " states=" + string.Join(",", new List<string>(states).ToArray()));
-                if (NetPlay.IsHost) h.Check(engaged, s_tag + " " + cls + " owner AI engages the guest");
+                if (owner) h.Check(stable && engaged, s_tag + " " + cls + " owner AI engages a player");
                 else if (mirrored)
                 {
                     bool stationary = cls == "MortarWormEnemy" || cls == "FloatingRockTurretEnemy"
                         || cls == "FloatingRockLaserEnemy" || cls == "ShootingSpider";
-                    h.Check(mirrorSeen && (travel > 1f || stationary), s_tag + " " + cls + " guest mirrored and travels >1 or stationary");
+                    h.Check(stable && mirrorSeen && (travel > 1f || stationary), s_tag + " " + cls + " mirror travels >1 or stationary");
                 }
                 Vector3 final = p.Position;
                 yield return Barrier(h, step + 3, chosen.Key, true);
                 if (!Has(step + 3)) yield break;
-                if (!NetPlay.IsHost && mirrored) h.Check(Vector3.Distance(final, Part[step + 3].Position) < 5f, s_tag + " " + cls + " final peer positions differ <5");
+                h.Check(Agreement(chosen.Key, step + 3), s_tag + " " + cls + " peers agree on one owner/epoch after simulation");
+                if (!owner && mirrored) h.Check(Vector3.Distance(final, Part[step + 3].Position) < 5f, s_tag + " " + cls + " final peer positions differ <5");
                 // Suicidal families may have respawned during the sample; kill a live instance on both peers.
                 yield return FamilyPresence(chosen);
                 p = EnemySync.Inspect(chosen.Key);
-                if (NetPlay.IsHost && p.Present) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
+                owner = OwnerHere(chosen.Key);
+                if (owner && p.Present) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
                 int deaths = EnemySync.DeathEffects; bool hasDeathAction = false;
                 foreach (RespawningPlaceholder placeholder in RespawningPlaceholder.All)
                     if (placeholder != null && Vector3.Distance(placeholder.Position, chosen.Origin) < 0.01f
                         && placeholder.CurrentEntity != null && placeholder.CurrentEntity.DamageReciever != null)
                         hasDeathAction = placeholder.CurrentEntity.DamageReciever.DeathAction != null;
                 yield return Barrier(h, step + 4, chosen.Key, true);
-                if (!Has(step + 4) || !Part[step + 4].Ready || !p.Present) yield break;
-                if (!NetPlay.IsHost) EnemySync.TestAttack(chosen.Key, 1000f, false);
+                if (!Has(step + 4) || !LocalReport(step + 4).Ready || !Part[step + 4].Ready) yield break;
+                bool killAgreed = Agreement(chosen.Key, step + 4);
+                h.Check(killAgreed, s_tag + " " + cls + " peers agree on one owner/epoch before kill");
+                if (!killAgreed) yield break;
+                owner = NetRoute.ServerMode ? LocalReport(step + 4).Owner : NetPlay.IsHost;
+                if (!owner) EnemySync.TestAttack(chosen.Key, 1000f, false);
                 float end = Now + 2f;
                 while (Now < end && EnemySync.Inspect(chosen.Key).Present) yield return null;
-                h.Check(!EnemySync.Inspect(chosen.Key).Present, s_tag + " " + cls + " guest kill removed entity within 2s");
-                if (!NetPlay.IsHost)
+                h.Check(!EnemySync.Inspect(chosen.Key).Present, s_tag + " " + cls + " mirror kill removed entity within 2s");
+                if (!owner)
                 {
                     if (hasDeathAction) h.Check(EnemySync.DeathEffects == deaths + 1, s_tag + " " + cls + " puppet death effect exactly once");
                     else h.Note(s_tag + " " + cls + " has no DeathAction");
@@ -461,7 +595,7 @@ namespace OriCoop
         }
         public static IEnumerator Run(TestHarness h)
         {
-            s_partnerSteps.Clear(); NetPlay.On(MsgBarrier, OnBarrier);
+            s_partnerSteps.Clear(); s_localSteps.Clear(); NetPlay.On(MsgBarrier, OnBarrier);
             h.Note(s_tag + " enemy sync: " + (NetPlay.IsHost ? "host" : "guest"));
             if (Own == null || P2Context.P2 == null) { h.Check(false, s_tag + " needs both Oris"); yield break; }
             NetTestHarness.BotLX = 0f; NetTestHarness.BotButtons = 0;

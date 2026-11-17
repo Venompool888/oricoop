@@ -115,7 +115,9 @@ namespace OriCoop
             }
             else s_percent[player].Hide();
 
-            SeinCharacter saver = Revive.Partner(d.Sein);
+            SeinCharacter saver = Revive.Rescuer(d, false);
+            if (Revive.MultiRevive && P2Context.P1 != null && !Revive.IsDowned(P2Context.P1)
+                && Revive.SaverNear(P2Context.P1, d)) saver = P2Context.P1;
             // Online, the partner's puppet is the saver on our own skull: the hint is for the player at the other PC.
             bool remoteSaver = NetPlay.Enabled && Players.OfSein(saver) != null;
             if (saver != null && !remoteSaver && Revive.SaverNear(saver, d) && !d.Holding)

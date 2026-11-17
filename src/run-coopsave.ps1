@@ -61,7 +61,7 @@ function Run-Pair([string]$name, [hashtable]$envs) {
     try {
         # Both games start back to back (Unity refuses a copy started after another finished starting).
         $clients = @(Start-TestClients @((Client-Spec 'host' $TL_AppData[0] $hostOut $envs), (Client-Spec 'join' $TL_AppData[1] $guestOut $envs)))
-        [void](Wait-TestGames $clients $TimeoutSec $watch)
+        [void](Wait-TestGames $clients $TimeoutSec $watch @($hostOut, $guestOut))
     } finally {
         foreach ($c in $clients) { if (-not $c.HasExited) { $c.Kill(); $c.WaitForExit(); "TIMEOUT: killed game $($c.Id)" }; $c.Dispose() }
         foreach ($role in 'host', 'join') {
@@ -75,7 +75,7 @@ function Run-Pair([string]$name, [hashtable]$envs) {
             $lines = @(Get-Content $o)
             $lines | Where-Object { $_ -match 'PASS |FAIL |RESULT|coop save' }
             if (-not ($lines -match 'RESULT PASS') -or ($lines -match 'RESULT FAIL')) { $ok = $false }
-        } else { "no result file $o"; $ok = $false }
+        } else { 'no result file ' + $o + ': ' + (Get-NoResultReason); $ok = $false }
     }
     $ok
 }
@@ -126,3 +126,4 @@ try {
 $all = $true
 foreach ($k in $results.Keys) { "$k : " + $(if ($results[$k]) { 'PASS' } else { 'FAIL' }); if (-not $results[$k]) { $all = $false } }
 if ($all -and $results.Count -eq 5) { 'COOPSAVE PASS' } else { 'COOPSAVE FAIL' }
+Exit-TestRun   # release the test copy only now, after the results were read

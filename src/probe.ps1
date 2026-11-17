@@ -31,3 +31,4 @@ try {
     } else { "no window rect" }
   } else { "game exited early, code $($p.ExitCode)" }
 } finally { Complete-TestRun }
+Exit-TestRun   # release the test copy only now, after the results were read

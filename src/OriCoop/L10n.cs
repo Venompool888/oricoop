@@ -16,51 +16,23 @@ namespace OriCoop
     // or changing a Chinese text here, rerun make-zh-glyphs.py; tools/check-l10n.py fails when a zh text uses a
     // glyph that is not baked, when a text mixes languages, or when a hard-coded Chinese literal is left outside
     // this file.
-    public static class L10n
+    public static partial class L10n
     {
-        public static bool Zh
-        {
-            get
-            {
-                try { return GameSettings.Instance != null && GameSettings.Instance.Language == Language.Chinese; }
-                catch (Exception) { return false; }
-            }
-        }
+        internal static Func<string> LanguageCode;
+        internal static Action EnsureHook = null;
+        internal static Action<string> Warning = null;
+        static bool s_hooked = false;
 
-        public static event Action Changed;
-        static bool s_hooked;
-
-        // Called once from Plugin start-up (and lazily from T): forwards the game's language-change event.
-        public static void Hook()
-        {
-            if (s_hooked) return;
-            try
-            {
-                Game.Events.Scheduler.OnGameLanguageChange.Add(OnLanguageChange);
-                s_hooked = true;
-            }
-            catch (Exception) { }
-        }
-
-        static void OnLanguageChange()
-        {
-            Action a = Changed;
-            if (a == null) return;
-            foreach (Action d in a.GetInvocationList())
-            {
-                try { ((Action)d)(); }
-                catch (Exception e) { Plugin.Log.LogWarning("l10n: language change handler: " + e.Message); }
-            }
-        }
+        public static bool Zh { get { return LanguageCode != null && LanguageCode() == "zh"; } }
 
         public static string T(string key) { return T(key, Zh); }
 
         public static string T(string key, bool zh)
         {
-            if (!s_hooked) Hook();
+            if (!s_hooked && EnsureHook != null) EnsureHook();
             string[] e;
             if (key != null && Table().TryGetValue(key, out e)) return zh ? e[0] : e[1];
-            if (s_missing.Count < 100 && key != null && s_missing.Add(key)) Plugin.Log.LogWarning("l10n: missing key '" + key + "'");
+            if (s_missing.Count < 100 && key != null && s_missing.Add(key) && Warning != null) Warning("l10n: missing key '" + key + "'");
             return key ?? "";
         }
 
@@ -72,31 +44,17 @@ namespace OriCoop
             catch (FormatException) { return s; }
         }
 
-        // A MessageProvider for native MessageBoxes: box.SetMessageProvider(L10n.Provider("key")). The game's
-        // MessageBox re-reads its provider and switches its style collection on OnGameLanguageChange, so such text
-        // follows a language switch with no code of ours. Use the Func overload for text with live values.
-        public static MessageProvider Provider(string key) { return Provider(delegate { return T(key); }); }
-
-        public static MessageProvider Provider(Func<string> text)
+        internal static bool Set(Action<Func<string>> target, string key)
         {
-            L10nProvider p = UnityEngine.ScriptableObject.CreateInstance<L10nProvider>();
-            p.hideFlags = UnityEngine.HideFlags.HideAndDontSave;
-            p.Text = text;
-            return p;
-        }
-
-        // Set a native box's text from a key (live language switch). Returns false when the box is missing.
-        public static bool Set(MessageBox box, string key)
-        {
-            if (box == null) return false;
-            box.SetMessageProvider(Provider(key));
+            if (target == null) return false;
+            target(delegate { return T(key); });
             return true;
         }
 
-        public static bool Set(MessageBox box, Func<string> text)
+        internal static bool Set(Action<Func<string>> target, Func<string> text)
         {
-            if (box == null) return false;
-            box.SetMessageProvider(Provider(text));
+            if (target == null) return false;
+            target(text);
             return true;
         }
 
@@ -114,7 +72,7 @@ namespace OriCoop
             var t = new Dictionary<string, string[]>(StringComparer.Ordinal);
             for (int i = 0; i + 2 < S.Length; i += 3)
             {
-                if (t.ContainsKey(S[i])) Plugin.Log.LogWarning("l10n: duplicate key '" + S[i] + "'");
+                if (t.ContainsKey(S[i]) && Warning != null) Warning("l10n: duplicate key '" + S[i] + "'");
                 t[S[i]] = new[] { S[i + 1], S[i + 2] };
             }
             s_table = t;
@@ -462,16 +420,4 @@ namespace OriCoop
         // END STRINGS
     }
 
-    public class L10nProvider : MessageProvider
-    {
-        public Func<string> Text;
-
-        public override IEnumerable<MessageDescriptor> GetMessages()
-        {
-            string s;
-            try { s = Text != null ? Text() : ""; }
-            catch (Exception) { s = ""; }
-            return new[] { new MessageDescriptor(s ?? "") };
-        }
-    }
 }

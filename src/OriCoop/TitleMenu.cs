@@ -366,8 +366,44 @@ namespace OriCoop
 
         static TitleScreenManager TitleManager { get { return Traverse.Create(typeof(TitleScreenManager)).Field("s_instance").GetValue<TitleScreenManager>(); } }
 
+        // Options > Language switches while our title items (or the orb) are alive: relabel them in the new
+        // language (they are set with SetMessage, which the game does not re-read on a language change).
+        static bool s_langHooked;
+        public static int LanguageRelabels;   // for tests
+        static void HookLanguage()
+        {
+            if (s_langHooked) return;
+            s_langHooked = true;
+            L10n.Changed += delegate
+            {
+                try
+                {
+                    if (s_tSingle != null && !L10n.Zh) s_tEnglishCase = EnglishCaseOf(s_tSingle);
+                    RelabelTitleItems();
+                    if (IsOpen && s_mgr != null) Relabel(s_mgr.Index);
+                    LanguageRelabels++;
+                    Plugin.Log.LogInfo("title menu: language changed, relabelled (" + string.Join(" | ", TitleLabels.ToArray()) + ")");
+                }
+                catch (Exception e) { Plugin.Log.LogWarning("title menu: relabel after language change: " + e.Message); }
+            };
+        }
+
+        // "upper" when the game's own item is written in capitals ("START GAME"), else "".
+        static string EnglishCaseOf(CleverMenuItem item)
+        {
+            foreach (MessageBox b in item.GetComponentsInChildren<MessageBox>(true))
+            {
+                string txt = "";
+                try { txt = b.MessageProvider != null ? b.MessageProvider.ToString() : ""; } catch (Exception) { }
+                if (txt.Length > 2 && txt == txt.ToUpperInvariant() && txt != txt.ToLowerInvariant()) return "upper";
+                if (txt.Length > 0) break;
+            }
+            return "";
+        }
+
         static void InstallTitleItems()
         {
+            HookLanguage();
             if (!TitleItemsOn) return;
             TitleScreenManager tm = TitleManager;
             if (tm == null || tm.MainMenuScreen == null) return;
@@ -435,14 +471,7 @@ namespace OriCoop
                     mm.Navigation.AddRange(add);
                 }
                 // English casing of the game's own item ("START GAME" or "Start Game").
-                s_tEnglishCase = "";
-                foreach (MessageBox b in start.GetComponentsInChildren<MessageBox>(true))
-                {
-                    string txt = "";
-                    try { txt = b.MessageProvider != null ? b.MessageProvider.ToString() : ""; } catch (Exception) { }
-                    if (txt.Length > 2 && txt == txt.ToUpperInvariant() && txt != txt.ToLowerInvariant()) s_tEnglishCase = "upper";
-                    if (txt.Length > 0) break;
-                }
+                s_tEnglishCase = EnglishCaseOf(start);
                 s_tMain = mm; s_tSingle = start; s_tCoop = coop;
                 RelabelTitleItems();
                 Plugin.Log.LogInfo("title menu: Single Player / Co-op items in (" + (layout != null ? "layout " + layout.name : "no layout") + ", " + string.Join(" | ", TitleLabels.ToArray()) + ")");

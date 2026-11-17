@@ -20,16 +20,65 @@ namespace OriCoop.Rooms
         public RoomWire.Fields Fields;
     }
 
-    public sealed class RoomClient
+    public interface IRoomHttp
+    {
+        byte[] Post(string op, RoomWire.Fields body, int timeoutMs);
+    }
+
+    public sealed class RoomHttp : IRoomHttp
     {
         readonly string url;
+
+        public RoomHttp(string baseUrl)
+        {
+            url = baseUrl.TrimEnd('/') + "/";
+        }
+
+        public byte[] Post(string op, RoomWire.Fields request, int timeoutMs)
+        {
+            HttpWebRequest http = (HttpWebRequest)WebRequest.Create(url + "v1/" + op);
+            http.Method = "POST";
+            http.ContentType = "application/octet-stream";
+            http.Proxy = null;
+            http.KeepAlive = false;
+            http.Timeout = timeoutMs;
+            http.ReadWriteTimeout = http.Timeout;
+            byte[] bytes = request.Encode();
+            http.ContentLength = bytes.Length;
+            using (Stream stream = http.GetRequestStream())
+            {
+                stream.Write(bytes, 0, bytes.Length);
+            }
+            using (WebResponse response = http.GetResponse())
+            using (Stream stream = response.GetResponseStream())
+            using (MemoryStream memory = new MemoryStream())
+            {
+                byte[] buffer = new byte[8192];
+                int n;
+                while ((n = stream.Read(buffer, 0, buffer.Length)) > 0)
+                {
+                    memory.Write(buffer, 0, n);
+                    if (memory.Length > RoomWire.MaximumBodyBytes) throw new InvalidDataException("rooms reply too large");
+                }
+                return memory.ToArray();
+            }
+        }
+    }
+
+    public sealed class RoomClient
+    {
+        readonly IRoomHttp http;
         public int TimeoutMs = 15000;
         public int TransferTimeoutMs = 120000;
         public string ClientVersion = "OriCoop";
 
-        public RoomClient(string baseUrl)
+        public RoomClient(string baseUrl) : this(new RoomHttp(baseUrl))
         {
-            url = baseUrl.TrimEnd('/') + "/";
+        }
+
+        public RoomClient(IRoomHttp http)
+        {
+            this.http = http;
         }
 
         public RoomReply Call(string op, RoomWire.Fields request)
@@ -38,41 +87,17 @@ namespace OriCoop.Rooms
             {
                 request.Set("proto", 1);
                 request.Set("client", ClientVersion);
-                HttpWebRequest http = (HttpWebRequest)WebRequest.Create(url + "v1/" + op);
-                http.Method = "POST";
-                http.ContentType = "application/octet-stream";
-                http.Proxy = null;
-                http.KeepAlive = false;
                 bool transfer = op == "upload" || op == "download" || op == "create"
                     || op == "new_save" || op == "restore";
-                http.Timeout = transfer ? TransferTimeoutMs : TimeoutMs;
-                http.ReadWriteTimeout = http.Timeout;
-                byte[] bytes = request.Encode();
-                http.ContentLength = bytes.Length;
-                using (Stream stream = http.GetRequestStream())
+                byte[] bytes = http.Post(op, request, transfer ? TransferTimeoutMs : TimeoutMs);
+                RoomWire.Fields f = RoomWire.Fields.Decode(bytes);
+                return new RoomReply
                 {
-                    stream.Write(bytes, 0, bytes.Length);
-                }
-                using (WebResponse response = http.GetResponse())
-                using (Stream stream = response.GetResponseStream())
-                using (MemoryStream memory = new MemoryStream())
-                {
-                    byte[] buffer = new byte[8192];
-                    int n;
-                    while ((n = stream.Read(buffer, 0, buffer.Length)) > 0)
-                    {
-                        memory.Write(buffer, 0, n);
-                        if (memory.Length > RoomWire.MaximumBodyBytes) throw new InvalidDataException("rooms reply too large");
-                    }
-                    RoomWire.Fields f = RoomWire.Fields.Decode(memory.ToArray());
-                    return new RoomReply
-                    {
-                        Ok = f.GetString("ok") == "1",
-                        Error = f.GetString("error"),
-                        Message = f.GetString("message"),
-                        Fields = f
-                    };
-                }
+                    Ok = f.GetString("ok") == "1",
+                    Error = f.GetString("error"),
+                    Message = f.GetString("message"),
+                    Fields = f
+                };
             }
             catch (Exception ex)
             {

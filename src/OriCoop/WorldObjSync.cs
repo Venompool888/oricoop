@@ -52,7 +52,7 @@ namespace OriCoop
         static readonly Queue<long> s_seenOrder = new Queue<long>();
         static uint s_seq;
         // Rising water follower state (guest).
-        static float s_waterY, s_waterSpeed, s_waterAt2 = -10f, s_waterWaitSince; static int s_waterId, s_waterWaitId;
+        static float s_waterY, s_waterSpeed, s_waterAt2 = -10f, s_waterWaitSince; static int s_waterId, s_waterWaitId, s_hostWaterId; static float s_hostWaterY, s_hostWaterAt, s_hostWaterRate;
 
         static readonly FieldInfo F_stomperState = AccessTools.Field(typeof(Stomper), "m_state");
         static readonly FieldInfo F_collapseActivated = AccessTools.Field(typeof(CollapsingSolid), "m_activated");
@@ -226,6 +226,13 @@ namespace OriCoop
                 if (water != null)
                 {
                     int id = IdOf(water); float y = water.transform.position.y, speed = (float)F_waterSpeed.GetValue(water);
+                    // Rate per REAL second (the guest extrapolates in real time; under load this game clock runs slower).
+                    // Smoothed over ~0.5 s: single 0.1 s windows were noisy (fixed steps bunch up) and the guest multiplies the rate.
+                    if (s_hostWaterId == id && now - s_hostWaterAt > 0.05f && now - s_hostWaterAt < 1f)
+                        s_hostWaterRate = Mathf.Lerp(s_hostWaterRate, (y - s_hostWaterY) / (now - s_hostWaterAt), 0.2f);
+                    else s_hostWaterRate = speed;
+                    speed = s_hostWaterRate;
+                    s_hostWaterId = id; s_hostWaterY = y; s_hostWaterAt = now;
                     NetPlay.Send(MsgState, false, w => { w.Write(SWater); w.Write((ushort)1); w.Write(id); w.Write(y); w.Write(speed); });
                 }
             }
@@ -296,7 +303,9 @@ namespace OriCoop
         // WorldSync: objects whose state this module carries (live hard writes would fight it).
         public static bool OwnsSerializable(ISerializable s)
         {
-            return Enabled && (s is JumpFlipPlatform || s is RisingWater);
+            // Stomper.Serialize writes nothing and its read resets the crusher to the top (Stomper.cs:236): a full resync
+            // (digest mismatch, more frequent over the relay) snapped falling stompers back up on one PC (WO1 on relay).
+            return Enabled && (s is JumpFlipPlatform || s is RisingWater || s is Stomper);
         }
 
         // ---------------------------------------------------------------- puppet damage
@@ -433,14 +442,15 @@ namespace OriCoop
                 {
                     // Water just appeared here: hold it up to 3 s for the host's stream instead of racing ahead at
                     // this PC's own speed. No stream after that (the host does not have it loaded): native.
-                    if (s_waterWaitId != id) { s_waterWaitId = id; s_waterWaitSince = Time.realtimeSinceStartup; }
+                    int inst = __instance.GetInstanceID();   // per instance: a reloaded water has the same net id
+                    if (s_waterWaitId != inst) { s_waterWaitId = inst; s_waterWaitSince = Time.realtimeSinceStartup; }
                     return Time.realtimeSinceStartup - s_waterWaitSince > 3f;
                 }
                 Vector3 p = __instance.transform.position;
                 // Extrapolate one half RTT only: the host's game clock can run slower than real time under load.
-                float target = s_waterY + s_waterSpeed * Mathf.Min(age, 0.1f) + s_waterSpeed * NetPlay.RttMs * 0.0005f;
+                float target = s_waterY + s_waterSpeed * (Mathf.Min(age, 0.25f) + Mathf.Min(NetPlay.RttMs * 0.0005f, 0.15f));   // RTT estimate spikes on the relay   // relay packets can be 0.2 s apart
                 if (target < p.y - 2f) p.y = target;
-                else if (target > p.y) p.y = Mathf.Lerp(p.y, target, 0.3f);
+                else if (target > p.y) p.y = target - p.y < 1f ? target : Mathf.Lerp(p.y, target, 0.3f);   // a lerp alone trails a rising target
                 __instance.transform.position = p;
                 WaterFollows++;
                 return false;

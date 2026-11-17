@@ -46,7 +46,7 @@ try {
     }
     # Both games start back to back (Unity refuses a copy started after another finished starting).
     $clients = @(Start-TestClients @((Client-Spec 'host' $TL_AppData[0] $hostOut), (Client-Spec 'join' $TL_AppData[1] $guestOut)))
-    [void](Wait-TestGames $clients $TimeoutSec $watch)
+    [void](Wait-TestGames $clients $TimeoutSec $watch @($hostOut, $guestOut))
     foreach ($client in $clients) { if (-not $client.HasExited) { $client.Kill(); $client.WaitForExit(); 'TIMEOUT: game {0} killed after {1} s' -f $client.Id, $TimeoutSec } }
 } finally {
     foreach ($client in $clients) { if (-not $client.HasExited) { $client.Kill(); $client.WaitForExit() }; $client.Dispose() }
@@ -58,6 +58,7 @@ $passed = $true
 foreach ($r in @($hostOut, $guestOut)) {
     '--- {0} ---' -f $r
     if (Test-Path $r) { $lines = @(Get-Content $r); $lines; if (-not ($lines -match '\] RESULT PASS \d+/\d+$')) { $passed = $false } }
-    else { 'no result file'; $passed = $false }
+    else { 'no result file: ' + (Get-NoResultReason); $passed = $false }
 }
 if ($passed) { "TITLEJOIN $Transport PASS" } else { "TITLEJOIN $Transport FAIL" }
+Exit-TestRun   # release the test copy only now, after the results were read

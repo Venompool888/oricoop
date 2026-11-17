@@ -22,6 +22,7 @@ namespace OriCoop
 
         static readonly Dictionary<string, string> s_seen = new Dictionary<string, string>();   // text -> where
         static string s_where = "";
+        static readonly HashSet<string> s_imguiPages = new HashSet<string>();
         static float s_nextScan;
 
         public static readonly HashSet<string> Whitelist = new HashSet<string>(StringComparer.Ordinal)
@@ -71,7 +72,11 @@ namespace OriCoop
                 return AccessTools.Method(typeof(GUIContent), "Temp", new[] { typeof(string) });
             }
             static bool Prepare() { return On; }
-            static void Prefix(string t) { Record(t, "imgui " + s_where); }
+            static void Prefix(string t)
+            {
+                Record(t, "imgui " + s_where);
+                if (!string.IsNullOrEmpty(t) && t.Trim().Length > 0) s_imguiPages.Add(s_where);
+            }
         }
 
         // Native boxes of our own objects, sampled a few times a second (called from Checks' coroutine and Tick).
@@ -204,8 +209,127 @@ namespace OriCoop
             note("l10n probe: " + n + " distinct texts recorded, " + keys + " keys");
             check(n > 10, "l10n: probe recorded the pages' texts (" + n + ")");
             check(bad.Count == 0, "l10n: every drawn label is in one language (" + lang + ", " + bad.Count + " bad)");
+            yield return host.StartCoroutine(FontFrames(host, check, note));
         }
 
+
+
+        static IEnumerator FontFrames(MonoBehaviour host, Action<bool, string> check, Action<string> note)
+        {
+            note("--- native game font probe");
+            var pages = new List<string> { "session.paused", "session.save", "steam.invite", "display.notice", "p2.joinhint", "saves.dialog" };
+            // Further pages announce themselves: any class with static string[] L10nTestPages() and
+            // static void L10nTestShow(string page, bool on) (so ported files need no edit here).
+            var shows = new Dictionary<string, System.Reflection.MethodInfo>();
+            foreach (Type t in typeof(L10nProbe).Assembly.GetTypes())
+            {
+                System.Reflection.MethodInfo list = t.GetMethod("L10nTestPages", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                System.Reflection.MethodInfo show = t.GetMethod("L10nTestShow", System.Reflection.BindingFlags.Static | System.Reflection.BindingFlags.Public | System.Reflection.BindingFlags.NonPublic);
+                if (list == null || show == null) continue;
+                foreach (string pg in (string[])list.Invoke(null, null)) { pages.Add(pg); shows[pg] = show; }
+            }
+            try
+            {
+                foreach (string page in pages)
+                {
+                    s_imguiPages.Remove(page);
+                    Where(page);
+                    bool shot = false;
+                    SessionScreens.TestPage = page.StartsWith("session.") ? page : "";
+                    SteamInviteHook.TestShow = page == "steam.invite";
+                    DisplayFix.TestShow = page == "display.notice";
+                    Plugin.TestJoinHint = page == "p2.joinhint";
+                    CoopSaves.TestShow = page == "saves.dialog";
+                    foreach (KeyValuePair<string, System.Reflection.MethodInfo> kv in shows) if (kv.Key != page) kv.Value.Invoke(null, new object[] { kv.Key, false });
+                    if (shows.ContainsKey(page)) shows[page].Invoke(null, new object[] { page, true });
+                    float end = Time.realtimeSinceStartup + 1f;
+                    bool seen = false, native = false;
+                    while (Time.realtimeSinceStartup < end)
+                    {
+                        yield return null;
+                        if (NativeGui.PagesLastFrame.Contains(page))
+                        {
+                            seen = true;
+                            if (NativeGui.LabelsLastFrame > 0 && NativeGui.PageUsesGameFont(page)) native = true;
+                        }
+                        ScanBoxes();
+                        if (!shot && Time.realtimeSinceStartup > end - 0.3f) { shot = true; Shot("native_" + page.Replace(".", "_")); }
+                    }
+                    check(seen, "native font: page drawn " + page);
+                    check(native, "native font: native label uses current BitmapFont " + page);
+                    check(!s_imguiPages.Contains(page), "native font: no IMGUI strings " + page);
+                }
+            }
+            finally
+            {
+                foreach (Camera cam in Camera.allCameras)
+                    note("camera " + cam.name + " depth " + cam.depth + " mask 0x" + cam.cullingMask.ToString("X") + " ortho " + cam.orthographic + " clear " + cam.clearFlags + " near " + cam.nearClipPlane + (cam == P2Hud.GuiCamera() ? " (GUI camera)" : ""));
+                if (SaveSlotsUI.Instance != null)
+                {
+                    foreach (Renderer rr in SaveSlotsUI.Instance.GetComponentsInChildren<Renderer>())
+                    {
+                        note("save slots renderer layer " + rr.gameObject.layer + " queue " + (rr.sharedMaterial != null ? rr.sharedMaterial.renderQueue : -1) + " z " + rr.transform.position.z + " " + rr.name);
+                        break;
+                    }
+                }
+                foreach (KeyValuePair<string, string> kv in NativeGui.Metrics) note("native label " + kv.Key + ": " + kv.Value);
+                SessionScreens.TestPage = ""; SteamInviteHook.TestShow = false; DisplayFix.TestShow = false;
+                Plugin.TestJoinHint = false; CoopSaves.TestShow = false;
+                foreach (KeyValuePair<string, System.Reflection.MethodInfo> kv in shows) kv.Value.Invoke(null, new object[] { kv.Key, false });
+                Where("");
+            }
+            yield return host.StartCoroutine(host_LanguageSwitch(check, note));
+        }
+
+
+        static void Shot(string name)
+        {
+            try
+            {
+                string outFile = Environment.GetEnvironmentVariable("ORICOOP_TEST_OUT");
+                string dir = string.IsNullOrEmpty(outFile) ? "." : System.IO.Path.GetDirectoryName(outFile);
+                string path = System.IO.Path.Combine(dir, name + "_" + (L10n.Zh ? "zh" : "en") + ".png");
+                Application.CaptureScreenshot(path);
+                Plugin.Log.LogInfo("l10n probe: screenshot " + path);
+            }
+            catch (Exception) { }
+        }
+
+        // Live switch through the game's own setter (as Options > Language does): our native boxes set through
+        // L10n.Set, the title items and the IMGUI text must follow. Skipped under ORICOOP_FORCE_ZH (the getter is
+        // pinned to Chinese there).
+        static IEnumerator host_LanguageSwitch(Action<bool, string> check, Action<string> note)
+        {
+            if (Environment.GetEnvironmentVariable("ORICOOP_FORCE_ZH") == "1" || GameSettings.Instance == null) { note("l10n: live switch skipped (forced Chinese)"); yield break; }
+            note("--- live language switch");
+            Language start = GameSettings.Instance.Language;
+            GameText probe = new GameText("OriCoop_L10nSwitchProbe");
+            MessageBox box = probe.Ok ? probe.Go.GetComponentInChildren<MessageBox>() : null;
+            if (box != null) { probe.Go.SetActive(true); L10n.Set(box, "server.title.desc"); }
+            int relabels0 = NativeModeMenu.LanguageRelabels;
+            Language[] seq = { start == Language.Chinese ? Language.English : Language.Chinese, start };
+            foreach (Language lang in seq)
+            {
+                GameSettings.Instance.Language = lang;
+                float end = Time.realtimeSinceStartup + 0.6f;
+                while (Time.realtimeSinceStartup < end) yield return null;
+                bool zh = lang == Language.Chinese;
+                string want = L10n.T("server.title.desc", zh);
+                string got = null;
+                try { got = box != null ? Traverse.Create(box).Field("m_currentMessage").Field("Message").GetValue<string>() : null; } catch (Exception) { }
+                check(L10n.Zh == zh, "l10n live switch: L10n.Zh follows the game language (" + lang + ")");
+                check(box != null && got == want, "l10n live switch: native box re-reads its text (" + lang + ": '" + got + "')");
+                SessionScreens.TestPage = "session.paused";
+                Where("switch " + lang);
+                float end2 = Time.realtimeSinceStartup + 0.6f;
+                while (Time.realtimeSinceStartup < end2) yield return null;
+                Shot("switch_session_paused");
+                SessionScreens.TestPage = "";
+            }
+            check(NativeModeMenu.LanguageRelabels >= relabels0 + 2, "l10n live switch: title items relabelled on each switch (" + (NativeModeMenu.LanguageRelabels - relabels0) + ")");
+            check(GameSettings.Instance.Language == start, "l10n live switch: language restored (" + GameSettings.Instance.Language + ")");
+            probe.Destroy();
+        }
         static IEnumerator Wait(float s) { float end = Time.realtimeSinceStartup + s; while (Time.realtimeSinceStartup < end) yield return null; }
     }
 }

@@ -4,6 +4,9 @@ using Game;
 using HarmonyLib;
 using UnityEngine;
 
+using OriCoop.Seams;
+using OriCoop.Rules;
+
 namespace OriCoop
 {
     // Local co-op downed / revive (the owner's design, 2026-11-14):
@@ -18,49 +21,39 @@ namespace OriCoop
     // Online mode: same rules over the network, see ReviveNet.cs (each PC decides only for its own Ori).
     public static partial class Revive
     {
+        static IRulesHost Host { get { return SessionRules.Host; } }
         public static bool Enabled = true;
         public const float HoldSeconds = 1.5f;
         public const float Radius = 2.5f;
 
-        public class Downed
+        public class Downed : DownedState
         {
             public SeinCharacter Sein;
-            public int Player;                 // seat
             public Vector3 Marker;
-            public float Progress;             // 0..1
-            public float DrainRate;            // health per second, fixed when progress starts from 0
-            public float Given;                // health drained from the saver so far
-            public bool NeedRelease;           // interrupted by damage: release and press again
-            public bool Holding;
             public bool Remote;                // online: the partner's Ori, downed in its owner's game
             public List<Renderer> Hidden = new List<Renderer>();
         }
 
-        static readonly Downed[] s_down = new Downed[Players.MaxSeats + 1];
-        // TODO(4p): retain slot-based safe-ground history across host/guest role changes in phase 0.
-        static Vector3 s_safe1, s_safe2;
-        static bool s_haveSafe1, s_haveSafe2;
+        static readonly DownedRoster<Downed> s_roster = new DownedRoster<Downed>(ReviveLogic.MaxSeats);
+        static readonly Downed[] s_down = s_roster.Seats;
+        static readonly Vector3[] s_safe = new Vector3[ReviveLogic.MaxSeats + 1];
+        static readonly bool[] s_haveSafe = new bool[ReviveLogic.MaxSeats + 1];
         static float s_safeTimer;
         static bool s_passThrough;            // our own final-death call must reach the game
         static bool s_subscribed;
         public static int Revives, FinalDeaths, Interrupts;
 
-        public static bool Local { get { return Enabled && !NetPlay.Enabled && P2Context.P1 != null && P2Context.P2 != null; } }
-        public static bool AnyDowned { get { foreach (Downed d in s_down) if (d != null) return true; return false; } }
-        // TODO(4p): phase 1 removes slot-based query; existing callers use local/puppet slots.
-        public static Downed DownedOf(int player) { return s_down[Roles.OfSlot(player)]; }
+        public static bool Local { get { return Enabled && !Services.Net.Enabled && Host.P1 != null && Host.P2 != null; } }
+        public static bool AnyDowned { get { return s_roster.AnyDowned; } }
+        // Compatibility query: slot 1 is local, slot 2 is the primary puppet.
+        public static Downed DownedOf(int player) { return s_down[Host.SeatOfSlot(player)]; }
         internal static Downed DownedAtSeat(int seat) { return s_down[seat]; }
-        internal static SeinCharacter SeinAt(int seat)
-        {
-            if (seat == Players.LocalSeat) return P2Context.P1;
-            foreach (Puppet p in Players.Remotes) if (p.Seat == seat) return p.Sein;
-            return null;
-        }
+        internal static SeinCharacter SeinAt(int seat) { return Host.SeinAt(seat); }
         internal static IEnumerable<int> PresentSeats
         {
             get
             {
-                for (int seat = 1; seat <= Players.MaxSeats; seat++) if (SeinAt(seat) != null) yield return seat;
+                for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++) if (SeinAt(seat) != null) yield return seat;
             }
         }
         public static bool IsDowned(SeinCharacter s)
@@ -69,23 +62,63 @@ namespace OriCoop
             foreach (Downed d in s_down) if (d != null && d.Sein == s) return true;
             return false;
         }
-        static int PlayerOf(SeinCharacter s) { return Players.SeatOf(s); }
+        static int PlayerOf(SeinCharacter s) { return Host.SeatOf(s); }
+        internal static bool MultiRevive { get { return Services.Net.Enabled && Host.RemoteCount > 1; } }
         internal static SeinCharacter Partner(SeinCharacter s)
         {
-            SeinCharacter first = null;
+            if (!MultiRevive)
+            {
+                SeinCharacter first = null;
+                foreach (int seat in PresentSeats)
+                {
+                    SeinCharacter other = SeinAt(seat);
+                    if (other == s) continue;
+                    if (Alive(other)) return other;
+                    if (first == null) first = other;
+                }
+                return first;
+            }
+            return s == null ? null : NearestLiving(s.Position, s);
+        }
+        internal static SeinCharacter NearestLiving(Vector3 position, SeinCharacter except)
+        {
+            SeinCharacter nearest = null;
+            float distance = float.PositiveInfinity;
             foreach (int seat in PresentSeats)
             {
                 SeinCharacter other = SeinAt(seat);
-                if (other == s) continue;
-                if (Alive(other)) return other;
-                if (first == null) first = other;
+                if (other == except || !Alive(other)) continue;
+                Vector3 at;
+                if (!Services.Net.Enabled || !Host.RemotePos(seat, out at)) at = other.Position;
+                float d = (at - position).sqrMagnitude;
+                if (d < distance) { nearest = other; distance = d; }
             }
-            return first;
+            return nearest;
+        }
+        internal static SeinCharacter Rescuer(Downed down, bool holding)
+        {
+            if (!MultiRevive) return Partner(down.Sein);
+            SeinCharacter nearest = null;
+            float distance = float.PositiveInfinity;
+            foreach (int seat in PresentSeats)
+            {
+                SeinCharacter other = SeinAt(seat);
+                if (seat == down.Player || !Alive(other) || !SaverNear(other, down)
+                    || Services.Net.Enabled && SessionRules.InMenu(seat) || holding && !SaverHolding(other)) continue;
+                Vector3 at;
+                if (!Services.Net.Enabled || !Host.RemotePos(seat, out at)) at = other.Position;
+                float d = (at - down.Marker).sqrMagnitude;
+                if (d < distance) { nearest = other; distance = d; }
+            }
+            return nearest;
+        }
+        static IEnumerable<int> OthersPresent(SeinCharacter dying)
+        {
+            foreach (int seat in PresentSeats) if (SeinAt(seat) != dying) yield return seat;
         }
         static bool AllDown(SeinCharacter dying)
         {
-            foreach (int seat in PresentSeats) if (SeinAt(seat) != dying && s_down[seat] == null) return false;
-            return true;
+            return s_roster.AllDown(OthersPresent(dying), 0);
         }
         static bool Alive(SeinCharacter s) { return s != null && s.gameObject.activeInHierarchy && !IsDowned(s) && s.Mortality.Health.Amount > 0f; }
 
@@ -114,15 +147,18 @@ namespace OriCoop
             Subscribe();
             if (IsDowned(who)) return true;
             SeinCharacter other = Partner(who);
-            if (!AllDown(who) && Alive(other) && !CoopMenu.IsOpen)
+            bool allDown = AllDown(who);
+            bool partnerAlive = !allDown && Alive(other);
+            bool menuOpen = partnerAlive && Host.CoopMenuOpen;
+            if (ReviveLogic.DecideLocalDeath(allDown, partnerAlive, menuOpen) == DeathOutcome.Downed)
             {
                 MakeDowned(who);
                 return true;
             }
             // Partner already down: both are out -> the game's normal death, once.
             FinalDeaths++;
-            Plugin.Log.LogInfo("both Oris are down: normal death / checkpoint reload");
-            if (who == P2Context.P1) return false; // P1's own death runs as the game does
+            Services.Log.Info("both Oris are down: normal death / checkpoint reload");
+            if (who == Host.P1) return false; // P1's own death runs as the game does
             // P2 went down last while P1 is downed: run P1's death as the game would.
             MakeDowned(who);
             KillP1Normally();
@@ -133,13 +169,13 @@ namespace OriCoop
         // reload, or game over on One Life).
         static void KillP1Normally()
         {
-            SeinCharacter p1 = P2Context.P1;
-            int seat = Players.LocalSeat;
+            SeinCharacter p1 = Host.P1;
+            int seat = Host.LocalSeat;
             if (s_down[seat] != null) { RestoreDowned(s_down[seat], false); s_down[seat] = null; }
             if (p1 == null || !p1.gameObject.activeInHierarchy) return;
             s_passThrough = true;
             try { p1.Mortality.DamageReciever.OnKill(new Damage(1000f, Vector2.zero, p1.Position, DamageType.Spikes, null)); }
-            catch (Exception e) { Plugin.Log.LogError(e); }
+            catch (Exception e) { Services.Log.Error(e.ToString()); }
             finally { s_passThrough = false; }
         }
 
@@ -148,9 +184,8 @@ namespace OriCoop
             int player = PlayerOf(s);
             Downed d = new Downed();
             d.Sein = s; d.Player = player;
-            bool local = s == P2Context.P1;
-            bool haveSafe = local ? s_haveSafe1 : s_haveSafe2;
-            d.Marker = haveSafe ? (local ? s_safe1 : s_safe2) : s.Position;
+            bool local = s == Host.P1;
+            d.Marker = s_haveSafe[player] ? s_safe[player] : s.Position;
             s.Mortality.Health.SetAmount(0f);
             if (local)
             {
@@ -163,13 +198,13 @@ namespace OriCoop
             }
             else
             {
-                P2Lifecycle.DropCarried(s);
+                Host.DropCarried(s);
                 s.gameObject.SetActive(false);
-                P2Extras.SetCompanionActive(false);
+                Host.SetCompanionActive(s, false);
             }
             s_down[player] = d;
             EnsureWatchdog();
-            Plugin.Log.LogInfo("P" + player + " downed at " + d.Marker + " (hold Spirit Flame near the skull to revive)");
+            Services.Log.Info("P" + player + " downed at " + d.Marker + " (hold Spirit Flame near the skull to revive)");
         }
 
         static void SetSuspended(SeinCharacter s, bool on)
@@ -186,7 +221,7 @@ namespace OriCoop
         {
             if (d == null || d.Sein == null) return;
             SeinCharacter s = d.Sein;
-            if (!d.Remote && d.Player == Players.LocalSeat)
+            if (!d.Remote && d.Player == Host.LocalSeat)
             {
                 foreach (Renderer r in d.Hidden) if (r != null) r.enabled = true;
                 if (s.PlatformBehaviour != null && s.PlatformBehaviour.CapsuleController != null) s.PlatformBehaviour.CapsuleController.EnableCollider(true);
@@ -200,24 +235,24 @@ namespace OriCoop
             else
             {
                 s.gameObject.SetActive(true);
-                P2Extras.SetCompanionActive(true);
+                Host.SetCompanionActive(s, true);
             }
             if (place && saver != null)
             {
-                Plugin.Teleport(s, saver.Position + new Vector3(saver.FaceLeft ? 1f : -1f, 0f, 0f));
+                Host.Teleport(s, saver.Position + new Vector3(saver.FaceLeft ? 1f : -1f, 0f, 0f));
                 s.Mortality.Health.SetAmount(Mathf.Clamp(health, 1f, s.Mortality.Health.MaxHealth));
                 s.Mortality.DamageReciever.MakeInvincible(1.5f);
-                if (Players.OfSein(s) != null) P2Extras.ReturnCompanion("revived");
+                if (Host.IsPuppet(s)) Host.ReturnCompanion(s, "revived");
             }
         }
 
         // ---- every frame (local co-op only) ---------------------------------------------------------------------
         public static void Tick()
         {
-            if (!Local) { if (AnyDowned) ClearAll("left local co-op", P2Context.P1 != null); return; }
+            if (!Local) { if (AnyDowned) ClearAll("left local co-op", Host.P1 != null); return; }
             Subscribe();
             TrackSafeGround();
-            if (s_down[Players.LocalSeat] != null) KeepPinned(s_down[Players.LocalSeat]);
+            if (s_down[Host.LocalSeat] != null) KeepPinned(s_down[Host.LocalSeat]);
             foreach (int seat in PresentSeats) Step(s_down[seat]);
         }
 
@@ -226,9 +261,11 @@ namespace OriCoop
             s_safeTimer -= Time.deltaTime;
             if (s_safeTimer > 0f) return;
             s_safeTimer = 0.2f;
-            SeinCharacter p1 = P2Context.P1, p2 = P2Context.P2;
-            if (Alive(p1) && Grounded(p1)) { s_safe1 = p1.Position; s_haveSafe1 = true; }
-            if (Alive(p2) && Grounded(p2)) { s_safe2 = p2.Position; s_haveSafe2 = true; }
+            foreach (int seat in PresentSeats)
+            {
+                SeinCharacter s = SeinAt(seat);
+                if (Alive(s) && Grounded(s)) { s_safe[seat] = s.Position; s_haveSafe[seat] = true; }
+            }
         }
 
         static bool Grounded(SeinCharacter s)
@@ -247,48 +284,56 @@ namespace OriCoop
 
         public static bool SaverHolding(SeinCharacter saver)
         {
-            Puppet p = Players.OfSein(saver);
-            if (p != null) return p.Input.SpiritFlame.IsPressed;
-            return Core.Input.SpiritFlame.IsPressed; // outside P2 context Core.Input is P1's
+            return Host.SaverHolding(saver);
         }
 
         public static bool SaverNear(SeinCharacter saver, Downed d)
         {
             if (saver == null || d == null) return false;
-            Vector3 v = saver.Position - d.Marker;
+            Vector3 at;
+            if (!MultiRevive || !Host.RemotePos(PlayerOf(saver), out at)) at = saver.Position;
+            Vector3 v = at - d.Marker;
             return Mathf.Abs(v.x) < Radius && Mathf.Abs(v.y) < Radius;
         }
 
         static void Step(Downed d)
         {
             if (d == null) return;
-            SeinCharacter saver = Partner(d.Sein);
+            bool multi = MultiRevive;
+            SeinCharacter saver = multi ? Rescuer(d, true) : Partner(d.Sein);
             d.Holding = false;
             // No reviving through a menu: online a menu no longer freezes the world, so check the saver's own menus too.
-            bool saverInMenu = CoopMenu.IsOpen || (UI.MainMenuVisible && (saver == P2Context.P1 || !NetPlay.Enabled));
-            if (!Alive(saver) || GameController.Instance == null || GameController.Instance.GameplaySuspended || saverInMenu) return;
-            bool holding = SaverNear(saver, d) && SaverHolding(saver);
-            if (!holding) { d.NeedRelease = false; return; }
+            bool saverInMenu = Host.CoopMenuOpen || (UI.MainMenuVisible && (saver == Host.P1 || !Services.Net.Enabled));
+            if (!multi && !Alive(saver) || GameController.Instance == null || GameController.Instance.GameplaySuspended || saverInMenu) return;
+            if (multi && saver == null) { ReviveLogic.Release(d); return; }
+            bool holding = multi || SaverNear(saver, d) && SaverHolding(saver);
+            if (!holding) { ReviveLogic.Release(d); return; }
+            if (multi && saver != Host.P1) return;
+            if (multi && d.Rescuer != PlayerOf(saver))
+            {
+                ReviveLogic.Release(d);
+                ReviveLogic.SetDrainRate(d, saver.Mortality.Health.Amount, HoldSeconds);
+            }
             if (d.NeedRelease) return;
-            d.Holding = true;
-            float dt = Time.deltaTime;
-            if (d.Progress <= 0f) d.DrainRate = saver.Mortality.Health.Amount / 2f / HoldSeconds;
-            float drain = Mathf.Min(d.DrainRate * dt, Mathf.Max(0f, saver.Mortality.Health.Amount - 0.25f));
+            ReviveLogic.BeginHold(d, PlayerOf(saver));
+            // Native SyncFramesTest varies timeScale even during ordinary gameplay.
+            float dt = Services.Net.Enabled ? Time.deltaTime : Time.unscaledDeltaTime;
+            if (d.Progress <= 0f) ReviveLogic.SetDrainRate(d, saver.Mortality.Health.Amount, HoldSeconds);
+            float drain = ReviveLogic.Drain(d, saver.Mortality.Health.Amount, dt);
             saver.Mortality.Health.SetAmount(saver.Mortality.Health.Amount - drain);
-            d.Given += drain;
-            d.Progress = Mathf.Min(1f, d.Progress + dt / HoldSeconds);
+            ReviveLogic.Advance(d, dt, drain, HoldSeconds);
             if (d.Progress >= 1f) Complete(d, saver);
         }
 
         static void Complete(Downed d, SeinCharacter saver)
         {
             float health = Mathf.Max(1f, d.Given);
-            if (d.Remote) { CompleteRemote(d, health); return; } // online: the partner's own game applies it
+            if (d.Remote) { CompleteRemote(d, saver, health); return; } // the owner's game applies it
             s_down[d.Player] = null;
             RestoreDowned(d, true, saver, health);
             PartnerFx.PlayRevive(d.Sein, d.Sein.Position);
             Revives++;
-            Plugin.Log.LogInfo("P" + d.Player + " revived by P" + PlayerOf(saver) + " with " + health.ToString("F1") + " health");
+            Services.Log.Info("P" + d.Player + " revived by P" + PlayerOf(saver) + " with " + health.ToString("F1") + " health");
         }
 
         // Accepted damage to a saver interrupts its revive hold.
@@ -297,11 +342,11 @@ namespace OriCoop
             foreach (Downed d in s_down)
             {
                 if (d == null) continue;
-                SeinCharacter saver = Partner(d.Sein);
-                if (saver != null && saver.Mortality.Health == h && d.Holding)
+                SeinCharacter saver = MultiRevive ? SeinAt(d.Rescuer) : Partner(d.Sein);
+                if (saver != null && saver.Mortality.Health == h && ReviveLogic.Interrupt(d))
                 {
-                    d.NeedRelease = true; d.Holding = false; Interrupts++;
-                    Plugin.Log.LogInfo("revive of P" + d.Player + " interrupted (saver took damage) at " + (d.Progress * 100f).ToString("F0") + "%");
+                    Interrupts++;
+                    Services.Log.Info("revive of P" + d.Player + " interrupted (saver took damage) at " + (d.Progress * 100f).ToString("F0") + "%");
                 }
             }
         }
@@ -317,23 +362,23 @@ namespace OriCoop
         static void OnPostRestore()
         {
             if (!AnyDowned) return;
-            SeinCharacter p1 = P2Context.P1;
+            SeinCharacter p1 = Host.P1;
             Downed[] down = (Downed[])s_down.Clone();
             Array.Clear(s_down, 0, s_down.Length);
-            RestoreDowned(down[Players.LocalSeat], false);
-            for (int seat = 1; seat <= Players.MaxSeats; seat++)
+            RestoreDowned(down[Host.LocalSeat], false);
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
             {
-                if (seat == Players.LocalSeat) continue;
+                if (seat == Host.LocalSeat) continue;
                 Downed d = down[seat];
                 RestoreDowned(d, false);
-                if (d != null && seat != Players.LocalSeat && !d.Remote && d.Sein != null && p1 != null)
+                if (d != null && seat != Host.LocalSeat && !d.Remote && d.Sein != null && p1 != null)
                 {
                     d.Sein.Mortality.Health.RestoreAllHealth();
-                    Plugin.Teleport(d.Sein, p1.Position + new Vector3(1f, 0f, 0f));
-                    P2Extras.ReturnCompanion("checkpoint reload");
+                    Host.Teleport(d.Sein, p1.Position + new Vector3(1f, 0f, 0f));
+                    Host.ReturnCompanion(d.Sein, "checkpoint reload");
                 }
             }
-            Plugin.Log.LogInfo("checkpoint reload: both Oris back");
+            Services.Log.Info("checkpoint reload: both Oris back");
         }
 
         // P2 leaves (F10, title screen...) or online mode starts while someone is down.
@@ -342,11 +387,11 @@ namespace OriCoop
             if (!AnyDowned) return;
             Downed[] down = (Downed[])s_down.Clone();
             Array.Clear(s_down, 0, s_down.Length);
-            Downed d1 = down[Players.LocalSeat];
-            for (int seat = 1; seat <= Players.MaxSeats; seat++)
+            Downed d1 = down[Host.LocalSeat];
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
             {
                 Downed d = down[seat];
-                if (seat != Players.LocalSeat && d != null && d.Sein != null) RestoreDowned(d, false);
+                if (seat != Host.LocalSeat && d != null && d.Sein != null) RestoreDowned(d, false);
             }
             if (d1 != null && d1.Sein != null)
             {
@@ -356,11 +401,11 @@ namespace OriCoop
                 {
                     s_passThrough = true;
                     try { d1.Sein.Mortality.DamageReciever.OnKill(new Damage(1000f, Vector2.zero, d1.Sein.Position, DamageType.Spikes, null)); }
-                    catch (Exception e) { Plugin.Log.LogError(e); }
+                    catch (Exception e) { Services.Log.Error(e.ToString()); }
                     finally { s_passThrough = false; }
                 }
             }
-            Plugin.Log.LogInfo("downed state cleared: " + why);
+            Services.Log.Info("downed state cleared: " + why);
         }
 
         // ---- patches --------------------------------------------------------------------------------------------
@@ -405,15 +450,15 @@ namespace OriCoop
             static void Prefix()
             {
                 s_moved = false;
-                if (!Local || !P2Context.Inside || P2Context.P1 == null || P2Context.P2 == null || IsDowned(P2Context.P1)) return;
-                s_p1Before = P2Context.P1.Position;
-                P2Context.P1.Position = P2Context.P2.Position;
+                if (!Local || !Host.Inside || Host.P1 == null || Host.P2 == null || IsDowned(Host.P1)) return;
+                s_p1Before = Host.P1.Position;
+                Host.P1.Position = Host.P2.Position;
                 s_moved = true;
                 CheckpointsByP2++;
             }
             static void Finalizer()
             {
-                if (s_moved && P2Context.P1 != null) P2Context.P1.Position = s_p1Before;
+                if (s_moved && Host.P1 != null) Host.P1.Position = s_p1Before;
                 s_moved = false;
             }
         }

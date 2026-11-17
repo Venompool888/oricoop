@@ -39,9 +39,10 @@ $cfg = Join-Path $TL_GameDir 'BepInEx\config\local.oricoop.cfg'
 $cfgBefore = if (Test-Path $cfg) { [IO.File]::ReadAllBytes($cfg) } else { $null }
 try {
     $p = Start-TestGame -Arguments '-screen-fullscreen 0 -screen-width 960 -screen-height 540' -Vars $vars -Tag 'run-test'
-    if (-not (Wait-TestGames @($p) $TimeoutSec)) { $p.Kill(); $p.WaitForExit(10000) | Out-Null; "TIMEOUT: game killed after $TimeoutSec s" }
+    if (-not (Wait-TestGames @($p) $TimeoutSec $null @($out))) { $p.Kill(); $p.WaitForExit(10000) | Out-Null; "TIMEOUT: game killed after $TimeoutSec s" }
 }
 finally { if ($cfgBefore -ne $null) { [IO.File]::WriteAllBytes($cfg, $cfgBefore) }; Complete-TestRun }
-if (Test-Path $out) { Get-Content $out } else { "no result file" }
+if (Test-Path $out) { Get-Content $out } else { 'no result file: ' + (Get-NoResultReason) }
 "--- BepInEx errors/warnings ---"
 Get-Content $log | Select-String 'Error|Exception|Warning|P2 ' | Select-Object -First 30
+Exit-TestRun   # release the test copy only now, after the results were read

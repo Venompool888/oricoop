@@ -6,6 +6,8 @@ using System.IO;
 using Game;
 using HarmonyLib;
 using OriCoop.Net;
+using OriCoop.Authority;
+using OriCoop.Enemies;
 using UnityEngine;
 
 namespace OriCoop
@@ -38,6 +40,7 @@ namespace OriCoop
         static void ReadTestSignal(int seat, string signal)
         {
             if (NetPlay.IsHost && signal == "ready") s_readySeats.Add(seat);
+            if (NetPlay.IsHost && FourTesting && signal == "4P done") s_fourDoneSeats.Add(seat);
             if (seat == 1 && signal == "leave") s_leaveReleased = true;
             if (seat == 1 && signal == "done") s_done = true;
             double at;
@@ -50,11 +53,11 @@ namespace OriCoop
 
         static IEnumerator StartBarrier(TestHarness h)
         {
-            float deadline = Time.realtimeSinceStartup + (ClientCount == 3 ? 120f : 30f);
+            float deadline = Time.realtimeSinceStartup + (ClientCount == 3 || ClientCount == 4 ? 120f : 30f);
             if (NetPlay.IsHost)
             {
                 while (s_readySeats.Count < ClientCount - 1 && Time.realtimeSinceStartup < deadline) yield return null;
-                h.Check(s_readySeats.Count == ClientCount - 1, "net all guests ready before go");
+                h.Check(s_readySeats.Count == ClientCount - 1, (ClientCount == 4 ? "4P " : "net ") + "all guests ready before go");
                 if (s_readySeats.Count != ClientCount - 1) yield break;
                 s_goAt = Clock() + 1.0;
                 NetPlay.SendTestSignal("go:" + s_goAt.ToString("R", CultureInfo.InvariantCulture));
@@ -63,7 +66,7 @@ namespace OriCoop
             {
                 NetPlay.SendTestSignal("ready");
                 while (s_goAt == 0 && Time.realtimeSinceStartup < deadline) yield return null;
-                h.Check(s_goAt > 0, "net start signal from host received");
+                h.Check(s_goAt > 0, (ClientCount == 4 ? "4P " : "net ") + "start signal from host received");
             }
             while (s_goAt > 0 && Clock() < s_goAt) yield return null;
         }
@@ -76,12 +79,27 @@ namespace OriCoop
             public long Frames;
             public double CollectedAt;
             public ulong Digest;
+            public int DownMask, Skulls, Forwarded, Glows, GlowEffects, RevivedMessages, RevivesSent, Wipes, Restores, MenuMask, StoryCalls, StoryLeaves, StorySent, StoryMirrored, EnemyOwner;
+            public bool Ready, Alive, Paused, BannerP3, EnemyLoaded;
+            public float EnemyHealth;
+            public Vector3 Position, EnemyOrigin;
+            public string EnemyKey = "";
             public void Write(BinaryWriter w)
             {
                 w.Write(Step); w.Write(Seat); w.Write(PuppetCount); w.Write(SeatMask); w.Write(Keys); w.Write(Loads);
                 w.Write(WorldCount); w.Write(Applied); w.Write(Rejected); w.Write(Unique); w.Write(Joined);
                 w.Write(Connected); w.Write(Ended); w.Write(Distance); w.Write(Rise); w.Write(Travel); w.Write(Error);
                 w.Write(Frames); w.Write(CollectedAt); w.Write(Digest);
+                if (ClientCount == 4)
+                {
+                    w.Write(DownMask); w.Write(Skulls); w.Write(Forwarded); w.Write(Glows); w.Write(GlowEffects);
+                    w.Write(RevivedMessages); w.Write(RevivesSent);
+                    w.Write(Wipes); w.Write(Restores); w.Write(MenuMask); w.Write(StoryCalls); w.Write(StoryLeaves);
+                    w.Write(StorySent); w.Write(StoryMirrored); w.Write(EnemyOwner); w.Write(Ready); w.Write(Alive);
+                    w.Write(Paused); w.Write(BannerP3); w.Write(EnemyLoaded); w.Write(EnemyHealth);
+                    w.Write(Position.x); w.Write(Position.y); w.Write(Position.z);
+                    w.Write(EnemyOrigin.x); w.Write(EnemyOrigin.y); w.Write(EnemyOrigin.z); w.Write(EnemyKey);
+                }
             }
             public static ThreePacket Read(BinaryReader r)
             {
@@ -92,6 +110,16 @@ namespace OriCoop
                 p.Connected = r.ReadBoolean(); p.Ended = r.ReadBoolean(); p.Distance = r.ReadSingle();
                 p.Rise = r.ReadSingle(); p.Travel = r.ReadSingle(); p.Error = r.ReadSingle();
                 p.Frames = r.ReadInt64(); p.CollectedAt = r.ReadDouble(); p.Digest = r.ReadUInt64();
+                if (ClientCount == 4)
+                {
+                    p.DownMask = r.ReadInt32(); p.Skulls = r.ReadInt32(); p.Forwarded = r.ReadInt32(); p.Glows = r.ReadInt32(); p.GlowEffects = r.ReadInt32();
+                    p.RevivedMessages = r.ReadInt32(); p.RevivesSent = r.ReadInt32();
+                    p.Wipes = r.ReadInt32(); p.Restores = r.ReadInt32(); p.MenuMask = r.ReadInt32(); p.StoryCalls = r.ReadInt32(); p.StoryLeaves = r.ReadInt32();
+                    p.StorySent = r.ReadInt32(); p.StoryMirrored = r.ReadInt32(); p.EnemyOwner = r.ReadInt32(); p.Ready = r.ReadBoolean(); p.Alive = r.ReadBoolean();
+                    p.Paused = r.ReadBoolean(); p.BannerP3 = r.ReadBoolean(); p.EnemyLoaded = r.ReadBoolean(); p.EnemyHealth = r.ReadSingle();
+                    p.Position = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+                    p.EnemyOrigin = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()); p.EnemyKey = r.ReadString();
+                }
                 return p;
             }
         }
@@ -109,7 +137,7 @@ namespace OriCoop
             if (NetPlay.IsHost)
             {
                 p.Seat = NetPlay.Sender;
-                for (int seat = 2; seat <= 3; seat++)
+                for (int seat = 2; seat <= (ClientCount == 4 ? 4 : 3); seat++)
                     if (seat != p.Seat) NetPlay.SendTo(seat, MsgThreeTest, true, p.Write);
             }
             StoreThree(p);
@@ -136,11 +164,24 @@ namespace OriCoop
             p.Connected = Connected; p.Ended = s_threeEnded;
             p.Rise = s_threeRise; p.Travel = s_threeTravel; p.Error = s_threeError; p.Frames = s_threeFrames;
             p.CollectedAt = s_collectedAt;
+            if (ClientCount == 4) CaptureFour(p);
             StoreThree(p); NetPlay.Send(MsgThreeTest, true, p.Write);
-            float deadline = Time.realtimeSinceStartup + 12f;
-            while (Connected && !HaveThree(step, count) && Time.realtimeSinceStartup < deadline) yield return null;
-            if (!HaveThree(step, count)) throw new InvalidOperationException("3P barrier " + step + " missing observations");
-            h.Note("3P barrier " + step + " received " + count + " seats");
+            float deadline = Time.realtimeSinceStartup + (ClientCount == 4 ? (step == 440 || step == 452 ? 90f : 30f) : 12f);
+            while (Connected && !HaveThree(step, count) && Time.realtimeSinceStartup < deadline)
+            { if (ClientCount == 4) HoldFour(); yield return null; }
+            string prefix = ClientCount == 4 ? "4P" : "3P";
+            if (!HaveThree(step, count)) throw new InvalidOperationException(prefix + " barrier " + step + " missing observations");
+            h.Note(prefix + " barrier " + step + " received " + count + " seats");
+            if (ClientCount == 4)
+                for (int seat = 1; seat <= 4; seat++)
+                {
+                    ThreePacket seen = Three(step, seat);
+                    h.Note("4P sample " + step + " P" + seat + " down=" + seen.DownMask + " skull=" + seen.Skulls
+                        + " fx=" + seen.Forwarded + "/" + seen.Glows + "/" + seen.GlowEffects + " revivedMsg=" + seen.RevivedMessages
+                        + " menu=" + seen.MenuMask + " paused=" + seen.Paused + " travel=" + F(seen.Travel)
+                        + " enemy=P" + seen.EnemyOwner + "/" + F(seen.EnemyHealth) + " story=" + seen.StoryCalls + "/" + seen.StoryLeaves
+                        + " wipes=" + seen.Wipes + " restores=" + seen.Restores + " loads=" + seen.Loads + " ready=" + seen.Ready);
+                }
         }
 
         static Puppet PuppetAt(int seat)
@@ -183,6 +224,391 @@ namespace OriCoop
                 ProgressSync.PickupCollector(Own).OnCollectKeystonePickup(pickup);
             }
             finally { UnityEngine.Object.Destroy(go); }
+        }
+
+        static bool s_fourActive, s_fourPinned;
+        static Vector3 s_fourPin, s_fourEnemyOrigin;
+        static int s_fourForwarded, s_fourGlows, s_fourRevivedMessages, s_fourStoryCalls, s_fourForcedOwner;
+        static string s_fourEnemyKey = "";
+        static readonly HashSet<int> s_fourDoneSeats = new HashSet<int>();
+        static readonly MoonGuid FourStoryId = new MoonGuid(0x34505354, 0x4f525954, 0x45535430, 1);
+        static bool FourTesting { get { return TestHarness.Enabled && ClientCount == 4 && s_fourActive; } }
+        static bool FourAlive { get { return Own != null && Own.Active && Own.Mortality.Health.Amount > 0 && !Revive.IsDowned(Own); } }
+        static bool FourReady
+        {
+            get { return FourAlive && SaveSync.Ready && NetPlay.LocalInGameplay() && Players.Remotes.Count == 3 && !Revive.AnyDowned; }
+        }
+        static int FourDownMask()
+        { int mask = 0; for (int seat = 1; seat <= 4; seat++) if (Revive.DownedAtSeat(seat) != null) mask |= 1 << seat; return mask; }
+        static bool FourSkull(int seat)
+        {
+            foreach (string name in new[] { "s_icon", "s_skull" })
+            {
+                object marker = ((Array)AccessTools.Field(typeof(ReviveHud), name).GetValue(null)).GetValue(seat);
+                if (marker == null) continue;
+                GameObject go = (GameObject)AccessTools.Field(marker.GetType(), "Go").GetValue(marker);
+                if (go != null && go.activeInHierarchy) return true;
+            }
+            return false;
+        }
+        static void CaptureFour(ThreePacket p)
+        {
+            p.DownMask = FourDownMask(); p.Ready = FourReady; p.Alive = FourAlive;
+            for (int seat = 1; seat <= 4; seat++)
+            { if (FourSkull(seat)) p.Skulls |= 1 << seat; if (SessionRules.InMenu(seat)) p.MenuMask |= 1 << seat; }
+            p.Forwarded = s_fourForwarded; p.Glows = s_fourGlows; p.GlowEffects = PartnerFx.ReviveEffects;
+            p.RevivedMessages = s_fourRevivedMessages; p.RevivesSent = Revive.NetRevivesSent;
+            p.Wipes = Revive.NetBothDown; p.Restores = TestHarness.RestoreCheckpointCalls;
+            p.Paused = SessionRules.LocalPaused || SessionRules.PausedByPartner;
+            p.BannerP3 = SessionRules.PauseText == L10n.F("pause.by", "P3");
+            p.StoryCalls = s_fourStoryCalls; p.StoryLeaves = (int)AccessTools.Field(typeof(NetStoryTest), "s_leafCalls").GetValue(null);
+            p.StorySent = StorySync.StartsSent; p.StoryMirrored = StorySync.StartsMirrored;
+            p.Position = Own.Position; p.EnemyKey = s_fourEnemyKey; p.EnemyOrigin = s_fourEnemyOrigin;
+            EnemySync.Probe enemy = EnemySync.Inspect(s_fourEnemyKey);
+            p.EnemyLoaded = enemy.Present && enemy.Mirrored && enemy.Known && enemy.PlaceholderLoaded;
+            p.EnemyOwner = enemy.OwnerSeat; p.EnemyHealth = enemy.Health;
+            p.Frames = NetPlay.LocalTick;
+        }
+        static void HoldFour()
+        {
+            if (!FourTesting || s_goAt == 0 || !FourAlive) return;
+            Own.Mortality.DamageReciever.IsImmortal = true;
+            if (s_fourPinned) { Own.Position = s_fourPin; Own.Speed = Vector3.zero; }
+        }
+        static IEnumerator FourAwait(TestHarness h, Func<bool> ready, float timeout, string waiting)
+        {
+            float end = Time.realtimeSinceStartup + timeout;
+            while (!ready() && Time.realtimeSinceStartup < end) { HoldFour(); yield return null; }
+            if (!ready()) h.Note("4P timeout awaiting " + waiting);
+        }
+        static IEnumerator FourTicks(TestHarness h, int ticks, Action observe = null)
+        {
+            uint start = NetPlay.LocalTick;
+            yield return FourAwait(h, delegate {
+                if (observe != null) observe();
+                return NetPlay.LocalTick - start >= ticks;
+            }, 6f, ticks + " input frames");
+        }
+        static bool AllFour(int step, Func<ThreePacket, bool> predicate)
+        { for (int seat = 1; seat <= 4; seat++) if (!predicate(Three(step, seat))) return false; return true; }
+        static IEnumerator FourPlace(TestHarness h, Vector3 anchor)
+        {
+            s_fourPinned = false; Bot(0, 0);
+            float side = Players.LocalSeat == 2 ? 0f : Players.LocalSeat == 3 ? 0.8f : Players.LocalSeat == 4 ? -0.8f : -1.4f;
+            Vector3 position;
+            if (!EnemyGroundPosition(anchor, side, out position)) position = anchor + Vector3.right * side;
+            Plugin.Teleport(Own, position); SessionRules.PositionChanged();
+            yield return FourAwait(h, delegate { return Own.PlatformBehaviour.PlatformMovement.IsOnGround; }, 8f, "group on safe ground");
+            s_fourPin = Own.Position; s_fourPinned = true;
+            yield return FourAwait(h, delegate {
+                bool[] have = (bool[])AccessTools.Field(typeof(Revive), "s_haveSafe").GetValue(null);
+                Vector3[] safe = (Vector3[])AccessTools.Field(typeof(Revive), "s_safe").GetValue(null);
+                return have[Players.LocalSeat] && Vector3.Distance(safe[Players.LocalSeat], s_fourPin) < 0.5f;
+            }, 5f, "revive safe-ground cache at group");
+        }
+        static void FourKill()
+        {
+            Own.Mortality.DamageReciever.IsImmortal = false;
+            Own.Mortality.DamageReciever.ResetInviciblity();
+            Own.Mortality.DamageReciever.OnRecieveDamage(new Damage(1000f, Vector2.zero, Own.Position, DamageType.Spikes, null));
+        }
+        [HarmonyPatch(typeof(PartnerFx), "OnNetPuppetFx")]
+        static class FourForwardObservation
+        {
+            static bool Prepare() { return TestHarness.Enabled && ClientCount == 4; }
+            static void Prefix(BinaryReader r)
+            {
+                if (!FourTesting) return;
+                long at = r.BaseStream.Position;
+                int seat = r.ReadByte(); r.BaseStream.Position = at;
+                if (NetPlay.Sender == 2 && seat == 2) s_fourForwarded++;
+            }
+        }
+        [HarmonyPatch(typeof(Revive), "OnNetRevived")]
+        static class FourRevivedObservation
+        {
+            static bool Prepare() { return TestHarness.Enabled && ClientCount == 4; }
+            static void Prefix(BinaryReader r, out bool __state)
+            {
+                __state = false; if (!FourTesting) return;
+                long at = r.BaseStream.Position;
+                int seat = r.ReadByte(); r.BaseStream.Position = at;
+                __state = seat == 2 && NetPlay.Sender == 2 && Revive.DownedAtSeat(2) != null;
+            }
+            static void Postfix(bool __state)
+            { if (__state && Revive.DownedAtSeat(2) == null) s_fourRevivedMessages++; }
+        }
+        [HarmonyPatch(typeof(ActionSequence), "Perform")]
+        static class FourStoryObservation
+        {
+            static bool Prepare() { return TestHarness.Enabled && ClientCount == 4; }
+            static void Postfix(ActionSequence __instance)
+            { if (FourTesting && __instance.MoonGuid == FourStoryId) s_fourStoryCalls++; }
+        }
+        [HarmonyPatch(typeof(EnemySync), "DesiredOwner")]
+        static class FourEnemyOwnerFixture
+        {
+            static bool Prepare() { return TestHarness.Enabled && ClientCount == 4; }
+            static bool Prefix(object a, ref int __result)
+            {
+                if (!FourTesting || s_fourForcedOwner == 0 || (string)AccessTools.Field(a.GetType(), "Key").GetValue(a) != s_fourEnemyKey) return true;
+                __result = s_fourForcedOwner; return false;
+            }
+        }
+
+        static IEnumerator FourClients(TestHarness h)
+        {
+            s_fourActive = true; s_fourPinned = false; s_fourForcedOwner = 0; s_fourEnemyKey = "";
+            s_fourDoneSeats.Clear();
+            s_fourForwarded = s_fourGlows = s_fourRevivedMessages = s_fourStoryCalls = 0;
+            bool immortal = false, captured = false;
+            Action<SeinCharacter> oldHook = PartnerFx.ReviveHook;
+            PartnerFx.ReviveHook = delegate(SeinCharacter sein) {
+                if (FourTesting && Players.SeatOf(sein) == 2) s_fourGlows++;
+                if (oldHook != null) oldHook(sein);
+            };
+            try
+            {
+                h.Note("4P SKIP two-client-only enemy/E3/E5/E6, revive/R, story/S4 and lag phases; using per-seat 4P scenarios");
+                yield return FourAwait(h, delegate { return FourReady; }, 150f, "three puppets and save handshake");
+                if (!FourReady)
+                { h.Check(false, "4P everyone sees three puppets with unique seats 1/2/3/4"); yield break; }
+                immortal = Own.Mortality.DamageReciever.IsImmortal; captured = true; HoldFour();
+                yield return StartBarrier(h);
+                if (s_goAt == 0) yield break;
+                yield return ThreeRound(h, 400, 4);
+                h.Check(AllFour(400, p => p.PuppetCount == 3 && p.Unique && p.SeatMask == 30 && p.Ready),
+                    "4P everyone sees three puppets with unique seats 1/2/3/4");
+                Vector3 arena = Three(400, 1).Position;
+                if (Players.LocalSeat == 2)
+                    NetPlay.Send(66, true, delegate(BinaryWriter w) {
+                        w.Write((byte)2); w.Write((byte)0); w.Write((byte)DamageType.Spikes);
+                        w.Write((byte)0); w.Write(1f); w.Write(0f);
+                    });
+                int before = Three(400, Players.LocalSeat).Forwarded;
+                yield return FourAwait(h, delegate { return Players.LocalSeat == 2 || s_fourForwarded > before; }, 8f, "forwarded P2 effect");
+                yield return ThreeRound(h, 401, 4);
+                h.Check(AllFour(401, p => p.Forwarded - Three(400, p.Seat).Forwarded == (p.Seat == 2 ? 0 : 1)),
+                    "4P P2 message 66 reaches host/P3/P4 once with sender P2");
+
+                yield return FourPlace(h, arena);
+                yield return FourRevive(h);
+                yield return FourPause(h);
+                yield return FourStory(h);
+                yield return FourEnemy(h);
+                yield return FourPlace(h, arena);
+                yield return FourWipe(h);
+                h.Check(h.ErrorCount == 0, "4P no Unity errors/exceptions");
+                yield return ThreeRound(h, 499, 4);
+                if (NetPlay.IsHost)
+                {
+                    NetPlay.SendTestSignal("done");
+                    float end = Time.realtimeSinceStartup + 12f;
+                    while (s_fourDoneSeats.Count < 3 && Time.realtimeSinceStartup < end) yield return null;
+                    if (s_fourDoneSeats.Count != 3) h.Check(false, "4P all guests received completion");
+                }
+                else
+                {
+                    yield return FourAwait(h, delegate { return s_done; }, 12f, "host completion");
+                    if (!s_done) h.Check(false, "4P host completion received");
+                    NetPlay.SendTestSignal("4P done"); NetPlay.Peer.Flush();
+                    yield return FourAwait(h, delegate { return NetPlay.Peer == null || NetPlay.Peer.Stats.ReliablePending == 0; }, 8f, "completion acknowledged before quitting");
+                }
+            }
+            finally
+            {
+                Bot(0, 0); s_fourPinned = false; s_fourForcedOwner = 0;
+                if (Players.LocalSeat == 3 && SessionRules.InMenu(3)) UI.Menu.HideMenuScreen(true);
+                PartnerFx.ReviveHook = oldHook; s_fourActive = false;
+                if (captured && Own != null) Own.Mortality.DamageReciever.IsImmortal = immortal;
+            }
+        }
+        static IEnumerator FourRevive(TestHarness h)
+        {
+            yield return ThreeRound(h, 410, 4);
+            if (Players.LocalSeat == 2) FourKill();
+            yield return FourAwait(h, delegate {
+                return Revive.DownedAtSeat(2) != null && (Players.LocalSeat != 1 && Players.LocalSeat != 4 || FourSkull(2));
+            }, 8f, "P2 down and visible skull");
+            yield return ThreeRound(h, 411, 4);
+            h.Check((Three(411, 1).DownMask & 4) != 0 && (Three(411, 4).DownMask & 4) != 0
+                && (Three(411, 1).Skulls & 4) != 0 && (Three(411, 4).Skulls & 4) != 0,
+                "4P host and P4 see P2 skull");
+            if (Players.LocalSeat == 3) Bot(0, P2Input.BTN_X);
+            yield return FourAwait(h, delegate { return Revive.DownedAtSeat(2) == null && s_fourGlows > Three(410, Players.LocalSeat).Glows; },
+                8f, "P3 completes P2 revive");
+            Bot(0, 0);
+            yield return FourAwait(h, delegate { return !FourSkull(2); }, 3f, "P2 skull hidden after revive");
+            yield return ThreeRound(h, 412, 4);
+            bool revived = AllFour(412, p => (p.DownMask & 4) == 0 && (p.Skulls & 4) == 0 && p.Glows - Three(410, p.Seat).Glows == 1
+                && p.Wipes == Three(410, p.Seat).Wipes && p.Restores == Three(410, p.Seat).Restores);
+            h.Check(revived && Three(412, 2).Alive && Three(412, 3).RevivesSent == Three(410, 3).RevivesSent + 1,
+                "4P P3 revives P2 and all four clear the skull");
+            ThreePacket p4 = Three(412, 4), baseline = Three(410, 4);
+            h.Check(p4.Glows == baseline.Glows + 1 && p4.GlowEffects == baseline.GlowEffects + 1 && p4.RevivedMessages == baseline.RevivedMessages + 1,
+                "4P P4 plays P2 revive glow once from MsgRevived");
+        }
+        static IEnumerator FourPause(TestHarness h)
+        {
+            s_fourPinned = false; Bot(0, 0);
+            yield return ThreeRound(h, 420, 4);
+            if (Players.LocalSeat == 3) AccessTools.Method(typeof(MenuScreenManager), "ShowMenuScreen",
+                new Type[] { typeof(MenuScreenManager.Screens), typeof(bool) }).Invoke(UI.Menu,
+                new object[] { MenuScreenManager.Screens.Pause, false });
+            yield return FourAwait(h, delegate {
+                return SessionRules.InMenu(3) && (SessionRules.LocalPaused || SessionRules.PausedByPartner)
+                    && SessionRules.PauseText == L10n.F("pause.by", "P3");
+            }, 8f, "P3 pause and banner");
+            Vector3 origin = Own.Position; s_threeTravel = 0; Bot(1, 0);
+            yield return FourTicks(h, 30, delegate { s_threeTravel = Mathf.Max(s_threeTravel, Vector3.Distance(origin, Own.Position)); });
+            Bot(0, 0);
+            yield return ThreeRound(h, 421, 4);
+            h.Check(AllFour(421, p => p.Paused && p.MenuMask == 8 && p.BannerP3 && p.Travel < 0.3f && p.Frames > Three(420, p.Seat).Frames),
+                "4P P3 pauses all four with banner P3 and no movement");
+            if (Players.LocalSeat == 3) UI.Menu.HideMenuScreen(true);
+            yield return FourAwait(h, delegate { return !SessionRules.InMenu(3) && !SessionRules.LocalPaused && !SessionRules.PausedByPartner; }, 8f, "P3 menu closed");
+            origin = Own.Position; Bot(1, 0);
+            yield return FourAwait(h, delegate { return Mathf.Abs(Own.Position.x - origin.x) > 0.5f; }, 5f, "movement after resume");
+            Bot(0, 0); s_threeTravel = Mathf.Abs(Own.Position.x - origin.x);
+            yield return ThreeRound(h, 422, 4);
+            h.Check(AllFour(422, p => !p.Paused && p.MenuMask == 0 && p.Travel > 0.5f),
+                "4P closing P3 menu resumes movement on all four");
+            s_fourPin = Own.Position; s_fourPinned = true;
+        }
+        static IEnumerator FourStory(TestHarness h)
+        {
+            GameObject go = new GameObject("OriCoop 4P S-test sequence");
+            ActionSequence sequence = go.AddComponent<ActionSequence>(); sequence.MoonGuid = new MoonGuid(FourStoryId);
+            LockPlayerInputAction storyLock = go.AddComponent<LockPlayerInputAction>(); storyLock.DurationPlayerCantMove = 0.4f;
+            sequence.Actions.Add(storyLock);
+            WaitAction wait = go.AddComponent<WaitAction>(); wait.Duration = 0.2f; sequence.Actions.Add(wait);
+            sequence.Actions.Add(go.AddComponent<NetStoryTest.NoStoryAction>());
+            try
+            {
+                s_fourPinned = false; Bot(0, 0);
+                yield return FourAwait(h, delegate { return !StorySync.StoryActive && !CutsceneGuard.PedestalWindow && !GameController.Instance.InputLocked; },
+                    12f, "previous story finished");
+                yield return ThreeRound(h, 430, 4);
+                ThreePacket before = Three(430, Players.LocalSeat);
+                if (Players.LocalSeat == 4) sequence.Perform(null);
+                yield return FourAwait(h, delegate {
+                    return s_fourStoryCalls > before.StoryCalls
+                        && (int)AccessTools.Field(typeof(NetStoryTest), "s_leafCalls").GetValue(null) > before.StoryLeaves
+                        && !sequence.IsRunning && !StorySync.StoryActive;
+                }, 15f, "P4 native story and End");
+                yield return ThreeRound(h, 431, 4);
+                h.Check(AllFour(431, p => p.StoryCalls == Three(430, p.Seat).StoryCalls + 1 && p.StoryLeaves == Three(430, p.Seat).StoryLeaves + 1
+                    && (p.Seat == 4 ? p.StorySent == Three(430, 4).StorySent + 1 : p.StoryMirrored == Three(430, p.Seat).StoryMirrored + 1)),
+                    "4P seat-4 story plays once on all four");
+            }
+            finally { UnityEngine.Object.Destroy(go); }
+        }
+        static string FourFindEnemy()
+        {
+            foreach (string kind in new[] { "SpitterEnemy", "JumperEnemy", "RammingEnemy", "AcidSlugEnemy", "StarSlugEnemy" })
+            {
+                string key = EnemySync.FindTestEnemyOfClass(Own.Position, kind, null);
+                if (!string.IsNullOrEmpty(key)) return key;
+            }
+            return "";
+        }
+        static IEnumerator FourEnemy(TestHarness h)
+        {
+            s_fourPinned = false; Bot(0, 0);
+            Vector3 saved = Own.Position;
+            if (NetPlay.IsHost)
+            {
+                s_fourEnemyKey = FourFindEnemy();
+                if (s_fourEnemyKey == "" && Core.Scenes.Manager != null)
+                {
+                    List<RuntimeSceneMetaData> areas = new List<RuntimeSceneMetaData>();
+                    foreach (RuntimeSceneMetaData scene in Core.Scenes.Manager.AllScenes)
+                        if (!scene.DependantScene && scene.CanBeLoaded && scene.SceneBoundaries.Count > 0
+                            && Game.Checkpoint.SaveGameData.Scenes.ContainsKey(scene.SceneMoonGuid)
+                            && scene.Scene.IndexOf("boss", StringComparison.OrdinalIgnoreCase) < 0
+                            && scene.Scene.IndexOf("escape", StringComparison.OrdinalIgnoreCase) < 0) areas.Add(scene);
+                    areas.Sort(delegate(RuntimeSceneMetaData a, RuntimeSceneMetaData b) {
+                        return Vector3.Distance(a.PlaceholderPosition, saved).CompareTo(Vector3.Distance(b.PlaceholderPosition, saved)); });
+                    for (int attempt = 0; attempt < areas.Count && attempt < 4 && s_fourEnemyKey == ""; attempt++)
+                    {
+                        Vector3 point = areas[attempt].PlaceholderPosition;
+                        h.Note("4P enemy search saved scene=" + areas[attempt].Scene + " position=" + point);
+                        EnemySync.LoadTestArea(point); Plugin.Teleport(Own, point);
+                        s_fourPin = point; s_fourPinned = true;
+                        yield return FourAwait(h, delegate { s_fourEnemyKey = FourFindEnemy(); return s_fourEnemyKey != ""; }, 6f, "loaded E-test enemy");
+                    }
+                }
+                s_fourEnemyOrigin = EnemySync.Inspect(s_fourEnemyKey).Origin;
+            }
+            yield return ThreeRound(h, 440, 4);
+            s_fourEnemyKey = Three(440, 1).EnemyKey; s_fourEnemyOrigin = Three(440, 1).EnemyOrigin;
+            if (s_fourEnemyKey == "")
+            {
+                h.Note("4P no mirrored E-test enemy reachable in current or four nearest saved scenes");
+                h.Check(false, "4P enemy owner is seat 3 on all four");
+                h.Check(false, "4P seat-2 duplicate hit removes exactly 3 health on all four");
+                yield break;
+            }
+            try
+            {
+                h.Note("4P real E-test enemy=" + s_fourEnemyKey + "; injecting DesiredOwner=P3, native Decide/Grant/Handoff and hit routing unchanged");
+                if (NetPlay.IsHost) s_fourForcedOwner = 1;
+                EnemySync.LoadTestArea(s_fourEnemyOrigin);
+                Vector3 ground;
+                float side = (Players.LocalSeat - 3) * 3f;
+                if (!EnemyGroundPosition(s_fourEnemyOrigin, side, out ground)) ground = s_fourEnemyOrigin + new Vector3(side, 1f, 0);
+                Plugin.Teleport(Own, ground); SessionRules.PositionChanged(); s_fourPin = ground; s_fourPinned = true;
+                yield return FourAwait(h, delegate {
+                    EnemySync.Probe p = EnemySync.Inspect(s_fourEnemyKey);
+                    return p.Present && p.PlaceholderLoaded && p.Known && p.OwnerSeat == 1;
+                }, 15f, "enemy loaded and initially owned by host");
+                if (NetPlay.IsHost && EnemySync.Inspect(s_fourEnemyKey).Owner) EnemySync.PrepareTestEnemy(s_fourEnemyKey, 80f);
+                yield return FourAwait(h, delegate { return Mathf.Abs(EnemySync.Inspect(s_fourEnemyKey).Health - 80f) < 0.01f; }, 8f, "enemy health 80");
+                yield return ThreeRound(h, 441, 4);
+                if (NetPlay.IsHost) s_fourForcedOwner = 3;
+                yield return FourAwait(h, delegate {
+                    EnemySync.Probe p = EnemySync.Inspect(s_fourEnemyKey);
+                    return p.OwnerSeat == 3 && p.Present && Mathf.Abs(p.Health - 80f) < 0.01f;
+                }, 10f, "grant owner P3 on every end");
+                yield return ThreeRound(h, 442, 4);
+                h.Check(AllFour(442, p => p.EnemyLoaded && p.EnemyOwner == 3 && Mathf.Abs(p.EnemyHealth - 80f) < 0.01f),
+                    "4P enemy owner is seat 3 on all four");
+                if (Players.LocalSeat == 2 && EnemySync.Inspect(s_fourEnemyKey).Present) EnemySync.TestAttack(s_fourEnemyKey, 3f, true);
+                yield return FourAwait(h, delegate { return EnemySync.Inspect(s_fourEnemyKey).Health <= 77f; }, 8f, "P2 hit applied by P3");
+                yield return FourTicks(h, 30);
+                yield return ThreeRound(h, 443, 4);
+                h.Check(AllFour(443, p => p.EnemyLoaded && p.EnemyOwner == 3 && Mathf.Abs(p.EnemyHealth - 77f) < 0.01f
+                    && Mathf.Abs(Three(442, p.Seat).EnemyHealth - p.EnemyHealth - 3f) < 0.01f),
+                    "4P seat-2 duplicate hit removes exactly 3 health on all four");
+            }
+            finally
+            {
+                if (NetPlay.IsHost) EnemySync.EndTestEnemy(s_fourEnemyKey);
+                s_fourForcedOwner = 0; s_fourPinned = false;
+            }
+        }
+        static IEnumerator FourWipe(TestHarness h)
+        {
+            Bot(0, 0); yield return ThreeRound(h, 450, 4);
+            ThreePacket baseline = Three(450, Players.LocalSeat);
+            if (Players.LocalSeat != 1) FourKill();
+            yield return FourAwait(h, delegate { return FourDownMask() == 28; }, 8f, "P2/P3/P4 all down with host alive");
+            yield return FourTicks(h, 30);
+            yield return ThreeRound(h, 451, 4);
+            h.Check(Three(451, 1).Alive && AllFour(451, p => p.DownMask == 28 && p.Wipes == Three(450, p.Seat).Wipes
+                && p.Restores == Three(450, p.Seat).Restores && p.Loads == Three(450, p.Seat).Loads),
+                "4P P2/P3/P4 down with host alive causes no wipe");
+            s_fourPinned = false;
+            if (Players.LocalSeat == 1) FourKill();
+            yield return FourAwait(h, delegate {
+                return FourReady && Revive.NetBothDown > baseline.Wipes && TestHarness.RestoreCheckpointCalls > baseline.Restores
+                    && (Players.LocalSeat == 1 || SaveSync.GuestLoads > baseline.Loads && SaveSync.JoinedHost);
+            }, 75f, "one host-decided wipe and all checkpoint reloads");
+            yield return ThreeRound(h, 452, 4);
+            h.Check(AllFour(452, p => p.Ready && p.Alive && p.DownMask == 0 && p.PuppetCount == 3
+                && p.Wipes == Three(450, p.Seat).Wipes + 1 && p.Restores == Three(450, p.Seat).Restores + 1
+                && (p.Seat == 1 || p.Joined && p.Loads == Three(450, p.Seat).Loads + 1)),
+                "4P all down causes one wipe and reload on all four");
         }
 
         static IEnumerator ThreeClients(TestHarness h)
@@ -417,7 +843,7 @@ namespace OriCoop
                     if (failure != null)
                     {
                         if (onFailure != null) onFailure();
-                        h.Check(false, label + " threw " + failure.GetType().Name + ": " + failure.Message);
+                        h.Check(false, label + " threw " + failure.GetType().Name + ": " + failure.Message); Plugin.Log.LogError(label + " threw: " + failure);
                     }
                     if (!moved)
                     {
@@ -606,10 +1032,12 @@ namespace OriCoop
         {
             public string Key; public float Health, X, Y, DeadAt; public bool Dead, Owner;
             public bool Present, Ready; public float Travel;
+            public int Seat, OwnerSeat; public uint Epoch;
         }
-        sealed class EnemyScenario { public string Key; public bool Valid; }
+        sealed class EnemyScenario { public string Key; public bool Valid; public int OwnerSeat; public uint Epoch; }
         static bool s_enemyReady; static float s_enemyTravel;
         static readonly Dictionary<int, EnemyTestPacket> s_enemyPackets = new Dictionary<int, EnemyTestPacket>();
+        static readonly Dictionary<int, EnemyTestPacket> s_ownEnemyReports = new Dictionary<int, EnemyTestPacket>();
         static readonly Dictionary<int, float> s_ownEnemyHealth = new Dictionary<int, float>();
         sealed class EnemyTracePoint { public float Tick; public Vector3 Position; }
         static readonly List<EnemyTracePoint> s_enemyOwnerTrace = new List<EnemyTracePoint>();
@@ -627,15 +1055,20 @@ namespace OriCoop
             p.Key = r.ReadString(); p.Health = r.ReadSingle(); p.X = r.ReadSingle(); p.Y = r.ReadSingle();
             p.DeadAt = r.ReadSingle(); p.Dead = r.ReadBoolean(); p.Owner = r.ReadBoolean(); s_enemyPackets[step] = p;
             p.Present = r.ReadBoolean(); p.Ready = r.ReadBoolean(); p.Travel = r.ReadSingle();
+            p.Seat = r.ReadInt32(); p.OwnerSeat = r.ReadInt32(); p.Epoch = r.ReadUInt32();
         }
         static IEnumerator EnemyBarrier(TestHarness h, int step, string key)
         {
             EnemySync.Probe p = EnemySync.Inspect(key);
             s_ownEnemyHealth[step] = p.Health;
+            s_ownEnemyReports[step] = new EnemyTestPacket { Key = key ?? "", Health = p.Health, Owner = p.Owner,
+                Present = p.Present, Dead = p.Dead, Ready = s_enemyReady, Travel = s_enemyTravel,
+                Seat = Players.LocalSeat, OwnerSeat = p.OwnerSeat, Epoch = p.Epoch };
             NetPlay.Send(49, true, delegate(BinaryWriter w) {
                 w.Write(step); w.Write(key ?? ""); w.Write(p.Health); w.Write(p.Origin.x); w.Write(p.Origin.y);
                 w.Write(p.DeathTime); w.Write(p.Dead); w.Write(p.Owner);
                 w.Write(p.Present); w.Write(s_enemyReady); w.Write(s_enemyTravel);
+                w.Write(Players.LocalSeat); w.Write(p.OwnerSeat); w.Write(p.Epoch);
             });
             float end = Time.realtimeSinceStartup + (step == 0 ? 30f : step >= 100 ? 25f : 12f);
             while (Connected && !s_enemyPackets.ContainsKey(step) && Time.realtimeSinceStartup < end) yield return null;
@@ -658,9 +1091,16 @@ namespace OriCoop
         }
         static bool EnemyReadyHere(EnemySync.Probe p, Vector3 origin)
         {
-            return p.Present && p.Mirrored && p.Known && !p.Dead && p.Owner == NetPlay.IsHost
+            return p.Present && p.Mirrored && p.Known && !p.Dead
+                && EnemyOwnership.ExpectedRole(NetRoute.ServerMode, NetPlay.IsHost, Players.LocalSeat, p.Owner, p.OwnerSeat)
                 && Own.PlatformBehaviour.PlatformMovement.IsOnGround && Mathf.Abs(Own.Position.x - origin.x) <= 15f
                 && Mathf.Abs(Own.Position.y - origin.y) <= 12f;
+        }
+        static bool EnemyAgreement(string key, int step)
+        {
+            EnemyTestPacket local = s_ownEnemyReports[step], partner = s_enemyPackets[step];
+            return local.Key == key && partner.Key == key && EnemyOwnership.PeerAgreement(NetRoute.ServerMode, NetPlay.IsHost,
+                local.Seat, local.Owner, local.OwnerSeat, local.Epoch, partner.Seat, partner.Owner, partner.OwnerSeat, partner.Epoch);
         }
         static IEnumerator MovingEnemyScenario(TestHarness h, string first, EnemyScenario result)
         {
@@ -704,7 +1144,16 @@ namespace OriCoop
                 yield return EnemyBarrier(h, ready, key);
                 EnemyTestPacket partner;
                 if (!s_enemyPackets.TryGetValue(ready, out partner)) yield break;
-                if (!s_enemyReady || !partner.Ready) { rejected.Add(key); h.Note("E3 retry candidate: both sides must be grounded, present and active"); continue; }
+                EnemyTestPacket agreed = s_ownEnemyReports[ready];
+                if (!agreed.Ready || !partner.Ready || !EnemyAgreement(key, ready))
+                {
+                    rejected.Add(key);
+                    h.Note("E3 retry candidate: both sides must be grounded, active and agree on one owner/epoch; ownerSeat="
+                        + agreed.OwnerSeat + " epoch=" + agreed.Epoch + " peerOwnerSeat=" + partner.OwnerSeat + " peerEpoch=" + partner.Epoch);
+                    continue;
+                }
+                bool owner = NetRoute.ServerMode ? agreed.Owner : NetPlay.IsHost;
+                s_enemyOwnerTrace.Clear();
                 List<EnemyTracePoint> trace = new List<EnemyTracePoint>();
                 double newestErrors = 0; int newestSamples = 0; float travel = 0; previous = EnemySync.Inspect(key).Position;
                 long bytes = EnemySync.BytesSent, wireBytes = EnemySync.EstimatedWireBytesSent; start = Time.realtimeSinceStartup;
@@ -712,26 +1161,27 @@ namespace OriCoop
                 {
                     EnemySync.Probe p = EnemySync.Inspect(key);
                     if (!p.Present || p.Dead || !p.Mirrored || !EnemyReadyHere(p, origin)) s_enemyReady = false;
+                    if (NetRoute.ServerMode && (p.OwnerSeat != agreed.OwnerSeat || p.Epoch != agreed.Epoch)) s_enemyReady = false;
                     if (p.Present)
                     {
                         travel += Vector3.Distance(previous, p.Position); previous = p.Position;
-                        float tick = NetPlay.IsHost ? NetPlay.LocalTick : p.RenderTick;
+                        float tick = owner ? NetPlay.LocalTick : p.RenderTick;
                         if (trace.Count == 0 || trace[trace.Count - 1].Tick != tick)
                         { EnemyTracePoint row = new EnemyTracePoint(); row.Tick = tick; row.Position = p.Position; if (trace.Count < 2048) trace.Add(row); }
-                        if (!NetPlay.IsHost && p.HasSnapshot) { newestErrors += Vector3.Distance(p.Position, p.OwnerPosition); newestSamples++; }
+                        if (!owner && p.HasSnapshot) { newestErrors += Vector3.Distance(p.Position, p.OwnerPosition); newestSamples++; }
                     }
                     yield return null;
                 }
                 float seconds = Time.realtimeSinceStartup - start;
                 long payloadDelta = EnemySync.BytesSent - bytes, wireDelta = EnemySync.EstimatedWireBytesSent - wireBytes;
                 s_enemyTravel = travel;
-                if (NetPlay.IsHost) NetPlay.Send(48, true, delegate(BinaryWriter w) {
+                if (owner) NetPlay.Send(48, true, delegate(BinaryWriter w) {
                     w.Write((ushort)trace.Count); foreach (EnemyTracePoint p in trace) { w.Write(p.Tick); w.Write(p.Position.x); w.Write(p.Position.y); w.Write(p.Position.z); }
                 });
                 yield return EnemyBarrier(h, measured, key);
                 if (!s_enemyPackets.TryGetValue(measured, out partner)) yield break;
                 double errors = 0; int samples = 0, i = 1;
-                if (!NetPlay.IsHost) foreach (EnemyTracePoint rendered in trace)
+                if (!owner) foreach (EnemyTracePoint rendered in trace)
                 {
                     while (i < s_enemyOwnerTrace.Count && s_enemyOwnerTrace[i].Tick < rendered.Tick) i++;
                     if (i >= s_enemyOwnerTrace.Count || rendered.Tick < s_enemyOwnerTrace[i - 1].Tick) continue;
@@ -740,17 +1190,20 @@ namespace OriCoop
                     errors += Vector3.Distance(rendered.Position, Vector3.Lerp(a.Position, b.Position, blend)); samples++;
                 }
                 float mean = samples == 0 ? float.PositiveInfinity : (float)(errors / samples);
-                h.Note("E3 follow seconds=" + F(seconds) + " matchedOwnerTickSamples=" + samples + " meanUnits=" + (NetPlay.IsHost ? "owner-reference" : F(mean))
+                h.Note("E3 follow seconds=" + F(seconds) + " ownerSeat=" + agreed.OwnerSeat + " epoch=" + agreed.Epoch
+                    + " matchedOwnerTickSamples=" + samples + " meanUnits=" + (owner ? "owner-reference" : F(mean))
                     + " newestSnapshotLagError=" + (newestSamples == 0 ? "owner-reference" : F((float)(newestErrors / newestSamples)))
                     + " travel=" + F(travel) + " partnerTravel=" + F(partner.Travel) + " localOri=" + Own.Position
                     + " enemyPayloadKBps=" + F(payloadDelta / 1024f / seconds) + " enemyEstimatedWireKBps=" + F(wireDelta / 1024f / seconds) + " " + EnemySync.Describe(key));
-                if (!s_enemyReady || !partner.Ready || travel <= 1f || partner.Travel <= 1f)
+                if (!s_ownEnemyReports[measured].Ready || !partner.Ready || travel <= 1f || partner.Travel <= 1f
+                    || !EnemyAgreement(key, measured))
                 { rejected.Add(key); h.Note("E3 retry candidate: 5 s travel must exceed 1 on both peers; present=" + EnemySync.Inspect(key).Present); continue; }
-                result.Key = key; result.Valid = true;
+                result.Key = key; result.Valid = true; result.OwnerSeat = agreed.OwnerSeat; result.Epoch = agreed.Epoch;
                 h.Note("E3 using scenario=" + key + " " + EnemySync.Describe(key));
-                h.Check(EnemySync.Inspect(key).Owner == NetPlay.IsHost && partner.Owner != NetPlay.IsHost, "E3 host owns the moving mirrored enemy");
+                h.Check(EnemyAgreement(key, measured), NetRoute.ServerMode
+                    ? "E3 exactly one owner; both peers agree on owner/epoch" : "E3 host owns the moving mirrored enemy");
                 h.Check(travel > 1f && partner.Travel > 1f, "E3 moving enemy travel >1 on both peers (local=" + F(travel) + " remote=" + F(partner.Travel) + ")");
-                if (!NetPlay.IsHost) h.Check(samples > 20 && mean < 0.5f, "E3 moving puppet mean <0.5 at matched owner ticks (" + F(mean) + ")");
+                if (!owner) h.Check(samples > 20 && mean < 0.5f, "E3 moving puppet mean <0.5 at matched owner ticks (" + F(mean) + ")");
                 yield break;
             }
             h.Check(false, "E3 no loaded mirrored candidate sustained >1 travel with both Oris grounded nearby");
@@ -797,26 +1250,34 @@ namespace OriCoop
                 if (!scenario.Valid) yield break;
                 key = scenario.Key; float start;
                 // Fixed health is a fixture prerequisite; damage still traverses the production attack receiver.
-                if (NetPlay.IsHost) EnemySync.PrepareTestEnemy(key, 80f);
+                bool owner = NetRoute.ServerMode ? scenario.OwnerSeat == Players.LocalSeat : NetPlay.IsHost;
+                EnemySync.Probe current = EnemySync.Inspect(key);
+                if (owner && (!NetRoute.ServerMode || (current.Owner && current.OwnerSeat == scenario.OwnerSeat && current.Epoch == scenario.Epoch)))
+                    EnemySync.PrepareTestEnemy(key, 80f);
                 yield return Wait(0.5f);
-                // Host: read the baseline before the barrier; the guest attacks as soon as it passes the barrier, so
-                // its hit can reach the host before the host's own barrier wait returns.
-                float hostBaseline = NetPlay.IsHost ? EnemySync.Inspect(key).Health : 0f;
+                // Read the owner's baseline before the barrier; the mirror can attack before the owner returns.
+                float ownerBaseline = owner ? EnemySync.Inspect(key).Health : 0f;
                 yield return EnemyBarrier(h, 1, key);
-                float baseline = NetPlay.IsHost ? hostBaseline : s_enemyPackets[1].Health;
-                if (!NetPlay.IsHost) EnemySync.TestAttack(key, 3f, true);
+                if (!s_enemyPackets.ContainsKey(1)) yield break;
+                bool agreed = EnemyAgreement(key, 1) && (!NetRoute.ServerMode
+                    || (s_ownEnemyReports[1].OwnerSeat == scenario.OwnerSeat && s_ownEnemyReports[1].Epoch == scenario.Epoch
+                    && s_enemyPackets[1].OwnerSeat == scenario.OwnerSeat && s_enemyPackets[1].Epoch == scenario.Epoch));
+                h.Check(agreed, "E3 peers agree on one owner/epoch before damage");
+                if (!agreed) yield break;
+                float baseline = owner ? ownerBaseline : s_enemyPackets[1].Health;
+                if (!owner) EnemySync.TestAttack(key, 3f, true);
                 yield return Wait(0.5f); yield return EnemyBarrier(h, 2, key);
-                float hp = NetPlay.IsHost ? s_ownEnemyHealth[2] : s_enemyPackets[2].Health;
-                h.Note("E3 guest damage old=" + F(baseline) + " requested=3 duplicateHit=yes hostNow=" + F(hp) + " delta=" + F(baseline - hp) + " " + EnemySync.Describe(key));
-                h.Check(Mathf.Abs(baseline - hp - 3f) < 0.01f, "E3 guest hit applied exactly once");
+                float hp = owner ? s_ownEnemyHealth[2] : s_enemyPackets[2].Health;
+                h.Note("E3 mirror damage old=" + F(baseline) + " requested=3 duplicateHit=yes ownerNow=" + F(hp) + " delta=" + F(baseline - hp) + " " + EnemySync.Describe(key));
+                h.Check(Mathf.Abs(baseline - hp - 3f) < 0.01f, "E3 mirror hit applied exactly once");
                 baseline = hp;
-                EnemySync.TestAttack(key, NetPlay.IsHost ? 2f : 3f, false);
+                EnemySync.TestAttack(key, owner ? 2f : 3f, false);
                 yield return Wait(0.5f); yield return EnemyBarrier(h, 3, key);
-                hp = NetPlay.IsHost ? s_ownEnemyHealth[3] : s_enemyPackets[3].Health;
-                h.Note("E3 concurrent host=2 guest=3 old=" + F(baseline) + " now=" + F(hp) + " sum=" + F(baseline - hp));
+                hp = owner ? s_ownEnemyHealth[3] : s_enemyPackets[3].Health;
+                h.Note("E3 concurrent owner=2 mirror=3 old=" + F(baseline) + " now=" + F(hp) + " sum=" + F(baseline - hp));
                 h.Check(Mathf.Abs(baseline - hp - 5f) < 0.01f, "E3 simultaneous hits total=5");
                 start = Time.realtimeSinceStartup;
-                if (!NetPlay.IsHost) EnemySync.TestAttack(key, 1000f, false);
+                if (!owner) EnemySync.TestAttack(key, 1000f, false);
                 while (!EnemySync.Inspect(key).Dead && Time.realtimeSinceStartup - start < 0.5f) yield return null;
                 h.Note("E3 death observedSeconds=" + F(Time.realtimeSinceStartup - start) + " dead=" + EnemySync.Inspect(key).Dead);
                 h.Check(EnemySync.Inspect(key).Dead, "E3 death within 0.5 s");
@@ -826,12 +1287,12 @@ namespace OriCoop
                 while (Time.realtimeSinceStartup - start < 5f)
                 {
                     EnemySync.Probe p = EnemySync.Inspect(key);
-                    if (!NetPlay.IsHost && p.Present && p.Dead) early = true;
+                    if (!owner && p.Present && p.Dead) early = true;
                     if (!p.Dead && respawnAt < 0) respawnAt = Time.realtimeSinceStartup - start;
                     yield return null;
                 }
-                h.Note("E3 earlyGuestRespawn=" + early + " observedRespawnSeconds=" + F(respawnAt) + " " + EnemySync.Diagnostics());
-                h.Check(!early, "E3 guest respawn blocked until owner permission");
+                h.Note("E3 earlyMirrorRespawn=" + early + " observedRespawnSeconds=" + F(respawnAt) + " " + EnemySync.Diagnostics());
+                h.Check(!early, "E3 mirror respawn blocked until owner permission");
                 h.Check(respawnAt >= 0 && !EnemySync.Inspect(key).Dead && EnemySync.Inspect(key).Present, "E3 owner respawn observed within 5 s (" + F(respawnAt) + ")");
                 yield return EnemyBarrier(h, 5, key);
                 h.Check(s_enemyPackets.ContainsKey(5) && !s_enemyPackets[5].Dead, "E3 both peers observe respawn");
@@ -851,7 +1312,8 @@ namespace OriCoop
         // screenshot of each side is kept next to the result file (net-roles-host.png / net-roles-guest.png).
         static IEnumerator RoleTag(TestHarness h, bool host)
         {
-            string want = host ? "P2 · 伙伴" : "P1 · 主机";
+            // In the game's language: "P2 · 伙伴" / "P2 - Partner" (host side), "P1 · 主机" / "P1 - Host" (guest side).
+            string want = L10n.F("roles.label", Roles.Tag(host ? 2 : 1), L10n.T(host ? "roles.partner" : "roles.host"));
             float by = Time.realtimeSinceStartup + 3f;
             while (!P2Hud.Visible && Time.realtimeSinceStartup < by) yield return null;
             h.Check(Roles.Mine == (host ? 1 : 2) && Roles.Partner == (host ? 2 : 1), "net roles: this PC is " + (host ? "P1 (host)" : "P2 (guest)"));
@@ -973,8 +1435,8 @@ namespace OriCoop
             s_goAt = s_pickupAt = s_collectedAt = 0; s_threeEnded = s_leaveReleased = s_done = false;
             NetPlay.TestSignalReceived += ReadTestSignal;
             NetPlay.SessionEnded += ThreeSessionEnded;
-            if (ClientCount == 3) NetPlay.On(MsgThreeTest, ReadThree);
-            try { yield return Safely(h, "net suite", RunCore(h)); }
+            if (ClientCount == 3 || ClientCount == 4) NetPlay.On(MsgThreeTest, ReadThree);
+            try { yield return Safely(h, ClientCount == 4 ? "4P suite" : "net suite", RunCore(h)); }
             finally
             {
                 NetPlay.TestSignalReceived -= ReadTestSignal;
@@ -987,9 +1449,10 @@ namespace OriCoop
         {
             bool host = NetPlay.IsHost;
             s_worldPackets.Clear(); s_ownWorldPackets.Clear(); NetPlay.On(MsgWorldTest, ReadWorldTest);
-            s_enemyPackets.Clear(); s_ownEnemyHealth.Clear(); s_enemyOwnerTrace.Clear(); NetPlay.On(49, ReadEnemyTest); NetPlay.On(48, ReadEnemyTrace);
+            s_enemyPackets.Clear(); s_ownEnemyReports.Clear(); s_ownEnemyHealth.Clear(); s_enemyOwnerTrace.Clear(); NetPlay.On(49, ReadEnemyTest); NetPlay.On(48, ReadEnemyTrace);
             s_harness = h; BotActive = true; Bot(0, 0);
             h.Note("net role=" + (host ? "host" : "guest"));
+            if (ClientCount == 4) { yield return FourClients(h); yield break; }
             float deadline = Time.realtimeSinceStartup + (ClientCount == 3 ? 120f : 40f);
             while ((Players.Remotes.Count != ClientCount - 1 || !SaveSync.Ready) && Time.realtimeSinceStartup < deadline) yield return null;
             h.Check(Players.Remotes.Count == ClientCount - 1, "net " + (ClientCount == 3 ? "two puppets appear within 120 s; " : "puppet appears within 40 s; ") + NetPlay.StatusLine());
@@ -1050,7 +1513,9 @@ namespace OriCoop
                 float loss = NetPlay.Peer == null ? -1 : NetPlay.Peer.Stats.LossPercent;
                 h.Note("C oneWayFromPartner=" + F(NetPlay.OneWayMs) + " ms (same-PC clock) spread=" + F(NetPlay.LatenessSpreadMs) + " targetDelay=" + NetPlay.TargetDelay);
                 h.Note("C RTT=" + F(rtt) + " loss=" + F(loss) + " AvgError=" + F(sample.Mean) + " snaps=" + (NetPlay.Snaps - snaps) + " played=" + (NetPlay.FramesPlayed - played) + " " + NetPlay.StatusLine());
-                h.Check(rtt >= 100 && rtt <= 260, "C RTT 100..260 (" + F(rtt) + ")");
+                // C-server: RTT is to the server (each client simulates only its own link), so the range starts lower.
+                float rttMin = OriCoop.Authority.NetRoute.ServerMode ? 50f : 100f;
+                h.Check(rtt >= rttMin && rtt <= 260, "C RTT " + rttMin + "..260 (" + F(rtt) + ")");
                 h.Check(loss >= 3 && loss <= 25, "C loss 3..25 (" + F(loss) + ")");
                 h.Check(sample.Mean < 1f, "C AvgError < 1.0 (" + F(sample.Mean) + ")");
                 h.Check(NetPlay.Snaps - snaps <= 3, "C snaps <= 3 (" + (NetPlay.Snaps - snaps) + ")");
@@ -1080,7 +1545,8 @@ namespace OriCoop
                     start = Time.realtimeSinceStartup;
                     while (Time.realtimeSinceStartup - start < 6f)
                     {
-                        bool silent = NetPlay.Peer != null && NetPlay.Peer.Stats.LastReceiveAgeMs > 350;
+                        // SilenceMs covers both modes: the guest's peer (P2P) or the guest's last message via the C-server.
+                        bool silent = NetPlay.SilenceMs > 350;
                         if (NetPlay.SignalLost && NetHud.SignalLostText().Length > 0
                             && NetHud.SignalBars(NetPlay.Connected, NetPlay.SignalLost, NetPlay.RttMs, NetPlay.LossPercent) == 0) sawHint = true;
                         if (silent && P2Context.P2 != null)

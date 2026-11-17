@@ -4,52 +4,35 @@ using System.IO;
 using Game;
 using HarmonyLib;
 using UnityEngine;
+using OriCoop.Authority;
 
 namespace OriCoop
 {
-    // Pushable stones (PushPullBlock) in co-op (playtest 2026-11-16, P1: "the stone merges with the other player").
-    //
-    // What went wrong (decomp PushPullBlock.cs):
-    // - IgnoreCollisionWithPlayer (:269) moves the WHOLE block to layer "pushPullBlock" while someone grabs/bashes it.
-    //   Both Oris share the player layer, so the OTHER Ori lost collision with the stone too: it fell in, passed through,
-    //   got stuck, and could stand on it only while nobody held it.
-    // - Online the puppet replays the partner's input with the native SeinGrabBlock, so each PC's puppet also pushed its
-    //   own local copy; both PCs simulated the stone, and WorldSync hard-wrote its RigidbodySerialize every 250 ms in
-    //   both directions (1 RTT old), teleporting the stone into players.
-    // - OnEnterBash (:311) uses Characters.Sein; a puppet's bash flipped the layer for the local Ori for 20 s.
-    //
-    // Now:
-    // - Collision is ignored per pair: Physics.IgnoreCollision(block, that Ori's capsule) for the physics step, and the
-    //   block is on the "pushPullBlock" layer only while that one Ori runs its own movement step (its sweeps / rays).
-    //   Everyone else always collides with it and can stand on it.
-    // - Online, the Ori pushing a block owns it (claim with an epoch; ties: lower seat, the host is seat 1). The owner's
-    //   game simulates it and streams its state; every other game drives it kinematically to that state, so the pusher
-    //   feels no lag and everyone else sees the stone move together with the pusher's puppet. Idle blocks belong to the
-    //   host. A puppet's grab/push/bash/hit never moves the local copy (its owner's game does that).
-    // - An Ori found inside a block it does not ignore is pushed out (smallest of up / left / right / down).
-    //   70 PhysState  owner -> others  { int id, int epoch, byte seat, byte flags(1 grabbed), float px, py, rz, vx, vy }  unreliable, 20 Hz moving / 1 Hz idle
-    //   71 PhysClaim  claimer -> others { int id, int epoch }  reliable
+    // Per-player collision and one leased simulation of each pushable stone.
     public static class PushBlockSync
     {
-        public const byte MsgState = 70, MsgClaim = 71;
-        const int HostSeat = 1;
-        const float SendInterval = 0.05f, IdleInterval = 1f, SnapDistance = 3f, MaxExtrapolate = 0.06f, GrabTimeout = 0.5f;
+        const float SendInterval = 0.05f, SnapDistance = 3f, MaxExtrapolate = 0.25f;
 
         public sealed class St
         {
             public int Id;
             public string Name;
             public int Epoch;
-            public int OwnerSeat = HostSeat;
-            public bool RemoteGrabbing;
-            public float RemoteGrabAt = -10f;
+            public string Key;
+            internal DynamicLease Lease;
+            internal StoneLeaseSimulation Simulation = new StoneLeaseSimulation();
+            public int OwnerSeat;
+            public float InteractionUntil = -10f;
             public bool HasRemote;
+            public uint StateEpoch, StateVersion;
             public Vector3 RemotePos, RemoteVel;
-            public float RemoteRotZ, RemoteAt;
+            public float RemoteRotZ, RemoteAngularZ, RemoteAt;
             public float SentAt = -10f;
-            public Vector3 SentPos;
-            public bool WasLocalOwner;
+            public bool WasLocalOwner, Seeded;
+            internal readonly List<PendingHit> Hits = new List<PendingHit>();
         }
+
+        internal sealed class PendingHit { public Damage Damage; public float Until; }
 
         // Per block instance: which Oris it ignores right now (pusher, basher) and who the bash timer belongs to.
         sealed class Inst
@@ -65,20 +48,23 @@ namespace OriCoop
         static readonly Dictionary<int, St> s_byId = new Dictionary<int, St>();
         static readonly Dictionary<PushPullBlock, Inst> s_inst = new Dictionary<PushPullBlock, Inst>();
         static readonly Dictionary<PlatformMovement, List<PushPullBlock>> s_ignoring = new Dictionary<PlatformMovement, List<PushPullBlock>>();
+        static readonly Dictionary<Component, int> s_readyFrame = new Dictionary<Component, int>();
+        static readonly HashSet<SceneRoot> s_unloading = new HashSet<SceneRoot>();
         static readonly System.Reflection.FieldInfo s_fIgnore = AccessTools.Field(typeof(PushPullBlock), "m_ignoreCollisionRemainingTime");
         static readonly System.Reflection.FieldInfo s_fColliders = AccessTools.Field(typeof(PushPullBlock), "m_colliders");
         static readonly System.Reflection.FieldInfo s_fBody = AccessTools.Field(typeof(PushPullBlock), "m_rigidbody");
         static readonly System.Reflection.FieldInfo s_fOrigin = AccessTools.Field(typeof(PushPullBlock), "m_originalPosition");
+        static readonly System.Reflection.FieldInfo s_fGrabbed = AccessTools.Field(typeof(PushPullBlock), "m_isGrabbed");
         static float GetIgnoreTime(PushPullBlock b) { return (float)s_fIgnore.GetValue(b); }
         static void SetIgnoreTime(PushPullBlock b, float t) { s_fIgnore.SetValue(b, t); }
         static Collider[] s_colliders(PushPullBlock b) { return (Collider[])s_fColliders.GetValue(b); }
         static Rigidbody s_body(PushPullBlock b) { return (Rigidbody)s_fBody.GetValue(b); }
         static Vector3 s_origin(PushPullBlock b) { return (Vector3)s_fOrigin.GetValue(b); }
-        static bool s_registered, s_wasOnline;
+        static bool s_registered;
         static int s_layerDefault = -1, s_layerIgnore = -1;
 
         // counters for tests / logs
-        public static int StatesSent, StatesApplied, ClaimsSent, ClaimsAccepted, ClaimsRejected, PuppetCallsIgnored, Denied, PushOuts, PuppetPushOuts, Snaps;
+        public static int StatesSent, StatesApplied, PuppetCallsIgnored, Denied, PushOuts, PuppetPushOuts, Snaps;
         public static bool Enabled = true;
 
         static void Log(string msg)
@@ -93,8 +79,9 @@ namespace OriCoop
         {
             if (s_registered) return;
             s_registered = true;
-            NetPlay.On(MsgState, ReadState);
-            NetPlay.On(MsgClaim, ReadClaim);
+            ResetOwnership("connected");
+            NetPlay.SessionStarted += delegate { ResetOwnership("connected"); };
+            NetPlay.SessionEnded += delegate { ResetOwnership("disconnected"); };
             s_layerDefault = LayerMask.NameToLayer("Default");
             s_layerIgnore = LayerMask.NameToLayer("pushPullBlock");
         }
@@ -119,8 +106,9 @@ namespace OriCoop
                 : scene + "|" + Mathf.RoundToInt(i.Origin.x * 10f) + "," + Mathf.RoundToInt(i.Origin.y * 10f) + "|" + b.name;
             int id = StableHash(key);
             St st;
-            if (!s_byId.TryGetValue(id, out st)) { st = new St { Id = id, Name = scene + "/" + b.name }; s_byId[id] = st; }
+            if (!s_byId.TryGetValue(id, out st)) { st = new St { Id = id, Key = "w:push:" + id, Name = scene + "/" + b.name }; s_byId[id] = st; }
             i.St = st;
+            st.Seeded = false;
             try
             {
                 string desc = "";
@@ -147,6 +135,10 @@ namespace OriCoop
                 if (kv.Key == null) gone.Add(kv.Key);
             }
             foreach (PlatformMovement k in gone) s_ignoring.Remove(k);
+            List<Component> expired = new List<Component>();
+            foreach (Component component in s_readyFrame.Keys) if (component == null) expired.Add(component);
+            foreach (Component component in expired) s_readyFrame.Remove(component);
+            s_unloading.RemoveWhere(delegate(SceneRoot root) { return root == null; });
         }
 
         static int StableHash(string s)
@@ -154,91 +146,73 @@ namespace OriCoop
             unchecked { int h = (int)2166136261; foreach (char c in s) { h ^= c; h *= 16777619; } return h; }
         }
 
-        static bool LocalOwns(St st) { return !Online || st.OwnerSeat == Players.LocalSeat; }
+        static bool LocalOwns(St st) { return !Online || DynamicLease.For(st.Key).Owns; }
+        static bool Simulates(St st)
+        {
+            if (!Online) return true;
+            DynamicLease lease = DynamicLease.For(st.Key);
+            float now = Time.realtimeSinceStartup;
+            return st.Simulation.Allows(lease.Owner, lease.Epoch, AuthoritySource.Current.LocalSeat,
+                now, NetPlay.RttMs, now < st.InteractionUntil);
+        }
 
         public static St StateOf(PushPullBlock b) { return b == null ? null : InstOf(b).St; }
-        public static bool IsLocalOwner(PushPullBlock b) { return b != null && LocalOwns(InstOf(b).St); }
+        public static bool IsLocalOwner(PushPullBlock b) { return b != null && LocalOwns(InstOf(b).St) && Simulates(InstOf(b).St); }
         public static bool Ignores(PushPullBlock b, PlatformMovement pm) { Inst i; return b != null && s_inst.TryGetValue(b, out i) && i.Ignored.Contains(pm); }
 
-        static bool Wins(int epoch, int seat, St st)
-        {
-            if (epoch != st.Epoch) return epoch > st.Epoch;
-            return seat < st.OwnerSeat;
-        }
-
-        static void Claim(PushPullBlock b, Inst i, string why)
-        {
-            St st = i.St;
-            st.Epoch++;
-            st.OwnerSeat = Players.LocalSeat;
-            st.RemoteGrabbing = false;
-            Rigidbody rb = s_body(b);
-            if (rb != null && st.HasRemote) { rb.isKinematic = false; rb.velocity = st.RemoteVel; }
-            ClaimsSent++;
-            int id = st.Id, epoch = st.Epoch;
-            NetPlay.Send(MsgClaim, true, w => { w.Write(id); w.Write(epoch); });
-            Log("claim " + st.Name + " id=" + id + " epoch=" + epoch + " seat=" + st.OwnerSeat + " (" + why + ") pos=" + V(b.Position));
-            CoopTrace.Event("phys", "owner.claim", "id", id, "owner", "P" + st.OwnerSeat, "epoch", epoch, "why", why, "pos", V(b.Position));
-            SendState(b, st, true);
-        }
-
-        static void ReadClaim(BinaryReader r)
-        {
-            int id = r.ReadInt32(), epoch = r.ReadInt32(), seat = NetPlay.Sender;
-            St st;
-            if (!s_byId.TryGetValue(id, out st)) { st = new St { Id = id, Name = "id" + id }; s_byId[id] = st; }
-            if (Wins(epoch, seat, st))
-            {
-                Log("claim from P" + seat + " accepted " + st.Name + " epoch " + st.Epoch + "->" + epoch + " (owner was P" + st.OwnerSeat + ")");
-                st.Epoch = epoch; st.OwnerSeat = seat; st.RemoteGrabbing = true; st.RemoteGrabAt = Time.time;
-                CoopTrace.Event("phys", "owner.change", "id", id, "owner", "P" + seat, "epoch", epoch, "via", "claim");
-                ClaimsAccepted++;
-            }
-            else
-            {
-                ClaimsRejected++;
-                Log("claim from P" + seat + " rejected " + st.Name + " epoch=" + epoch + " mine=" + st.Epoch + " owner=P" + st.OwnerSeat);
-                CoopTrace.Event("phys", "owner.reject", "id", id, "from", "P" + seat, "epoch", epoch, "owner", "P" + st.OwnerSeat, "mine", st.Epoch);
-                // Tell the loser who really owns it.
-                if (st.OwnerSeat == Players.LocalSeat) foreach (KeyValuePair<PushPullBlock, Inst> kv in s_inst) if (kv.Value.St == st && kv.Key != null) SendState(kv.Key, st, true);
-            }
-        }
-
-        static void SendState(PushPullBlock b, St st, bool force)
+        static void SendState(PushPullBlock b, St st)
         {
             Rigidbody rb = s_body(b);
-            if (rb == null) return;
+            if (rb == null || Time.realtimeSinceStartup - st.SentAt < SendInterval) return;
+            st.SentAt = Time.realtimeSinceStartup;
             Vector3 p = b.Position, v = rb.isKinematic ? Vector3.zero : rb.velocity;
-            float now = Time.time;
-            bool moving = v.sqrMagnitude > 0.0025f || (p - st.SentPos).sqrMagnitude > 0.0001f || b.IsGrabbed;
-            if (!force && now - st.SentAt < (moving ? SendInterval : IdleInterval)) return;
-            st.SentAt = now; st.SentPos = p;
-            int id = st.Id, epoch = st.Epoch; byte seat = (byte)st.OwnerSeat, flags = (byte)(b.IsGrabbed ? 1 : 0);
-            float rz = b.transform.eulerAngles.z;
-            StatesSent++;
-            NetPlay.Send(MsgState, false, w => { w.Write(id); w.Write(epoch); w.Write(seat); w.Write(flags); w.Write(p.x); w.Write(p.y); w.Write(rz); w.Write(v.x); w.Write(v.y); });
+            float rotation = b.transform.eulerAngles.z, angular = rb.isKinematic ? 0f : rb.angularVelocity.z;
+            if (!LeaseMath.Finite(p.x) || !LeaseMath.Finite(p.y) || !LeaseMath.Finite(rotation)
+                || !LeaseMath.Finite(v.x) || !LeaseMath.Finite(v.y) || !LeaseMath.Finite(angular)) return;
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter w = new BinaryWriter(stream))
+            {
+                w.Write(p.x); w.Write(p.y); w.Write(rotation); w.Write(v.x); w.Write(v.y); w.Write(angular);
+                byte[] data = stream.ToArray();
+                st.Lease.Publish(data); StatesSent++;
+            }
         }
 
-        static void ReadState(BinaryReader r)
+        static bool Standing(PushPullBlock b)
         {
-            int id = r.ReadInt32(), epoch = r.ReadInt32(); int seat = r.ReadByte(); byte flags = r.ReadByte();
-            Vector3 p = new Vector3(r.ReadSingle(), r.ReadSingle(), 0f); float rz = r.ReadSingle();
-            Vector3 v = new Vector3(r.ReadSingle(), r.ReadSingle(), 0f);
-            if (seat != NetPlay.Sender) return;
-            St st;
-            if (!s_byId.TryGetValue(id, out st)) { st = new St { Id = id, Name = "id" + id }; s_byId[id] = st; }
-            if (epoch < st.Epoch || (epoch == st.Epoch && seat != st.OwnerSeat && !Wins(epoch, seat, st))) return;
-            if (epoch > st.Epoch || seat != st.OwnerSeat)
+            PlatformMovement pm = LocalPm;
+            if (pm == null || !pm.IsOnGround) return false;
+            CapsuleCollider cap = pm.GetComponent<CapsuleCollider>();
+            if (cap == null) return false;
+            float surface = SurfaceY(b, cap.bounds.center.x);
+            return !float.IsNaN(surface) && Mathf.Abs(cap.bounds.min.y - surface) < 0.25f;
+        }
+
+        static void LeaseStep(PushPullBlock b, St st)
+        {
+            st.Lease = DynamicLease.For(st.Key);
+            bool pushing = Time.realtimeSinceStartup < st.InteractionUntil;
+            float distance = LocalPm == null ? float.MaxValue : Vector3.Distance(LocalPm.Position, b.Position);
+            if (!LeaseMath.Finite(distance)) distance = float.MaxValue;
+            // Riders follow an owned stone; only a push keeps its owner's lease active.
+            bool standing = StoneLeaseSimulation.WantsStandingLease(pushing, st.Lease.Owner) && Standing(b);
+            st.Lease.Tick(distance, pushing || standing, pushing, false);
+            st.Lease.Active = pushing;
+            st.OwnerSeat = st.Lease.Owner; st.Epoch = (int)st.Lease.Epoch;
+            st.Hits.RemoveAll(hit => hit.Until < Time.realtimeSinceStartup);
+            if (st.Lease.Data == null) return;
+            if (st.HasRemote && st.StateEpoch == st.Lease.StateEpoch && st.StateVersion == st.Lease.StateVersion) return;
+            using (BinaryReader r = new BinaryReader(new MemoryStream(st.Lease.Data)))
             {
-                Log("owner of " + st.Name + " is now P" + seat + " (state epoch " + epoch + ", was P" + st.OwnerSeat + " epoch " + st.Epoch + ")");
-                st.Epoch = epoch; st.OwnerSeat = seat;
-                CoopTrace.Event("phys", "owner.change", "id", id, "owner", "P" + seat, "epoch", epoch, "via", "state");
+                Vector3 position = new Vector3(r.ReadSingle(), r.ReadSingle(), b.Position.z); float rotation = r.ReadSingle();
+                Vector3 velocity = new Vector3(r.ReadSingle(), r.ReadSingle(), 0f);
+                float angular = r.ReadSingle();
+                if (!LeaseMath.Finite(position) || !LeaseMath.Finite(rotation)
+                    || !LeaseMath.Finite(velocity) || !LeaseMath.Finite(angular)) return;
+                st.RemotePos = position; st.RemoteRotZ = rotation; st.RemoteVel = velocity; st.RemoteAngularZ = angular;
             }
-            st.HasRemote = true; st.RemotePos = p; st.RemoteVel = v; st.RemoteRotZ = rz; st.RemoteAt = Time.time;
-            st.RemoteGrabbing = (flags & 1) != 0; if (st.RemoteGrabbing) st.RemoteGrabAt = Time.time;
-            StatesApplied++;
-            if (CoopTrace.SampleDue("phys") && CoopTrace.Every("phys.apply." + id, 0.5f))
-                CoopTrace.Sample("phys", "snapshot.apply", "id", id, "owner", "P" + seat, "pos", V(p), "vel", V(v), "rz", rz.ToString("F1"), "grabbed", st.RemoteGrabbing);
+            st.HasRemote = true; st.RemoteAt = st.Lease.ReceivedAt;
+            st.StateEpoch = st.Lease.StateEpoch; st.StateVersion = st.Lease.StateVersion; StatesApplied++;
         }
 
         // ---------------------------------------------------------------- per-pair collision
@@ -251,9 +225,47 @@ namespace OriCoop
             return false;
         }
 
+        static bool Ready(PushPullBlock block)
+        {
+            return SceneReady(block) && ValidBody(s_body(block));
+        }
+
+        static bool SceneReady(Component component)
+        {
+            if (component == null) return false;
+            if (!component.gameObject.activeInHierarchy) { s_readyFrame.Remove(component); return false; }
+            SceneRoot root = SceneRoot.FindFromTransform(component.transform);
+            if (root != null)
+            {
+                if (s_unloading.Contains(root) || Core.Scenes.Manager == null)
+                { s_readyFrame.Remove(component); return false; }
+                bool ready = false;
+                foreach (SceneManagerScene scene in Core.Scenes.Manager.ActiveScenes)
+                    if (scene != null && scene.SceneRoot == root)
+                    { ready = scene.CurrentState == SceneManagerScene.State.Loaded && scene.HasStartBeenCalled; break; }
+                if (!ready) { s_readyFrame.Remove(component); return false; }
+            }
+            int frame;
+            if (!s_readyFrame.TryGetValue(component, out frame))
+            { s_readyFrame[component] = Time.frameCount; return false; }
+            return Time.frameCount > frame;
+        }
+
+        static bool ValidRotation(Quaternion q)
+        {
+            float length = q.x * q.x + q.y * q.y + q.z * q.z + q.w * q.w;
+            return LeaseMath.Finite(q) && LeaseMath.Finite(length) && length > 0.000001f;
+        }
+
+        static bool ValidBody(Rigidbody body)
+        {
+            if (!SceneReady(body) || !LeaseMath.Finite(body.position) || !ValidRotation(body.rotation)) return false;
+            return body.isKinematic || (LeaseMath.Finite(body.velocity) && LeaseMath.Finite(body.angularVelocity));
+        }
+
         static void SetIgnore(PushPullBlock b, PlatformMovement pm, bool ignore)
         {
-            if (b == null || pm == null) return;
+            if (b == null || pm == null || !Ready(b) || !pm.gameObject.activeInHierarchy) return;
             Inst i = InstOf(b);
             bool has = i.Ignored.Contains(pm);
             if (has == ignore) return;
@@ -268,7 +280,7 @@ namespace OriCoop
             else { i.Ignored.Remove(pm); list.Remove(b); }
             if (cols != null)
                 foreach (Collider c in cols)
-                    if (c != null && c.enabled) c.material = i.Ignored.Count > 0 ? b.PushPullMaterialMoving : b.PushPullMaterial;
+                    if (c != null && c.enabled && c.gameObject.activeInHierarchy) c.material = i.Ignored.Count > 0 ? b.PushPullMaterialMoving : b.PushPullMaterial;
         }
 
         // The game's own version: the whole block on the pushPullBlock layer (for every Ori). Ours: per Ori.
@@ -277,7 +289,7 @@ namespace OriCoop
         {
             static bool Prefix(PushPullBlock __instance, PlatformMovement platformMovement, bool ignore)
             {
-                if (!Enabled) return true;
+                if (!Enabled || !Ready(__instance)) return true;
                 try { SetIgnore(__instance, platformMovement, ignore); }
                 catch (Exception e) { Plugin.Log.LogWarning("[phys] ignore failed: " + e.Message); return true; }
                 return false;
@@ -305,17 +317,17 @@ namespace OriCoop
 
         static void SetLayer(PushPullBlock b, int layer)
         {
-            if (b == null) return;
+            if (b == null || !Ready(b)) return;
             Collider[] cols = s_colliders(b);
             if (cols == null) return;
-            foreach (Collider c in cols) if (c != null && c.enabled) c.gameObject.layer = layer;
+            foreach (Collider c in cols) if (c != null && c.enabled && c.gameObject.activeInHierarchy) c.gameObject.layer = layer;
         }
 
         // ---------------------------------------------------------------- grab / push / release / bash / hit
         // Returns false when the call must not touch this block (a puppet online, or a block someone else is holding).
         static bool Allow(PushPullBlock b, PlatformMovement pm, string what)
         {
-            if (!Enabled || !Online) return true;
+            if (!Enabled || !Online || !Ready(b)) return true;
             Inst i = InstOf(b);
             if (IsPuppet(pm) || P2Context.Inside)
             {
@@ -325,15 +337,19 @@ namespace OriCoop
             }
             if (pm != LocalPm) return true;
             St st = i.St;
-            if (LocalOwns(st)) return true;
-            if (st.RemoteGrabbing && Time.time - st.RemoteGrabAt < GrabTimeout)
+            st.InteractionUntil = Time.realtimeSinceStartup + 0.15f;
+            Simulates(st);
+            LeaseStep(b, st);
+            Rigidbody rb = s_body(b);
+            if (Simulates(st))
             {
-                Denied++;
-                if (CoopTraceEvery("deny" + st.Id, 1f)) { Log("deny " + what + " " + st.Name + ": P" + st.OwnerSeat + " is holding it"); CoopTrace.Event("phys", "grab.denied", "id", st.Id, "owner", "P" + st.OwnerSeat, "what", what); }
-                return false;
+                st.Seeded = true;
+                if (rb != null && rb.isKinematic) { rb.isKinematic = false; if (st.HasRemote && LeaseMath.Finite(st.RemoteVel)) rb.velocity = st.RemoteVel; }
+                return true;
             }
-            Claim(b, i, what);
-            return true;
+            Denied++;
+            SetIgnore(b, pm, false);
+            return false;
         }
 
         static readonly Dictionary<string, float> s_every = new Dictionary<string, float>();
@@ -349,6 +365,7 @@ namespace OriCoop
         {
             static bool Prefix(PushPullBlock __instance, PlatformMovement platformMovement)
             {
+                if (!Ready(__instance)) return true;
                 try
                 {
                     bool puppet = Online && (IsPuppet(platformMovement) || P2Context.Inside);
@@ -368,10 +385,12 @@ namespace OriCoop
         {
             static bool Prefix(PushPullBlock __instance, PlatformMovement platformMovement)
             {
+                if (!Ready(__instance)) return true;
                 try
                 {
                     if (Online && Enabled && (IsPuppet(platformMovement) || P2Context.Inside)) { SetIgnore(__instance, platformMovement, true); PuppetCallsIgnored++; return false; }
-                    return Allow(__instance, platformMovement, "push");
+                    if (!Allow(__instance, platformMovement, "push")) return false;
+                    return true;
                 }
                 catch (Exception e) { Plugin.Log.LogWarning("[phys] push: " + e.Message); return true; }
             }
@@ -382,13 +401,16 @@ namespace OriCoop
         {
             static bool Prefix(PushPullBlock __instance, PlatformMovement platformMovement)
             {
+                if (!Ready(__instance)) return true;
                 try
                 {
                     if (Online && Enabled && (IsPuppet(platformMovement) || P2Context.Inside)) { SetIgnore(__instance, platformMovement, false); return false; }
-                    if (Online && Enabled && platformMovement == LocalPm && !LocalOwns(InstOf(__instance).St))
+                    if (Online && Enabled && platformMovement == LocalPm) InstOf(__instance).St.InteractionUntil = -10f;
+                    if (Online && Enabled && platformMovement == LocalPm && !Simulates(InstOf(__instance).St))
                     {
                         // We were denied: just drop our own per-pair ignore, do not touch the owner's velocity.
                         SetIgnore(__instance, platformMovement, false);
+                        s_fGrabbed.SetValue(__instance, false);
                         return false;
                     }
                     Log("release " + InstOf(__instance).St.Name + " by " + Who(platformMovement) + " pos=" + V(__instance.Position));
@@ -404,7 +426,7 @@ namespace OriCoop
         {
             static bool Prefix(PushPullBlock __instance)
             {
-                if (!Enabled) return true;
+                if (!Enabled || !Ready(__instance)) return true;
                 try
                 {
                     // The game uses Characters.Sein: inside P2Context that is the bashing puppet / local P2.
@@ -435,14 +457,18 @@ namespace OriCoop
         {
             static bool Prefix(PushPullBlock __instance, Damage damage)
             {
-                if (!Enabled || !Online || damage == null) return true;
+                if (!Enabled || !Online || damage == null || !Ready(__instance)) return true;
                 try
                 {
                     Inst i = InstOf(__instance);
                     if (P2Context.Inside) { PuppetCallsIgnored++; return false; }
-                    if (LocalOwns(i.St)) return true;
-                    if (!PlayerAttack(damage.Type)) return false;   // enemies / world: the owner's game applies it
-                    return Allow(__instance, LocalPm, "hit " + damage.Type);
+                    if (!PlayerAttack(damage.Type)) return Simulates(i.St);
+                    if (!Allow(__instance, LocalPm, "hit " + damage.Type)) return false;
+                    if (Simulates(i.St)) return true;
+                    i.St.Hits.Add(new PendingHit {
+                        Damage = new Damage(damage.Amount, damage.Force, damage.Position, damage.Type, damage.Sender),
+                        Until = Time.realtimeSinceStartup + 0.6f + NetPlay.RttMs * 0.002f });
+                    return false;
                 }
                 catch (Exception e) { Plugin.Log.LogWarning("[phys] hit: " + e.Message); return true; }
             }
@@ -456,22 +482,30 @@ namespace OriCoop
             {
                 __state = 0f;
                 if (!Enabled) return true;
-                // A copy another game owns: skip the game's step (it would flip isKinematic back every step); just follow.
-                if (Online && !__instance.IsSuspended && !LocalOwns(InstOf(__instance).St))
+                if (!Ready(__instance))
                 {
+                    Inst existing;
+                    if (s_inst.TryGetValue(__instance, out existing) && existing.St != null && existing.St.Lease != null)
+                        existing.St.Lease.Cancel();
+                    __state = -1f; return true;
+                }
+                if (Online) { EnsureRegistered(); LeaseStep(__instance, InstOf(__instance).St); }
+                float t = GetIgnoreTime(__instance);
+                if (t > 0f && !__instance.IsSuspended)
+                {
+                    Inst i = InstOf(__instance);
+                    t = Mathf.Max(0f, t - Time.deltaTime);
+                    if (t == 0f) { if (i.Basher != null) SetIgnore(__instance, i.Basher, false); i.Basher = null; }
+                    SetIgnoreTime(__instance, 0f); __state = t;
+                }
+                if (Online && !__instance.IsSuspended && !Simulates(InstOf(__instance).St))
+                {
+                    if (t > 0f) SetIgnoreTime(__instance, t);
                     try { Step(__instance); }
                     catch (Exception e) { if (CoopTraceEvery("steperr", 5f)) Plugin.Log.LogWarning("[phys] step: " + e); }
                     __state = -1f;
                     return false;
                 }
-                // Run the bash ignore timer ourselves, for the Ori that bashed (the game would use Characters.Sein).
-                float t = GetIgnoreTime(__instance);
-                if (t <= 0f || __instance.IsSuspended) return true;
-                Inst i = InstOf(__instance);
-                t -= Time.deltaTime;
-                if (t <= 0f) { t = 0f; if (i.Basher != null) SetIgnore(__instance, i.Basher, false); i.Basher = null; }
-                SetIgnoreTime(__instance, 0f);
-                __state = t;
                 return true;
             }
 
@@ -486,43 +520,86 @@ namespace OriCoop
 
         static void Step(PushPullBlock b)
         {
-            if (b.IsSuspended) return;
+            if (b == null || !Ready(b) || b.IsSuspended) return;
             Inst i = InstOf(b);
             St st = i.St;
             bool online = Online;
-            if (online != s_wasOnline) { s_wasOnline = online; ResetOwnership(online ? "connected" : "disconnected"); }
             if (online)
             {
                 EnsureRegistered();
                 Rigidbody rb = s_body(b);
-                if (LocalOwns(st))
+                if (Simulates(st))
                 {
-                    if (!st.WasLocalOwner) { st.WasLocalOwner = true; Log("simulating " + st.Name + " here (owner P" + st.OwnerSeat + " epoch " + st.Epoch + ")"); }
-                    SendState(b, st, false);
+                    if (!st.Seeded && st.HasRemote && rb != null)
+                    {
+                        Quaternion rotation = Quaternion.Euler(0f, 0f, st.RemoteRotZ);
+                        if (LeaseMath.Finite(st.RemotePos) && LeaseMath.Finite(rotation))
+                        {
+                            rb.position = st.RemotePos; b.transform.position = st.RemotePos;
+                            rb.rotation = rotation;
+                        }
+                    }
+                    st.Seeded = true;
+                    if (!st.WasLocalOwner)
+                    {
+                        st.WasLocalOwner = true;
+                        if (rb != null && rb.isKinematic)
+                        {
+                            rb.isKinematic = false;
+                            if (st.HasRemote && LeaseMath.Finite(st.RemoteVel) && LeaseMath.Finite(st.RemoteAngularZ))
+                            { rb.velocity = st.RemoteVel; rb.angularVelocity = new Vector3(0f, 0f, st.RemoteAngularZ); }
+                        }
+                        Log("simulating " + st.Name + " here (owner P" + st.OwnerSeat + " epoch " + st.Epoch + ")");
+                    }
+                    if (LocalOwns(st))
+                    {
+                        while (st.Hits.Count > 0)
+                        {
+                            PendingHit hit = st.Hits[0]; st.Hits.RemoveAt(0);
+                            if (hit.Until >= Time.realtimeSinceStartup) b.OnRecieveDamage(hit.Damage);
+                        }
+                        SendState(b, st);
+                    }
                 }
                 else if (rb != null)
                 {
+                    if (st.WasLocalOwner)
+                    {
+                        SetIgnore(b, LocalPm, false);
+                        s_fGrabbed.SetValue(b, false);
+                    }
                     if (st.WasLocalOwner) { st.WasLocalOwner = false; Log("following " + st.Name + " (owner P" + st.OwnerSeat + " epoch " + st.Epoch + ")"); }
                     rb.isKinematic = true;
                     if (st.HasRemote)
                     {
-                        float age = Mathf.Min(Time.time - st.RemoteAt, MaxExtrapolate);
+                        float age = FollowAge(Time.realtimeSinceStartup - st.RemoteAt, NetPlay.RttMs);
                         Vector3 target = st.RemotePos + st.RemoteVel * age;
                         target.z = rb.position.z;
-                        if ((target - rb.position).magnitude > SnapDistance)
+                        bool snap = !st.Lease.Blending && (target - rb.position).magnitude > SnapDistance;
+                        Vector3 position = snap ? target : Vector3.Lerp(rb.position, target, 0.5f);
+                        Quaternion rotation = Quaternion.Euler(0f, 0f, Mathf.LerpAngle(b.transform.eulerAngles.z, st.RemoteRotZ, 0.5f));
+                        if (LeaseMath.Finite(position) && LeaseMath.Finite(rotation))
                         {
-                            Snaps++;
-                            Log("snap " + st.Name + " " + V(rb.position) + " -> " + V(target));
-                            CoopTrace.Event("phys", "block.snap", "id", st.Id, "from", V(rb.position), "to", V(target));
-                            rb.position = target; b.transform.position = target;
+                            if (snap)
+                            {
+                                Snaps++;
+                                Log("snap " + st.Name + " " + V(rb.position) + " -> " + V(target));
+                                CoopTrace.Event("phys", "block.snap", "id", st.Id, "from", V(rb.position), "to", V(target));
+                                rb.position = target; b.transform.position = target;
+                            }
+                            else rb.MovePosition(position);
+                            rb.MoveRotation(rotation);
                         }
-                        else rb.MovePosition(Vector3.Lerp(rb.position, target, 0.5f));
-                        rb.MoveRotation(Quaternion.Euler(0f, 0f, Mathf.LerpAngle(b.transform.eulerAngles.z, st.RemoteRotZ, 0.5f)));
                     }
                 }
             }
             if (online) KeepPuppetsOut(b, i);
             PushOutOris(b, i);
+        }
+
+        internal static float FollowAge(float age, float rttMs)
+        {
+            return Mathf.Min(MaxExtrapolate, Mathf.Max(0f, age) + Mathf.Max(0f, rttMs) * 0.0005f);
         }
 
         // A puppet's position is its owner's truth plus corrections written every step; letting it touch the stone in
@@ -546,9 +623,49 @@ namespace OriCoop
 
         static void ResetOwnership(string why)
         {
-            foreach (St st in s_byId.Values) { st.Epoch = 0; st.OwnerSeat = HostSeat; st.HasRemote = false; st.RemoteGrabbing = false; st.WasLocalOwner = false; }
-            Log("ownership reset (" + why + "): " + s_byId.Count + " blocks back to the host");
-            CoopTrace.Event("phys", "owner.reset", "why", why, "blocks", s_byId.Count);
+            Prune();
+            foreach (St st in s_byId.Values)
+            {
+                st.Epoch = st.OwnerSeat = 0; st.HasRemote = st.WasLocalOwner = st.Seeded = false;
+                st.Simulation = new StoneLeaseSimulation();
+                st.InteractionUntil = st.SentAt = -10f;
+                st.Hits.Clear();
+            }
+            Log("ownership reset (" + why + ")");
+        }
+
+        [HarmonyPatch(typeof(PushPullBlock), "OnDisable")]
+        static class UnloadLease
+        {
+            static void Postfix(PushPullBlock __instance)
+            {
+                Inst i;
+                if (Online && s_inst.TryGetValue(__instance, out i) && i.St != null)
+                    DynamicLease.For(i.St.Key).Cancel();
+            }
+        }
+
+        internal static void StopScene(SceneRoot root)
+        {
+            foreach (KeyValuePair<PushPullBlock, Inst> pair in s_inst)
+                if (pair.Key != null && pair.Value.St != null && pair.Value.St.Lease != null
+                    && SceneRoot.FindFromTransform(pair.Key.transform) == root)
+                    pair.Value.St.Lease.Cancel();
+        }
+
+        [HarmonyPatch]
+        static class SceneUnload
+        {
+            static IEnumerable<System.Reflection.MethodBase> TargetMethods()
+            {
+                yield return AccessTools.Method(typeof(SceneRoot), "SaveAndUnload");
+                yield return AccessTools.Method(typeof(SceneRoot), "Unload");
+            }
+
+            static void Prefix(SceneRoot __instance)
+            {
+                if (__instance != null && s_unloading.Add(__instance)) StopScene(__instance);
+            }
         }
 
         // ---------------------------------------------------------------- push out of overlap
@@ -669,23 +786,28 @@ namespace OriCoop
             {
                 if (s == null || !s.gameObject.activeInHierarchy) continue;
                 PlatformMovement pm = s.PlatformBehaviour.PlatformMovement;
-                if (pm == null || i.Ignored.Contains(pm)) continue;
+                if (pm == null || !pm.gameObject.activeInHierarchy || i.Ignored.Contains(pm)) continue;
                 Vector3 move; string dir;
                 float depth = Depth(b, s, out move, out dir);
-                if (depth <= 0f) continue;
-                pm.Position = pm.Position + move;
+                Rigidbody orb = pm.GetComponent<Rigidbody>();
+                Vector3 position = pm.Position + move;
+                if (depth <= 0f || !LeaseMath.Finite(depth) || !LeaseMath.Finite(move) || !LeaseMath.Finite(position)
+                    || (orb != null && !ValidBody(orb))) continue;
+                pm.Position = position;
                 // Also move the physics body: a transform write alone was undone by the next physics step (seen in a
                 // test: 400 push-outs in a row, the Ori back in the same spot every step).
-                Rigidbody orb = pm.GetComponent<Rigidbody>();
-                if (orb != null) orb.position = pm.Position;
+                if (orb != null) orb.position = position;
                 // SessionRules.HoldLocal pins the own Ori to an anchor while locked (menu / respawn / story watch); move the
                 // anchor too, or the push-out is undone next frame and the Ori stays inside the stone.
                 if (s == P2Context.P1) SessionRules.PositionChanged();
                 Vector2 sp = pm.WorldSpeed;
-                if (move.y > 0f && sp.y < 0f) sp.y = 0f;
-                if (move.y < 0f && sp.y > 0f) sp.y = 0f;
-                if (move.x != 0f && Mathf.Sign(sp.x) != Mathf.Sign(move.x)) sp.x = 0f;
-                pm.WorldSpeed = sp;
+                if (LeaseMath.Finite(sp.x) && LeaseMath.Finite(sp.y))
+                {
+                    if (move.y > 0f && sp.y < 0f) sp.y = 0f;
+                    if (move.y < 0f && sp.y > 0f) sp.y = 0f;
+                    if (move.x != 0f && Mathf.Sign(sp.x) != Mathf.Sign(move.x)) sp.x = 0f;
+                    pm.WorldSpeed = sp;
+                }
                 bool puppet = s != P2Context.P1;
                 if (puppet) PuppetPushOuts++; else PushOuts++;
                 if (CoopTraceEvery("out" + i.St.Id + (puppet ? "p" : "l"), 0.5f))
@@ -710,11 +832,12 @@ namespace OriCoop
             return "Ori";
         }
 
-        // For WorldSync: the block's own RigidbodySerialize is ours, not part of the shared save stream.
+        // For WorldSync: the block's pose comes from its lease stream.
         public static bool OwnsSerializable(ISerializable s)
         {
             Component c = s as Component;
-            return Enabled && c != null && s is RigidbodySerialize && c.GetComponent<PushPullBlock>() != null;
+            return Enabled && c != null && (s is RigidbodySerialize || s is TransformSaveSerialize)
+                && c.GetComponent<PushPullBlock>() != null;
         }
     }
 }

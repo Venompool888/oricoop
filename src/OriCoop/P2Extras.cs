@@ -105,9 +105,7 @@ namespace OriCoop
             // Only the colliders the game itself reacts to (tag "Player"); an Ori has untagged child colliders too,
             // and counting those would let one of them "leave" for the whole Ori.
             if (c == null || !c.CompareTag("Player")) return 0;
-            if (P2Context.P2 != null && c.transform.IsChildOf(P2Context.P2.transform)) return 2;
-            if (P2Context.P1 != null && c.transform.IsChildOf(P2Context.P1.transform)) return 1;
-            return 1;
+            return ZoneOriId(c);
         }
 
         public static void ResetOccupancy() { s_occupants.Clear(); s_zones.Clear(); }
@@ -270,11 +268,13 @@ namespace OriCoop
         {
             static bool Prefix(CutsceneTrigger __instance, Collider collider)
             {
-                if (P2Context.P2 == null || collider == null || !collider.transform.IsChildOf(P2Context.P2.transform)) return true;
+                Puppet puppet = Players.Of(collider);
+                if (puppet == null) return true;
+                if (NetPlay.Enabled) { CutscenesIgnored++; return false; }
                 SeinCharacter p1 = P2Context.P1;
                 if (Plugin.Instance.P2CanTriggerCutscenes && p1 != null && p1.gameObject.activeInHierarchy)
                 {
-                    Plugin.Teleport(p1, P2Context.P2.Position);
+                    Plugin.Teleport(p1, puppet.Sein.Position);
                     CutscenesByP2++;
                     Collider p1col = p1.GetComponent<Collider>();
                     if (p1col != null) __instance.OnTriggerEnter(p1col);

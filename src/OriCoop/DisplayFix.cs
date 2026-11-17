@@ -26,6 +26,7 @@ namespace OriCoop
         static ConfigEntry<bool> s_enabled, s_addedByMod;
         static ConfigEntry<string> s_oldSize;
         static bool s_showRestartNote;
+        internal static bool TestShow;
         public static string Summary = "";
 
         public static void Init(ConfigFile cfg)
@@ -115,11 +116,21 @@ namespace OriCoop
 
             void OnGUI()
             {
-                if (Time.realtimeSinceStartup > m_noteUntil) return;
-                GUIStyle st = new GUIStyle(GUI.skin.box); st.fontSize = Mathf.Max(14, Screen.height / 50); st.wordWrap = true;
-                float w = Screen.width * 0.6f;
-                GUI.Box(new Rect((Screen.width - w) / 2f, Screen.height * 0.04f, w, st.fontSize * 5f),
-                    L10n.T("display.restart"), st);
+                if (Time.realtimeSinceStartup > m_noteUntil && !(L10nProbe.On && TestShow)) return;
+                NativeGui.BeginPage("display.notice");
+                try
+                {
+                    GUIStyle st = new GUIStyle(GUI.skin.box); st.fontSize = Mathf.Max(14, Screen.height / 50); st.wordWrap = true;
+                    float w = Screen.width * 0.6f;
+                    Rect r = new Rect((Screen.width - w) / 2f, Screen.height * 0.04f, w, st.fontSize * 5f);
+                    if (NativeGui.Available)
+                    {
+                        NativeGui.Panel("display.notice.panel", r, new Color(0.01f, 0.03f, 0.06f, 0.8f));
+                        NativeGui.Label("display.notice.text", r, L10n.T("display.restart"), st.fontSize, st.alignment, st.normal.textColor);
+                    }
+                    else GUI.Box(r, L10n.T("display.restart"), st);
+                }
+                finally { NativeGui.EndPage(); }
             }
         }
 

@@ -972,7 +972,9 @@ namespace OriCoop
             string shotOff = Shot("visual_hud_hidden"); yield return StartCoroutine(Wait(0.4f));
             P2HudTestHide = false; yield return StartCoroutine(Wait(0.3f));
             string shotOn = Shot("visual_gameplay"); yield return StartCoroutine(Wait(0.4f)); // taken at end of frame
-            int newYellow = NewPixels(shotOff, shotOn, hudScreen, 90, c => c.r > 0.75f && c.g > 0.55f && c.b < 0.45f && c.r - c.b > 0.35f);
+            string hudRegion = Path.Combine(Path.GetDirectoryName(shotOn), "visual_hud_region.png");
+            int newYellow = NewPixels(shotOff, shotOn, hudScreen, 90, c => c.r > 0.75f && c.g > 0.55f && c.b < 0.45f && c.r - c.b > 0.35f, hudRegion);
+            Note("screenshot " + hudRegion);
             Note("hud pixels: " + newYellow + " new HUD-yellow pixels around screen " + hudScreen + " (layer " + (P2Hud.Renderer != null ? P2Hud.Renderer.gameObject.layer : -1) + ")");
             // Background animation alone produced 50-85 such pixels in this spot; readable text gives several hundred.
             Check(newYellow >= 200, "hud: P2 health is actually visible on screen (" + newYellow + " pixels)");
@@ -1385,16 +1387,26 @@ namespace OriCoop
         public static bool P2HudTestHide { get { return P2Hud.TestHide; } set { P2Hud.TestHide = value; } }
 
         // Pixels matching `match` in b but not in a, in a square of +-radius around a screen point.
-        static int NewPixels(string a, string b, Vector3 screen, int radius, Func<Color, bool> match)
+        static int NewPixels(string a, string b, Vector3 screen, int radius, Func<Color, bool> match, string regionPath = null)
         {
             if (!File.Exists(a) || !File.Exists(b)) return -1;
             Texture2D ta = new Texture2D(2, 2), tb = new Texture2D(2, 2);
             ta.LoadImage(File.ReadAllBytes(a)); tb.LoadImage(File.ReadAllBytes(b));
             float sx = ta.width / (float)Screen.width, sy = ta.height / (float)Screen.height;
             int cx = (int)(screen.x * sx), cy = (int)(screen.y * sy), n = 0;
-            for (int y = Mathf.Max(0, cy - radius); y < Mathf.Min(ta.height, cy + radius); y++)
-                for (int x = Mathf.Max(0, cx - radius); x < Mathf.Min(ta.width, cx + radius); x++)
+            int x0 = Mathf.Max(0, cx - radius), x1 = Mathf.Min(ta.width, cx + radius);
+            int y0 = Mathf.Max(0, cy - radius), y1 = Mathf.Min(ta.height, cy + radius);
+            for (int y = y0; y < y1; y++)
+                for (int x = x0; x < x1; x++)
                     if (match(tb.GetPixel(x, y)) && !match(ta.GetPixel(x, y))) n++;
+            if (regionPath != null)
+            {
+                Texture2D region = new Texture2D(x1 - x0, y1 - y0, TextureFormat.RGB24, false);
+                region.SetPixels(tb.GetPixels(x0, y0, x1 - x0, y1 - y0));
+                region.Apply();
+                File.WriteAllBytes(regionPath, region.EncodeToPNG());
+                UnityEngine.Object.Destroy(region);
+            }
             UnityEngine.Object.Destroy(ta); UnityEngine.Object.Destroy(tb);
             return n;
         }
@@ -1437,6 +1449,10 @@ namespace OriCoop
             if (m_done) return;
             m_done = true;
             Bot(0f, 0);
+            List<string> throwing = new List<string>();
+            foreach (KeyValuePair<string, int> count in SubsystemGuard.Counts)
+                if (count.Value > 5) throwing.Add(count.Key + "=" + count.Value);
+            Check(throwing.Count == 0, "subsystem throws <= 5" + (throwing.Count > 0 ? ": " + string.Join(", ", throwing.ToArray()) : ""));
             if (NetPlay.Enabled)
             {
                 NetTestHarness.Stop();

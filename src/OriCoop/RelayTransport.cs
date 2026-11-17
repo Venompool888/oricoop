@@ -12,7 +12,7 @@ namespace OriCoop.Net
     // All work happens in SendTo/Receive/Update on the caller's thread.
     public sealed class RelayTransport : IDatagramTransport
     {
-        private const ushort Magic = 0x524F;
+        private const ushort Magic = 0x534F;
         private const byte OpHostRoom = 1;
         private const byte OpJoinRoom = 2;
         private const byte OpRoomCreated = 3;
@@ -36,7 +36,8 @@ namespace OriCoop.Net
         private const double DirectTimeoutSeconds = 3.0;
         private const string CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
 
-        private static readonly EndPoint VirtualRemote = new IPEndPoint(IPAddress.Parse("10.255.255.1"), 1);
+        private static readonly IPAddress VirtualAddress = IPAddress.Parse("10.255.255.1");
+        private static readonly EndPoint VirtualRemote = new IPEndPoint(VirtualAddress, 1);
         private static readonly Random NonceSource = new Random();
 
         // Optional identity appended to HostRoom/JoinRoom for the relay operator's join log (SteamID64 and a
@@ -49,46 +50,53 @@ namespace OriCoop.Net
         private const int MaxIdentityNameBytes = 32;
         private readonly byte[] identity;
 
-        private readonly UdpTransport udp;
+        private readonly IDatagramTransport udp;
         private readonly EndPoint server;
         private readonly bool hosting;
         private readonly uint nonce;
         private readonly Stopwatch clock = Stopwatch.StartNew();
+        private readonly Func<double> now;
         private readonly byte[] receiveBuffer = new byte[65536];
-        private readonly Queue<byte[]> incoming = new Queue<byte[]>();
+        private sealed class Path
+        {
+            public int Seat;
+            public EndPoint Address, Remote;
+            public bool Direct, Blocked, ReceivedPayload;
+            public double PunchStart = -1000000, LastPunch = -1000000, LastDirectReceive = -1000000;
+        }
+        private sealed class Datagram { public Path Path; public byte[] Bytes; }
+        private readonly Queue<Datagram> incoming = new Queue<Datagram>();
+        private readonly Dictionary<int, Path> paths = new Dictionary<int, Path>();
         private string roomCode;
         private string error;
-        private EndPoint peer;
         private bool ready;
-        private bool direct;
         private bool forceRelay;
-        private bool directBlocked;
-        private bool receivedPeerPayload;
         private bool updating;
         private bool disposed;
         private double lastHostRoom;
         private double lastJoinRoom;
         private double lastKeepAlive;
-        private double punchStart;
-        private double lastPunch;
-        private double lastDirectReceive;
         private double lastServerReceive;
 
         private RelayTransport(EndPoint server, bool hosting, string code)
+            : this(server, hosting, code, null, null)
+        {
+        }
+
+        internal RelayTransport(EndPoint server, bool hosting, string code, IDatagramTransport udp, Func<double> now)
         {
             if (server == null) throw new ArgumentNullException("server");
             this.server = server;
             this.hosting = hosting;
             this.roomCode = code;
+            Seat = hosting ? 1 : 0;
             this.nonce = NewNonce();
             this.identity = BuildIdentity();
-            this.udp = new UdpTransport(0);
+            this.udp = udp ?? new UdpTransport(0);
+            this.now = now;
             this.lastHostRoom = -1000000;
             this.lastJoinRoom = -1000000;
             this.lastKeepAlive = -1000000;
-            this.punchStart = -1000000;
-            this.lastPunch = -1000000;
-            this.lastDirectReceive = -1000000;
             this.lastServerReceive = -1000000;
             Update();
         }
@@ -108,11 +116,16 @@ namespace OriCoop.Net
 
         public string RoomCode { get { return roomCode; } }
         public bool Ready { get { return ready; } }
-        public bool Direct { get { return direct; } }
+        public bool Direct
+        {
+            get { foreach (Path peer in paths.Values) if (!peer.Direct) return false; return paths.Count > 0; }
+        }
+        public int Seat { get; private set; }
         public string Error { get { return error; } }
-        public EndPoint RemoteEndPoint { get { return VirtualRemote; } }
+        public EndPoint RemoteEndPoint { get { return hosting ? new IPEndPoint(VirtualAddress, 2) : VirtualRemote; } }
         public int LocalPort { get { return udp.LocalPort; } }
         public event Action<string> Log;
+        internal event Action<EndPoint> PeerLeft;
 
         private void LogState(string message)
         {
@@ -122,18 +135,18 @@ namespace OriCoop.Net
             catch (Exception) { } // Diagnostics must not interrupt the transport.
         }
 
-        private void LogFirstPayload(string path, int length)
+        private void LogFirstPayload(Path peer, string path, int length)
         {
-            if (receivedPeerPayload) return;
-            receivedPeerPayload = true;
-            LogState("first payload via " + path + " peer=" + peer + " bytes=" + length);
+            if (peer.ReceivedPayload) return;
+            peer.ReceivedPayload = true;
+            LogState("first payload via " + path + " seat=" + peer.Seat + " peer=" + peer.Address + " bytes=" + length);
         }
 
-        private void SetDirect(bool value, string reason)
+        private void SetDirect(Path peer, bool value, string reason)
         {
-            if (direct == value) return;
-            direct = value;
-            LogState("direct " + (value ? "on" : "off") + " peer=" + peer + " (" + reason + ")");
+            if (peer.Direct == value) return;
+            peer.Direct = value;
+            LogState("direct " + (value ? "on" : "off") + " seat=" + peer.Seat + " peer=" + peer.Address + " (" + reason + ")");
         }
 
         // Test-only: never hole punch, always use the relay path.
@@ -143,8 +156,11 @@ namespace OriCoop.Net
             set
             {
                 forceRelay = value;
-                if (value) SetDirect(false, "forced relay");
-                else if (ready && peer != null) BeginPunch();
+                foreach (Path peer in paths.Values)
+                {
+                    if (value) SetDirect(peer, false, "forced relay");
+                    else if (ready && peer.Address != null) BeginPunch(peer);
+                }
             }
         }
 
@@ -153,7 +169,7 @@ namespace OriCoop.Net
             lock (NonceSource) { return (uint)NonceSource.Next(1, Int32.MaxValue); }
         }
 
-        private double Now { get { return clock.Elapsed.TotalSeconds; } }
+        private double Now { get { return now == null ? clock.Elapsed.TotalSeconds : now(); } }
 
         public void Update()
         {
@@ -179,8 +195,7 @@ namespace OriCoop.Net
                     }
                     else if (now - lastKeepAlive >= KeepAliveSeconds) { SendKeepAlive(); lastKeepAlive = now; }
                 }
-                TryPunch(now);
-                CheckDirectTimeout(now);
+                foreach (Path peer in paths.Values) { TryPunch(peer, now); CheckDirectTimeout(peer, now); }
             }
             finally
             {
@@ -195,20 +210,25 @@ namespace OriCoop.Net
             if (offset < 0 || length < 0 || offset > data.Length - length) throw new ArgumentOutOfRangeException("length");
             Update();
             if (!ready || roomCode == null) return;
-            if (direct && !forceRelay && peer != null)
+            int seat = hosting ? ((IPEndPoint)to).Port : 1;
+            if (hosting && (seat < 2 || seat > 4)) return;
+            Path peer;
+            paths.TryGetValue(seat, out peer);
+            if (peer != null && peer.Direct && !forceRelay && peer.Address != null)
             {
                 byte[] raw = new byte[1 + length];
                 raw[0] = MarkerData;
                 Buffer.BlockCopy(data, offset, raw, 1, length);
-                SendRaw(raw, peer);
+                SendRaw(raw, peer.Address);
                 return;
             }
             if (length > MaxRelayPayload) return;
-            byte[] packet = new byte[11 + length];
+            byte[] packet = new byte[12 + length];
             WriteMagicOp(packet, OpRelay);
             WriteCode(packet, 3, roomCode);
-            WriteU16(packet, 9, (ushort)length);
-            Buffer.BlockCopy(data, offset, packet, 11, length);
+            packet[9] = (byte)seat;
+            WriteU16(packet, 10, (ushort)length);
+            Buffer.BlockCopy(data, offset, packet, 12, length);
             SendRaw(packet, server);
         }
 
@@ -219,7 +239,8 @@ namespace OriCoop.Net
             if (buffer == null) throw new ArgumentNullException("buffer");
             Update();
             if (incoming.Count == 0) return 0;
-            byte[] payload = incoming.Dequeue();
+            Datagram datagram = incoming.Dequeue();
+            byte[] payload = datagram.Bytes; from = datagram.Path.Remote;
             int length = Math.Min(buffer.Length, payload.Length);
             Buffer.BlockCopy(payload, 0, buffer, 0, length);
             return length;
@@ -263,7 +284,7 @@ namespace OriCoop.Net
                 if (SameEndpoint(from, server)) HandleServer(data, length);
                 return;
             }
-            if (!forceRelay && !directBlocked) HandleDirect(data, length, from);
+            if (!forceRelay) HandleDirect(data, length, from);
         }
 
         private static bool SameEndpoint(EndPoint a, EndPoint b)
@@ -298,33 +319,22 @@ namespace OriCoop.Net
                     lastServerReceive = Now;
                     return;
                 case OpJoined:
-                    if (hosting || length < 15) return;
+                    if (hosting || length < 16 || data[9] < 2 || data[9] > 4) return;
                     if (!CodeEquals(ReadCode(data, 3))) return;
-                    EndPoint hostEndpoint = ReadEndpoint(data, 9);
+                    EndPoint hostEndpoint = ReadEndpoint(data, 10);
                     if (hostEndpoint == null) return;
                     lastServerReceive = Now;
+                    Seat = data[9];
                     if (!ready) { ready = true; error = null; }
-                    if (peer == null || !peer.Equals(hostEndpoint))
-                    {
-                        peer = hostEndpoint;
-                        receivedPeerPayload = false;
-                        LogState("PeerJoined host=" + peer);
-                        BeginPunch();
-                    }
+                    SetPeer(1, hostEndpoint);
                     return;
                 case OpPeerJoined:
-                    if (!hosting || length < 15) return;
+                    if (!hosting || length < 16 || data[9] < 2 || data[9] > 4) return;
                     if (!CodeEquals(ReadCode(data, 3))) return;
-                    EndPoint guestEndpoint = ReadEndpoint(data, 9);
+                    EndPoint guestEndpoint = ReadEndpoint(data, 10);
                     if (guestEndpoint == null) return;
                     lastServerReceive = Now;
-                    if (peer == null || !peer.Equals(guestEndpoint))
-                    {
-                        peer = guestEndpoint;
-                        receivedPeerPayload = false;
-                        LogState("PeerJoined guest=" + peer);
-                        BeginPunch();
-                    }
+                    SetPeer(data[9], guestEndpoint);
                     return;
                 case OpJoinFailed:
                     if (hosting || length < 4 || ready) return;
@@ -334,25 +344,33 @@ namespace OriCoop.Net
                     lastServerReceive = Now;
                     return;
                 case OpRelayed:
-                    if (length < 5) return;
-                    int size = ReadU16(data, 3);
-                    if (size > length - 5) return;
+                    if (length < 6) return;
+                    int source = data[3];
+                    if (hosting ? source < 2 || source > 4 : source != 1) return;
+                    int size = ReadU16(data, 4);
+                    if (size > length - 6) return;
                     byte[] payload = new byte[size];
-                    Buffer.BlockCopy(data, 5, payload, 0, size);
-                    incoming.Enqueue(payload);
-                    LogFirstPayload("relay", size);
+                    Buffer.BlockCopy(data, 6, payload, 0, size);
+                    Path relayed = PathOf(source);
+                    incoming.Enqueue(new Datagram { Path = relayed, Bytes = payload });
+                    LogFirstPayload(relayed, "relay", size);
                     lastServerReceive = Now;
                     return;
                 case OpKeepAliveAck:
                     lastServerReceive = Now;
                     return;
                 case OpPeerLeft:
-                    if (!hosting) return;
-                    if (length >= 9 && !CodeEquals(ReadCode(data, 3))) return;
-                    if (peer != null) LogState("PeerLeft guest=" + peer);
-                    SetDirect(false, "peer left");
-                    peer = null;
-                    receivedPeerPayload = false;
+                    if (!hosting || length < 10 || !CodeEquals(ReadCode(data, 3))) return;
+                    Path departed;
+                    if (paths.TryGetValue(data[9], out departed))
+                    {
+                        LogState("PeerLeft seat=" + departed.Seat + " guest=" + departed.Address);
+                        SetDirect(departed, false, "peer left");
+                        paths.Remove(departed.Seat);
+                        int queued = incoming.Count;
+                        while (queued-- > 0) { Datagram item = incoming.Dequeue(); if (item.Path != departed) incoming.Enqueue(item); }
+                        if (PeerLeft != null) PeerLeft(departed.Remote);
+                    }
                     lastServerReceive = Now;
                     return;
             }
@@ -360,57 +378,79 @@ namespace OriCoop.Net
 
         private void HandleDirect(byte[] data, int length, EndPoint from)
         {
-            if (length < 1 || !IsPeer(from)) return;
+            Path peer = null;
+            foreach (Path candidate in paths.Values) if (candidate.Address != null && candidate.Address.Equals(from)) { peer = candidate; break; }
+            if (length < 1 || peer == null || peer.Blocked) return;
             byte marker = data[0];
             if (marker == MarkerData)
             {
                 if (length <= 1) return;
-                lastDirectReceive = Now;
-                SetDirect(true, "data");
+                peer.LastDirectReceive = Now;
+                SetDirect(peer, true, "data");
                 byte[] payload = new byte[length - 1];
                 Buffer.BlockCopy(data, 1, payload, 0, length - 1);
-                incoming.Enqueue(payload);
-                LogFirstPayload("direct", length - 1);
+                incoming.Enqueue(new Datagram { Path = peer, Bytes = payload });
+                LogFirstPayload(peer, "direct", length - 1);
                 return;
             }
             if (marker != MarkerPunch && marker != MarkerPunchAck) return;
             if (length < 11) return;
             if (!CodeEquals(ReadCode(data, 1))) return;
-            lastDirectReceive = Now;
-            SetDirect(true, "punch");
-            if (marker == MarkerPunch) SendPunch(MarkerPunchAck);
+            peer.LastDirectReceive = Now;
+            SetDirect(peer, true, "punch");
+            if (marker == MarkerPunch) SendPunch(peer, MarkerPunchAck);
         }
 
-        private void BeginPunch()
+        private Path PathOf(int seat)
+        {
+            Path peer;
+            if (!paths.TryGetValue(seat, out peer))
+            {
+                peer = new Path { Seat = seat, Remote = new IPEndPoint(VirtualAddress, seat) };
+                paths.Add(seat, peer);
+            }
+            return peer;
+        }
+
+        private void SetPeer(int seat, EndPoint address)
+        {
+            Path peer = PathOf(seat);
+            if (Object.Equals(peer.Address, address)) return;
+            peer.Address = address; peer.ReceivedPayload = false;
+            LogState("PeerJoined seat=" + seat + " peer=" + address);
+            BeginPunch(peer);
+        }
+
+        private void BeginPunch(Path peer)
         {
             if (forceRelay) return;
-            SetDirect(false, "punch start");
-            if (directBlocked) LogState("blocked off peer=" + peer);
-            directBlocked = false;
-            LogState("punch start peer=" + peer);
-            punchStart = Now;
-            lastPunch = -1000000;
-            lastDirectReceive = Now;
+            SetDirect(peer, false, "punch start");
+            if (peer.Blocked) LogState("blocked off seat=" + peer.Seat + " peer=" + peer.Address);
+            peer.Blocked = false;
+            LogState("punch start seat=" + peer.Seat + " peer=" + peer.Address);
+            peer.PunchStart = Now;
+            peer.LastPunch = -1000000;
+            peer.LastDirectReceive = Now;
         }
 
-        private void TryPunch(double now)
+        private void TryPunch(Path peer, double now)
         {
-            if (forceRelay || directBlocked || direct || !ready || peer == null) return;
-            if (punchStart < 0 || now - punchStart > PunchSeconds) return;
-            if (now - lastPunch < PunchIntervalSeconds) return;
-            lastPunch = now;
-            SendPunch(MarkerPunch);
+            if (forceRelay || peer.Blocked || peer.Direct || !ready || peer.Address == null) return;
+            if (peer.PunchStart < 0 || now - peer.PunchStart > PunchSeconds) return;
+            if (now - peer.LastPunch < PunchIntervalSeconds) return;
+            peer.LastPunch = now;
+            SendPunch(peer, MarkerPunch);
         }
 
-        private void CheckDirectTimeout(double now)
+        private void CheckDirectTimeout(Path peer, double now)
         {
-            if (!direct || forceRelay) return;
-            if (now - lastDirectReceive < DirectTimeoutSeconds) return;
+            if (!peer.Direct || forceRelay) return;
+            if (now - peer.LastDirectReceive < DirectTimeoutSeconds) return;
             // Only abandon the direct path when the relay path is demonstrably alive.
             if (lastServerReceive < 0 || now - lastServerReceive > 7.0) return;
-            SetDirect(false, "direct timeout");
-            directBlocked = true;
-            LogState("blocked on peer=" + peer);
+            SetDirect(peer, false, "direct timeout");
+            peer.Blocked = true;
+            LogState("blocked on seat=" + peer.Seat + " peer=" + peer.Address);
         }
 
         private void SendHostRoom()
@@ -467,14 +507,14 @@ namespace OriCoop.Net
             SendRaw(packet, server);
         }
 
-        private void SendPunch(byte marker)
+        private void SendPunch(Path peer, byte marker)
         {
-            if (peer == null || roomCode == null) return;
+            if (peer.Address == null || roomCode == null) return;
             byte[] packet = new byte[11];
             packet[0] = marker;
             WriteCode(packet, 1, roomCode);
             WriteU32(packet, 7, nonce);
-            SendRaw(packet, peer);
+            SendRaw(packet, peer.Address);
         }
 
         private void SendRaw(byte[] data, EndPoint to)
@@ -482,11 +522,6 @@ namespace OriCoop.Net
             try { udp.SendTo(data, 0, data.Length, to); }
             catch (SocketException) { }
             catch (ObjectDisposedException) { }
-        }
-
-        private bool IsPeer(EndPoint from)
-        {
-            return peer != null && from != null && peer.Equals(from);
         }
 
         private bool CodeEquals(string code)

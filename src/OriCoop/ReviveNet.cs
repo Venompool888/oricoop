@@ -3,16 +3,17 @@ using System.IO;
 using Game;
 using UnityEngine;
 
+using OriCoop.Seams;
+using OriCoop.Rules;
+
 namespace OriCoop
 {
-    // Online downed / revive: the same rules as local co-op, split between the two PCs.
-    // On each PC the local player is P1 and the partner's Ori is P2 (a network puppet). Each PC decides only for its
-    // own Ori and its own health; messages carry the rest (types 60-69 are reserved for this):
+    // Each PC decides only for its own Ori and health; the host decides the wipe.
     //   60 Downed    owner -> partner   "my Ori is down, skull at (x,y,z)"          reliable
     //   61 Revive    saver -> owner     "revived you, giving N health"              reliable
     //   62 Revived   owner -> saver     "I'm back" (clears the skull there too)     reliable
     //   63 BothDown  host  -> guest     "we're both down: reload"                   reliable
-    //   64 Progress  saver -> owner     revive progress 0..1, for the owner's skull   unreliable
+    //   64 Progress  saver -> others    downed seat, rescuer seat, progress 0..1     unreliable
     // Both down is decided by the host only, so simultaneous deaths can't trigger two different reloads. The host
     // runs the normal death/checkpoint reload; the guest runs its own normal death too, and SaveSync brings its
     // world back in line with the host's save afterwards.
@@ -20,12 +21,11 @@ namespace OriCoop
     {
         public const byte MsgDowned = 60, MsgRevive = 61, MsgRevived = 62, MsgBothDown = 63, MsgProgress = 64;
         static bool s_netRegistered;
-        static float s_progressSendTimer;
         public static int NetDownedSent, NetDownedReceived, NetRevivesSent, NetRevivesApplied, NetBothDown;
 
         public static bool Online
         {
-            get { return Enabled && NetPlay.Enabled && NetPlay.Connected && P2Context.P1 != null && P2Context.P2 != null; }
+            get { return Enabled && Services.Net.Enabled && Services.Net.Connected && Host.P1 != null && Host.PuppetCount != 0; }
         }
 
         static void RegisterNet()
@@ -33,33 +33,47 @@ namespace OriCoop
             PartnerFx.EnsureRegistered();
             if (s_netRegistered) return;
             s_netRegistered = true;
-            NetPlay.On(MsgDowned, OnNetDowned);
-            NetPlay.On(MsgRevive, OnNetRevive);
-            NetPlay.On(MsgRevived, OnNetRevived);
-            NetPlay.On(MsgBothDown, OnNetBothDown);
-            NetPlay.On(MsgProgress, OnNetProgress);
+            Services.Net.On(MsgDowned, OnNetDowned);
+            Services.Net.On(MsgRevive, OnNetRevive);
+            Services.Net.On(MsgRevived, OnNetRevived);
+            Services.Net.On(MsgBothDown, OnNetBothDown);
+            Services.Net.On(MsgProgress, OnNetProgress);
+            Services.Net.PlayerLeft += ClearSeat;
+        }
+
+        static void ClearSeat(int seat)
+        {
+            Downed d = s_roster.Take(seat);
+            RestoreDowned(d, false);
+            s_haveSafe[seat] = false;
+            if (Online && Services.Net.IsHost && AnyDowned && AllDown(null))
+            {
+                FinalDeaths++; NetBothDown++;
+                Services.Net.Send(MsgBothDown, true, w => { });
+                KillP1Normally();
+            }
         }
 
         // Called from the OnKill prefix for the LOCAL Ori online. true = turned into downed (skip the game's death).
         public static bool HandleDeathOnline(SeinCharacter p1)
         {
-            if (s_passThrough || !Online || p1 == null || p1 != P2Context.P1) return false;
+            if (s_passThrough || !Online || p1 == null || p1 != Host.P1) return false;
             RegisterNet(); Subscribe();
             if (IsDowned(p1)) return true;
             bool partnerDown = AllDown(p1);
-            if (partnerDown && NetPlay.IsHost)
+            if (ReviveLogic.DecideOnlineDeath(partnerDown, partnerDown && Services.Net.IsHost) == DeathOutcome.Checkpoint)
             {
                 // The guest is already down and now the host: both out. Tell the guest, then die normally.
                 FinalDeaths++; NetBothDown++;
-                Plugin.Log.LogInfo("online: both Oris are down (host decides): checkpoint reload");
-                NetPlay.Send(MsgBothDown, true, w => { });
+                Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
+                Services.Net.Send(MsgBothDown, true, w => { });
                 return false;
             }
             // Down; the partner can revive us. (Guest with the host already down: the host decides on our message.)
             MakeDowned(p1);
-            int seat = Players.LocalSeat;
+            int seat = Host.LocalSeat;
             Vector3 m = s_down[seat].Marker;
-            NetPlay.Send(MsgDowned, true, w => { w.Write((byte)seat); w.Write(m.x); w.Write(m.y); w.Write(m.z); });
+            Services.Net.Send(MsgDowned, true, w => ReviveWire.WritePosition(w, seat, m.x, m.y, m.z));
             NetDownedSent++;
             return true;
         }
@@ -67,15 +81,36 @@ namespace OriCoop
         // Every frame while online (from Plugin's online path).
         public static void TickOnline()
         {
-            if (NetPlay.Enabled) PartnerFx.EnsureRegistered(); // partner hurt visuals also when revive is off
-            if (!Online) { if (AnyDowned && NetPlay.Enabled && !NetPlay.Connected) ClearAll("partner disconnected", P2Context.P1 != null); return; }
+            if (Services.Net.Enabled) PartnerFx.EnsureRegistered(); // partner hurt visuals also when revive is off
+            if (!Online) { if (AnyDowned && Services.Net.Enabled && !Services.Net.Connected) ClearAll("partner disconnected", Host.P1 != null); return; }
             RegisterNet(); Subscribe();
             TrackSafeGround();
-            if (s_down[Players.LocalSeat] != null) KeepPinned(s_down[Players.LocalSeat]);
+            Downed own = s_down[Host.LocalSeat];
+            if (own != null)
+            {
+                KeepPinned(own);
+                if (Host.RemoteCount > 1 && !GameController.Instance.GameplaySuspended && !SessionRules.LocalPaused && !SessionRules.PausedByPartner)
+                {
+                    SeinCharacter teammate = ReviveLogic.RespawnDue(own, Time.deltaTime) ? NearestLiving(own.Marker, own.Sein) : null;
+                    if (teammate != null)
+                    {
+                        s_down[own.Player] = null;
+                        RestoreDowned(own, true, teammate, own.Sein.Mortality.Health.MaxHealth);
+                        PartnerFx.PlayRevive(own.Sein, own.Sein.Position);
+                        SendRevived(own.Player, own.Sein.Position);
+                        Services.Log.Info("online: P" + own.Player + " respawned beside P" + PlayerOf(teammate));
+                    }
+                }
+            }
             foreach (int seat in PresentSeats)
             {
                 Downed d = s_down[seat];
-                if (seat != Players.LocalSeat && d != null) { KeepHidden(d); Step(d); if (s_down[seat] == d) SendProgress(d); } // Step may complete the revive (kit ad8f4bc crashed here)
+                if (seat != Host.LocalSeat && d != null)
+                {
+                    if (d.Sein == null) d.Sein = SeinAt(seat);
+                    KeepHidden(d); Step(d);
+                    if (s_down[seat] == d) SendProgress(d);
+                }
             }
         }
 
@@ -87,8 +122,8 @@ namespace OriCoop
             void Update()
             {
                 if (!AnyDowned) return;
-                bool partnerGone = P2Context.P2 == null || (NetPlay.Enabled && !NetPlay.Connected);
-                if (partnerGone) ClearAll("partner gone while someone was downed", P2Context.P1 != null || Characters.Sein != null);
+                bool partnerGone = Host.PuppetCount == 0 || (Services.Net.Enabled && !Services.Net.Connected);
+                if (partnerGone) ClearAll("partner gone while someone was downed", Host.P1 != null || Characters.Sein != null);
             }
         }
         static GameObject s_watchdog;
@@ -109,90 +144,102 @@ namespace OriCoop
 
         static void SendProgress(Downed d)
         {
-            if (d.Progress <= 0f) return;
-            s_progressSendTimer -= Time.unscaledDeltaTime;
-            if (s_progressSendTimer > 0f) return;
-            s_progressSendTimer = 0.1f;
+            if (!ReviveLogic.ShouldSend(d, Host.LocalSeat, Host.RemoteCount > 1, Time.unscaledTime)) return;
             float p = d.Progress;
-            NetPlay.Send(MsgProgress, false, w => w.Write(p));
+            Services.Net.Send(MsgProgress, false, w => ReviveWire.WriteProgress(w, d.Player, d.Rescuer, p, d.Given));
         }
 
         // Our revive of the partner reached 100%: give the health over the network; their game applies it.
-        static void CompleteRemote(Downed d, float health)
+        static void CompleteRemote(Downed d, SeinCharacter saver, float health)
         {
             s_down[d.Player] = null;
             RestoreDowned(d, false);
             // The partner's game puts its Ori next to us (RestoreDowned there); the glow plays at that spot here.
-            SeinCharacter me = P2Context.P1;
+            SeinCharacter me = saver;
             if (me != null) PartnerFx.PlayRevive(d.Sein, me.Position + new Vector3(me.FaceLeft ? 1f : -1f, 0f, 0f));
-            NetPlay.Send(MsgRevive, true, w => { w.Write((byte)d.Player); w.Write(health); });
+            Services.Net.Send(MsgRevive, true, w => ReviveWire.WriteRevive(w, d.Player, health));
             NetRevivesSent++; Revives++;
-            Plugin.Log.LogInfo("online: revived the partner, giving " + health.ToString("F1") + " health");
+            Services.Log.Info("online: revived the partner, giving " + health.ToString("F1") + " health");
         }
 
         // ---- messages ---------------------------------------------------------------------------------------------
         static void OnNetDowned(BinaryReader r)
         {
-            int seat = r.ReadByte();
-            Vector3 m = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-            if (!Online) return;
+            ReviveWire.Position message = ReviveWire.ReadPosition(r);
+            int seat = message.Seat;
+            Vector3 m = new Vector3(message.X, message.Y, message.Z);
+            if (!Online || seat != Services.Net.Sender) return;
             NetDownedReceived++;
             if (s_down[seat] == null)
             {
                 Downed d = new Downed();
                 d.Sein = SeinAt(seat); d.Player = seat; d.Marker = m; d.Remote = true;
-                s_down[seat] = d;
+                s_roster.TryAdd(seat, d);
                 KeepHidden(d);
                 EnsureWatchdog();
-                Plugin.Log.LogInfo("online: partner downed at " + m + " (hold Spirit Flame near the skull to revive)");
+                Services.Log.Info("online: partner downed at " + m + " (hold Spirit Flame near the skull to revive)");
             }
-            if (NetPlay.IsHost && AllDown(null))
+            if (Services.Net.IsHost && AllDown(null))
             {
                 // We (host) were already down and now the guest: both out.
                 FinalDeaths++; NetBothDown++;
-                Plugin.Log.LogInfo("online: both Oris are down (host decides): checkpoint reload");
-                NetPlay.Send(MsgBothDown, true, w => { });
+                Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
+                Services.Net.Send(MsgBothDown, true, w => { });
                 KillP1Normally();
             }
         }
 
         static void OnNetRevive(BinaryReader r)
         {
-            int seat = r.ReadByte();
-            float health = r.ReadSingle();
+            ReviveWire.Revive message = ReviveWire.ReadRevive(r);
+            int seat = message.Seat;
+            float health = message.Health;
             if (!Online || s_down[seat] == null) return;
             Downed d = s_down[seat];
+            d.Rescuer = Services.Net.Sender;
+            if (seat != Host.LocalSeat) return;
             s_down[seat] = null;
-            RestoreDowned(d, true, SeinAt(NetPlay.Sender), health);
+            RestoreDowned(d, true, SeinAt(Services.Net.Sender), health);
             if (d.Sein != null) PartnerFx.PlayRevive(d.Sein, d.Sein.Position);
             NetRevivesApplied++;
-            NetPlay.Send(MsgRevived, true, w => w.Write((byte)seat));
-            Plugin.Log.LogInfo("online: revived by the partner with " + health.ToString("F1") + " health");
+            SendRevived(seat, d.Sein.Position);
+            Services.Log.Info("online: revived by the partner with " + health.ToString("F1") + " health");
         }
 
         static void OnNetRevived(BinaryReader r)
         {
-            int seat = r.ReadByte();
-            if (s_down[seat] == null) return;
-            Downed d = s_down[seat]; s_down[seat] = null;
+            ReviveWire.Position message = ReviveWire.ReadPosition(r);
+            int seat = message.Seat;
+            Vector3 position = new Vector3(message.X, message.Y, message.Z);
+            Downed d = s_roster.TakeRevived(seat, Services.Net.Sender);
+            if (d == null) return;
             RestoreDowned(d, false);
+            if (d.Sein != null)
+            {
+                Host.Teleport(d.Sein, position);
+                PartnerFx.PlayRevive(d.Sein, position);
+            }
+        }
+
+        static void SendRevived(int seat, Vector3 position)
+        {
+            Services.Net.Send(MsgRevived, true, w => ReviveWire.WritePosition(w, seat, position.x, position.y, position.z));
         }
 
         static void OnNetBothDown(BinaryReader r)
         {
-            if (!NetPlay.Enabled) return;
+            if (!Services.Net.Enabled || Services.Net.Sender != 1) return;
             FinalDeaths++; NetBothDown++;
-            Plugin.Log.LogInfo("online: host says both Oris are down: checkpoint reload");
+            Services.Log.Info("online: host says both Oris are down: checkpoint reload");
             foreach (int seat in PresentSeats)
-                if (seat != Players.LocalSeat && s_down[seat] != null) { RestoreDowned(s_down[seat], false); s_down[seat] = null; }
+                if (seat != Host.LocalSeat && s_down[seat] != null) { RestoreDowned(s_down[seat], false); s_down[seat] = null; }
             KillP1Normally();
         }
 
         static void OnNetProgress(BinaryReader r)
         {
-            float p = r.ReadSingle();
-            Downed d = s_down[Players.LocalSeat];
-            if (d != null) d.Progress = Mathf.Max(d.Progress, p);
+            ReviveWire.Progress message = ReviveWire.ReadProgress(r);
+            s_roster.MergeProgress(message.Seat, message.Rescuer, Services.Net.Sender, Host.LocalSeat, message.Value, message.Given);
         }
     }
 }

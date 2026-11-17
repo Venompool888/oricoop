@@ -142,9 +142,14 @@ namespace OriCoop
         public static ulong Hash() { return Ready ? Capture().Hash() : 0; }
         public static void Tick()
         {
-            if (!NetPlay.Connected || !SaveSync.Ready || !NetPlay.LocalInGameplay() || !Ready) return;
-            if (!NetPlay.IsHost && s_received != null) { State s = s_received; s_received = null; Apply(s); }
-            if (NetPlay.IsHost)
+            // Snapshots (abilities, health/energy, inventory, level) only need both progress states present; they
+            // no longer wait for NetPlay.LocalInGameplay(). A relay run left it false after a half-run scene story
+            // and the guest never got the host's WallJump=false (CUT reset). The host's pickup-action queue still
+            // needs a live local player.
+            ReportStall();
+            if (!NetPlay.Connected || !SaveSync.Ready || !Ready) return;
+            if (!NetPlay.IsHost && s_received != null) { State s = s_received; s_received = null; s_receivedAt = -1f; Apply(s); }
+            if (NetPlay.IsHost && NetPlay.LocalInGameplay())
             {
                 while (s_pending.Count > 0)
                 {
@@ -175,9 +180,29 @@ namespace OriCoop
             { NetPlay.Send(MsgProgress, true, s.Write); s_sentHash = s.Hash(); s_sent = true; }
             else NetPlay.SendTo(seat, MsgProgress, true, s.Write);
         }
+        static float s_receivedAt = -1f, s_unsentAt = -1f, s_stallCheckAt; static bool s_stallLogged;
+        // One line per stall (> 3 s) with every gate, so a stuck sync names its cause in the log.
+        static void ReportStall()
+        {
+            float now = Time.realtimeSinceStartup;
+            if (now < s_stallCheckAt) return;
+            s_stallCheckAt = now + 0.5f;
+            bool unsent = NetPlay.IsHost && NetPlay.Connected && Ready && (!s_sent || Hash() != s_sentHash);
+            if (!unsent) s_unsentAt = -1f; else if (s_unsentAt < 0) s_unsentAt = now;
+            bool stalled = s_receivedAt >= 0 && now - s_receivedAt > 3f || s_unsentAt >= 0 && now - s_unsentAt > 3f;
+            if (!stalled) { s_stallLogged = false; return; }
+            if (s_stallLogged) return;
+            s_stallLogged = true;
+            GameController gc = GameController.Instance;
+            Plugin.Log.LogWarning("net: progress sync stalled " + (NetPlay.IsHost ? "(host change not sent)" : "(guest snapshot not applied)")
+                + " connected=" + NetPlay.Connected + " saveReady=" + SaveSync.Ready + " progressReady=" + Ready
+                + " inGameplay=" + NetPlay.LocalInGameplay() + " loading=" + (gc != null && gc.IsLoadingGame)
+                + " sein=" + (Characters.Sein != null) + " seinActive=" + (Characters.Sein != null && Characters.Sein.gameObject.activeInHierarchy)
+                + " seinIsP2=" + (Characters.Sein != null && P2Context.P2 != null && Characters.Sein == P2Context.P2));
+        }
         static void ReceiveProgress(BinaryReader r)
         {
-            State s = State.Read(r); if (!NetPlay.IsHost) s_received = s;
+            State s = State.Read(r); if (!NetPlay.IsHost) { s_received = s; if (s_receivedAt < 0) s_receivedAt = Time.realtimeSinceStartup; }
         }
         static void Apply(State s)
         {
