@@ -47,7 +47,9 @@ namespace OriCoop
         public static void Ensure(MessageBox box)
         {
             if (box == null || box.LanguageStyles == null) return;
+#if !ZHPATCH
             if (s_forceZh == 0) ForceChineseForTests();
+#endif
             TextStyleCollection col = box.LanguageStyles.Chinese;
             if (col == null || col.styles == null)
             {
@@ -71,7 +73,10 @@ namespace OriCoop
 
         public static int RetargetLateMaterials()
         {
-            if (s_swaps.Count == 0 || s_retargetFrame == Time.frameCount || P2Extras.MutateSignpost) return 0;
+            if (s_swaps.Count == 0 || s_retargetFrame == Time.frameCount) return 0;
+#if !ZHPATCH
+            if (P2Extras.MutateSignpost) return 0;
+#endif
             s_retargetFrame = Time.frameCount;
             int n = 0;
             foreach (Material m in Resources.FindObjectsOfTypeAll<Material>())
@@ -84,7 +89,14 @@ namespace OriCoop
                     if (t != null && s_swaps.TryGetValue(t, out repl) && repl != null) { m.SetTexture(p, repl); n++; }
                 }
             }
-            if (n > 0) { LateMaterialsFixed += n; CoopTrace.Event("hud", "glyph.retarget", "materials", n); Plugin.Log.LogInfo("zh glyphs: " + n + " late-loaded material(s) moved to the new atlas"); }
+            if (n > 0)
+            {
+                LateMaterialsFixed += n;
+#if !ZHPATCH
+                CoopTrace.Event("hud", "glyph.retarget", "materials", n);
+#endif
+                Plugin.Log.LogInfo("zh glyphs: " + n + " late-loaded material(s) moved to the new atlas");
+            }
             return n;
         }
 
@@ -519,6 +531,7 @@ namespace OriCoop
             }
         }
 
+#if !ZHPATCH
         // ORICOOP_FORCE_ZH=1 (tests): run the game in Simplified Chinese. This build's Language setter turns
         // Chinese into English (the translation and font ship but are locked), so override the getter.
         static readonly bool s_forceZhEnv = Environment.GetEnvironmentVariable("ORICOOP_FORCE_ZH") == "1";
@@ -534,5 +547,6 @@ namespace OriCoop
         {
             static void Postfix(ref Language __result) { if (s_forceZhEnv) __result = Language.Chinese; }
         }
+#endif
     }
 }

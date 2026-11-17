@@ -77,6 +77,7 @@ namespace OriCoop
             }
         }
 
+#if !ZHPATCH
         // ORICOOP_LANG_PROBE=1 (tests): switch to Chinese through the game's own setter when a save slot is picked
         // (after the settings file has loaded; runs before NativeModeMenu's prefix so its page is in Chinese).
         static bool s_probed;
@@ -93,5 +94,6 @@ namespace OriCoop
                 Plugin.Log.LogInfo("language probe: set Chinese through the setter -> " + GameSettings.Instance.Language + " (unlocked=" + Unlocked + ")");
             }
         }
+#endif
     }
 }
