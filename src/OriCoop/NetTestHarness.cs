@@ -1283,15 +1283,17 @@ namespace OriCoop
                 h.Check(EnemySync.Inspect(key).Dead, "E3 death within 0.5 s");
                 yield return EnemyBarrier(h, 4, key);
                 h.Check(s_enemyPackets.ContainsKey(4) && s_enemyPackets[4].Dead, "E3 partner also dead");
-                bool early = false; float respawnAt = -1; start = Time.realtimeSinceStartup;
-                while (Time.realtimeSinceStartup - start < 5f)
+                // 5 s of GAME time (the respawn timer is 3 s of game time; T-071: real seconds failed on a busy PC).
+                bool early = false; float respawnAt = -1, respawnReal = -1; TestClock.Window window = new TestClock.Window(5f);
+                while (window.Open)
                 {
                     EnemySync.Probe p = EnemySync.Inspect(key);
                     if (!owner && p.Present && p.Dead) early = true;
-                    if (!p.Dead && respawnAt < 0) respawnAt = Time.realtimeSinceStartup - start;
+                    if (!p.Dead && respawnAt < 0) { respawnAt = window.GameElapsed; respawnReal = window.RealElapsed; }
                     yield return null;
                 }
-                h.Note("E3 earlyMirrorRespawn=" + early + " observedRespawnSeconds=" + F(respawnAt) + " " + EnemySync.Diagnostics());
+                h.Note("E3 earlyMirrorRespawn=" + early + " observedRespawnSeconds=" + F(respawnAt) + " realSeconds=" + F(respawnReal)
+                    + " gameRate=" + F(window.Rate) + " " + EnemySync.Diagnostics());
                 h.Check(!early, "E3 mirror respawn blocked until owner permission");
                 h.Check(respawnAt >= 0 && !EnemySync.Inspect(key).Dead && EnemySync.Inspect(key).Present, "E3 owner respawn observed within 5 s (" + F(respawnAt) + ")");
                 yield return EnemyBarrier(h, 5, key);

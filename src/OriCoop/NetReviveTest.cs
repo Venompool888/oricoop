@@ -50,7 +50,9 @@ namespace OriCoop
             yield return Barrier(h, 12);
         }
 
-        static IEnumerator Wait(float s) { float end = Time.realtimeSinceStartup + s; while (Time.realtimeSinceStartup < end) yield return null; }
+        // Game seconds (T-071): every wait here is for something the game times (hurt flash, invincibility, death, the
+        // revive hold and glow); real seconds failed whenever a busy PC ran the game slower than real time.
+        static IEnumerator Wait(float s) { return TestClock.WaitGame(s); }
 
         static IEnumerator Barrier(TestHarness h, int step)
         {
@@ -174,7 +176,7 @@ namespace OriCoop
                 HoldSpiritFlame(false);
                 yield return Wait(0.1f);
                 float p = d.Progress, drained = h0 - Own.Mortality.Health.Amount;
-                h.Note("R2 host: after 0.75 s hold progress " + F(p * 100f) + "%, health " + F(h0) + " -> " + F(Own.Mortality.Health.Amount));
+                h.Note("R2 host: after 0.75 s (game) hold progress " + F(p * 100f) + "%, health " + F(h0) + " -> " + F(Own.Mortality.Health.Amount));
                 h.Check(p > 0.35f && p < 0.65f, "R2 host: revive progress advances while holding Spirit Flame");
                 h.Check(Mathf.Abs(drained - h0 / 2f * p) < 0.6f, "R2 host: own health drains in step with progress");
             }
@@ -192,8 +194,8 @@ namespace OriCoop
             if (host && Revive.DownedOf(2) != null)
             {
                 HoldSpiritFlame(true);
-                float endHold = Time.realtimeSinceStartup + 1.2f;
-                while (Revive.DownedOf(2) != null && Time.realtimeSinceStartup < endHold) yield return null;
+                TestClock.Window hold = new TestClock.Window(1.2f);
+                while (Revive.DownedOf(2) != null && hold.Open) yield return null;
                 HoldSpiritFlame(false);
                 yield return Wait(0.15f);
                 int visGlow = 0; foreach (Renderer r in Puppet.GetComponentsInChildren<Renderer>()) if (r.enabled) visGlow++;

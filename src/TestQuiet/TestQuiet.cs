@@ -42,32 +42,42 @@ namespace OriCoop.TestQuiet
                 System.Globalization.CultureInfo.InvariantCulture, out sc) && sc >= 1f && sc <= 8f) m_scale = sc;
             if (m_quiet || noSteam) Logger.LogInfo("TestQuiet: quiet=" + m_quiet + " noSteam=" + noSteam + " timeScale x" + m_scale);
             m_fps = Flag("ORICOOP_FPS_LOG");
-            if (!m_quiet && m_scale == 1f && !m_fps) enabled = false;
+            // ORICOOP_TARGET_FPS=N (10..59): hold the game at N fps, like a slow PC (T-071 reproduces game-timed checks at a
+            // low game rate this way; Ori itself sets 60). Vsync is turned off so the cap applies.
+            int fps; if (int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_TARGET_FPS") ?? "", out fps) && fps >= 10 && fps <= 59) m_targetFps = fps;
+            if (m_targetFps > 0) Logger.LogInfo("TestQuiet: target fps " + m_targetFps);
+            if (!m_quiet && m_scale == 1f && !m_fps && m_targetFps == 0) enabled = false;
         }
 
         // ORICOOP_TIMESCALE=N (test speed-up, opt-in per suite): multiply the game's own Time.timeScale by N. The game
         // sets timeScale itself (loading 0.5, pause 0, normal 1); any value that differs from the one we wrote last is
         // taken as the game's new base. Only for suites whose checks do not depend on real time (no latency/timeouts).
         float m_scale = 1f, m_base = 1f, m_applied = -1f;
-        void Update() { ApplyScale(); SampleFrame(); }
+        int m_targetFps;
+        void ApplyFps() { if (m_targetFps > 0 && (Application.targetFrameRate != m_targetFps || QualitySettings.vSyncCount != 0)) { QualitySettings.vSyncCount = 0; Application.targetFrameRate = m_targetFps; } }
+        void Update() { ApplyFps(); ApplyScale(); SampleFrame(); }
 
         // ORICOOP_FPS_LOG=1: every 10 s log the frame time (avg / p95 / max ms, unscaled) as "TestQuiet: frames ...".
         // Used to measure what parallel test games cost a game the owner plays (a stand-in copy).
         bool m_fps;
         readonly System.Collections.Generic.List<float> m_frames = new System.Collections.Generic.List<float>();
-        float m_nextFps;
+        float m_nextFps, m_gameSum, m_realSum;
         void SampleFrame()
         {
             if (!m_fps) return;
             m_frames.Add(Time.unscaledDeltaTime * 1000f);
+            // Game time per real second: Ori caps a frame's game time at Time.maximumDeltaTime (1/60, or 1/30 after
+            // it detects slow frames), so below that frame rate the game's own timers (respawn, revive) run slow.
+            if (Time.timeScale > 0f) { m_gameSum += Time.deltaTime / Time.timeScale; m_realSum += Time.unscaledDeltaTime; }
             if (Time.realtimeSinceStartup < m_nextFps) return;
             m_nextFps = Time.realtimeSinceStartup + 10f;
-            if (m_frames.Count < 10) { m_frames.Clear(); return; }
+            if (m_frames.Count < 10) { m_frames.Clear(); m_gameSum = 0f; m_realSum = 0f; return; }
             m_frames.Sort();
             float sum = 0f; foreach (float f in m_frames) sum += f;
             Logger.LogInfo("TestQuiet: frames n=" + m_frames.Count + " avg=" + (sum / m_frames.Count).ToString("F2") + "ms p95="
-                + m_frames[(int)(m_frames.Count * 0.95f)].ToString("F2") + "ms max=" + m_frames[m_frames.Count - 1].ToString("F2") + "ms");
-            m_frames.Clear();
+                + m_frames[(int)(m_frames.Count * 0.95f)].ToString("F2") + "ms max=" + m_frames[m_frames.Count - 1].ToString("F2") + "ms"
+                + " gameRate=" + (m_realSum > 0f ? m_gameSum / m_realSum : 0f).ToString("F2") + " maxDelta=" + Time.maximumDeltaTime.ToString("F4"));
+            m_frames.Clear(); m_gameSum = 0f; m_realSum = 0f;
         }
         void ApplyScale()
         {

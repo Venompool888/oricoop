@@ -370,8 +370,8 @@ namespace OriCoop
             }
             else
             {
-                float until = Time.realtimeSinceStartup + 3f; bool done = false;
-                while (Time.realtimeSinceStartup < until && !done) { done = WorldObjSync.PostActivated(post) && WorldObjSync.PostActionsApplied > before; yield return null; }
+                TestClock.Window until = new TestClock.Window(3f); bool done = false;   // game seconds (T-071): the post slides in game time
+                while (until.Open && !done) { done = WorldObjSync.PostActivated(post) && WorldObjSync.PostActionsApplied > before; yield return null; }
                 h.Check(done, tag + " guest's post is in and its AllTheWayInAction ran within 3 s (activated=" + WorldObjSync.PostActivated(post)
                     + " actions=" + (WorldObjSync.PostActionsApplied - before) + ")");
             }

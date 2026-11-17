@@ -1120,9 +1120,10 @@ namespace OriCoop
             yield return StartCoroutine(Wait(0.3f));
             x0 = P2.Position.x;
             Bot(1f, 0);
-            yield return StartCoroutine(Wait(0.6f));
+            TestClock.Window run = new TestClock.Window(0.6f);   // game seconds (T-071): movement is game-timed
+            while (run.Open) yield return null;
             Bot(0f, 0);
-            Check(P2.Position.x - x0 > 1f, "lifecycle: P2 moves again after the hold (dx=" + F(P2.Position.x - x0) + ")");
+            Check(P2.Position.x - x0 > 1f, "lifecycle: P2 moves again after the hold (dx=" + F(P2.Position.x - x0) + " game=" + F(run.GameElapsed) + "s real=" + F(run.RealElapsed) + "s)");
             Check(m_errors == err0, "lifecycle: no errors");
         }
 
