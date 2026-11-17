@@ -206,6 +206,7 @@ namespace OriCoop
             Own.Mortality.Health.RestoreAllHealth();
             yield return Barrier(h, 8);
             restores0 = TestHarness.RestoreCheckpointCalls;
+            int bothDown0 = Revive.NetBothDown;
             if (host)
             {
                 Hurt(Own, 1000f);
@@ -220,12 +221,25 @@ namespace OriCoop
                 h.Check(Revive.DownedOf(2) != null, "R3 guest: sees the host's skull");
                 Hurt(Own, 1000f);
             }
+            // T-026: once "both down" is decided the partner's skull must go at once (0.3 s grace) and stay gone through
+            // this PC's death, the reload and the partner's return; it used to stay frozen on the HUD until then.
+            float bothAt = -1f, lingerFirst = -1f; int lingerFrames = 0;
+            System.Action sampleSkull = () =>
+            {
+                float now = Time.realtimeSinceStartup;
+                if (bothAt < 0f && Revive.NetBothDown > bothDown0) bothAt = now;
+                if (bothAt >= 0f && now > bothAt + 0.3f && ReviveHud.SkullShown(2)) { lingerFrames++; if (lingerFirst < 0f) lingerFirst = now - bothAt; }
+            };
             float endR = Time.realtimeSinceStartup + 30f;
-            while (TestHarness.RestoreCheckpointCalls == restores0 && Time.realtimeSinceStartup < endR) yield return null;
+            while (TestHarness.RestoreCheckpointCalls == restores0 && Time.realtimeSinceStartup < endR) { sampleSkull(); yield return null; }
             h.Check(TestHarness.RestoreCheckpointCalls > restores0, "R3 both down -> checkpoint reload on this PC");
             endR = Time.realtimeSinceStartup + 30f;
-            while ((Characters.Sein == null || !Characters.Sein.gameObject.activeInHierarchy || GameController.Instance.InputLocked) && Time.realtimeSinceStartup < endR) yield return null;
-            yield return Wait(3f);
+            while ((Characters.Sein == null || !Characters.Sein.gameObject.activeInHierarchy || GameController.Instance.InputLocked) && Time.realtimeSinceStartup < endR) { sampleSkull(); yield return null; }
+            float endSettle = Time.realtimeSinceStartup + 3f;
+            while (Time.realtimeSinceStartup < endSettle) { sampleSkull(); yield return null; }
+            h.Check(bothAt >= 0f, "R3 'both down' reached this PC");
+            h.Check(lingerFrames == 0, "R3 partner's skull hidden within 0.3 s of 'both down' and through the reload (T-026): "
+                + lingerFrames + " frames still shown, first at +" + lingerFirst.ToString("F2") + " s");
             h.Check(!Revive.AnyDowned, "R3 nobody downed after the reload");
             h.Check(Revive.NetBothDown >= 1, "R3 'both down' was decided once (host) and applied here");
             yield return Barrier(h, 10);
