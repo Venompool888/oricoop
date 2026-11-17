@@ -1,6 +1,7 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using Game;
 using UnityEngine;
 
@@ -21,6 +22,33 @@ namespace OriCoop
         static SeinCharacter Own { get { return P2Context.P1; } }
         static SeinCharacter Puppet { get { return P2Context.P2; } }
         static string F(float f) { return f.ToString("F2"); }
+
+        // R4 (T-029): the guest casts a soul link (the save flame, the game's SeinSoulFlame.CheckpointMarker); the host
+        // must see the same native flame appear beside the guest's Ori. The puppet's own soul-flame logic is blocked online.
+        static readonly FieldInfo s_soulFlameField = typeof(SeinSoulFlame).GetField("m_soulFlame", BindingFlags.Instance | BindingFlags.NonPublic);
+        static SoulFlame FlameOf(SeinCharacter s) { return s == null || s.SoulFlame == null ? null : s_soulFlameField.GetValue(s.SoulFlame) as SoulFlame; }
+        static IEnumerator SoulLink(TestHarness h, bool host)
+        {
+            SoulFlame before = FlameOf(host ? Puppet : Own);
+            yield return Barrier(h, 11);
+            if (Own == null || Puppet == null) { h.Check(false, "R4 needs both Oris"); yield break; }
+            if (!host)
+            {
+                typeof(SeinSoulFlame).GetMethod("CastSoulFlame", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Own.SoulFlame, null);
+                SoulFlame mine = FlameOf(Own);
+                h.Check(mine != null && mine != before && Vector3.Distance(mine.Position, Own.Position) < 0.5f, "R4 guest: soul link cast at own position");
+            }
+            else
+            {
+                float end = Time.realtimeSinceStartup + 5f; SoulFlame seen = null;
+                while (Time.realtimeSinceStartup < end) { seen = FlameOf(Puppet); if (seen != null && seen != before) break; yield return null; }
+                bool appeared = seen != null && seen != before;
+                float d = appeared ? Vector3.Distance(seen.Position, Puppet.Position) : -1f;
+                h.Check(appeared && seen.gameObject.activeInHierarchy && d < 2f,
+                    "R4 host: the guest's soul link flame appears on this screen beside the guest (" + (appeared ? F(d) : "none") + ")");
+            }
+            yield return Barrier(h, 12);
+        }
 
         static IEnumerator Wait(float s) { float end = Time.realtimeSinceStartup + s; while (Time.realtimeSinceStartup < end) yield return null; }
 
@@ -243,6 +271,7 @@ namespace OriCoop
             h.Check(!Revive.AnyDowned, "R3 nobody downed after the reload");
             h.Check(Revive.NetBothDown >= 1, "R3 'both down' was decided once (host) and applied here");
             yield return Barrier(h, 10);
+            yield return SoulLink(h, host);
             HoldSpiritFlame(false);
             PartnerFx.ReviveHook = null;
         }

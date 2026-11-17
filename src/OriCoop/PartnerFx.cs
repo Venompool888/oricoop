@@ -25,6 +25,7 @@ namespace OriCoop
     {
         static IRulesHost Host { get { return SessionRules.Host; } }
         public const byte MsgPuppetFx = 66;
+        public const byte MsgSoulLink = 80;   // docs/net-msg-ids.md (T-029)
         public const byte KindHurt = 0, KindDown = 1;
         public const float GlowSeconds = 0.55f, FadeSeconds = 0.4f;
 
@@ -34,6 +35,7 @@ namespace OriCoop
         public static string LastReviveEffect = "", LastReviveSound = "";
         public static float LastHurtPlayedAt = -1f, LastReviveAt = -1f;
         public static bool LastHurtStateOn, LastHurtAnimOn;
+        public static int SoulLinksSent, SoulLinksShown;
 
         static bool s_registered;
 
@@ -47,6 +49,41 @@ namespace OriCoop
             if (s_registered) return;
             s_registered = true;
             Services.Net.On(MsgPuppetFx, OnNetPuppetFx);
+            Services.Net.On(MsgSoulLink, OnNetSoulLink);
+        }
+
+        // ---- soul link (T-029) -----------------------------------------------------------------------------------------
+        // Saving with a soul link places the game's own flame (SeinSoulFlame.CheckpointMarker, with its appear flash). The
+        // partner's game blocks the puppet's soul-flame logic online, so it never placed one: send where ours appeared and
+        // that game spawns the same native flame on our puppet (replacing the previous one; it goes with the puppet).
+        [HarmonyPatch(typeof(SeinSoulFlame), "CastSoulFlame")]
+        static class SoulLinkWatch
+        {
+            static void Postfix(SeinSoulFlame __instance, SoulFlame ___m_soulFlame)
+            {
+                try
+                {
+                    if (!Online || Host.P1 == null || Host.P1.SoulFlame != __instance || ___m_soulFlame == null) return;
+                    int seat = Host.LocalSeat; Vector3 at = ___m_soulFlame.Position;
+                    Services.Net.Send(MsgSoulLink, true, w => { w.Write((byte)seat); w.Write(at.x); w.Write(at.y); w.Write(at.z); });
+                    SoulLinksSent++;
+                    Log("soul link at " + at + " sent to the partner");
+                }
+                catch (Exception e) { Services.Log.Warn("soul link send: " + e.Message); }
+            }
+        }
+
+        static void OnNetSoulLink(BinaryReader r)
+        {
+            int seat = r.ReadByte();
+            Vector3 at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+            SeinCharacter s = Revive.SeinAt(seat);
+            if (s == null || s == Host.P1 || s.SoulFlame == null) { Log("got soul link for seat " + seat + " but no puppet"); return; }
+            s.SoulFlame.DestroySoulFlame();
+            s.SoulFlame.SpawnSoulFlame(at);
+            SoulLinksShown++;
+            Log("partner P" + seat + " soul link flame shown at " + at);
+            Host.Trace("player", "soullink.fx", "who", "P" + seat, "pos", at);
         }
 
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected && Host.P1 != null; } }
