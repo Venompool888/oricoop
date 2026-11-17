@@ -166,8 +166,12 @@ namespace OriCoop
             return OpenOrb(slot.DifficultyScreen, slot, null);
         }
 
-        // Up to 4 rows (the Co-op page on the title has 4); pages with fewer rows hide the rest (ApplyRows).
+        // Four visible native rows; saved-server pages grow logical rows and scroll the same cloned items.
         const int MaxItems = 4;
+        static readonly List<Vector3> s_itemPositions = new List<Vector3>();
+        static readonly List<Vector2> s_itemSizes = new List<Vector2>();
+        static CleverMenuItemSelectionManager.Direction s_itemDirection;
+        static int s_listTop;
         static bool s_onTitle;             // the orb sits on the title (TitleMenu.cs), not on a save slot
         static bool s_settle;              // first unlock after opening: settle the copied screen's highlights
 
@@ -194,7 +198,8 @@ namespace OriCoop
                 if (Probe || !s_dumped) { s_dumped = true; Plugin.Log.LogInfo("mode menu: difficulty screen tree\n" + Dump(s_root.transform)); }
 
                 // Keep the first MaxItems items, hide the rest; strip the difficulty actions.
-                s_items.Clear(); s_itemBoxes.Clear();
+                s_items.Clear(); s_itemBoxes.Clear(); s_itemPositions.Clear(); s_itemSizes.Clear();
+                s_itemDirection = s_mgr.ItemDirection;
                 int keep = Math.Min(MaxItems, s_mgr.MenuItems.Count);
                 for (int i = 0; i < s_mgr.MenuItems.Count; i++)
                 {
@@ -210,6 +215,8 @@ namespace OriCoop
                     it.gameObject.SetActive(true);
                     s_items.Add(it);
                     s_itemBoxes.Add(it.GetComponentsInChildren<MessageBox>(true));
+                    s_itemPositions.Add(s_root.transform.InverseTransformPoint(it.transform.position));
+                    s_itemSizes.Add(it.Size);
                 }
                 s_mgr.MenuItems.RemoveRange(keep, s_mgr.MenuItems.Count - keep);
                 s_mgr.Navigation.RemoveAll(n => n.From == null || n.To == null || !s_items.Contains(n.From) || !s_items.Contains(n.To));
@@ -265,6 +272,7 @@ namespace OriCoop
                 InstantiateUtility.Destroy(s_root, 2f);
             }
             s_root = null; s_mgr = null; s_items.Clear(); s_itemBoxes.Clear(); s_baseCurves.Clear();
+            s_itemPositions.Clear(); s_itemSizes.Clear(); s_listTop = 0;
             s_fromTitle = false; s_onTitle = false; s_settle = false; s_soundIndex = -1;
             RestoreSlotTexts();
         }
@@ -343,6 +351,7 @@ namespace OriCoop
             if (s_mgr == null) return;
             if (!s_quiet && s_mgr.Index != s_soundIndex && s_soundIndex >= 0) PlayMove();
             s_soundIndex = s_mgr.Index;
+            LayoutServerRows(PageRows.Length);
             if (s_tooltip == null) return;
             int i = s_mgr.Index;
             string[][] rows = PageRows;
@@ -653,28 +662,31 @@ namespace OriCoop
                     case 14: StopEdit(); break;
                     case 15: s_mgr.OnBackPressed(); break;                        // -> role
                     case 16: s_mgr.OnBackPressed(); break;                        // -> server mode
-                    case 17: s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); break;   // cserver -> role
+                    case 17: s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); break;   // cserver -> list
                     case 18:
-                        if (LastPage != "role" || s_transport != "cserver" || LastLabels.Count != 2)
-                            Plugin.Log.LogError("mode menu probe: expected cserver Host / Join (" + Labels + ")");
-                        s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); wait = 2f; break;
+                        if (!CServerListLabelsMatch()) Plugin.Log.LogError("mode menu probe: expected C-server Add / Remove / saved rows (" + Labels + ")");
+                        s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); break;   // -> add
                     case 19:
-                        if (LastPage != (LobbyServer.Length == 0 ? "role" : "hosting"))
-                            Plugin.Log.LogError("mode menu probe: unexpected cserver host page (" + Labels + ")");
-                        Shot("lobby_host_cserver"); break;
-                    case 20: if (s_page == PageHost) s_mgr.OnBackPressed(); break;
-                    case 21: s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;   // join -> room code
+                        if (LastPage != "serveradd" || LastLabels.Count != 3 || !HasKey(LastLabels, "common.save"))
+                            Plugin.Log.LogError("mode menu probe: expected address / port / Save (" + Labels + ")");
+                        if (!OriCoop.Authority.CServerConfig.IsValidAddress(s_cserverHost + ":" + s_cserverPort))
+                        { s_cserverHost = "127.0.0.1"; s_cserverPort = "1"; }
+                        s_mgr.SetCurrentItem(2); s_mgr.PressCurrentItem(); break;
+                    case 20:
+                        if (!CServerListLabelsMatch() || LastLabels[LastLabels.Count - 1] != s_cserverHost + ":" + s_cserverPort)
+                            Plugin.Log.LogError("mode menu probe: Save did not append to the C-server list (" + Labels + ")");
+                        s_mgr.SetCurrentItem(LastLabels.Count - 1); s_mgr.PressCurrentItem(); break;
+                    case 21:
+                        if (LastPage != "role" || s_transport != "cserver" || LastLabels.Count != 2 ||
+                            !HasKey(LastLabels, "lobby.host") || !HasKey(LastLabels, "lobby.join") ||
+                            OriCoop.Authority.CServerConfig.Address != s_cserverHost + ":" + s_cserverPort)
+                            Plugin.Log.LogError("mode menu probe: picking a saved C-server must select it and open Host / Join (" + Labels + ")");
+                        s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;
                     case 22:
                         if (LastPage != "entry" || s_entryKind != 0)
                             Plugin.Log.LogError("mode menu probe: expected cserver room code entry (" + Labels + ")");
-                        if (LobbyServer.Length == 0)
-                        {
-                            s_entry = "ABC234"; Submit();
-                            if (LastPage != "entry" || NetPlay.Enabled)
-                                Plugin.Log.LogError("mode menu probe: cserver join without a server must stay on entry");
-                        }
-                        Shot("lobby_entry_cserver"); break;
-                    case 23: s_mgr.OnBackPressed(); break;                        // -> role
+                        Shot("lobby_entry_cserver"); s_mgr.OnBackPressed(); break;
+                    case 23: s_mgr.OnBackPressed(); break;                        // -> list
                     case 24: s_mgr.OnBackPressed(); break;                        // -> server mode
                     case 25: s_mgr.OnBackPressed(); break;                        // -> online
                     case 26: s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;   // direct -> role

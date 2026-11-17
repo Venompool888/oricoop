@@ -5,6 +5,8 @@ using System.IO;
 using System.Reflection;
 using Game;
 using HarmonyLib;
+using OriCoop.Seams;
+using OriCoop.Story;
 using UnityEngine;
 
 namespace OriCoop
@@ -13,23 +15,20 @@ namespace OriCoop
     public static class StorySync
     {
         const byte StartMessage = 50, EndMessage = 51, SkipMessage = 52;
-        sealed class Story
+        sealed class Story : StoryEntry
         {
             public byte Kind;
             public MoonGuid Scene, Id;
-            public string Path = "", State = "", Key;
-            public uint Token;
-            public int Sender;
+            public string Path = "", State = "";
             public Vector3 Position;
-            public float Began, NextResolve, EndAt = -1f;
             public uint ControlFrame;
             public Vector3 ControlPosition;
             public float FreeSince = -1f, FreeLast = -1f;
-            public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
             public ActionSequence Sequence;
             public CutsceneController Controller;
         }
-        static readonly Dictionary<string, float> Seen = new Dictionary<string, float>();
+        static readonly StoryLedger<Story> Ledger = new StoryLedger<Story>();
+        static readonly Dictionary<string, float> Seen = Ledger.Seen;
         static readonly Dictionary<string, float> Performed = new Dictionary<string, float>();
         static readonly Dictionary<string, bool> Classification = new Dictionary<string, bool>();
         sealed class Candidate { public Story Story; public int Before; public float At; }
@@ -37,9 +36,9 @@ namespace OriCoop
         static readonly Dictionary<string, Candidate> Pending = new Dictionary<string, Candidate>();
         static float s_statsAt;
         public static int StartsSeen, StartsSent, StartsMirrored;
-        static readonly Dictionary<ulong, Story> Local = new Dictionary<ulong, Story>();
-        static readonly Dictionary<ulong, Story> Remote = new Dictionary<ulong, Story>();
-        static readonly Dictionary<ulong, Story> Accepted = new Dictionary<ulong, Story>();
+        static readonly Dictionary<ulong, Story> Local = Ledger.Local;
+        static readonly Dictionary<ulong, Story> Remote = Ledger.Remote;
+        static readonly Dictionary<ulong, Story> Accepted = Ledger.Accepted;
         static readonly Dictionary<Renderer, bool> Hidden = new Dictionary<Renderer, bool>();
         static readonly HashSet<Component> Mirrored = new HashSet<Component>();
         static readonly HashSet<CutsceneController> Starting = new HashSet<CutsceneController>();
@@ -47,7 +46,7 @@ namespace OriCoop
         static readonly HashSet<ActionSequence> LocalOnly = new HashSet<ActionSequence>();
         static readonly HashSet<CutsceneController> LocalOnlyControllers = new HashSet<CutsceneController>();
         static int s_localOnlyDepth, s_localOnlyRunDepth;
-        static int LiveRemotes() { int n = 0; foreach (Story s in Remote.Values) if (s.EndAt < 0) n++; return n; }
+        static int LiveRemotes() { return Ledger.LiveRemotes; }
         public static bool StoryActive { get { return Local.Count + Remote.Count + Pending.Count > 0; } }
         public static float LastStoryActivity = -1f;
         // Test only (NetCutsceneTest): start mirrors this late, like a slow resolve / scene load on a real link.
@@ -80,7 +79,6 @@ namespace OriCoop
             public Transform Target;
         }
         static NativeState s_native;
-        static uint s_token;
         static bool s_mirroring;
         static int s_entryDepth;
         static int s_replayActionDepth;
@@ -91,13 +89,12 @@ namespace OriCoop
             get
             {
                 if (CutsceneGuard.PedestalWindow || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return false;
-                foreach (Story story in Remote.Values) if ((!story.Resolved && story.Classified) || story.Watch) return true;
-                return false;
+                return Ledger.Watching;
             }
         }
-        static bool Online { get { return NetPlay.Enabled && NetPlay.Connected && SaveSync.Ready; } }
-        static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
-        static bool PuppetCall { get { return P2Context.Inside || Players.OfSein(Characters.Sein) != null; } }
+        static bool Online { get { return Services.Net.Enabled && Services.Net.Connected && Services.Session.Ready; } }
+        static SeinCharacter Own { get { return StoryHost.Current.P1 != null ? StoryHost.Current.P1 : Characters.Sein; } }
+        static bool PuppetCall { get { return StoryHost.Current.Inside || StoryHost.Current.IsPuppet(Characters.Sein); } }
         static bool NativeLocked()
         {
             return TakeoverMask() != 0;
@@ -197,7 +194,7 @@ namespace OriCoop
         {
             if (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0 || story.Sequence != null && LocalOnly.Contains(story.Sequence)
                 || story.Controller != null && LocalOnlyControllers.Contains(story.Controller) || CutsceneGuard.PedestalWindow) return;
-            if (!Online || s_mirroring || PuppetCall || LiveRemotes() != 0 || WorldSync.Applying
+            if (!Online || s_mirroring || PuppetCall || LiveRemotes() != 0 || StoryHost.Current.WorldApplying
                 || (story.Sequence != null && s_sourceActionDepth > 0)
                 || GameController.Instance == null || GameController.Instance.IsLoadingGame) return;
             story.Key = KeyOf(story); story.Position = call.Position;
@@ -219,11 +216,12 @@ namespace OriCoop
         }
         public static void Init()
         {
+            StoryHost.Current = new GameStoryHost();
             CutsceneGuard.Init();
-            NetPlay.On(StartMessage, ReceiveStart);
-            NetPlay.On(EndMessage, ReceiveEnd);
-            NetPlay.On(SkipMessage, ReceiveSkip);
-            NetPlay.PlayerLeft += RemoveSeat;
+            Services.Net.On(StartMessage, ReceiveStart);
+            Services.Net.On(EndMessage, ReceiveEnd);
+            Services.Net.On(SkipMessage, ReceiveSkip);
+            Services.Net.PlayerLeft += RemoveSeat;
             s_statsAt = Time.realtimeSinceStartup + 30f;
         }
         public static void Reset()
@@ -283,7 +281,7 @@ namespace OriCoop
                     if (text == null) { StoryTexts.Remove(text); continue; }
                     MessageBox box = StoryMessageBox.GetValue(text) as MessageBox;
                     try { if (box != null) box.HideMessageScreen(); }
-                    catch (Exception e) { Plugin.Log.LogWarning("net: mirrored story text exit: " + e.Message); }
+                    catch (Exception e) { Services.Log.Warn("net: mirrored story text exit: " + e.Message); }
                     finally { StoryTexts.Remove(text); }
                 }
                 foreach (CutsceneController controller in OwnedControllers)
@@ -291,7 +289,7 @@ namespace OriCoop
                     if (controller == null) continue;
                     CutsceneState state = controller.CurrentState; controller.CurrentState = null;
                     try { if (state != null && n != null && n.Ori != null && n.Ori == Own) state.OnExit(); }
-                    catch (Exception e) { Plugin.Log.LogWarning("net: mirrored state exit: " + e.Message); }
+                    catch (Exception e) { Services.Log.Warn("net: mirrored state exit: " + e.Message); }
                     finally { if (controller != null) controller.CurrentState = null; }
                 }
                 if (n == null || n.Ori == null || n.Ori != Own || n.Game != GameController.Instance) return;
@@ -329,18 +327,18 @@ namespace OriCoop
                     n.Camera.WideScreenVerticalPanStrength = n.Vertical; n.Camera.WideScreenZoomStrength = n.Zoom;
                 }
             }
-            catch (Exception e) { Plugin.Log.LogWarning("net: mirrored story cleanup: " + e); }
+            catch (Exception e) { Services.Log.Warn("net: mirrored story cleanup: " + e); }
             finally
             {
                 OwnedSequences.Clear(); OwnedControllers.Clear(); OwnedInputActions.Clear(); OwnedPauses.Clear();
-                s_mirroring = previous; SessionRules.PositionChanged();
+                s_mirroring = previous; StoryHost.Current.PositionChanged();
             }
         }
         static void TryStop(PerformingAction action)
         {
             if (action == null) return;
             try { action.Stop(); }
-            catch (Exception e) { Plugin.Log.LogWarning("net: stopping mirrored " + action.GetType().Name + ": " + e.Message); }
+            catch (Exception e) { Services.Log.Warn("net: stopping mirrored " + action.GetType().Name + ": " + e.Message); }
         }
         static MoonGuid SceneOf(Component component)
         {
@@ -372,71 +370,48 @@ namespace OriCoop
         {
             if (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0 || story.Sequence != null && LocalOnly.Contains(story.Sequence)
                 || story.Controller != null && LocalOnlyControllers.Contains(story.Controller) || CutsceneGuard.PedestalWindow) return;
-            if (!Online || s_mirroring || PuppetCall || Own == null || WorldSync.Applying
+            if (!Online || s_mirroring || PuppetCall || Own == null || StoryHost.Current.WorldApplying
                 || GameController.Instance == null || GameController.Instance.IsLoadingGame) return;
             // Mirrored timelines continue invoking nested actions after Perform has returned. Retain
             // the receive ownership until End rather than clearing the echo guard after one stack.
             if (LiveRemotes() != 0) return;   // a mirror that is only finishing (EndAt set) does not block
-            story.Key = KeyOf(story); float last;
-            if (Seen.TryGetValue(story.Key, out last) && Time.realtimeSinceStartup - last < 3f) return;
-            if (NetPlay.IsHost) foreach (Story accepted in Accepted.Values) if (accepted.Key == story.Key) return;
-            Seen[story.Key] = Time.realtimeSinceStartup;
-            story.Sender = Players.LocalSeat; story.Token = ++s_token; story.Began = Time.realtimeSinceStartup;
+            story.Key = KeyOf(story);
+            if (!Ledger.PrepareLocal(story, StoryHost.Current.LocalSeat, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
             LastStoryActivity = Time.realtimeSinceStartup;
-            story.SawLock = NativeLocked(); Local[TokenKey(story.Sender, story.Token)] = story;
-            if (NetPlay.IsHost) Accepted[TokenKey(story.Sender, story.Token)] = story;
-            NetPlay.Send(StartMessage, true, delegate(BinaryWriter w) {
-                w.Write(story.Token); w.Write(story.Kind); w.Write(story.Scene.ToByteArray()); w.Write(story.Id.ToByteArray());
-                w.Write(story.Path); w.Write(story.State);
-                w.Write(story.Position.x); w.Write(story.Position.y); w.Write(story.Position.z);
-                // Trailing flag (older peers ignore it): false = only a coincident input lock made this a story.
-                w.Write(story.Classified);
+            story.SawLock = NativeLocked(); Ledger.TrackLocal(story, Services.Net.IsHost);
+            Services.Net.Send(StartMessage, true, delegate(BinaryWriter w) {
+                StoryWire.WriteStart(w, new StoryStart { Token = story.Token, Kind = story.Kind,
+                    Scene = story.Scene.ToByteArray(), Id = story.Id.ToByteArray(), Path = story.Path, State = story.State,
+                    X = story.Position.x, Y = story.Position.y, Z = story.Position.z, Classified = story.Classified });
             });
             StartsSent++;
-            Plugin.Log.LogInfo("net: story start " + story.Token + " " + story.Key);
+            Services.Log.Info("net: story start " + story.Token + " " + story.Key);
         }
         static void ReceiveStart(BinaryReader r)
         {
-            Story story = new Story(); story.Sender = NetPlay.Sender; story.Token = r.ReadUInt32(); story.Kind = r.ReadByte();
-            story.Scene = new MoonGuid(r); story.Id = new MoonGuid(r); story.Path = r.ReadString(); story.State = r.ReadString();
-            story.Position = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
-            story.Classified = r.BaseStream.Position >= r.BaseStream.Length || r.ReadBoolean();
-            if (story.Kind > 1 || story.Path.Length > 4096 || story.State.Length > 4096
-                || float.IsNaN(story.Position.x) || float.IsInfinity(story.Position.x)
-                || float.IsNaN(story.Position.y) || float.IsInfinity(story.Position.y)
-                || float.IsNaN(story.Position.z) || float.IsInfinity(story.Position.z)) throw new InvalidDataException("invalid StoryStart");
+            StoryStart data = StoryWire.ReadStart(r);
+            Story story = new Story(); story.Sender = Services.Net.Sender; story.Token = data.Token; story.Kind = data.Kind;
+            story.Scene = GameStoryHost.ReadGuid(data.Scene); story.Id = GameStoryHost.ReadGuid(data.Id);
+            story.Path = data.Path; story.State = data.State; story.Position = new Vector3(data.X, data.Y, data.Z);
+            story.Classified = data.Classified;
             if (!Online || Remote.ContainsKey(TokenKey(story.Sender, story.Token)) || LocalOnlyStory(story)) return;
             LastStoryActivity = Time.realtimeSinceStartup;
             story.Key = KeyOf(story);
-            if (NetPlay.IsHost)
-            {
-                foreach (Story ordered in Accepted.Values) if (ordered.Key == story.Key) return;
-                float accepted;
-                if (Seen.TryGetValue(story.Key, out accepted) && Time.realtimeSinceStartup - accepted < 3f) return;
-            }
-            if (!NetPlay.IsHost)
+            if (!Ledger.CanReceive(story, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
+            if (!Services.Net.IsHost)
             {
                 List<ulong> superseded = new List<ulong>();
                 foreach (Story local in Local.Values) if (local.Key == story.Key) superseded.Add(TokenKey(local.Sender, local.Token));
                 foreach (ulong token in superseded) SendEnd(token);
             }
-            float last;
-            if (Seen.TryGetValue(story.Key, out last) && Time.realtimeSinceStartup - last < 3f)
-            {
-                // (Pedestal window: this end is playing the same pedestal natively, CutsceneGuard.)
-                // Already playing locally: track the triggerer's lifetime, without replaying effects.
-                story.Resolved = true;
-            }
-            Seen[story.Key] = Time.realtimeSinceStartup; story.Began = Time.realtimeSinceStartup;
-            Remote[TokenKey(story.Sender, story.Token)] = story;
-            if (NetPlay.IsHost) Accepted[TokenKey(story.Sender, story.Token)] = story;
-            NetPlay.Rebroadcast(r);
+            Ledger.TrackRemote(story, Services.Net.IsHost, Time.realtimeSinceStartup);
+            StoryHost.Current.Rebroadcast(r);
             SeinCharacter own = Own;
             if (own != null && Vector3.Distance(own.Position, story.Position) > 12f)
             {
-                Plugin.Teleport(own, story.Position + Vector3.right);
+                StoryHost.Current.Teleport(own, story.Position + Vector3.right);
                 CutsceneGuard.SnapSpirit("story teleport");
-                SessionRules.PositionChanged();
+                StoryHost.Current.PositionChanged();
             }
             if (!story.Resolved) Resolve(story);
         }
@@ -481,7 +456,7 @@ namespace OriCoop
                     {
                         // Already played here by our own pedestal replay (CutsceneGuard): track only.
                         story.Resolved = true; story.Sequence = null;
-                        Plugin.Log.LogInfo("net: story " + story.Token + " already playing locally (pedestal) " + story.Key);
+                        Services.Log.Info("net: story " + story.Token + " already playing locally (pedestal) " + story.Key);
                         return true;
                     }
                     if (!story.Sequence.gameObject.activeInHierarchy)
@@ -490,7 +465,7 @@ namespace OriCoop
                         // (no subtitles, orb never returned). The host's copy was active when it ran.
                         for (Transform t = story.Sequence.transform; t != null && t.GetComponent<SceneRoot>() == null; t = t.parent)
                             if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
-                        Plugin.Log.LogInfo("net: story " + story.Token + " activated inactive sequence " + story.Sequence.name);
+                        Services.Log.Info("net: story " + story.Token + " activated inactive sequence " + story.Sequence.name);
                     }
                     CaptureNative(); OwnedSequences.Add(story.Sequence);
                     Mirrored.Add(story.Sequence); if (!alreadyPerformed) story.Sequence.Perform(null);
@@ -514,8 +489,8 @@ namespace OriCoop
                 }
                 story.Resolved = true;
                 StartsMirrored++;
-                Plugin.Log.LogInfo("net: story mirrored " + story.Token + " " + story.Key);
-                CoopTrace.Event("story", "mirror.start", "token", story.Token, "key", story.Key);
+                Services.Log.Info("net: story mirrored " + story.Token + " " + story.Key);
+                StoryHost.Current.Trace("story", "mirror.start", "token", story.Token, "key", story.Key);
                 if (story.Skipped) SkipRemote(story);
                 return true;
             }
@@ -523,7 +498,7 @@ namespace OriCoop
             {
                 CleanupNative();
                 story.Watch = true; story.Resolved = true;
-                Plugin.Log.LogWarning("net: story mirror failed; watching " + story.Key + ": " + e);
+                Services.Log.Warn("net: story mirror failed; watching " + story.Key + ": " + e);
                 return true;
             }
             finally { s_mirroring = previous; }
@@ -532,28 +507,25 @@ namespace OriCoop
         {
             Story story;
             if (Local.TryGetValue(token, out story) && !LocalOnlyStory(story))
-                NetPlay.Send(EndMessage, true, delegate(BinaryWriter w) { w.Write((uint)token); });
-            Local.Remove(token);
-            Accepted.Remove(token);
+                Services.Net.Send(EndMessage, true, delegate(BinaryWriter w) { StoryWire.WriteToken(w, (uint)token); });
+            Ledger.EndLocal(token);
             LastStoryActivity = Time.realtimeSinceStartup;
-            Plugin.Log.LogInfo("net: story end sent " + (uint)token);
+            Services.Log.Info("net: story end sent " + (uint)token);
         }
-        static ulong TokenKey(int sender, uint token) { return ((ulong)sender << 32) | token; }
+        static ulong TokenKey(int sender, uint token) { return StoryLedger<Story>.TokenKey(sender, token); }
         static void ReceiveEnd(BinaryReader r)
         {
-            ulong token = TokenKey(NetPlay.Sender, r.ReadUInt32()); Story story;
-            if (!(NetPlay.IsHost ? Accepted : Remote).TryGetValue(token, out story) || LocalOnlyStory(story)) return;
-            NetPlay.Rebroadcast(r);
+            ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r)); Story story;
+            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || LocalOnlyStory(story)) return;
+            StoryHost.Current.Rebroadcast(r);
             Accepted.Remove(token);
             EndRemote(token);
         }
         static void RemoveSeat(int seat)
         {
-            List<ulong> tokens = new List<ulong>();
-            foreach (KeyValuePair<ulong, Story> pair in Remote) if (pair.Value.Sender == seat) tokens.Add(pair.Key);
+            List<ulong> tokens = Ledger.RemoteSeatTokens(seat);
             foreach (ulong token in tokens) EndRemote(token, true);
-            tokens.Clear();
-            foreach (KeyValuePair<ulong, Story> pair in Accepted) if (pair.Value.Sender == seat) tokens.Add(pair.Key);
+            tokens = Ledger.AcceptedSeatTokens(seat);
             foreach (ulong token in tokens) Accepted.Remove(token);
         }
         static void EndRemote(ulong token, bool force = false)
@@ -565,11 +537,10 @@ namespace OriCoop
                 // The partner's copy ended, ours is still running (it started later). Stopping it half-way left the
                 // screen black (FadeToBlack without FadeFromBlack) or the letterbox down (playtest 19:07, lever).
                 // Let it finish on its own; Tick force-ends it when it stops, or after 10 s.
-                if (story.EndAt < 0)
+                if (StoryLedger<Story>.DeferEnd(story, Time.realtimeSinceStartup))
                 {
-                    story.EndAt = Time.realtimeSinceStartup;
-                    Plugin.Log.LogInfo("net: story end " + story.Token + " deferred: mirror still running");
-                    CoopTrace.Event("story", "mirror.finishing", "token", story.Token);
+                    Services.Log.Info("net: story end " + story.Token + " deferred: mirror still running");
+                    StoryHost.Current.Trace("story", "mirror.finishing", "token", story.Token);
                 }
                 return;
             }
@@ -577,23 +548,23 @@ namespace OriCoop
             if (story.Controller != null) Mirrored.Remove(story.Controller);
             Remote.Remove(token);
             LastStoryActivity = Time.realtimeSinceStartup;
-            Plugin.Log.LogInfo("net: story end " + story.Token + " remaining=" + Remote.Count);
+            Services.Log.Info("net: story end " + story.Token + " remaining=" + Remote.Count);
             if (Remote.Count == 0) CleanupNative();
             if (!Watching) RestoreVisible();
         }
         static void ReceiveSkip(BinaryReader r)
         {
-            ulong token = TokenKey(NetPlay.Sender, r.ReadUInt32()); Story story;
-            if (!(NetPlay.IsHost ? Accepted : Remote).TryGetValue(token, out story) || LocalOnlyStory(story)) return;
-            NetPlay.Rebroadcast(r);
+            ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r)); Story story;
+            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || LocalOnlyStory(story)) return;
+            StoryHost.Current.Rebroadcast(r);
             if (!Remote.ContainsKey(token)) return;
-            story.Skipped = true; if (story.Resolved && !story.Watch) SkipRemote(story);
+            Ledger.Skip(story); if (story.Resolved && !story.Watch) SkipRemote(story);
         }
         static void SkipRemote(Story story)
         {
             if (LocalOnlyStory(story) || story.SkipApplied || SkipCutsceneController.Instance == null || !SkipCutsceneController.Instance.SkippingAvailable) return;
             // Only the matching mirrored run is eligible. A fallback watch never skips unrelated story.
-            if (story.Sequence == null && story.Controller == null) return;
+            if (!StoryLedger<Story>.CanSkip(story, story.Sequence != null || story.Controller != null)) return;
             bool previous = s_mirroring; s_mirroring = true;
             try { SkipCutsceneController.Instance.SkipCutscene(); story.SkipApplied = true; }
             finally { s_mirroring = previous; }
@@ -606,7 +577,7 @@ namespace OriCoop
             if (Time.realtimeSinceStartup >= s_statsAt)
             {
                 s_statsAt = Time.realtimeSinceStartup + 30f;
-                if (NetPlay.Enabled) Plugin.Log.LogInfo("net: story classification startsSeen=" + StartsSeen + " sent=" + StartsSent
+                if (Services.Net.Enabled) Services.Log.Info("net: story classification startsSeen=" + StartsSeen + " sent=" + StartsSent
                     + " mirrored=" + StartsMirrored + " cachedIds=" + Classification.Count + " watching=" + Watching);
             }
             if (!Online) { if (Local.Count + Remote.Count + Pending.Count > 0) Reset(); return; }
@@ -631,38 +602,40 @@ namespace OriCoop
             {
                 if (locked) story.SawLock = true;
                 bool running = story.Sequence != null && story.Sequence.IsRunning;
-                if (now - story.Began >= 60f || (!locked && now - story.Began > 0.5f && (story.SawLock || !running))) ended.Add(TokenKey(story.Sender, story.Token));
+                if (StoryLedger<Story>.LocalEnded(story, locked, running, now)) ended.Add(TokenKey(story.Sender, story.Token));
             }
             foreach (ulong token in ended) SendEnd(token);
             ended.Clear();
             List<ulong> finished = new List<ulong>();
             foreach (Story story in Remote.Values)
             {
-                if (now - story.Began >= 60f
-                    || story.EndAt >= 0 && (story.Sequence == null || !story.Sequence.IsRunning || now - story.EndAt >= 10f))
+                bool running = !(now - story.Began >= 60f) && story.EndAt >= 0
+                    && story.Sequence != null && story.Sequence.IsRunning;
+                if (StoryLedger<Story>.RemoteFinished(story, running, now))
                 { finished.Add(TokenKey(story.Sender, story.Token)); continue; }
                 if (story.Resolved)
                 {
                     if (story.Skipped && !story.Watch) SkipRemote(story);
                     continue;
                 }
-                if (now - story.Began >= 2f && !story.Classified && !CutsceneGuard.Off)
+                StoryResolution resolution = StoryLedger<Story>.Resolution(story, now, CutsceneGuard.Off);
+                if (resolution == StoryResolution.Drop)
                 {
                     // Not a real story on the sender (e.g. a plant's projectile sequence that started while a lock
                     // began): never hide and freeze our own player for it (playtest 14:28 "我这边怎么站着不动了").
-                    Plugin.Log.LogInfo("net: unclassified story unavailable; dropped " + story.Key);
-                    CoopTrace.Event("story", "unavailable.dropped", "token", story.Token, "key", story.Key);
+                    Services.Log.Info("net: unclassified story unavailable; dropped " + story.Key);
+                    StoryHost.Current.Trace("story", "unavailable.dropped", "token", story.Token, "key", story.Key);
                     ended.Add(TokenKey(story.Sender, story.Token)); continue;
                 }
-                if (now - story.Began >= 2f)
+                if (resolution == StoryResolution.Watch)
                 {
                     story.Resolved = true; story.Watch = true;
-                    Plugin.Log.LogWarning("net: story unavailable after 2s; watching " + story.Key);
-                    CoopTrace.Event("story", "unavailable", "token", story.Token, "key", story.Key); continue;
+                    Services.Log.Warn("net: story unavailable after 2s; watching " + story.Key);
+                    StoryHost.Current.Trace("story", "unavailable", "token", story.Token, "key", story.Key); continue;
                 }
-                if (now >= story.NextResolve && now - story.Began >= TestResolveDelay)
+                if (StoryLedger<Story>.ResolveDue(story, now, TestResolveDelay))
                 {
-                    story.NextResolve = now + 0.1f;
+                    StoryLedger<Story>.ScheduleResolve(story, now);
                     if (!Resolve(story) && Core.Scenes.Manager != null)
                         Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(new Rect(story.Position.x - 16, story.Position.y - 16, 32, 32), true, false, false);
                 }
@@ -715,7 +688,7 @@ namespace OriCoop
             }
             static void Postfix(ActionSequence __instance, StartCall __state)
             {
-                if (NetPlay.Enabled && !s_mirroring && !PuppetCall) StartsSeen++;
+                if (Services.Net.Enabled && !s_mirroring && !PuppetCall) StartsSeen++;
                 if (OwnedSequences.Contains(__instance) && __instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty)
                     Performed[KeyOf(new Story { Kind = 0, Scene = SceneOf(__instance), Id = __instance.MoonGuid })] = Time.realtimeSinceStartup;
                 if (!__state.Root || !__instance.enabled || __instance.MoonGuid == null || __instance.MoonGuid == MoonGuid.Empty || Mirrored.Contains(__instance)) return;
@@ -800,12 +773,12 @@ namespace OriCoop
         {
             static void Postfix(NetPlay.Frame f)
             {
-                if (!NetPlay.NewestRemoteFrame(NetPlay.Sender, f.Tick)) return;
+                if (!StoryHost.Current.NewestRemoteFrame(Services.Net.Sender, f.Tick)) return;
                 float now = Time.realtimeSinceStartup;
                 bool moving = f.Vel.sqrMagnitude > 0.04f || Math.Abs((int)f.LX) > 12 || Math.Abs((int)f.LY) > 12;
                 foreach (Story story in Remote.Values)
                 {
-                    if (story.Sender != NetPlay.Sender || f.Tick <= story.ControlFrame) continue;
+                    if (story.Sender != Services.Net.Sender || f.Tick <= story.ControlFrame) continue;
                     float distance = Vector3.Distance(f.Pos, story.ControlPosition);
                     bool free = (f.Flags & 4) == 0 && moving && distance < 4f;
                     if (!free) story.FreeSince = -1f;
@@ -831,7 +804,7 @@ namespace OriCoop
         {
             static bool Prefix(Collider collider)
             {
-                return !NetPlay.Enabled || (collider != null && !PuppetCall && Players.Of(collider) == null);
+                return !Services.Net.Enabled || (collider != null && !PuppetCall && !StoryHost.Current.IsPuppetComponent(collider));
             }
         }
         [HarmonyPatch(typeof(SkipCutsceneController), "SkipCutscene")]
@@ -845,7 +818,7 @@ namespace OriCoop
                 {
                     if (LocalOnlyStory(story)) continue;
                     uint token = story.Token;
-                    NetPlay.Send(SkipMessage, true, delegate(BinaryWriter w) { w.Write(token); });
+                    Services.Net.Send(SkipMessage, true, delegate(BinaryWriter w) { StoryWire.WriteToken(w, token); });
                 }
             }
         }

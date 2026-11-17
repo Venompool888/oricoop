@@ -59,12 +59,14 @@ namespace OriCoop.Authority
             // Teardown does not, so a surviving override equal to our last room means "rejoin my seat with the token".
             bool rejoin = s_lastToken != null && !string.IsNullOrEmpty(NetPlay.RoomCodeOverride) && NetPlay.RoomCodeOverride == s_lastCode;
             if (rejoin) code = s_lastCode;
-            CServerClient c = new CServerClient(ep, (byte)(rejoin ? 2 : isHost ? 0 : 1), code, rejoin ? s_lastToken : null, 0, "");
+            // TODO(four-player): pass all local players' identities/count and map their assigned seats here.
+            CServerClient c = new CServerClient(ep, (byte)(rejoin ? 2 : isHost ? 0 : 1), code,
+                rejoin ? s_lastToken : null, 1, new CsIdentity[] { new CsIdentity { Steam = 0, Nick = "" } });
             c.SeatAssigned += delegate(int seat)
             {
                 NetPlay.RoomCodeOverride = c.Code;
                 s_lastCode = c.Code; s_lastToken = c.Token;
-                NetPlay.AssignSeat(seat);
+                NetPlay.AssignSeat(c.PrimarySeat);
                 NetPlay.HostOverride = c.IsArbiter;
                 Plugin.Log.LogInfo("cserver: seat P" + seat + ", room code " + c.Code + (c.IsArbiter ? ", legacy arbiter" : ""));
             };

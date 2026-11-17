@@ -82,7 +82,16 @@ namespace OriCoop
                 Plugin.Log.LogInfo("display: the player chose a Windows DPI override for oriDE.exe (" + value.Trim() + "); left as is");
                 return;
             }
+            if (s_addedByMod.Value)
+                Plugin.Log.LogWarning("display: the high-DPI flag the mod set on an earlier start has disappeared (something removed it); setting it again, restart the game once");
             WriteLayer(exe, AddToken(value, Flag));
+            // also under the on-disk spelling of the exe name (Steam may launch OriDE.exe while the file is oriDE.exe)
+            try
+            {
+                string[] real = System.IO.Directory.GetFiles(System.IO.Path.GetDirectoryName(exe), System.IO.Path.GetFileName(exe));
+                if (real.Length == 1 && real[0] != exe) WriteLayer(real[0], AddToken(ReadLayer(real[0]), Flag));
+            }
+            catch (Exception) { }
             s_addedByMod.Value = true;
             s_oldSize.Value = logW + "x" + logH;
             s_showRestartNote = true;
@@ -94,13 +103,14 @@ namespace OriCoop
         class Watcher : MonoBehaviour
         {
             float m_noteUntil;
+            bool m_notePending;
             int m_lastW, m_lastH; bool m_lastFull;
 
             IEnumerator Start()
             {
                 float t = Time.realtimeSinceStartup + 2f;
                 while (Time.realtimeSinceStartup < t) yield return null;
-                if (s_showRestartNote) m_noteUntil = Time.realtimeSinceStartup + 15f;
+                m_notePending = s_showRestartNote;
                 try { FixSize(); } catch (Exception e) { Plugin.Log.LogWarning("display: resolution check failed: " + e.Message); }
                 while (true)
                 {
@@ -116,7 +126,16 @@ namespace OriCoop
 
             void OnGUI()
             {
-                if (Time.realtimeSinceStartup > m_noteUntil && !(L10nProbe.On && TestShow)) return;
+                if (!m_notePending && Time.realtimeSinceStartup > m_noteUntil && !(L10nProbe.On && TestShow)) return;
+                // Startup can precede both the language settings and the native UI. Do not draw an English
+                // IMGUI notice then, or spend its display time waiting for the game to finish loading.
+                if (GameSettings.Instance == null || P2Hud.GuiCamera() == null || Game.UI.MessageController == null ||
+                    Game.UI.MessageController.HintMessage == null) return;
+                if (m_notePending)
+                {
+                    m_notePending = false;
+                    m_noteUntil = Time.realtimeSinceStartup + 15f;
+                }
                 NativeGui.BeginPage("display.notice");
                 try
                 {

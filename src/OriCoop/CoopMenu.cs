@@ -6,10 +6,9 @@ using UnityEngine;
 namespace OriCoop
 {
     // In-game co-op settings panel. Opens with F8 or by holding Back/View on any controller for 1 s, from gameplay
-    // or the pause menu. The game is frozen while it is open. Works with mouse, keyboard (arrows/Enter/Esc) and
-    // any controller (D-pad/stick, A, B).
-    //   - Shows each controller slot live: connected or not, which player has it, and lights up while pressed,
-    //     so the players can tell which physical controller is which.
+    // or the pause menu. Offline F8 freezes gameplay; the native pause keeps its own pause while settings is open.
+    // Works with mouse, keyboard (arrows/Enter/Esc) and any controller (D-pad/stick, A, B).
+    //   - Settings lists only this device's local seats. Setup still shows the live controller slots.
     //   - "Choose controller" for P1 / P2: press any button on the controller you want (for P1, any keyboard key
     //     = keyboard/mouse only). If the other player had that controller, the two swap.
     //   - Story cutscenes: only P1 starts them, or either player.
@@ -45,8 +44,10 @@ namespace OriCoop
             else if (page == "coop.hint") Close();
         }
 
+        static readonly LocalSeatsAdapter s_seats = new LocalSeatsAdapter();
         static int s_focus;
-        static int s_waitFor;            // 0 none, 1 = choosing P1's controller, 2 = choosing P2's
+        static int s_waitFor;            // 0 none, positive = local seat, -1 = add local player
+        static bool s_fromPause, s_changedTimeScale;
         static int[] s_baseline = new int[4];
         static float s_ignoreNavUntil, s_backHeld;
         static float s_savedTimeScale = 1f;
@@ -62,7 +63,7 @@ namespace OriCoop
         public static int[] TestPadButtons;
 
         const int A = 0x1000, B = 0x2000, BACK = 0x20, START = 0x10, DUP = 1, DDOWN = 2;
-        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : 6; } }
+        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : NetPlay.Enabled ? 1 : s_seats.LocalSeats.Length + 4; } }
 
         static void PollPads()
         {
@@ -105,6 +106,7 @@ namespace OriCoop
         static void GoTo(int page)
         {
             Page = page; s_focus = 0; s_waitFor = 0; s_message = "";
+            s_settingsH = 0f;
             if (page == PageModeSelect) s_focus = PlayMode.LastChoice == PlayMode.Single ? 0 : 1;
             if (page == PageSetup) s_focus = 3;   // "Start" (the controllers shown are usually already right)
             s_ignoreNavUntil = Time.unscaledTime + 0.25f;
@@ -112,14 +114,18 @@ namespace OriCoop
 
         static void OpenPage(int page)
         {
+            if (s_testPage == "" && !NetPlay.LocalInGameplay()) return;
             if (IsOpen) { GoTo(page); return; }
             IsOpen = true;
             Page = page;
             s_focus = 0; s_waitFor = 0; s_message = "";
             s_ignoreNavUntil = Time.unscaledTime + 0.3f;
-            if (UI.MainMenuVisible) { try { UI.Menu.HideMenuScreen(true); } catch (Exception) { } }
+            s_settingsH = 0f;
+            s_fromPause = PauseMenuEntry.Suspend();
+            if (!s_fromPause && UI.MainMenuVisible) { try { UI.Menu.HideMenuScreen(true); } catch (Exception) { } }
             s_savedTimeScale = Time.timeScale;
-            Time.timeScale = 0f;
+            s_changedTimeScale = !NetPlay.Enabled && !s_fromPause;
+            if (s_changedTimeScale) Time.timeScale = 0f;
             if (GameController.Instance != null) { s_savedLockInput = GameController.Instance.LockInput; GameController.Instance.LockInput = true; }
             PollPads(); PollPads();
             Plugin.Log.LogInfo("co-op menu opened (" + (page == PageModeSelect ? "mode select" : page == PageSetup ? "2-player setup" : "settings") + ")");
@@ -130,18 +136,21 @@ namespace OriCoop
             if (!IsOpen) return;
             IsOpen = false;
             s_waitFor = 0;
-            Time.timeScale = s_savedTimeScale <= 0f ? 1f : s_savedTimeScale;
+            if (s_changedTimeScale) Time.timeScale = s_savedTimeScale;
             if (GameController.Instance != null) GameController.Instance.LockInput = s_savedLockInput;
             P2Input.StartLatched = false;
             KeyboardOnlyP1.HoldUntilReleased = true;
             KeyboardOnlyP1.Refresh();
+            if (s_fromPause) PauseMenuEntry.Return();
+            s_fromPause = false;
             Plugin.Log.LogInfo("co-op menu closed");
         }
 
         // Called every frame from Plugin.Tick.
         public static void Tick()
         {
-            bool inGame = Characters.Sein != null && Characters.Sein.gameObject.activeInHierarchy;
+            PauseMenuEntry.Tick();
+            bool inGame = NetPlay.LocalInGameplay();
             if (!IsOpen)
             {
                 if (!inGame) { s_backHeld = 0f; return; }
@@ -153,6 +162,8 @@ namespace OriCoop
                 return;
             }
             if (!inGame && s_testPage == "") { Close(); return; }
+            if (Page == PageSettings && NetPlay.Enabled && s_waitFor != 0) s_waitFor = 0;
+            s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
             PollPads();
 
             if (s_waitFor != 0)
@@ -190,7 +201,22 @@ namespace OriCoop
 
         public static void Assign(int player, int pad)
         {
-            Plugin.Instance.AssignPad(player, pad);
+            if (Page == PageSettings)
+            {
+                InputDevice device = new InputDevice(pad < 0 ? InputDevice.DeviceKind.KeyboardMouse : InputDevice.DeviceKind.Pad, pad);
+                if (player < 0)
+                {
+                    // Spawn has an input-lock guard: restore gameplay first, or queue until native pause closes.
+                    Close();
+                    if (!s_seats.AddLocalPlayer(device)) { Open(); s_message = L10n.T("coop.input_failed"); }
+                    return;
+                }
+                bool ok = s_seats.SetInput(player, device);
+                s_waitFor = 0;
+                s_settingsH = 0f;
+                if (!ok) { s_message = L10n.T("coop.input_failed"); return; }
+            }
+            else Plugin.Instance.AssignPad(player, pad);
             s_waitFor = 0;
             s_message = pad < 0 ? L10n.T("coop.p1_keyboard")
                 : L10n.F("coop.assigned", pad + 1, player);
@@ -210,6 +236,7 @@ namespace OriCoop
                 else GoTo(PageSetup);
                 return;
             }
+            if (Page == PageSettings) { ActivateSettings(row); return; }
             switch (row)
             {
                 case 0:
@@ -222,23 +249,41 @@ namespace OriCoop
                     Plugin.Instance.P2CanTriggerCutscenes = !Plugin.Instance.P2CanTriggerCutscenes;
                     break;
                 case 3:
-                    if (Page == PageSetup || P2Context.P2 == null)
-                    {
-                        PlayMode.SetMode(PlayMode.Coop);
-                        Close();
-                        if (P2Context.P2 == null) Plugin.Instance.Spawn();
-                    }
-                    else { Plugin.DespawnNow("removed from the co-op menu"); }
+                    PlayMode.SetMode(PlayMode.Coop);
+                    Close();
+                    if (P2Context.P2 == null) s_seats.AddLocalPlayer(new InputDevice(InputDevice.DeviceKind.Pad, Plugin.Instance.P2PadInUse));
                     break;
                 case 4:
-                    if (Page == PageSetup) { GoTo(PageModeSelect); break; }
-                    // Settings: change mode (single: P2 leaves and P1 gets the controller; 2 players: setup page).
                     GoTo(PageModeSelect);
                     break;
-                case 5:
-                    Close();
-                    break;
             }
+        }
+
+        static void WaitForDevice(int seat)
+        {
+            s_waitFor = seat;
+            Array.Copy(s_buttons, s_baseline, 4);
+            s_message = "";
+            s_settingsH = 0f;
+        }
+
+        static void ActivateSettings(int row)
+        {
+            if (NetPlay.Enabled) { if (row == 0) Close(); return; }
+            int[] seats = s_seats.LocalSeats;
+            if (row < 0) return;
+            if (row < seats.Length) { WaitForDevice(seats[row]); return; }
+            switch (row - seats.Length)
+            {
+                case 0: Plugin.Instance.P2CanTriggerCutscenes = !Plugin.Instance.P2CanTriggerCutscenes; break;
+                case 1:
+                    if (seats.Length == 1) WaitForDevice(-1);
+                    else { s_seats.RemoveLocalPlayer(seats[seats.Length - 1]); s_settingsH = 0f; }
+                    break;
+                case 2: GoTo(PageModeSelect); break;
+                case 3: Close(); break;
+            }
+            s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
         }
 
         // ---- drawing --------------------------------------------------------------------------------------
@@ -310,6 +355,7 @@ namespace OriCoop
         static void DrawPage(string page)
         {
             if (Page == PageModeSelect) { DrawModeSelect(); return; }
+            if (Page == PageSettings) { DrawSettings(); return; }
             if (s_waitFor == 1)
             {
                 Event e = Event.current;
@@ -389,7 +435,61 @@ namespace OriCoop
             GUILayout.EndArea();
         }
 
-        static float s_settingsH, s_settingsW;   // measured settings panel height (last repaint) and the width it was for
+        static void DrawSettings()
+        {
+            bool online = NetPlay.Enabled;
+            int[] seats = s_seats.LocalSeats;
+            if (!online && s_waitFor == 1)
+            {
+                Event e = Event.current;
+                if (e != null && e.type == EventType.KeyDown && e.keyCode != KeyCode.None && e.keyCode != KeyCode.Escape && e.keyCode != KeyCode.F8)
+                { Assign(1, -1); e.Use(); }
+            }
+            string[] seatRows = new string[seats.Length];
+            for (int i = 0; i < seats.Length; i++)
+            {
+                InputDevice device = s_seats.InputOf(seats[i]);
+                string input = online ? L10n.T("coop.online_input") : device.Kind == InputDevice.DeviceKind.KeyboardMouse ?
+                    L10n.T("coop.keyboard_only") : L10n.F("coop.controller", device.Pad + 1);
+                string label = L10n.F("coop.local_seat", seats[i], input);
+                seatRows[i] = s_waitFor == seats[i] ? L10n.T(seats[i] == 1 ? "coop.choose_p1" : "coop.choose_p2") :
+                    online ? label : L10n.F("coop.change_device", label);
+            }
+            string[] actions = online ? new string[] { L10n.T("coop.close") } : new string[] {
+                L10n.F("coop.cutscenes", Plugin.Instance.P2CanTriggerCutscenes ? L10n.T("coop.either") : L10n.T("coop.p1_only")),
+                s_waitFor < 0 ? L10n.T("coop.choose_local_pad") : seats.Length == 1 ? L10n.T("coop.add_local") : L10n.F("coop.remove_local", seats[seats.Length - 1]),
+                L10n.F("coop.mode", PlayMode.Current == PlayMode.Single ? L10n.T("coop.single") : L10n.T("coop.two_players")),
+                L10n.T("coop.close") };
+            float w = Mathf.Min(Screen.width - 40f, 760f), inner = w - 40f, lineH = s_text.fontSize * 1.9f;
+            float h = 36f + LineH(s_title, L10n.T("coop.settings"), inner);
+            foreach (string label in seatRows) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
+            foreach (string label in actions) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
+            if (s_message != "") h += LineH(s_text, s_message, inner);
+            if (!online) h += LineH(s_small, L10n.T("coop.cutscene_hint"), inner);
+            h = Mathf.Min(h, Screen.height - 20f);
+            Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
+            NativeGui.Panel("coop.settings.background", r, new Color(0.05f, 0.07f, 0.12f, 0.92f));
+            GUILayout.BeginArea(new Rect(r.x + 20f, r.y + 14f, inner, r.height - 28f));
+            NativeGui.LayoutLabel("coop.settings.title", L10n.T("coop.settings"), s_title);
+            for (int i = 0; i < seatRows.Length; i++)
+            {
+                string id = "coop.settings.seat." + seats[i];
+                if (online) NativeGui.LayoutLabel(id, seatRows[i], s_text);
+                else if (RowButton(id, seatRows[i], s_focus == i, Mathf.Max(lineH * 1.15f, LineH(s_row, seatRows[i], inner))))
+                { s_focus = i; if (s_waitFor == 0) Activate(i); }
+            }
+            for (int i = 0; i < actions.Length; i++)
+            {
+                int row = online ? i : seats.Length + i;
+                if (RowButton("coop.settings.action." + i, actions[i], s_focus == row, Mathf.Max(lineH * 1.15f, LineH(s_row, actions[i], inner))))
+                { s_focus = row; if (s_waitFor == 0) Activate(row); }
+            }
+            if (s_message != "") NativeGui.LayoutLabel("coop.settings.message", s_message, s_text);
+            if (!online) NativeGui.LayoutLabel("coop.settings.footer", L10n.T("coop.cutscene_hint"), s_small);
+            GUILayout.EndArea();
+        }
+
+        static float s_settingsH, s_settingsW;   // measured setup panel height (last repaint) and the width it was for
 
         // Height GUILayout gives a label of this text at this width (wrapping included), plus its margins.
         static float LineH(GUIStyle style, string text, float width)

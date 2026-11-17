@@ -140,7 +140,8 @@ namespace OriCoop
             LastSlotPick = "title-host-" + transport;
             Plugin.Log.LogInfo("title menu: slot picked, hosting via " + transport);
             GoPage(PageHost, 1);
-            NetPlay.Begin(true, s_transport, s_transport == "cserver" ? OriCoop.Authority.CServerConfig.Address + "|" : s_transport == "relay" ? relay + "|" : "");
+            if (s_transport == "cserver") BeginCServer(true, OriCoop.Authority.CServerConfig.Address + "|");
+            else NetPlay.Begin(true, s_transport, s_transport == "relay" ? relay + "|" : "");
             return 2;
         }
 
@@ -223,6 +224,7 @@ namespace OriCoop
             }
             if (s_onTitle && s_page == PageRole && index == 0)
             {
+                if (s_transport == "cserver" && !ValidateCServer()) return true;
                 string srv = LobbyServer;
                 if (UsesRoomCode && srv.Length == 0) { ToastKey("lobby.server.required"); return true; }
                 TitleChoice = TitleOnline; TitleTransport = s_transport;
@@ -251,7 +253,8 @@ namespace OriCoop
             }
             if (s_onTitle && s_page == PageRole)
             {
-                if (UsesRoomCode) { GoPage(PageServerMode, s_transport == "cserver" ? 0 : 1); return true; }
+                if (s_transport == "cserver") { GoPage(PageServerList, 0); return true; }
+                if (UsesRoomCode) { GoPage(PageServerMode, 1); return true; }
                 int row = Array.IndexOf(TitleTransports, s_transport);
                 GoPage(PageCoop, row < 1 ? 1 : row);
                 return true;
@@ -697,6 +700,46 @@ namespace OriCoop
         static bool HasKey(List<string> labels, string key) { return labels.Contains(L10n.T(key, true)) || labels.Contains(L10n.T(key, false)) || labels.Contains(L10n.T(key, false).ToUpperInvariant()); }
         static string Labels { get { return LastPage + ": " + string.Join(" | ", LastLabels.ToArray()); } }
 
+        static bool CServerListLabelsMatch()
+        {
+            List<string> saved = OriCoop.Authority.CServerConfig.Servers;
+            if (LastPage != "serverlist" || LastLabels.Count != saved.Count + 2 ||
+                !HasKey(new List<string> { LastLabels[0] }, "server.add") ||
+                !HasKey(new List<string> { LastLabels[1] }, "server.remove")) return false;
+            for (int i = 0; i < saved.Count; i++) if (LastLabels[i + 2] != saved[i]) return false;
+            return true;
+        }
+
+        static IEnumerator CheckCServerList(Action<bool, string> check)
+        {
+            check(CServerListLabelsMatch(), "title menu: C-server list has Add / Remove and saved rows (" + Labels + ")");
+            int before = OriCoop.Authority.CServerConfig.Servers.Count;
+            yield return s_tHost.StartCoroutine(Row(1, 0.5f));
+            check(LastPage == "serverremove" && LastLabels.Count == (before == 0 ? 1 : before) &&
+                (before != 0 || HasKey(LastLabels, "common.back")), "title menu: Remove lists saved servers, or Back when empty");
+            yield return s_tHost.StartCoroutine(Back(0.5f));
+            yield return s_tHost.StartCoroutine(Row(0, 0.5f));
+            check(LastPage == "serveradd" && LastLabels.Count == 3 && HasKey(LastLabels, "common.save"),
+                "title menu: Add opens address / port / Save");
+            if (!OriCoop.Authority.CServerConfig.IsValidAddress(s_cserverHost + ":" + s_cserverPort))
+            { s_cserverHost = "127.0.0.1"; s_cserverPort = "1"; }
+            string added = s_cserverHost + ":" + s_cserverPort;
+            yield return s_tHost.StartCoroutine(Row(2, 0.5f));
+            check(CServerListLabelsMatch() && LastLabels.Count == before + 3 && LastLabels[before + 2] == added,
+                "title menu: Save appends the server and returns to the list");
+            yield return s_tHost.StartCoroutine(Row(1, 0.5f));
+            yield return s_tHost.StartCoroutine(Row(before, 0.5f));
+            check(CServerListLabelsMatch() && LastLabels.Count == before + 2,
+                "title menu: picking Remove deletes just that saved row and returns to the list");
+            yield return s_tHost.StartCoroutine(Row(0, 0.5f));
+            int colon = added.LastIndexOf(':');
+            s_cserverHost = added.Substring(0, colon); s_cserverPort = added.Substring(colon + 1);
+            yield return s_tHost.StartCoroutine(Row(2, 0.5f));
+            yield return s_tHost.StartCoroutine(Row(before + 2, 0.5f));
+            check(LastPage == "role" && LastLabels.Count == 2 && OriCoop.Authority.CServerConfig.Address == added,
+                "title menu: picking a saved server selects it and opens Host / Join");
+        }
+
         public static IEnumerator TitleChecks(MonoBehaviour host, Action<bool, string> check, Action<string> note, int slot)
         {
             s_tHost = host;
@@ -765,12 +808,13 @@ namespace OriCoop
                         && HasKey(LastLabels, "server.relay") && HasKey(LastLabels, "server.cserver"),
                         "title menu: equal / relay mode choice, default focus on equal mode (" + Labels + ")");
                     yield return s_tHost.StartCoroutine(Row(tr == "cserver" ? 0 : 1, 1f));
+                    if (tr == "cserver") yield return s_tHost.StartCoroutine(CheckCServerList(check));
                 }
                 check(TitleOrbOpen && LastPage == "role" && s_transport == tr && HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join")
                     // relay: Host, Join, My rooms (server room saves, 67b8d9a), Relay Server
                     && (tr != "relay" || (LastLabels.Count == 4 && HasKey(LastLabels, "lobby.rooms"))) && !SlotsReady,
                     "title menu: " + tr + " asks host / join before any save slot (" + Labels + ")");
-                if (tr == "cserver") check(LastLabels.Count == 2, "title menu: cserver has only Host / Join (" + Labels + ")");
+                if (tr == "cserver") check(LastLabels.Count == 2, "title menu: selected C-server has only Host / Join (" + Labels + ")");
                 TShot("title_" + tr + "_role");
                 yield return s_tHost.StartCoroutine(TWait(0.5f));
 
@@ -828,6 +872,11 @@ namespace OriCoop
                 yield return s_tHost.StartCoroutine(Back(1f));
                 if (tr == "relay" || tr == "cserver")
                 {
+                    if (tr == "cserver")
+                    {
+                        check(CServerListLabelsMatch(), "title menu: Back from C-server Host / Join returns to the list");
+                        yield return s_tHost.StartCoroutine(Back(1f));
+                    }
                     check(TitleOrbOpen && LastPage == "servermode" && s_mgr.Index == (tr == "cserver" ? 0 : 1),
                         "title menu: " + tr + " Back returns to the mode choice (" + Labels + ")");
                     yield return s_tHost.StartCoroutine(Back(1f));

@@ -34,6 +34,7 @@ namespace OriCoop
             int m_checks, m_fails;
             float m_t0;
             string m_out, m_role, m_tr;
+            string m_cserverAddress;
 
             void Note(string s) { string l = string.Format("[{0,7:F2}] {1}", Time.realtimeSinceStartup - m_t0, s); m_lines.Add(l); Plugin.Log.LogInfo("TITLEJOIN " + s); }
             void Check(bool ok, string what) { m_checks++; if (!ok) m_fails++; Note((ok ? "PASS " : "FAIL ") + what); }
@@ -58,6 +59,27 @@ namespace OriCoop
 
             string RoomFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-room.txt"); } }
 
+            static bool CServerSavedOnDisk(string address)
+            {
+                try
+                {
+                    bool net = false;
+                    foreach (string raw in File.ReadAllLines(Plugin.Instance.Config.ConfigFilePath))
+                    {
+                        string line = raw.Trim();
+                        if (line.StartsWith("[")) net = line == "[Net]";
+                        else if (net)
+                        {
+                            int equals = line.IndexOf('=');
+                            if (equals > 0 && line.Substring(0, equals).Trim() == "CServerList")
+                                return new List<string>(line.Substring(equals + 1).Trim().Split(';')).Contains(address);
+                        }
+                    }
+                }
+                catch (Exception) { }
+                return false;
+            }
+
             IEnumerator Run()
             {
                 Note("up: " + m_role + " via " + m_tr + ", saves in appdata: " + SaveFiles());
@@ -75,6 +97,19 @@ namespace OriCoop
                 }
                 Check(TitleItemsReady, "title items up (screen=" + TitleScreenManager.CurrentScreen + ")");
                 if (!TitleItemsReady) { Finish(); yield break; }
+                PauseScreen pause = PauseScreen.Instance;
+                Check(pause == null || pause.NavigationManager == null || !pause.NavigationManager.MenuItems.Exists(
+                    delegate(CleverMenuItem item) { return item != null && item.name == "OriCoop_PauseSettings"; }),
+                    "title: pause settings have not mutated the native menu during startup");
+                LocalSeatsAdapter seats = new LocalSeatsAdapter();
+                int p1 = Plugin.Instance.P1Pad, p2 = Plugin.Instance.P2Pad, mode = PlayMode.Current;
+                InputDevice pad = new InputDevice(InputDevice.DeviceKind.Pad, (p2 + 1) % 4);
+                bool changed = seats.SetInput(1, pad);
+                bool added = seats.AddLocalPlayer(pad);
+                seats.RemoveLocalPlayer(2);
+                Check(!changed && !added && Plugin.Instance.P1Pad == p1 && Plugin.Instance.P2Pad == p2 &&
+                    PlayMode.Current == mode && P2Context.P2 == null, "title: local seat operations are inert");
+                if (m_fails != 0) { Finish(); yield break; }
                 yield return StartCoroutine(TWait(1.5f));
                 yield return StartCoroutine(PressCoop());
                 int row = Array.IndexOf(TitleTransports, m_tr == "cserver" ? "relay" : m_tr);
@@ -85,12 +120,95 @@ namespace OriCoop
                         m_tr + ": server mode choice defaults to equal mode (" + Labels + ")");
                     yield return StartCoroutine(Row(m_tr == "cserver" ? 0 : 1, 1f));
                 }
-                Check(TitleOrbOpen && LastPage == "role", m_tr + ": host / join page on the title (" + Labels + ")");
+                if (m_tr == "cserver") yield return StartCoroutine(CheckCServerEditor());
+                bool roleReady = TitleOrbOpen && LastPage == "role" && HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join");
+                Check(roleReady, m_tr + ": host / join page on the title (" + Labels + ")");
+                if (!roleReady || m_fails != 0) { Finish(); yield break; }
                 if (m_role == "host") yield return StartCoroutine(Host());
                 else yield return StartCoroutine(Join(savesAtStart));
                 if (SignMode && m_fails == 0) yield return StartCoroutine(SignOnline());          // TitleInputTest.cs
                 if (LeaveMode.Length > 0 && m_fails == 0) yield return StartCoroutine(Leave());
                 Finish();
+            }
+
+            IEnumerator CheckCServerEditor()
+            {
+                Check(CServerListLabelsMatch(), "cserver: list always shows Add / Remove and every saved address (" + Labels + ")");
+                int before = OriCoop.Authority.CServerConfig.Servers.Count;
+                yield return StartCoroutine(Row(0, 0.5f));
+                Check(LastPage == "serveradd", "cserver: Add opens the address / port editor");
+                string prefilled = OriCoop.Authority.CServerConfig.Address;
+                string supplied = (Environment.GetEnvironmentVariable("ORICOOP_NET_CSERVER") ?? "").Trim();
+                if (supplied.Length == 0) supplied = OriCoop.Authority.CServerConfig.Configured;
+                Check(OriCoop.Authority.CServerConfig.IsValidAddress(supplied) && prefilled == supplied,
+                    "cserver: runner supplied a valid endpoint (" + supplied + ")");
+                string host = s_cserverHost, port = s_cserverPort;
+                m_cserverAddress = supplied;
+                Check(LastLabels.Count == 3 && LastLabels[0].Contains(host) && LastLabels[1].Contains(port) && host + ":" + port == supplied,
+                    "cserver: address and port rows prefilled from " + prefilled);
+                foreach (bool zh in new[] { true, false })
+                {
+                    string[][] rows = LobbyRows(zh);
+                    Check(rows.Length == 3 && rows[0][0] == L10n.T("cserver.addr", zh) + ": [" + host + "]" &&
+                        rows[1][0] == L10n.T("cserver.port", zh) + ": " + port && rows[2][0] == L10n.T("common.save", zh),
+                        "cserver: localized add rows " + (zh ? "zh" : "en"));
+                }
+                s_cserverHost = "";
+                yield return StartCoroutine(Row(2, 0.4f));
+                Check(LastPage == "serveradd" && s_toastKey == "cserver.addr.invalid" && !NetPlay.Enabled &&
+                    OriCoop.Authority.CServerConfig.Servers.Count == before, "cserver: invalid address cannot be added");
+                s_cserverHost = host;
+                RefreshTexts(true);
+
+                yield return StartCoroutine(Row(0, 0.5f));
+                Check(LastPage == "entry" && s_entryKind == 3 && s_entry == host, "cserver: address row opens its prefilled editor");
+                if (LastPage != "entry" || s_entryKind != 3) yield break;
+                yield return StartCoroutine(Row(0, 0.4f));
+                int lastDot = s_entry.LastIndexOf('.');
+                Check(s_editing, "cserver: address editor accepts keyboard input");
+                if (!s_editing) yield break;
+                s_cursor = lastDot + 1;
+                CServerEditInput("0");
+                string edited = s_entry;
+                Check(edited != host && edited == host.Insert(lastDot + 1, "0"), "cserver: typed address changes the editor");
+                CServerEditInput("\b");
+                Check(s_entry == host, "cserver: Backspace removes the typed character");
+                CServerEditInput("0\r");
+                Check(LastPage == "serveradd" && s_cserverHost == edited && OriCoop.Authority.CServerConfig.Servers.Count == before,
+                    "cserver: Enter accepts the host field without adding a partial server");
+                yield return StartCoroutine(TWait(0.5f));
+
+                // The edit above tests saving a changed field, not a different server. Restore through the editor
+                // before adding/selecting: both clients must use the exact endpoint provided by the runner.
+                yield return StartCoroutine(Row(0, 0.5f));
+                yield return StartCoroutine(Row(0, 0.4f));
+                s_cursor = lastDot + 2;
+                CServerEditInput("\b\r");
+                Check(LastPage == "serveradd" && s_cserverHost == host && s_cserverHost + ":" + s_cserverPort == supplied &&
+                    OriCoop.Authority.CServerConfig.Servers.Count == before,
+                    "cserver: editor restores the supplied endpoint before saving the list");
+                yield return StartCoroutine(TWait(0.5f));
+
+                yield return StartCoroutine(Row(1, 0.5f));
+                yield return StartCoroutine(Row(0, 0.4f));
+                if (s_page == PageEntry && s_entryKind == 4 && s_editing)
+                {
+                    CServerEditInput("x");
+                    Check(s_entry == port, "cserver: port editor rejects letters");
+                    CServerEditInput("0\u001b");
+                    Check(LastPage == "serveradd" && s_cserverPort == port,
+                        "cserver: Escape cancels a port edit");
+                    yield return StartCoroutine(TWait(0.5f));
+                }
+                else Check(false, "cserver: port row opens its editor");
+                yield return StartCoroutine(Row(2, 0.5f));
+                List<string> saved = OriCoop.Authority.CServerConfig.Servers;
+                Check(CServerListLabelsMatch() && saved.Count == before + 1 && saved[saved.Count - 1] == m_cserverAddress &&
+                    CServerSavedOnDisk(m_cserverAddress), "cserver: Save appends to the persisted list");
+                yield return StartCoroutine(Row(saved.Count + 1, 0.5f));
+                Check(LastPage == "role" && LastLabels.Count == 2 && OriCoop.Authority.CServerConfig.Address == m_cserverAddress &&
+                    OriCoop.Authority.CServerConfig.Configured == m_cserverAddress,
+                    "cserver: picking the saved row selects its address and opens Host / Join");
             }
 
             IEnumerator Host()
@@ -106,13 +224,24 @@ namespace OriCoop
                 ui.UsedSaveSlotSelected();
                 float end = Time.realtimeSinceStartup + 20f;
                 while (Time.realtimeSinceStartup < end && !(LastPage == "hosting" && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected)
-                    && ((m_tr != "relay" && m_tr != "cserver") || !string.IsNullOrEmpty(NetPlay.RoomCode)))) yield return null;
+                    && ((m_tr != "relay" && m_tr != "cserver") || !string.IsNullOrEmpty(NetPlay.RoomCode))))
+                {
+                    if (m_tr == "cserver" && OriCoop.Authority.CServerLink.LastFailure.Length > 0) break;
+                    yield return null;
+                }
                 Check(IsOpen && LastPage == "hosting", "host: slot pick opens the host page (" + Labels + ", net=" + NetPlay.CurrentPhase + ")");
+                Check((NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected) &&
+                    (m_tr != "cserver" || OriCoop.Authority.CServerLink.LastFailure.Length == 0),
+                    "host: server accepted the session (net=" + NetPlay.CurrentPhase + ", error=" +
+                    (m_tr == "cserver" ? OriCoop.Authority.CServerLink.LastFailure : NetPlay.Problem) + ")");
+                if (m_tr == "cserver") Check(s_cserverBeginTarget == m_cserverAddress + "|", "host: Begin target " + s_cserverBeginTarget);
                 if (m_tr == "relay" || m_tr == "cserver")
                 {
                     Check(!string.IsNullOrEmpty(NetPlay.RoomCode), "host: room code " + NetPlay.RoomCode);
-                    try { File.WriteAllText(RoomFile, NetPlay.RoomCode ?? ""); } catch (Exception e) { Note("room file: " + e.Message); }
+                    if (string.IsNullOrEmpty(NetPlay.RoomCode)) yield break;   // Run writes RESULT FAIL, not a timeout.
+                    try { File.WriteAllText(RoomFile, NetPlay.RoomCode); } catch (Exception e) { Note("room file: " + e.Message); }
                 }
+                if (m_fails != 0) yield break;
                 yield return StartCoroutine(TWait(1f));
                 Shot("host_page");
                 yield return StartCoroutine(TWait(0.5f));
@@ -163,6 +292,7 @@ namespace OriCoop
                 yield return StartCoroutine(TWait(0.5f));
                 yield return StartCoroutine(Row(m_tr == "direct" ? 2 : 1, 0.5f));  // 连接
                 Check(LastPage == "joining" || NetPlay.Enabled, "guest: connecting (" + Labels + ", net=" + NetPlay.CurrentPhase + ")");
+                if (m_tr == "cserver") Check(s_cserverBeginTarget == m_cserverAddress + "|" + s_entry.ToUpperInvariant(), "guest: Begin target " + s_cserverBeginTarget);
                 float end = Time.realtimeSinceStartup + 150f;
                 bool sawStart = false, picked = false;
                 while (Time.realtimeSinceStartup < end && !(NetPlay.LocalInGameplay() && SaveSync.Ready))

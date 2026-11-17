@@ -1,4 +1,4 @@
-# Shared launcher for every script that starts the TEST COPY of the game (C:\OriCoop\game\oriDE.exe).
+﻿# Shared launcher for every script that starts the TEST COPY of the game (C:\OriCoop\game\oriDE.exe).
 # Dot-source it:   . (Join-Path $PSScriptRoot 'test-launch.ps1')
 # Rules (docs\testing-rules.md):
 #  * never disturb the owner: windows open without activation, are pushed to the bottom of the z-order, never TOPMOST,
@@ -47,14 +47,14 @@ $script:TL_RegBefore = $null
 $script:TL_FocusFixes = 0
 $script:TL_PrevFg = [IntPtr]::Zero
 
-if (-not ('OriTestLaunch4' -as [type])) {
+if (-not ('OriTestLaunch5' -as [type])) {
     Add-Type -TypeDefinition @'
 using System;
 using System.Collections.Generic;
 using System.Runtime.InteropServices;
 using System.Text;
 
-public static class OriTestLaunch4
+public static class OriTestLaunch5
 {
     [StructLayout(LayoutKind.Sequential, CharSet = CharSet.Unicode)]
     struct STARTUPINFO
@@ -108,8 +108,24 @@ public static class OriTestLaunch4
     static readonly IntPtr HWND_BOTTOM = new IntPtr(1), HWND_NOTOPMOST = new IntPtr(-2);
     const int GWL_EXSTYLE = -20, WS_EX_TOPMOST = 8;
 
-    // Starts without activating its first window (SW_SHOWNOACTIVATE) with exactly envPairs (BelowNormal if asked).
-    public static int Start(string exe, string args, string cwd, string[] envPairs, bool belowNormal)
+    [DllImport("user32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    static extern IntPtr CreateDesktopW(string name, IntPtr device, IntPtr devmode, int flags, uint access, IntPtr sa);
+    static IntPtr s_desktop = IntPtr.Zero;
+    // A separate desktop in WinSta0 for the test games: their windows can never take the owner's focus or input.
+    // The handle stays open for this PowerShell's lifetime; the desktop lives while any of its processes runs.
+    public static string EnsureDesktop(string name)
+    {
+        if (s_desktop == IntPtr.Zero)
+        {
+            s_desktop = CreateDesktopW(name, IntPtr.Zero, IntPtr.Zero, 0, 0x10000000 /* GENERIC_ALL */, IntPtr.Zero);
+            if (s_desktop == IntPtr.Zero) throw new System.ComponentModel.Win32Exception(Marshal.GetLastWin32Error());
+        }
+        return "WinSta0\\" + name;
+    }
+
+    // Starts without activating its first window (SW_SHOWNOACTIVATE) with exactly envPairs (BelowNormal if asked),
+    // on desktop (e.g. "WinSta0\\OriCoopTests") when given.
+    public static int Start(string exe, string args, string cwd, string[] envPairs, bool belowNormal, string desktop)
     {
         var block = new StringBuilder();
         foreach (var kv in envPairs) { block.Append(kv); block.Append('\0'); }
@@ -121,6 +137,7 @@ public static class OriTestLaunch4
             si.cb = Marshal.SizeOf(typeof(STARTUPINFO));
             si.dwFlags = STARTF_USESHOWWINDOW;
             si.wShowWindow = SW_SHOWNOACTIVATE;
+            if (!string.IsNullOrEmpty(desktop)) si.lpDesktop = desktop;
             PROCESS_INFORMATION pi;
             var cmd = new StringBuilder("\"" + exe + "\" " + args);
             if (!CreateProcessW(exe, cmd, IntPtr.Zero, IntPtr.Zero, false,
@@ -174,6 +191,8 @@ public static class OriTestLaunch4
 function Get-TestCopies {
     foreach ($c in @('a', 'b', 'c')) {
         $sfx = $(if ($c -eq 'a') { '' } else { '-' + $c })
+        # ORICOOP_FAKE_OWNER_EXE: a test copy that stands in for the owner's game (never the owner's real game).
+        if ($env:ORICOOP_FAKE_OWNER_EXE -and [string]::Equals($env:ORICOOP_FAKE_OWNER_EXE, "$($script:TL_Root)\game$sfx\oriDE.exe", [StringComparison]::OrdinalIgnoreCase)) { continue }
         $i = [int][char]$c - [int][char]'a'
         [pscustomobject]@{
             Name = $c; GameDir = "$($script:TL_Root)\game$sfx"; Exe = "$($script:TL_Root)\game$sfx\oriDE.exe"
@@ -189,7 +208,7 @@ function Get-TestCopies {
 # Path of a running process, or $null if it cannot be read (retried: a process that is just starting or exiting).
 function Get-ProcPath($proc) {
     for ($i = 0; $i -lt 3; $i++) {
-        $p = [OriTestLaunch4]::ImagePath($proc.Id)
+        $p = [OriTestLaunch5]::ImagePath($proc.Id)
         if (-not $p) { try { $p = $proc.Path } catch { } }
         if ($p) { return $p }
         if ($proc.HasExited) { return $null }
@@ -261,7 +280,13 @@ function Enter-CopyLock($copy, [string]$script) {
     return $false
 }
 
+function Exit-AlongsideLock {
+    $f = $script:TL_AlongsideLock
+    if ($f -and (Test-Path -LiteralPath $f) -and (Read-LockInfo $f)['pid'] -eq [string]$PID) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+}
+
 function Exit-CopyLock {
+    Exit-AlongsideLock
     if ($script:TL_LockFile -and (Test-Path -LiteralPath $script:TL_LockFile)) {
         $info = Read-LockInfo $script:TL_LockFile
         if ($info['pid'] -eq [string]$PID) { Remove-Item -LiteralPath $script:TL_LockFile -Force -ErrorAction SilentlyContinue }
@@ -307,7 +332,14 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
     $sw = [System.Diagnostics.Stopwatch]::StartNew(); $lastNote = -999
     while ($true) {
         $owner = @(Get-OwnerGames)
-        if ($owner.Count -gt 0) {
+        if ($owner.Count -gt 0 -and -not (Enter-Alongside $owner $script)) {
+            if (Test-PlayAlongside) {
+                $i = Read-LockInfo $script:TL_AlongsideLock
+                $min = [int][Math]::Floor($sw.Elapsed.TotalMinutes)
+                if ($min -ge $WaitMinutes) { 'OWNER IS PLAYING and another test runs alongside: gave up after ' + $WaitMinutes + ' min (exit 4).'; exit 4 }
+                if ($min -ne $lastNote) { $lastNote = $min; 'WAITING: the owner is playing; one test at a time, held by ' + $i['session'] + ' (' + $i['script'] + ')' }
+                Start-Sleep -Seconds 15; continue
+            }
             'OWNER IS PLAYING (' + (Format-Games $owner) + '): not starting the test; no process stopped. Rerun later. / 有人在玩游戏，测试未启动，稍后再跑。'
             exit 2
         }
@@ -432,6 +464,14 @@ function Restore-OriDisplayPrefs {
     if ($changed -gt 0) { 'display prefs: restored ' + $changed + ' owner value(s)' }
 }
 
+# Hidden desktop (default; ORICOOP_TEST_DESKTOP=0 = the owner's desktop, old behaviour): test games are created on a
+# separate desktop "OriCoopTests" in WinSta0, so their windows can never take focus or input from the owner's desktop.
+# Verified 2026-11-17: run-test PASS and 2P nettest 666/666 + 673/673 there; Unity renders normally.
+function Get-TestDesktop {
+    if ($env:ORICOOP_TEST_DESKTOP -eq '0') { return '' }
+    return [OriTestLaunch5]::EnsureDesktop('OriCoopTests')
+}
+
 # Starts one test game quietly. -Vars: variables to set ('' = set empty, like ProcessStartInfo). Returns the Process.
 function Start-TestGame([string]$Arguments, [hashtable]$Vars = @{}, [string]$Tag = 'game', [switch]$NeedsSteam, [string]$WorkingDirectory = '') {
     if (-not $WorkingDirectory) { $WorkingDirectory = $script:TL_GameDir }
@@ -454,11 +494,12 @@ function Start-TestGame([string]$Arguments, [hashtable]$Vars = @{}, [string]$Tag
     $script:TL_LiveLogs += Join-Path 'C:\OriCoop\test' ($all['ORICOOP_LOG_TAG'] + '.log')
     $pairs = @($all.Keys | Sort-Object | ForEach-Object { $_ + '=' + $all[$_] })
     Update-OwnerForeground
-    $procId = [OriTestLaunch4]::Start($script:TL_TestExe, $Arguments, $WorkingDirectory, [string[]]$pairs, ($env:ORICOOP_TEST_PRIORITY -eq 'BelowNormal'))
+    $procId = [OriTestLaunch5]::Start($script:TL_TestExe, $Arguments, $WorkingDirectory, [string[]]$pairs, ($env:ORICOOP_TEST_PRIORITY -eq 'BelowNormal'), (Get-TestDesktop))
     $p = [System.Diagnostics.Process]::GetProcessById($procId)
     $null = $p.Handle   # keep a handle so HasExited / ExitCode work after it exits
     $script:TL_Pids.Add($procId)
     $script:TL_Procs.Add($p)
+    if ($script:TL_Alongside) { Set-AlongsideLimits $p }
     Write-Host ('TESTGAME ' + $Tag + ' pid=' + $procId + ' quiet (no focus, ' + $(if ($env:ORICOOP_TEST_PRIORITY -eq 'BelowNormal') { 'BelowNormal' } else { 'Normal priority' }) + ', muted' + $(if ($NeedsSteam) { ', Steam ON' } else { ', no Steam' }) + ')')
     Invoke-TestWatch -Force
     $p
@@ -544,9 +585,9 @@ function Get-TilePosition([int]$index, [int]$w, [int]$h) {
 
 # Remembers the window the owner is using (anything not owned by a test game) so a focus steal can be undone.
 function Update-OwnerForeground {
-    $fg = [OriTestLaunch4]::Foreground()
+    $fg = [OriTestLaunch5]::Foreground()
     if ($fg -ne [IntPtr]::Zero) {
-        $fgPid = [OriTestLaunch4]::WindowPid($fg)
+        $fgPid = [OriTestLaunch5]::WindowPid($fg)
         if (-not $script:TL_Pids.Contains($fgPid) -and -not (@(Get-Process -Id $fgPid -ErrorAction SilentlyContinue | Where-Object { $_.ProcessName -eq 'oriDE' }).Count)) { $script:TL_PrevFg = $fg }
     }
 }
@@ -555,12 +596,12 @@ function Set-TestWindowsQuiet {
     Update-OwnerForeground
     foreach ($p in $script:TL_Procs) {
         if ($p.HasExited) { continue }
-        foreach ($h in [OriTestLaunch4]::Windows($p.Id)) {
+        foreach ($h in [OriTestLaunch5]::Windows($p.Id)) {
             # Unity resizes/re-centres its window while starting up, so the window is put back in its corner tile
             # whenever its rectangle is not the one we last set.
             $key = [string]$h
-            $r = New-Object OriTestLaunch4+RECT
-            [void][OriTestLaunch4]::GetWindowRect($h, [ref]$r)
+            $r = New-Object OriTestLaunch5+RECT
+            [void][OriTestLaunch5]::GetWindowRect($h, [ref]$r)
             $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
             if (-not $script:TL_Placed.ContainsKey($key)) {
                 $script:TL_Placed[$key] = @{ Tile = $script:TL_Placed.Count + 3 * [int]($script:TL_PortOffset / 100); X = $null; Y = $null }
@@ -569,7 +610,7 @@ function Set-TestWindowsQuiet {
             $pos = Get-TilePosition $slot.Tile $w $hh
             $x = $pos[0]; $y = $pos[1]
             $move = ($r.Left -ne $x -or $r.Top -ne $y)
-            $script:TL_FocusFixes += [OriTestLaunch4]::Quiet($h, $move, $x, $y, $script:TL_PrevFg)
+            $script:TL_FocusFixes += [OriTestLaunch5]::Quiet($h, $move, $x, $y, $script:TL_PrevFg)
         }
     }
 }
@@ -587,6 +628,28 @@ function Stop-TestGames {
     }
 }
 
+# Play alongside the owner (default with the hidden desktop; ORICOOP_PLAY_ALONGSIDE=0 = stop when the owner plays): while the owner's game runs, exactly one test run
+# continues (it holds testcopy-alongside.lock in the repo root), its games pinned to ORICOOP_ALONGSIDE_CPUS (hex affinity mask,
+# default 0xFC0 = logical CPUs 6-11), Normal priority. Every other run stops (exit 3) or waits at start. The owner's
+# process is never touched; display prefs are left alone while it runs (Restore-OriDisplayPrefs).
+$script:TL_AlongsideLock = Join-Path $script:TL_Root 'testcopy-alongside.lock'
+$script:TL_Alongside = $false
+function Test-PlayAlongside { return ($env:ORICOOP_PLAY_ALONGSIDE -ne '0' -and (Get-TestDesktop) -ne '') }
+function Set-AlongsideLimits($p) {
+    $mask = 0xFC0; if ($env:ORICOOP_ALONGSIDE_CPUS) { $mask = [Convert]::ToInt64(($env:ORICOOP_ALONGSIDE_CPUS -replace '^0x', ''), 16) }
+    try { if (-not $p.HasExited) { $p.ProcessorAffinity = [IntPtr]$mask } } catch { Write-Host ('could not limit test game ' + $p.Id + ': ' + $_) }
+}
+function Enter-Alongside($owner, [string]$script) {
+    if ($script:TL_Alongside) { return $true }
+    if (-not (Test-PlayAlongside)) { return $false }
+    $lock = [pscustomobject]@{ Name = 'alongside'; Lock = $script:TL_AlongsideLock }
+    if (-not (Enter-CopyLock $lock $script)) { return $false }
+    $script:TL_Alongside = $true
+    foreach ($p in $script:TL_Procs) { Set-AlongsideLimits $p }
+    Write-Host ('PLAYING ALONGSIDE the owner (' + (Format-Games $owner) + '): this run continues on the hidden desktop, CPUs mask ' + $(if ($env:ORICOOP_ALONGSIDE_CPUS) { $env:ORICOOP_ALONGSIDE_CPUS } else { '0xFC0' }) + '; other runs wait.')
+    return $true
+}
+
 # Call from every wait loop (cheap). Keeps windows quiet; every 2 s checks for the owner's game.
 function Invoke-TestWatch([switch]$Force) {
     try { Set-TestWindowsQuiet } catch { }
@@ -594,6 +657,7 @@ function Invoke-TestWatch([switch]$Force) {
     if (-not $Force -and ($now - $script:TL_LastOwnerCheck).TotalSeconds -lt 2) { return }
     $script:TL_LastOwnerCheck = $now
     $owner = @(Get-OwnerGames)
+    if ($owner.Count -gt 0 -and (Enter-Alongside $owner 'watchdog')) { return }
     if ($owner.Count -gt 0) {
         Stop-TestGames
         Write-Host ('OWNER IS PLAYING (' + (Format-Games $owner) + '): test stopped, only this run''s games (pid ' + ($script:TL_Pids -join ',') + ') were closed. Rerun later. / 有人开始玩游戏了，测试已停止，稍后再跑。')

@@ -4,6 +4,8 @@ using System.IO;
 using System.Reflection;
 using Game;
 using HarmonyLib;
+using OriCoop.Seams;
+using OriCoop.Story;
 using UnityEngine;
 
 namespace OriCoop
@@ -13,47 +15,8 @@ namespace OriCoop
     public static class ProgressSync
     {
         const byte MsgProgress = 20, MsgAction = 21, MsgSkillStatus = 22;
-        enum ActionKind : byte { Keystone, Experience, SkillPoint, MaxEnergy, MaxHealth, MapStone, MarkOnly,
-            DirectExperience, KeysDelta, MapsDelta, DoorEnergyDelta, Skill, Pedestal }
-
-        sealed class State
-        {
-            public ulong Abilities;
-            public int MaxHealth, Keys, Maps, Collected, Experience, Level, Points;
-            public float MaxEnergy;
-            public void Write(BinaryWriter w)
-            {
-                w.Write(Abilities); w.Write(MaxHealth); w.Write(MaxEnergy); w.Write(Keys); w.Write(Maps);
-                w.Write(Collected); w.Write(Experience); w.Write(Level); w.Write(Points);
-            }
-            public static State Read(BinaryReader r)
-            {
-                State s = new State();
-                s.Abilities = r.ReadUInt64(); s.MaxHealth = r.ReadInt32(); s.MaxEnergy = r.ReadSingle();
-                s.Keys = r.ReadInt32(); s.Maps = r.ReadInt32(); s.Collected = r.ReadInt32();
-                s.Experience = r.ReadInt32(); s.Level = r.ReadInt32(); s.Points = r.ReadInt32(); return s;
-            }
-            public ulong Hash()
-            {
-                MemoryStream m = new MemoryStream(); BinaryWriter w = new BinaryWriter(m); Write(w); w.Flush();
-                ulong h = 14695981039346656037UL;
-                foreach (byte b in m.ToArray()) { h ^= b; h = unchecked(h * 1099511628211UL); }
-                return h;
-            }
-        }
-
-        sealed class PendingAction
-        {
-            public uint Sequence;
-            public ActionKind Kind;
-            public MoonGuid Guid;
-            public int Amount, Extra;
-        }
-
-        static readonly HashSet<ulong> s_actions = new HashSet<ulong>();
-        static readonly HashSet<MoonGuid> s_collected = new HashSet<MoonGuid>();
-        static readonly Queue<PendingAction> s_pending = new Queue<PendingAction>();
-        static State s_received;
+        static readonly ProgressQueue<MoonGuid> s_pending = new ProgressQueue<MoonGuid>();
+        static readonly ProgressInbox s_inbox = new ProgressInbox();
         static uint s_sequence;
         static ulong s_sentHash;
         static bool s_sent, s_applying;
@@ -65,7 +28,7 @@ namespace OriCoop
         public static int ActionsApplied, ActionsRejected;
         public static bool SkillPurchaseForwardingEnabled = true;
 
-        static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
+        static SeinCharacter Own { get { return StoryHost.Current.P1 != null ? StoryHost.Current.P1 : Characters.Sein; } }
         public static bool Ready
         {
             get
@@ -94,12 +57,12 @@ namespace OriCoop
             if (processor != null && player == Own && s_loggedCollector != processor.GetInstanceID())
             {
                 s_loggedCollector = processor.GetInstanceID();
-                Plugin.Log.LogInfo("net: resolved local pickup collector " + processor.GetInstanceID()
+                Services.Log.Info("net: resolved local pickup collector " + processor.GetInstanceID()
                     + " boundTo=" + player.GetInstanceID() + " PickupHandler=" + (player.PickupHandler != null));
             }
             return processor;
         }
-        static bool Guest { get { return NetPlay.Connected && !NetPlay.IsHost && !s_applying; } }
+        static bool Guest { get { return Services.Net.Connected && !Services.Net.IsHost && !s_applying; } }
         static bool ValidGuid(MoonGuid g) { return !object.ReferenceEquals(g, null) && g != MoonGuid.Empty; }
         static MoonGuid PickupGuid(PickupBase p)
         {
@@ -110,30 +73,30 @@ namespace OriCoop
 
         public static void Init()
         {
-            NetPlay.On(MsgProgress, ReceiveProgress); NetPlay.On(MsgAction, ReceiveAction);
-            NetPlay.On(MsgSkillStatus, delegate(BinaryReader r) {
-                bool enabled = r.ReadBoolean();
-                if (!NetPlay.IsHost) { SkillPurchaseForwardingEnabled = enabled; Plugin.Log.LogWarning("net: skill purchase forwarding enabled=" + enabled); }
+            StoryHost.Current = new GameStoryHost();
+            Services.Net.On(MsgProgress, ReceiveProgress); Services.Net.On(MsgAction, ReceiveAction);
+            Services.Net.On(MsgSkillStatus, delegate(BinaryReader r) {
+                bool enabled = ProgressWire.ReadSkillStatus(r);
+                if (!Services.Net.IsHost) { SkillPurchaseForwardingEnabled = ProgressWire.ApplySkillStatus(false, enabled, SkillPurchaseForwardingEnabled); Services.Log.Warn("net: skill purchase forwarding enabled=" + enabled); }
             });
-            NetPlay.SessionStarted += Reset; NetPlay.SessionEnded += Reset;
+            Services.Net.SessionStarted += Reset; Services.Net.SessionEnded += Reset;
             // SharedProgress's proximity postfix bypasses trigger callbacks. Disable that local-coop
             // shortcut online, where touching a puppet must never collect on behalf of its owner.
             Type t = typeof(SharedProgress).GetNestedType("PickupPatch", BindingFlags.NonPublic);
-            if (t != null) Plugin.H.Patch(AccessTools.Method(t, "Postfix"),
-                new HarmonyMethod(typeof(ProgressSync), "LocalPickupShortcut"), null, null, null, null);
+            if (t != null) StoryHost.Current.PatchPickupShortcut(AccessTools.Method(t, "Postfix"));
         }
-        static bool LocalPickupShortcut() { return !NetPlay.Enabled; }
+        static bool LocalPickupShortcut() { return !Services.Net.Enabled; }
         static void Reset()
         {
-            s_actions.Clear(); s_collected.Clear(); s_pending.Clear(); s_received = null;
+            s_pending.Reset(); s_inbox.Snapshot = null;
             s_sequence = 0; s_sent = false; s_next = 0; ActionsApplied = ActionsRejected = 0;
             s_loggedCollector = 0; s_collectorWarningAt = 0;
             SkillPurchaseForwardingEnabled = true;
         }
 
-        static State Capture()
+        static ProgressSnapshot Capture()
         {
-            SeinCharacter p = Own; State s = new State();
+            SeinCharacter p = Own; ProgressSnapshot s = new ProgressSnapshot();
             for (int i = 0; i < 43; i++) if (p.PlayerAbilities.Abilities[i].HasAbility) s.Abilities |= 1UL << i;
             s.MaxHealth = p.Mortality.Health.MaxHealth; s.MaxEnergy = p.Energy.Max;
             s.Keys = p.Inventory.Keystones; s.Maps = p.Inventory.MapStones; s.Collected = p.Inventory.SkillPointsCollected;
@@ -147,64 +110,64 @@ namespace OriCoop
             // and the guest never got the host's WallJump=false (CUT reset). The host's pickup-action queue still
             // needs a live local player.
             ReportStall();
-            if (!NetPlay.Connected || !SaveSync.Ready || !Ready) return;
-            if (!NetPlay.IsHost && s_received != null) { State s = s_received; s_received = null; s_receivedAt = -1f; Apply(s); }
-            if (NetPlay.IsHost && NetPlay.LocalInGameplay())
+            if (!Services.Net.Connected || !Services.Session.Ready || !Ready) return;
+            if (!Services.Net.IsHost && s_inbox.Snapshot != null) { ProgressSnapshot s = s_inbox.Take(); Apply(s); }
+            if (Services.Net.IsHost && Services.Session.LocalInGameplay)
             {
                 while (s_pending.Count > 0)
                 {
-                    PendingAction pending = s_pending.Peek();
+                    ProgressAction pending = s_pending.Peek();
                     if (pending.Kind < ActionKind.MarkOnly && PickupCollector(Own) == null)
                     {
                         if (Time.realtimeSinceStartup >= s_collectorWarningAt)
                         {
                             s_collectorWarningAt = Time.realtimeSinceStartup + 5f;
-                            Plugin.Log.LogWarning("net: waiting for bound local pickup collector; queued seq=" + pending.Sequence);
+                            Services.Log.Warn("net: waiting for bound local pickup collector; queued seq=" + pending.Sequence);
                         }
                         break;
                     }
-                    PendingAction a = s_pending.Dequeue();
+                    ProgressAction a = s_pending.Dequeue();
                     try { ApplyAction(a); }
-                    catch (Exception e) { Plugin.Log.LogWarning("net: progress action disabled seq=" + a.Sequence + " " + a.Kind + ": " + e); }
+                    catch (Exception e) { Services.Log.Warn("net: progress action disabled seq=" + a.Sequence + " " + a.Kind + ": " + e); }
                 }
             }
             if (Time.realtimeSinceStartup < s_next) return;
             s_next = Time.realtimeSinceStartup + 0.1f;
-            if (NetPlay.IsHost && (!s_sent || Hash() != s_sentHash)) SendSnapshot();
+            if (Services.Net.IsHost && (!s_sent || Hash() != s_sentHash)) SendSnapshot();
         }
         public static void SendSnapshot(int seat = 0)
         {
-            if (!NetPlay.IsHost || !NetPlay.Connected || !Ready || !SaveSync.Ready) return;
-            State s = Capture();
+            if (!Services.Net.IsHost || !Services.Net.Connected || !Ready || !Services.Session.Ready) return;
+            ProgressSnapshot s = Capture();
             if (seat == 0)
-            { NetPlay.Send(MsgProgress, true, s.Write); s_sentHash = s.Hash(); s_sent = true; }
-            else NetPlay.SendTo(seat, MsgProgress, true, s.Write);
+            { Services.Net.Send(MsgProgress, true, s.Write); s_sentHash = s.Hash(); s_sent = true; }
+            else Services.Net.SendTo(seat, MsgProgress, true, s.Write);
         }
-        static float s_receivedAt = -1f, s_unsentAt = -1f, s_stallCheckAt; static bool s_stallLogged;
+        static float s_unsentAt = -1f, s_stallCheckAt; static bool s_stallLogged;
         // One line per stall (> 3 s) with every gate, so a stuck sync names its cause in the log.
         static void ReportStall()
         {
             float now = Time.realtimeSinceStartup;
             if (now < s_stallCheckAt) return;
             s_stallCheckAt = now + 0.5f;
-            bool unsent = NetPlay.IsHost && NetPlay.Connected && Ready && (!s_sent || Hash() != s_sentHash);
+            bool unsent = Services.Net.IsHost && Services.Net.Connected && Ready && (!s_sent || Hash() != s_sentHash);
             if (!unsent) s_unsentAt = -1f; else if (s_unsentAt < 0) s_unsentAt = now;
-            bool stalled = s_receivedAt >= 0 && now - s_receivedAt > 3f || s_unsentAt >= 0 && now - s_unsentAt > 3f;
+            bool stalled = s_inbox.ReceivedAt >= 0 && now - s_inbox.ReceivedAt > 3f || s_unsentAt >= 0 && now - s_unsentAt > 3f;
             if (!stalled) { s_stallLogged = false; return; }
             if (s_stallLogged) return;
             s_stallLogged = true;
             GameController gc = GameController.Instance;
-            Plugin.Log.LogWarning("net: progress sync stalled " + (NetPlay.IsHost ? "(host change not sent)" : "(guest snapshot not applied)")
-                + " connected=" + NetPlay.Connected + " saveReady=" + SaveSync.Ready + " progressReady=" + Ready
-                + " inGameplay=" + NetPlay.LocalInGameplay() + " loading=" + (gc != null && gc.IsLoadingGame)
+            Services.Log.Warn("net: progress sync stalled " + (Services.Net.IsHost ? "(host change not sent)" : "(guest snapshot not applied)")
+                + " connected=" + Services.Net.Connected + " saveReady=" + Services.Session.Ready + " progressReady=" + Ready
+                + " inGameplay=" + Services.Session.LocalInGameplay + " loading=" + (gc != null && gc.IsLoadingGame)
                 + " sein=" + (Characters.Sein != null) + " seinActive=" + (Characters.Sein != null && Characters.Sein.gameObject.activeInHierarchy)
-                + " seinIsP2=" + (Characters.Sein != null && P2Context.P2 != null && Characters.Sein == P2Context.P2));
+                + " seinIsP2=" + (Characters.Sein != null && StoryHost.Current.P2 != null && Characters.Sein == StoryHost.Current.P2));
         }
         static void ReceiveProgress(BinaryReader r)
         {
-            State s = State.Read(r); if (!NetPlay.IsHost) { s_received = s; if (s_receivedAt < 0) s_receivedAt = Time.realtimeSinceStartup; }
+            ProgressSnapshot s = ProgressSnapshot.Read(r); s_inbox.Receive(Services.Net.IsHost, s, Time.realtimeSinceStartup);
         }
-        static void Apply(State s)
+        static void Apply(ProgressSnapshot s)
         {
             SeinCharacter p = Own; bool changed = false; s_applying = true;
             try
@@ -239,30 +202,30 @@ namespace OriCoop
         static void SendAction(ActionKind kind, MoonGuid guid, int amount, int extra)
         {
             uint seq = ++s_sequence;
-            NetPlay.Send(MsgAction, true, delegate(BinaryWriter w)
-            {
-                w.Write(seq); w.Write((byte)kind); w.Write((guid ?? MoonGuid.Empty).ToByteArray()); w.Write(amount); w.Write(extra);
+            Services.Net.Send(MsgAction, true, delegate(BinaryWriter w) {
+                ProgressAction a = new ProgressAction { Sequence = seq, Kind = kind,
+                    Guid = (guid ?? MoonGuid.Empty).ToByteArray(), Amount = amount, Extra = extra };
+                a.Write(w);
             });
         }
         static void ReceiveAction(BinaryReader r)
         {
-            PendingAction a = new PendingAction(); a.Sequence = r.ReadUInt32(); a.Kind = (ActionKind)r.ReadByte();
-            a.Guid = new MoonGuid(r); a.Amount = r.ReadInt32(); a.Extra = r.ReadInt32();
-            if (NetPlay.IsHost && s_actions.Add(((ulong)NetPlay.Sender << 32) | a.Sequence)) s_pending.Enqueue(a);
+            ProgressAction a = ProgressAction.Read(r);
+            if (Services.Net.IsHost) s_pending.Enqueue(Services.Net.Sender, a);
         }
-        static void ApplyAction(PendingAction a)
+        static void ApplyAction(ProgressAction a)
         {
-            SeinCharacter p = Own;
+            SeinCharacter p = Own; MoonGuid guid = GameStoryHost.ReadGuid(a.Guid);
             bool pickup = a.Kind <= ActionKind.MarkOnly;
-            if (pickup && ValidGuid(a.Guid) && !s_collected.Add(a.Guid))
-            { ActionsRejected++; Plugin.Log.LogInfo("net: duplicate pickup ignored " + a.Guid); return; }
+            if (pickup && ValidGuid(guid) && !s_pending.RecordPickup(guid))
+            { ActionsRejected++; Services.Log.Info("net: duplicate pickup ignored " + guid); return; }
             s_applying = true;
             try
             {
                 if (pickup)
                 {
                     if (a.Kind != ActionKind.MarkOnly) ApplyPickup(a);
-                    if (ValidGuid(a.Guid)) WorldSync.MarkCollected(a.Guid);
+                    if (ValidGuid(guid)) StoryHost.Current.MarkCollected(guid);
                 }
                 else switch (a.Kind)
                 {
@@ -276,13 +239,13 @@ namespace OriCoop
                         if (energy < 0) p.Energy.Spend(-energy); else p.Energy.Gain(energy); break;
                     case ActionKind.Skill: BuySkill((AbilityType)a.Extra); break;
                     case ActionKind.Pedestal:
-                        GetAbilityPedestal pedestal = WorldSync.FindAny(a.Guid) as GetAbilityPedestal;
+                        GetAbilityPedestal pedestal = StoryHost.Current.FindAny(guid) as GetAbilityPedestal;
                         AbilityType ability = pedestal != null ? pedestal.Ability : (AbilityType)a.Extra;
                         if (!Enum.IsDefined(typeof(AbilityType), ability)) break;
-                        p.PlayerAbilities.SetAbility(ability, true); WorldSync.MarkPedestal(a.Guid); break;
+                        p.PlayerAbilities.SetAbility(ability, true); StoryHost.Current.MarkPedestal(guid); break;
                 }
                 ActionsApplied++;
-                Plugin.Log.LogInfo("net: progress action seq=" + a.Sequence + " " + a.Kind + " amount=" + a.Amount + " keys=" + p.Inventory.Keystones + " xp=" + p.Level.Experience);
+                Services.Log.Info("net: progress action seq=" + a.Sequence + " " + a.Kind + " amount=" + a.Amount + " keys=" + p.Inventory.Keystones + " xp=" + p.Level.Experience);
             }
             finally { s_applying = false; }
             SendSnapshot();
@@ -300,11 +263,12 @@ namespace OriCoop
                 default: return typeof(MapStonePickup);
             }
         }
-        static void ApplyPickup(PendingAction a)
+        static void ApplyPickup(ProgressAction a)
         {
             // Real loaded pickups preserve their normal sequences. For an unloaded area / dynamic
             // orb, a detached inactive argument carries the amount through the very same collector.
-            PickupBase pickup = ValidGuid(a.Guid) ? WorldSync.FindAny(a.Guid) as PickupBase : null;
+            MoonGuid guid = GameStoryHost.ReadGuid(a.Guid);
+            PickupBase pickup = ValidGuid(guid) ? StoryHost.Current.FindAny(guid) as PickupBase : null;
             GameObject temporary = null;
             if (pickup == null || pickup.IsCollected || pickup.GetType() != PickupType(a.Kind))
             {
@@ -356,8 +320,8 @@ namespace OriCoop
         static void DisableSkills(string reason)
         {
             SkillPurchaseForwardingEnabled = false;
-            Plugin.Log.LogWarning("net: SkillPurchaseForwardingEnabled=false: " + reason);
-            NetPlay.Send(MsgSkillStatus, true, delegate(BinaryWriter w) { w.Write(false); });
+            Services.Log.Warn("net: SkillPurchaseForwardingEnabled=false: " + reason);
+            Services.Net.Send(MsgSkillStatus, true, delegate(BinaryWriter w) { ProgressWire.WriteSkillStatus(w, false); });
         }
 
         static ActionKind Kind(PickupBase p)
@@ -379,16 +343,16 @@ namespace OriCoop
             }
             static bool Prefix(SeinPickupProcessor __instance, object[] __args)
             {
-                if (!NetPlay.Enabled) return true;
+                if (!Services.Net.Enabled) return true;
                 // Covers direct/proximity callers as well as touch-context callbacks.
-                if (Players.OfSein(__instance.Sein) != null) return false;
-                if (__instance.Sein != Own || !NetPlay.Connected) return true;
+                if (StoryHost.Current.IsPuppet(__instance.Sein)) return false;
+                if (__instance.Sein != Own || !Services.Net.Connected) return true;
                 PickupBase p = (PickupBase)__args[0];
                 if (p == s_synthetic) return true;
                 if (p.IsCollected) return false;
                 MoonGuid guid = PickupGuid(p);
-                if (NetPlay.IsHost) { if (ValidGuid(guid)) s_collected.Add(guid); return true; }
-                if (!SaveSync.Ready) return false;
+                if (Services.Net.IsHost) { if (ValidGuid(guid)) s_pending.RecordPickup(guid); return true; }
+                if (!Services.Session.Ready) return false;
                 ActionKind kind = Kind(p);
                 FieldInfo amount = p.GetType().GetField("Amount"); int n = amount == null ? 1 : (int)amount.GetValue(p);
                 ExpOrbPickup orb = p as ExpOrbPickup;
@@ -409,7 +373,7 @@ namespace OriCoop
             static bool Prefix(SeinLevel __instance, int amount)
             {
                 if (!Guest || !Ready || __instance != Own.Level) return true;
-                if (SaveSync.Ready) SendAction(ActionKind.DirectExperience, MoonGuid.Empty, amount, 0);
+                if (Services.Session.Ready) SendAction(ActionKind.DirectExperience, MoonGuid.Empty, amount, 0);
                 return false;
             }
         }
@@ -425,7 +389,7 @@ namespace OriCoop
             {
                 if (!Guest) return true;
                 SkillItem item = __instance.CurrentSkillItem;
-                if (SaveSync.Ready && SkillPurchaseForwardingEnabled && item != null && !item.HasSkillItem && item.CanEarnSkill)
+                if (Services.Session.Ready && SkillPurchaseForwardingEnabled && item != null && !item.HasSkillItem && item.CanEarnSkill)
                     SendAction(ActionKind.Skill, MoonGuid.Empty, 0, (int)item.Ability);
                 return false;
             }
@@ -435,16 +399,16 @@ namespace OriCoop
         {
             static bool Prefix(GetAbilityPedestal __instance)
             {
-                if (NetPlay.Enabled && P2Context.Inside) return false;
+                if (Services.Net.Enabled && StoryHost.Current.Inside) return false;
                 if (CutsceneGuard.ReplayingPedestal) return true;
                 if (CutsceneGuard.Off && Guest)
                 {
-                    if (SaveSync.Ready && __instance.CurrentState != GetAbilityPedestal.States.Completed)
+                    if (Services.Session.Ready && __instance.CurrentState != GetAbilityPedestal.States.Completed)
                         SendAction(ActionKind.Pedestal, __instance.MoonGuid, 0, (int)__instance.Ability);
                     return false;
                 }
                 if (!Guest) { CutsceneGuard.LocalActivation(__instance); return true; }
-                if (SaveSync.Ready && __instance.CurrentState != GetAbilityPedestal.States.Completed)
+                if (Services.Session.Ready && __instance.CurrentState != GetAbilityPedestal.States.Completed)
                 {
                     CutsceneGuard.LocalActivation(__instance);
                     SendAction(ActionKind.Pedestal, __instance.MoonGuid, 0, (int)__instance.Ability);
@@ -469,7 +433,7 @@ namespace OriCoop
             { __state = Guest && Ready && __instance == Own.Inventory ? new int[] { __instance.Keystones, __instance.MapStones } : null; }
             static void Postfix(SeinInventory __instance, int[] __state)
             {
-                if (__state == null || !SaveSync.Ready || WorldSync.Applying) return;
+                if (__state == null || !Services.Session.Ready || StoryHost.Current.WorldApplying) return;
                 int keys = __instance.Keystones - __state[0], maps = __instance.MapStones - __state[1];
                 if (keys != 0) SendAction(ActionKind.KeysDelta, MoonGuid.Empty, keys, 0);
                 if (maps != 0) SendAction(ActionKind.MapsDelta, MoonGuid.Empty, maps, 0);
@@ -481,7 +445,7 @@ namespace OriCoop
             static void Prefix(out int __state) { __state = Guest && Ready ? Own.Inventory.MapStones : int.MinValue; }
             static void Postfix(int __state)
             {
-                if (__state != int.MinValue && SaveSync.Ready && Own.Inventory.MapStones != __state)
+                if (__state != int.MinValue && Services.Session.Ready && Own.Inventory.MapStones != __state)
                     SendAction(ActionKind.MapsDelta, MoonGuid.Empty, Own.Inventory.MapStones - __state, 0);
             }
         }
@@ -508,7 +472,7 @@ namespace OriCoop
             { __state = Guest && Ready && s_energyDoorDepth > 0 && __instance == Own.Energy ? __instance.Current : float.NaN; }
             static void Postfix(SeinEnergy __instance, float __state)
             {
-                if (!float.IsNaN(__state) && SaveSync.Ready && !WorldSync.Applying && __instance.Current != __state)
+                if (!float.IsNaN(__state) && Services.Session.Ready && !StoryHost.Current.WorldApplying && __instance.Current != __state)
                     SendAction(ActionKind.DoorEnergyDelta, MoonGuid.Empty, Mathf.RoundToInt((__instance.Current - __state) * 1000f), 0);
             }
         }
@@ -520,17 +484,17 @@ namespace OriCoop
                 yield return AccessTools.Method(typeof(DoorWithSlots), "RestoreOrbs");
                 yield return AccessTools.Method(typeof(EnergyDoor), "RestoreOrbs");
             }
-            static bool Prefix() { return !NetPlay.Enabled || !WorldSync.Applying; }
+            static bool Prefix() { return !Services.Net.Enabled || !StoryHost.Current.WorldApplying; }
         }
         [HarmonyPatch(typeof(GameController), "ResetInputLocks")]
         static class PreserveLocalInputLocks
         {
-            static bool Prefix() { return !NetPlay.Enabled || !WorldSync.Applying; }
+            static bool Prefix() { return !Services.Net.Enabled || !StoryHost.Current.WorldApplying; }
         }
         [HarmonyPatch(typeof(GameController), "RestoreCheckpoint")]
         static class ResetPickupLedger
         {
-            static void Postfix() { s_collected.Clear(); s_sent = false; }
+            static void Postfix() { s_pending.ClearPickups(); s_sent = false; }
         }
     }
 }

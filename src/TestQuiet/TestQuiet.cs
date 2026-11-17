@@ -41,14 +41,34 @@ namespace OriCoop.TestQuiet
             if (float.TryParse(Environment.GetEnvironmentVariable("ORICOOP_TIMESCALE") ?? "", System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out sc) && sc >= 1f && sc <= 8f) m_scale = sc;
             if (m_quiet || noSteam) Logger.LogInfo("TestQuiet: quiet=" + m_quiet + " noSteam=" + noSteam + " timeScale x" + m_scale);
-            if (!m_quiet && m_scale == 1f) enabled = false;
+            m_fps = Flag("ORICOOP_FPS_LOG");
+            if (!m_quiet && m_scale == 1f && !m_fps) enabled = false;
         }
 
         // ORICOOP_TIMESCALE=N (test speed-up, opt-in per suite): multiply the game's own Time.timeScale by N. The game
         // sets timeScale itself (loading 0.5, pause 0, normal 1); any value that differs from the one we wrote last is
         // taken as the game's new base. Only for suites whose checks do not depend on real time (no latency/timeouts).
         float m_scale = 1f, m_base = 1f, m_applied = -1f;
-        void Update() { ApplyScale(); }
+        void Update() { ApplyScale(); SampleFrame(); }
+
+        // ORICOOP_FPS_LOG=1: every 10 s log the frame time (avg / p95 / max ms, unscaled) as "TestQuiet: frames ...".
+        // Used to measure what parallel test games cost a game the owner plays (a stand-in copy).
+        bool m_fps;
+        readonly System.Collections.Generic.List<float> m_frames = new System.Collections.Generic.List<float>();
+        float m_nextFps;
+        void SampleFrame()
+        {
+            if (!m_fps) return;
+            m_frames.Add(Time.unscaledDeltaTime * 1000f);
+            if (Time.realtimeSinceStartup < m_nextFps) return;
+            m_nextFps = Time.realtimeSinceStartup + 10f;
+            if (m_frames.Count < 10) { m_frames.Clear(); return; }
+            m_frames.Sort();
+            float sum = 0f; foreach (float f in m_frames) sum += f;
+            Logger.LogInfo("TestQuiet: frames n=" + m_frames.Count + " avg=" + (sum / m_frames.Count).ToString("F2") + "ms p95="
+                + m_frames[(int)(m_frames.Count * 0.95f)].ToString("F2") + "ms max=" + m_frames[m_frames.Count - 1].ToString("F2") + "ms");
+            m_frames.Clear();
+        }
         void ApplyScale()
         {
             if (m_scale == 1f) return;

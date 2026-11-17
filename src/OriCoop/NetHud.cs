@@ -590,12 +590,9 @@ namespace OriCoop
                 {
                     line = L10n.F("hud.invite", "F5");
                 }
-                else // direct
-                {
-                    string[] addrs = NetPlay.LocalAddresses();
-                    string addr = (addrs != null && addrs.Length > 0) ? addrs[0] : "127.0.0.1";
-                    line = L10n.F("hud.address", addr + ":" + NetPlay.ConfigPort);
-                }
+                // LAN addresses belong only on the direct host lobby page, never on the gameplay HUD.
+                // C-server is not UsesRelay: it must not fall through to a local-address chip either.
+                else return;
 
                 GUIContent c = new GUIContent(line);
                 Vector2 sz = s_chipStyle.CalcSize(c);

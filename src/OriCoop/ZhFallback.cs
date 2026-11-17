@@ -101,6 +101,56 @@ namespace OriCoop
             return s_terms;
         }
 
+        static readonly string[] s_characterNames = { "Ori", "Sein", "Naru", "Gumo", "Gumon", "Kuro", "Eki", "Ano", "Nir", "Reem", "Fil", "Atsu" };
+
+        static bool IsHan(char c)
+        {
+            return (c >= '\u3400' && c <= '\u9fff') || (c >= '\uf900' && c <= '\ufaff');
+        }
+
+        static bool IsNameLetter(char c)
+        {
+            return (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') || (c >= '0' && c <= '9') || c == '_';
+        }
+
+        // Only character names get Han/Latin spacing; leave markup and all other text untouched.
+        // For #Name# put any space outside the highlight, never between # and the name.
+        static string SpaceNames(string text)
+        {
+            var spaces = new bool[text.Length + 1];
+            int depth = 0;
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (text[i] == '[') depth++;
+                if (depth != 0)
+                {
+                    if (text[i] == ']') depth--;
+                    continue;
+                }
+                foreach (string name in s_characterNames)
+                {
+                    int end = i + name.Length;
+                    if (end > text.Length || string.CompareOrdinal(text, i, name, 0, name.Length) != 0) continue;
+                    if ((i > 0 && IsNameLetter(text[i - 1])) || (end < text.Length && IsNameLetter(text[end]))) continue;
+                    int left = i, right = end;
+                    if (left > 0 && text[left - 1] == '#') left--;
+                    if (right < text.Length && text[right] == '#') right++;
+                    // Only tight Han adjacency needs a space, so existing spaces cannot be doubled.
+                    if (left > 0 && IsHan(text[left - 1])) spaces[left] = true;
+                    if (right < text.Length && IsHan(text[right])) spaces[right] = true;
+                    i = end - 1;
+                    break;
+                }
+            }
+            var sb = new System.Text.StringBuilder(text.Length);
+            for (int i = 0; i < text.Length; i++)
+            {
+                if (spaces[i]) sb.Append(' ');
+                sb.Append(text[i]);
+            }
+            return sb.ToString();
+        }
+
         static string ApplyTerms(string text)
         {
             if (string.IsNullOrEmpty(text)) return text;
@@ -133,7 +183,7 @@ namespace OriCoop
                 }
                 if (!matched) { sb.Append(ch); i++; }
             }
-            string result = sb.ToString();
+            string result = SpaceNames(sb.ToString());
             s_termCache[text] = result;
             return result;
         }

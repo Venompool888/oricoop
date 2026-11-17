@@ -4,6 +4,8 @@ using System.IO;
 using System.Reflection;
 using Game;
 using HarmonyLib;
+using OriCoop.Seams;
+using OriCoop.Story;
 using UnityEngine;
 
 namespace OriCoop
@@ -11,9 +13,8 @@ namespace OriCoop
     public static class CutsceneGuard
     {
         const byte PedestalMessage = 73;
-        static readonly Dictionary<MoonGuid, float> Played = new Dictionary<MoonGuid, float>();
+        static readonly RecentObjects<MoonGuid> Played = new RecentObjects<MoonGuid>();
         static readonly Dictionary<string, string> Traces = new Dictionary<string, string>();
-        static readonly FieldInfo PluginCameraTarget = AccessTools.Field(typeof(Plugin), "m_camTarget");
         static float s_freeSince = -1f;
         static Transform s_traceTarget;
         static bool s_traceTargetKnown;
@@ -31,12 +32,12 @@ namespace OriCoop
         // Test-only mutation switch: ORICOOP_P3_OFF=1 restores the pre-fix behaviour so the P3 scenario can prove it fails.
         public static readonly bool Off = Environment.GetEnvironmentVariable("ORICOOP_P3_OFF") == "1";
         public static int PedestalPlaysSent, PedestalPlaysReceived, PedestalPlaysPlayed, Repairs, LocalPedestalActivations;
-        static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
-        static bool Online { get { return NetPlay.Enabled && NetPlay.Connected; } }
+        static SeinCharacter Own { get { return StoryHost.Current.P1 != null ? StoryHost.Current.P1 : Characters.Sein; } }
+        static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         public static void Log(string msg)
         {
-            Plugin.Log.LogInfo("cutscene " + DateTime.Now.ToString("HH:mm:ss.fff") + " t=" + Time.time.ToString("F2") + " " + msg);
-            CoopTrace.Event("story", "guard", "msg", msg);   // merged P1/P2 timeline (docs\coop-trace.md)
+            Services.Log.Info("cutscene " + DateTime.Now.ToString("HH:mm:ss.fff") + " t=" + Time.time.ToString("F2") + " " + msg);
+            StoryHost.Current.Trace("story", "guard", "msg", msg);   // merged P1/P2 timeline (docs\coop-trace.md)
         }
         public static CameraPuppetController CameraPuppet()
         {
@@ -46,9 +47,9 @@ namespace OriCoop
         public static bool IsPlayerCameraTarget(Transform target)
         {
             return Own != null && target == Own.Transform
-                || target != null && Plugin.Instance != null && target == (PluginCameraTarget.GetValue(Plugin.Instance) as Transform);
+                || target != null && StoryHost.Current.IsPluginCameraTarget(target);
         }
-        public static void Init() { NetPlay.On(PedestalMessage, ReceivePedestal); NetPlay.On(LeverMessage, ReceiveLever); }
+        public static void Init() { Services.Net.On(PedestalMessage, ReceivePedestal); Services.Net.On(LeverMessage, ReceiveLever); }
 
         // ---- Levers (playtest 19:07, Spirit Cavern B): the lever's Direction is host-authoritative world state, so a
         // guest's push was silently undone by the host's blob while its camera story ran locally and was "mirrored" on
@@ -59,12 +60,13 @@ namespace OriCoop
         public static int LeverPushesSent, LeverPushesPlayed;
         static void ReceiveLever(BinaryReader r)
         {
-            MoonGuid id = new MoonGuid(r); Lever.LeverDirections direction = (Lever.LeverDirections)r.ReadByte();
+            byte rawDirection; byte[] bytes = ObjectWire.ReadLever(r, out rawDirection);
+            MoonGuid id = GameStoryHost.ReadGuid(bytes); Lever.LeverDirections direction = (Lever.LeverDirections)rawDirection;
             if (Off) return;
-            Lever lever = WorldSync.FindAny(id) as Lever;
+            Lever lever = StoryHost.Current.FindAny(id) as Lever;
             if (lever == null) foreach (Lever candidate in Lever.All) if (candidate != null && candidate.MoonGuid == id) { lever = candidate; break; }
             if (lever == null) { Log("lever push skipped: lever not loaded " + id); return; }
-            if (lever.Direction != direction)
+            if (ObjectWire.LeverChanged((int)lever.Direction, (int)direction))
             {
                 s_applyingLever = true;
                 try
@@ -75,7 +77,7 @@ namespace OriCoop
                 }
                 finally { s_applyingLever = false; }
             }
-            if (NetPlay.IsHost) NetPlay.Send(LeverMessage, true, delegate(BinaryWriter w) { w.Write(id.ToByteArray()); w.Write((byte)direction); });
+            if (Services.Net.IsHost) Services.Net.Send(LeverMessage, true, delegate(BinaryWriter w) { ObjectWire.WriteLever(w, id.ToByteArray(), (byte)direction); });
         }
         [HarmonyPatch]
         static class LeverScope
@@ -89,7 +91,7 @@ namespace OriCoop
             static void Prefix(Lever __instance, out int __state)
             {
                 __state = -1;
-                if (Off || !Online || P2Context.Inside) return;
+                if (Off || !Online || StoryHost.Current.Inside) return;
                 __state = (int)__instance.Direction;
                 // The lever's stories run natively on every end; do not also mirror them (see PedestalWindow).
                 StorySync.EnterLocalOnly(null); s_pedestalUntil = Mathf.Max(s_pedestalUntil, Time.realtimeSinceStartup + 12f);
@@ -98,10 +100,10 @@ namespace OriCoop
             {
                 if (__state < 0) return __exception;
                 StorySync.ExitLocalOnly();
-                if (!s_applyingLever && (int)__instance.Direction != __state)
+                if (!s_applyingLever && ObjectWire.LeverChanged((int)__instance.Direction, __state))
                 {
                     MoonGuid id = new MoonGuid(__instance.MoonGuid); Lever.LeverDirections direction = __instance.Direction;
-                    NetPlay.Send(LeverMessage, true, delegate(BinaryWriter w) { w.Write(id.ToByteArray()); w.Write((byte)direction); });
+                    Services.Net.Send(LeverMessage, true, delegate(BinaryWriter w) { ObjectWire.WriteLever(w, id.ToByteArray(), (byte)direction); });
                     LeverPushesSent++; Log("lever push sent " + id + " " + direction);
                 }
                 return __exception;
@@ -109,18 +111,17 @@ namespace OriCoop
         }
         public static void LocalActivation(GetAbilityPedestal pedestal)
         {
-            if (Off || !Online || P2Context.Inside || ReplayingPedestal || pedestal.CurrentState == GetAbilityPedestal.States.Completed) return;
+            if (Off || !Online || StoryHost.Current.Inside || ReplayingPedestal || pedestal.CurrentState == GetAbilityPedestal.States.Completed) return;
             MoonGuid id = new MoonGuid(pedestal.MoonGuid);
-            Played[id] = Time.realtimeSinceStartup;
-            NetPlay.Send(PedestalMessage, true, delegate(BinaryWriter w) { w.Write(id.ToByteArray()); });
+            Played.Mark(id, Time.realtimeSinceStartup);
+            Services.Net.Send(PedestalMessage, true, delegate(BinaryWriter w) { ObjectWire.WritePedestal(w, id.ToByteArray()); });
             PedestalPlaysSent++; Log("pedestal play sent " + id);
         }
         static void ReceivePedestal(BinaryReader r)
         {
-            MoonGuid id = new MoonGuid(r); PedestalPlaysReceived++; Log("pedestal play received " + id);
-            float last;
-            if (Played.TryGetValue(id, out last) && Time.realtimeSinceStartup - last < 30f) return;
-            GetAbilityPedestal pedestal = WorldSync.FindAny(id) as GetAbilityPedestal;
+            MoonGuid id = GameStoryHost.ReadGuid(ObjectWire.ReadPedestal(r)); PedestalPlaysReceived++; Log("pedestal play received " + id);
+            if (Played.Recent(id, Time.realtimeSinceStartup, 30f)) return;
+            GetAbilityPedestal pedestal = StoryHost.Current.FindAny(id) as GetAbilityPedestal;
             if (pedestal == null)
                 foreach (GetAbilityPedestal candidate in Resources.FindObjectsOfTypeAll<GetAbilityPedestal>())
                     if (candidate != null && candidate.MoonGuid == id) { pedestal = candidate; break; }
@@ -129,13 +130,13 @@ namespace OriCoop
             if (own == null) { Log("pedestal play skipped: own player missing"); return; }
             if (GameController.Instance == null || GameController.Instance.IsLoadingGame)
             { Log("pedestal play skipped: loading"); return; }
-            Played[id] = Time.realtimeSinceStartup;
-            if (Vector3.Distance(own.Position, pedestal.transform.position) > 12f) { Plugin.Teleport(own, pedestal.transform.position); SnapSpirit("pedestal teleport"); }
+            Played.Mark(id, Time.realtimeSinceStartup);
+            if (Vector3.Distance(own.Position, pedestal.transform.position) > 12f) { StoryHost.Current.Teleport(own, pedestal.transform.position); SnapSpirit("pedestal teleport"); }
             ReplayingPedestal = true;
             try { pedestal.ActivatePedestal(); PedestalPlaysPlayed++; Log("pedestal play played " + id); }
             finally { ReplayingPedestal = false; }
             // Guests only talk to the host: forward so every other guest plays it too (the sender ignores the echo).
-            if (NetPlay.IsHost) NetPlay.Send(PedestalMessage, true, delegate(BinaryWriter w) { w.Write(id.ToByteArray()); });
+            if (Services.Net.IsHost) Services.Net.Send(PedestalMessage, true, delegate(BinaryWriter w) { ObjectWire.WritePedestal(w, id.ToByteArray()); });
         }
         static void Trace(string key, string value)
         {
@@ -166,13 +167,13 @@ namespace OriCoop
             // move at all (it also keeps the originator's story alive). Held 20 s: release it.
             // Fully black (FadeStay) while nothing is loading: start the "stuck black" clock.
             bool black = UI.Fader != null && UI.Fader.CurrentState == FaderB.State.FadeStay
-                && gc != null && !gc.IsLoadingGame && SaveSync.Ready && !StorySync.StoryActive;
+                && gc != null && !gc.IsLoadingGame && Services.Session.Ready && !StorySync.StoryActive;
             if (!black) s_blackSince = -1f; else if (s_blackSince < 0) s_blackSince = now;
             if (gc != null && gc.LockInputByAction && !gc.IsLoadingGame) { if (s_actionLockSince < 0) s_actionLockSince = now; }
             else s_actionLockSince = -1f;
             if (!Off && s_actionLockSince >= 0 && now - s_actionLockSince >= 20f)
             { gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++; Log("repair stale LockInputByAction (held 20 s)"); }
-            if (P2Context.Inside || own == null || gc == null || gc.IsLoadingGame || gc.GameplaySuspended
+            if (StoryHost.Current.Inside || own == null || gc == null || gc.IsLoadingGame || gc.GameplaySuspended
                 || Game.UI.MainMenuVisible || StorySync.StoryActive
                 || PedestalWindow) { s_freeSince = -1f; return; }   // a pedestal/lever cutscene runs natively: hands off
             bool free = (StorySync.TakeoverMaskPublic() & 191) == 0;
@@ -191,7 +192,7 @@ namespace OriCoop
         // is fired from where it is ("attacks fly over from over there").
         public static void SnapSpirit(string why)
         {
-            if (Off || Characters.Ori == null || Own == null || P2Context.Inside) return;
+            if (Off || Characters.Ori == null || Own == null || StoryHost.Current.Inside) return;
             if (Vector3.Distance(Characters.Ori.Position, Own.Position) <= 30f) return;
             if (StuckSpirit()) Characters.Ori.BackToPlayerController(); else Characters.Ori.MoveOriToPlayer();
             Repairs++; Log("spirit snapped to player (" + why + ")");
@@ -235,7 +236,7 @@ namespace OriCoop
             [HarmonyPriority(Priority.First)]
             static void Prefix(GetAbilityPedestal __instance, out bool __state)
             {
-                __state = !P2Context.Inside && !Off;
+                __state = !StoryHost.Current.Inside && !Off;
                 // Both ends play the pedestal natively; nested stories it starts (timelines, story texts) must not
                 // also be mirrored from the partner, or each end performs them twice (double input locks).
                 if (__state) s_pedestalUntil = Time.realtimeSinceStartup + 20f;
@@ -251,7 +252,7 @@ namespace OriCoop
             static void Prefix(GetAbilityPedestal __instance, out GetAbilityPedestal.States __state) { __state = __instance.CurrentState; }
             static Exception Finalizer(GetAbilityPedestal __instance, GetAbilityPedestal.States __state, Exception __exception)
             {
-                if (!P2Context.Inside && __state != GetAbilityPedestal.States.Completed && __instance.CurrentState == GetAbilityPedestal.States.Completed)
+                if (!StoryHost.Current.Inside && __state != GetAbilityPedestal.States.Completed && __instance.CurrentState == GetAbilityPedestal.States.Completed)
                     LocalPedestalActivations++;
                 return __exception;
             }
@@ -262,7 +263,7 @@ namespace OriCoop
             static void Prefix(PlayerAbilities __instance, AbilityType ability, out bool __state) { __state = __instance.HasAbility(ability); }
             static void Postfix(PlayerAbilities __instance, AbilityType ability, bool value, bool __state)
             {
-                if (Online && !P2Context.Inside && Own != null && __instance == Own.PlayerAbilities && __state != __instance.HasAbility(ability))
+                if (Online && !StoryHost.Current.Inside && Own != null && __instance == Own.PlayerAbilities && __state != __instance.HasAbility(ability))
                     Log("ability " + ability + "=" + value);
             }
         }
@@ -276,14 +277,14 @@ namespace OriCoop
                 yield return AccessTools.Method(typeof(SaveGameController), "OnFinishedLoading");
                 yield return AccessTools.Method(typeof(RestoreCheckpointController), "FinishLoading");
             }
-            static void Postfix() { if (Online && !P2Context.Inside) Repair(Time.realtimeSinceStartup, true, false); }
+            static void Postfix() { if (Online && !StoryHost.Current.Inside) Repair(Time.realtimeSinceStartup, true, false); }
         }
         [HarmonyPatch(typeof(GameController), "CreateCheckpoint")]
         static class SaveRepair
         {
             static void Prefix()
             {
-                if (!Off && Online && !P2Context.Inside && !StorySync.StoryActive && StuckSpirit())
+                if (!Off && Online && !StoryHost.Current.Inside && !StorySync.StoryActive && StuckSpirit())
                 { Characters.Ori.BackToPlayerController(); Repairs++; Log("repair spirit before checkpoint"); }
             }
         }

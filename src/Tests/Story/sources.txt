@@ -1,0 +1,5 @@
+OriCoop\Seams\Seams.cs
+OriCoop\Story\SharedResources.cs
+OriCoop\Story\StoryCore.cs
+OriCoop\Story\ProgressCore.cs
+OriCoop\Story\ObjectCore.cs

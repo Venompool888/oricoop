@@ -167,6 +167,27 @@ namespace OriCoop
             Where("");
             ScanBoxes();
 
+            // Ask for the patched descriptors, not the raw (unmodified) Chinese fields.
+            string[] chineseNames = { "奥里", "奥日", "赛安", "纳鲁", "古莫", "古门", "黑子", "埃基", "阿诺", "尼尔", "里姆", "菲尔", "阿祖" };
+            int nameItems = 0, nameOffenders = 0;
+            var nameSamples = new List<string>();
+            foreach (TranslatedMessageProvider provider in Resources.FindObjectsOfTypeAll<TranslatedMessageProvider>())
+                foreach (TranslatedMessageProvider.MessageItem item in provider.Messages)
+                {
+                    int index = nameItems++;
+                    string text = item.GetDescriptor(Language.Chinese).Message;
+                    if (string.IsNullOrEmpty(text)) continue;
+                    foreach (string name in chineseNames)
+                        if (text.IndexOf(name, StringComparison.Ordinal) >= 0)
+                        {
+                            nameOffenders++;
+                            if (nameSamples.Count < 10) nameSamples.Add(provider.name + " item " + index + ": " + text.Replace("\n", "\\n"));
+                            break;
+                        }
+                }
+            check(nameOffenders == 0, "l10n: Chinese game descriptors keep character names in English (" + nameItems + " items, " + nameOffenders + " offenders)");
+            foreach (string sample in nameSamples) note("l10n name offender: " + sample);
+
             // Table: every key has both texts, Chinese texts only use baked glyphs, no mixing inside an entry.
             HashSet<int> glyphs = ChineseGlyphs(), latin = Glyphs(false);
             var noLatin = new List<string>();
@@ -210,6 +231,33 @@ namespace OriCoop
             check(n > 10, "l10n: probe recorded the pages' texts (" + n + ")");
             check(bad.Count == 0, "l10n: every drawn label is in one language (" + lang + ", " + bad.Count + " bad)");
             yield return host.StartCoroutine(FontFrames(host, check, note));
+
+            if (zh)
+            {
+                // Empty Chinese forces the same fallback + terms path used by the game's hints.
+                TranslatedMessageProvider provider = null;
+                MessageBox box = null;
+                try
+                {
+                    provider = ScriptableObject.CreateInstance<TranslatedMessageProvider>();
+                    provider.Messages.Add(new TranslatedMessageProvider.MessageItem
+                    {
+                        English = "I am #Sein#, the light and eyes of the #Spirit Tree#.", Chinese = ""
+                    });
+                    box = Game.UI.Hints.Show(provider, HintLayer.Gameplay, 6f);
+                }
+                catch (Exception e) { note("l10n name hint: " + e.Message); }
+                yield return host.StartCoroutine(Wait(1.5f));
+                string shown = null;
+                try { if (box != null) shown = Traverse.Create(box).Field("m_currentMessage").Field("Message").GetValue<string>(); }
+                catch (Exception e) { note("l10n name hint text: " + e.Message); }
+                check(box != null && !string.IsNullOrEmpty(shown) && HasHan(shown) && shown.IndexOf("Sein", StringComparison.Ordinal) >= 0,
+                    "l10n: native Chinese game hint contains Sein (" + shown + ")");
+                Shot("l10n_name_hint");
+                yield return host.StartCoroutine(Wait(0.5f));
+                try { if (box != null && box.Visibility != null) box.Visibility.HideMessageScreenImmediately(); } catch (Exception) { }
+                if (provider != null) UnityEngine.Object.Destroy(provider);
+            }
         }
 
 

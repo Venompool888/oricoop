@@ -1,6 +1,7 @@
 using System;
 using Game;
 using HarmonyLib;
+using OriCoop.Story;
 using UnityEngine;
 
 namespace OriCoop
@@ -11,34 +12,30 @@ namespace OriCoop
     // - P2 touching a pickup collects it for P1 (rewards land in P1's save; the pool sync shares them).
     public static class SharedProgress
     {
-        static int s_keys, s_maps;
-        static float s_energy;
-        static bool s_init;
+        static readonly SharedResources Resources = new SharedResources();
 
-        public static void Reset() { s_init = false; }
+        public static void Reset() { Resources.Reset(); }
 
         public static void Sync(SeinCharacter p1, SeinCharacter p2)
         {
             if (p1 == null || p2 == null || p1.Inventory == null || p2.Inventory == null || p1.Energy == null || p2.Energy == null) return;
-            if (!s_init)
+            if (!Resources.Initialized)
             {
-                s_init = true;
+                Resources.Initialize();
                 p2.Inventory.Keystones = p1.Inventory.Keystones;
                 p2.Inventory.MapStones = p1.Inventory.MapStones;
                 p2.Energy.Current = p1.Energy.Current;
             }
             else
             {
-                p1.Inventory.Keystones = Mathf.Max(0, p1.Inventory.Keystones + (p2.Inventory.Keystones - s_keys));
-                p1.Inventory.MapStones = Mathf.Max(0, p1.Inventory.MapStones + (p2.Inventory.MapStones - s_maps));
-                p1.Energy.Current = Mathf.Clamp(p1.Energy.Current + (p2.Energy.Current - s_energy), 0f, p1.Energy.Max);
+                p1.Inventory.Keystones = Resources.MergeKeys(p1.Inventory.Keystones, p2.Inventory.Keystones);
+                p1.Inventory.MapStones = Resources.MergeMaps(p1.Inventory.MapStones, p2.Inventory.MapStones);
+                p1.Energy.Current = Resources.MergeEnergy(p1.Energy.Current, p2.Energy.Current, p1.Energy.Max);
                 p2.Inventory.Keystones = p1.Inventory.Keystones;
                 p2.Inventory.MapStones = p1.Inventory.MapStones;
                 p2.Energy.Current = p1.Energy.Current;
             }
-            s_keys = p2.Inventory.Keystones;
-            s_maps = p2.Inventory.MapStones;
-            s_energy = p2.Energy.Current;
+            Resources.Remember(p2.Inventory.Keystones, p2.Inventory.MapStones, p2.Energy.Current);
         }
 
         public static int PickupsByP2;
@@ -50,7 +47,7 @@ namespace OriCoop
         {
             static void Postfix(PickupBase __instance)
             {
-                SeinCharacter p1 = P2Context.P1, p2 = P2Context.P2;
+                SeinCharacter p1 = StoryHost.Current.P1, p2 = StoryHost.Current.P2;
                 if (p1 == null || p2 == null || !p2.gameObject.activeInHierarchy || __instance.IsCollected || !__instance.gameObject.activeInHierarchy) return;
                 if (Vector3.Distance(__instance.transform.position, p2.Position) >= __instance.Radius) return;
                 if ((float)s_timeField.GetValue(__instance) < __instance.DelayBeforeCollectable) return;

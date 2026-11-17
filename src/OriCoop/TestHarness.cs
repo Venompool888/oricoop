@@ -848,6 +848,27 @@ namespace OriCoop
             int p1Was = Plugin.Instance.P1Pad, p2Was = Plugin.Instance.P2Pad;
             bool cutWas = Plugin.Instance.P2CanTriggerCutscenes;
             int joins0 = P2 != null ? 1 : 0;
+            // Native pause entry: use the real manager press, keep its pause debt, then return to it.
+            UI.Menu.ShowMenuScreen();
+            yield return null;
+            CleverMenuItemSelectionManager pauseNav = PauseScreen.Instance.NavigationManager;
+            CleverMenuItem pauseEntry = pauseNav.MenuItems.Find(delegate(CleverMenuItem item) { return item != null && item.name == "OriCoop_PauseSettings"; });
+            Check(pauseEntry != null && pauseEntry.Pressed == null && pauseEntry.Activated == null && pauseEntry.Visible == null,
+                "menu: native pause settings entry has no copied press action or conditions");
+            if (pauseEntry != null)
+            {
+                float pauseScale = Time.timeScale;
+                pauseNav.SetCurrentMenuItem(pauseEntry);
+                pauseNav.PressCurrentItem();
+                yield return null;
+                Check(CoopMenu.IsOpen && UI.MainMenuVisible && !pauseNav.IsVisible && pauseNav.IsLocked && Time.timeScale == pauseScale,
+                    "menu: pause entry opens settings without adding a pause or releasing the native pause");
+                CoopMenu.Close();
+                yield return StartCoroutine(Wait(0.4f));
+                Check(!CoopMenu.IsOpen && UI.MainMenuVisible && pauseNav.IsVisible && pauseNav.IsActive && !pauseNav.IsLocked && pauseNav.CurrentMenuItem == pauseEntry,
+                    "menu: closing settings returns focus to the pause entry");
+            }
+            UI.Menu.HideMenuScreen(true);
             CoopMenu.TestPadButtons = new int[4];
             CoopMenu.Open();
             yield return null; yield return null;

@@ -17,26 +17,31 @@ namespace OriCoop
     public static partial class NativeModeMenu
     {
         const int PageRole = 2, PageEntry = 3, PageHost = 4, PageJoin = 5, PageCoop = 6, PageServerMode = 7;
-        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode" };
+        const int PageServerList = 8, PageServerAdd = 9, PageServerRemove = 10;
+        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove" };
         const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
         const string IpAlphabet = "0123456789.:";
         const string ServerAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-:";
+        const string CServerHostAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-";
+        const string CServerPortAlphabet = "0123456789";
 
         static BepInEx.Configuration.ConfigEntry<bool> s_nativeLobby;
         static string s_transport = "relay";
-        static int s_entryKind;             // 0 room code, 1 IP address, 2 relay server
+        static int s_entryKind;             // 0 room code, 1 IP, 2 relay server, 3 C-server host, 4 C-server port
         static string s_entry = "";
+        static string s_cserverHost = "", s_cserverPort = "";
         static int s_cursor;
         static bool s_editing;
         static float s_editStartedAt;
         static string s_joinTarget = "";
+        static string s_cserverBeginTarget = "";
         static float s_connectedAt;
         static string s_toastKey = "";
         static float s_toastUntil;
         static float s_nextRefresh;
         static string s_cursorStyle;        // a highlight text style of the menu font, if it has one
-        static readonly string[] s_labelCache = new string[MaxItems];
-        static readonly string[] s_descCache = new string[MaxItems];
+        static string[] s_labelCache = new string[MaxItems];
+        static string[] s_descCache = new string[MaxItems];
 
         // Direct join (s_entryKind 1): the orb has 3 rows, so they are IP / Port / Connect (B or Esc goes back).
         // The IP is 4 octet slots, each checked as you type (0-255, no leading zero); the port is checked 1-65535.
@@ -78,9 +83,10 @@ namespace OriCoop
         public static bool LobbyEditing { get { return s_editing; } }
         public static string LobbyEntry { get { return s_entry; } }
 
-        static bool IsLobbyPage { get { return s_page >= PageRole && s_page <= PageJoin; } }
+        static bool IsLobbyPage { get { return (s_page >= PageRole && s_page <= PageJoin) || s_page >= PageServerList; } }
         static bool UsesRoomCode { get { return s_transport == "relay" || s_transport == "cserver"; } }
         static string LobbyServer { get { return s_transport == "cserver" ? OriCoop.Authority.CServerConfig.Address : (NetPlay.ConfigRelayServer ?? "").Trim(); } }
+        static bool CServerEntry { get { return s_entryKind == 3 || s_entryKind == 4; } }
 
         // ---- rows -----------------------------------------------------------------------------------------
 
@@ -89,11 +95,36 @@ namespace OriCoop
             return new[] { L10n.T(labelKey, true), L10n.T(descKey, true), L10n.T(labelKey, false), L10n.T(descKey, false) };
         }
 
+        static string[][] CServerRoleRows(bool zh)
+        {
+            string help = L10n.T("cserver.edit.desc", zh);
+            return new[] {
+                new[] { L10n.T("cserver.addr", zh) + ": [" + (s_cserverHost.Length == 0 ? "_" : s_cserverHost) + "]", help },
+                new[] { L10n.T("cserver.port", zh) + ": " + (s_cserverPort.Length == 0 ? "_" : s_cserverPort), help }
+            };
+        }
+
         static string[][] LobbyRows(bool zh)
         {
             bool relay = UsesRoomCode, direct = s_transport == "direct";
             var r = new List<string[]>();
-            if (s_page == PageRole)
+            if (s_page == PageServerList || s_page == PageServerRemove)
+            {
+                if (s_page == PageServerList)
+                {
+                    r.Add(new[] { L10n.T("server.add", zh), L10n.T("server.add.desc", zh) });
+                    r.Add(new[] { L10n.T("server.remove", zh), L10n.T("server.remove.desc", zh) });
+                }
+                foreach (string server in OriCoop.Authority.CServerConfig.Servers)
+                    r.Add(new[] { server, L10n.T(s_page == PageServerRemove ? "server.remove.pick" : "server.pick", zh) });
+                if (r.Count == 0) r.Add(new[] { L10n.T("common.back", zh), L10n.T("common.back.desc", zh) });
+            }
+            else if (s_page == PageServerAdd)
+            {
+                r.AddRange(CServerRoleRows(zh));
+                r.Add(new[] { L10n.T("common.save", zh), L10n.T("server.add.desc", zh) });
+            }
+            else if (s_page == PageRole)
             {
                 r.Add(new[] { L10n.T("lobby.host", zh), L10n.T(relay ? "lobby.host.room.desc" : direct ? "lobby.host.direct.desc" : "lobby.host.steam.desc", zh) });
                 r.Add(new[] { L10n.T("lobby.join", zh), L10n.T(relay ? "lobby.join.room.desc" : direct ? "lobby.join.direct.desc" : "lobby.join.steam.desc", zh) });
@@ -113,10 +144,10 @@ namespace OriCoop
             }
             else if (s_page == PageEntry)
             {
-                string titleKey = s_entryKind == 0 ? "lobby.room.code" : s_entryKind == 1 ? "lobby.ip" : "lobby.relay.address";
-                string help = s_editing ? L10n.T("lobby.edit.chars", zh) : string.Format(L10n.T("lobby.entry.desc", zh), L10n.T(titleKey, zh));
+                string titleKey = s_entryKind == 0 ? "lobby.room.code" : s_entryKind == 1 ? "lobby.ip" : s_entryKind == 3 ? "cserver.addr" : s_entryKind == 4 ? "cserver.port" : "lobby.relay.address";
+                string help = s_editing ? L10n.T(CServerEntry ? "cserver.typing.desc" : "lobby.edit.chars", zh) : string.Format(L10n.T("lobby.entry.desc", zh), L10n.T(titleKey, zh));
                 r.Add(new[] { EntryDisplay(zh), help });
-                if (s_entryKind == 2) r.Add(new[] { L10n.T("common.save", zh), L10n.T("lobby.server.save.desc", zh) });
+                if (s_entryKind == 2 || CServerEntry) r.Add(new[] { L10n.T("common.save", zh), L10n.T(CServerEntry ? "cserver.save.desc" : "lobby.server.save.desc", zh) });
                 else r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T("lobby.connect.desc", zh) + SaveNote(zh) });
                 r.Add(new[] { L10n.T("common.back", zh), L10n.T("common.back.desc", zh) });
             }
@@ -222,7 +253,7 @@ namespace OriCoop
                 return sb.ToString();
             }
             if (s_entry.Length == 0 && !s_editing)
-                return L10n.T(s_entryKind == 1 ? "lobby.ip.enter" : "lobby.server.enter", zh);
+                return L10n.T(s_entryKind == 1 ? "lobby.ip.enter" : s_entryKind == 4 ? "cserver.port" : "lobby.server.enter", zh);
             if (!s_editing) return s_entry;
             string before = s_entry.Substring(0, s_cursor);
             string at = s_cursor < s_entry.Length ? s_entry[s_cursor].ToString() : "_";
@@ -258,8 +289,8 @@ namespace OriCoop
 
         static string Mark(string c) { return s_cursorStyle != null ? "<" + s_cursorStyle + ">" + c + "</>" : "[" + c + "]"; }
 
-        static string EntryAlphabet { get { return s_entryKind == 0 ? RoomAlphabet : s_entryKind == 1 ? IpAlphabet : ServerAlphabet; } }
-        static int EntryMax { get { return s_entryKind == 0 ? 6 : s_entryKind == 1 ? 21 : 48; } }
+        static string EntryAlphabet { get { return s_entryKind == 0 ? RoomAlphabet : s_entryKind == 1 ? IpAlphabet : s_entryKind == 3 ? CServerHostAlphabet : s_entryKind == 4 ? CServerPortAlphabet : ServerAlphabet; } }
+        static int EntryMax { get { return s_entryKind == 0 ? 6 : s_entryKind == 1 ? 21 : s_entryKind == 3 ? 253 : s_entryKind == 4 ? 10 : 48; } }
 
         // ---- navigation -----------------------------------------------------------------------------------
 
@@ -267,8 +298,40 @@ namespace OriCoop
         static void LobbyOpen(string transport)
         {
             s_transport = transport;
+            if (transport == "cserver") LoadCServer();
             Plugin.Log.LogInfo("mode menu: native lobby (" + transport + ")");
-            GoPage(PageRole, 0);
+            GoPage(transport == "cserver" ? PageServerList : PageRole, 0);
+        }
+
+        static void LoadCServer()
+        {
+            string address = (OriCoop.Authority.CServerConfig.Address ?? "").Trim();
+            int colon = address.LastIndexOf(':');
+            s_cserverHost = colon >= 0 ? address.Substring(0, colon) : address;
+            s_cserverPort = colon >= 0 ? address.Substring(colon + 1) : OriCoop.Authority.CServerConfig.DefaultPort.ToString();
+        }
+
+        static bool ValidateCServer()
+        {
+            if (!OriCoop.Authority.CServerConfig.IsValidAddress(OriCoop.Authority.CServerConfig.Address))
+            { ToastKey("cserver.addr.invalid"); return false; }
+            return true;
+        }
+
+        static void BeginCServer(bool host, string target)
+        {
+            s_cserverBeginTarget = target;
+            Plugin.Log.LogInfo("mode menu: C-server Begin " + (host ? "host " : "join ") + target);
+            NetPlay.Begin(host, "cserver", target);
+        }
+
+        static void SaveCServerEntry()
+        {
+            bool host = s_entryKind == 3;
+            if (host ? !OriCoop.Authority.CServerConfig.IsValidHost(s_entry) : !OriCoop.Authority.CServerConfig.IsValidPort(s_entry))
+            { ToastKey("cserver.addr.invalid"); return; }
+            if (host) s_cserverHost = s_entry; else s_cserverPort = s_entry;
+            GoPage(PageServerAdd, host ? 0 : 1);
         }
 
         static void GoPage(int page, int focus)
@@ -277,6 +340,7 @@ namespace OriCoop
             s_editing = false;
             s_connectedAt = 0f;
             s_toastUntil = 0f;
+            s_listTop = 0;
             Relabel(focus);
             OnHighlightChanged();
             s_mgr.IsLocked = true;                          // the press that got us here is still down
@@ -289,14 +353,51 @@ namespace OriCoop
         static void LobbyPressed(int index)
         {
             bool relay = UsesRoomCode;
-            if (s_page == PageRole)
+            if (s_page == PageServerList)
             {
+                if (index == 0) { LoadCServer(); GoPage(PageServerAdd, 0); }
+                else if (index == 1) GoPage(PageServerRemove, 0);
+                else
+                {
+                    List<string> servers = OriCoop.Authority.CServerConfig.Servers;
+                    if (index - 2 < servers.Count && OriCoop.Authority.CServerConfig.SetAddress(servers[index - 2]))
+                    { LoadCServer(); GoPage(PageRole, 0); }
+                    else ToastKey("cserver.addr.save_failed");
+                }
+            }
+            else if (s_page == PageServerRemove)
+            {
+                if (OriCoop.Authority.CServerConfig.Servers.Count == 0) { LobbyBack(); return; }
+                if (OriCoop.Authority.CServerConfig.RemoveServer(index)) GoPage(PageServerList, 1);
+                else ToastKey("cserver.addr.save_failed");
+            }
+            else if (s_page == PageServerAdd)
+            {
+                if (index < 2)
+                {
+                    s_entryKind = index == 0 ? 3 : 4;
+                    s_entry = index == 0 ? s_cserverHost : s_cserverPort;
+                    s_cursor = Math.Min(s_entry.Length, EntryMax - 1);
+                    GoPage(PageEntry, 0);
+                }
+                else
+                {
+                    string address = s_cserverHost + ":" + s_cserverPort;
+                    if (!OriCoop.Authority.CServerConfig.IsValidAddress(address)) { ToastKey("cserver.addr.invalid"); return; }
+                    if (!OriCoop.Authority.CServerConfig.AddServer(address)) { ToastKey("cserver.addr.save_failed"); return; }
+                    GoPage(PageServerList, OriCoop.Authority.CServerConfig.Servers.Count + 1);
+                }
+            }
+            else if (s_page == PageRole)
+            {
+                if (s_transport == "cserver" && index < 2 && !ValidateCServer()) return;
                 if (index == 0)
                 {
                     string srv = LobbyServer;
                     if (relay && srv.Length == 0) { ToastKey("lobby.server.required"); return; }
                     GoPage(PageHost, 1);
-                    NetPlay.Begin(true, s_transport, relay ? srv + "|" : "");
+                    if (s_transport == "cserver") BeginCServer(true, srv + "|");
+                    else NetPlay.Begin(true, s_transport, relay ? srv + "|" : "");
                 }
                 else if (index == 1)
                 {
@@ -366,7 +467,8 @@ namespace OriCoop
                 {
                     s_connectedAt = 0f;
                     Plugin.Log.LogInfo("mode menu: retry join " + s_transport + " " + s_joinTarget);
-                    NetPlay.Begin(false, s_transport, s_joinTarget);
+                    if (s_transport == "cserver") BeginCServer(false, s_joinTarget);
+                    else NetPlay.Begin(false, s_transport, s_joinTarget);
                     RefreshTexts(true);
                 }
                 else if (index == 1) LobbyBack();
@@ -375,6 +477,7 @@ namespace OriCoop
 
         static void Submit()
         {
+            if (CServerEntry) { SaveCServerEntry(); return; }
             if (s_entryKind == 2)
             {
                 NetPlay.SetRelayServer(s_entry);
@@ -397,20 +500,25 @@ namespace OriCoop
             if (s_transport == "cserver") s_joinTarget = OriCoop.Authority.CServerConfig.Address + "|" + s_joinTarget;
             GoPage(PageJoin, 1);
             Plugin.Log.LogInfo("mode menu: join " + s_transport + " " + s_joinTarget);
-            NetPlay.Begin(false, s_transport, s_joinTarget);
+            if (s_transport == "cserver") BeginCServer(false, s_joinTarget);
+            else NetPlay.Begin(false, s_transport, s_joinTarget);
         }
 
         static void LobbyBack()
         {
+            if (s_page == PageServerList) { GoPage(PageServerMode, 0); return; }
+            if (s_page == PageServerAdd || s_page == PageServerRemove) { GoPage(PageServerList, s_page == PageServerAdd ? 0 : 1); return; }
             if (s_page == PageRole)
             {
-                if (UsesRoomCode) { GoPage(PageServerMode, s_transport == "cserver" ? 0 : 1); return; }
+                if (s_transport == "cserver") { GoPage(PageServerList, 0); return; }
+                if (UsesRoomCode) { GoPage(PageServerMode, 1); return; }
                 s_page = 1;
                 Relabel(s_transport == "direct" ? 1 : 2);
                 OnHighlightChanged();
                 Plugin.Log.LogInfo("mode menu: online page");
             }
-            else if (s_page == PageEntry) GoPage(PageRole, s_entryKind == 2 ? 2 : 1);
+            else if (s_page == PageEntry)
+                GoPage(CServerEntry ? PageServerAdd : PageRole, s_entryKind == 3 ? 0 : s_entryKind == 4 ? 1 : s_entryKind == 2 ? 3 : 1);
             else if (s_page == PageHost) { NetPlay.End("host cancelled"); GoPage(PageRole, 0); }
             else if (s_page == PageJoin) { NetPlay.End("join cancelled"); GoPage(s_transport == "steam" ? PageRole : PageEntry, 1); }
         }
@@ -480,6 +588,25 @@ namespace OriCoop
         static void EditTick()
         {
             if (Time.realtimeSinceStartup - s_editStartedAt < 0.15f) return;   // the press that started editing
+            if (CServerEntry)
+            {
+                if (Input.GetKeyDown(KeyCode.Escape) || Core.Input.Cancel.OnPressed) { LobbyBack(); return; }
+                bool cChanged = CServerEditInput(Input.inputString);
+                if (s_page != PageEntry) return;
+                bool cCtrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+                if ((cCtrl && Input.GetKeyDown(KeyCode.V)) || Core.Input.Delete.OnPressed) { Paste(GUIUtility.systemCopyBuffer ?? ""); cChanged = true; }
+                else if (Core.Input.Copy.OnPressed && Input.inputString.Length == 0) { Backspace(); cChanged = true; }
+                if (Input.inputString.Length == 0)
+                {
+                    if (Core.Input.MenuLeft.OnPressed) { CursorMove(-1); cChanged = true; }
+                    if (Core.Input.MenuRight.OnPressed) { CursorMove(+1); cChanged = true; }
+                    if (Core.Input.MenuUp.OnPressed) { Cycle(+1); cChanged = true; }
+                    if (Core.Input.MenuDown.OnPressed) { Cycle(-1); cChanged = true; }
+                    if (Core.Input.ActionButtonA.OnPressed) { SaveCServerEntry(); return; }
+                }
+                if (cChanged) RefreshTexts(true);
+                return;
+            }
             string typed = TypedChars();
             bool changed = false;
             foreach (char ch in Input.inputString)
@@ -502,6 +629,19 @@ namespace OriCoop
             if (changed) RefreshTexts(true);
         }
 
+        static bool CServerEditInput(string input)
+        {
+            bool changed = false;
+            foreach (char ch in input ?? "")
+            {
+                if (ch == '\b') { Backspace(); changed = true; }
+                else if (ch == '\n' || ch == '\r') { SaveCServerEntry(); return changed; }
+                else if (ch == '\x1b') { LobbyBack(); return changed; }
+                else { Insert(ch.ToString()); changed = true; }
+            }
+            return changed;
+        }
+
         static string TypedChars()
         {
             string s = Input.inputString;
@@ -515,7 +655,7 @@ namespace OriCoop
             var sb = new StringBuilder();
             foreach (char raw in s)
             {
-                char c = s_entryKind == 0 ? char.ToUpperInvariant(raw) : s_entryKind == 2 ? char.ToLowerInvariant(raw) : raw;
+                char c = s_entryKind == 0 ? char.ToUpperInvariant(raw) : s_entryKind == 2 || s_entryKind == 3 ? char.ToLowerInvariant(raw) : raw;
                 if (alpha.IndexOf(c) >= 0) sb.Append(c);
             }
             return sb.ToString();
@@ -752,14 +892,70 @@ namespace OriCoop
             return PickResolved(rows[i][1], rows[i][3]);
         }
 
+        static void EnsureRowItems(int count)
+        {
+            while (s_items.Count < count)
+            {
+                int index = s_items.Count;
+                CleverMenuItem source = s_items[0];
+                GameObject copy = (GameObject)InstantiateUtility.Instantiate(source.gameObject);
+                copy.name = "OriCoop_ServerRow_" + index;
+                copy.transform.parent = source.transform.parent;
+                copy.transform.localScale = source.transform.localScale;
+                copy.transform.localRotation = source.transform.localRotation;
+                CleverMenuItem item = copy.GetComponent<CleverMenuItem>();
+                item.Pressed = null; item.Activated = null; item.Visible = null;
+                item.PressedCallback += () => OnPressed(index);
+                s_items.Add(item);
+                MessageBox[] boxes = copy.GetComponentsInChildren<MessageBox>(true);
+                s_itemBoxes.Add(boxes);
+                for (int b = 0; b < boxes.Length && b < s_itemBoxes[0].Length; b++)
+                {
+                    AnimationCurve curve;
+                    if (s_baseCurves.TryGetValue(s_itemBoxes[0][b], out curve)) s_baseCurves[boxes[b]] = curve;
+                }
+                s_itemPositions.Add(s_itemPositions[0]);
+                s_itemSizes.Add(s_itemSizes[0]);
+            }
+            if (s_labelCache.Length < s_items.Count)
+            { s_labelCache = new string[s_items.Count]; s_descCache = new string[s_items.Count]; }
+        }
+
+        // Keep all logical rows navigable, with a four-row window in the existing native orb.
+        // Off-window items stay active for keyboard/controller navigation but have no opacity or mouse bounds.
+        static void LayoutServerRows(int count)
+        {
+            if (s_mgr == null || s_items.Count < 2) return;
+            bool list = s_page == PageServerList || s_page == PageServerRemove;
+            s_mgr.ItemDirection = list ? CleverMenuItemSelectionManager.Direction.TopToBottom : s_itemDirection;
+            int focus = Mathf.Clamp(s_mgr.Index, 0, Math.Max(0, count - 1));
+            if (focus < s_listTop) s_listTop = focus;
+            if (focus >= s_listTop + MaxItems) s_listTop = focus - MaxItems + 1;
+            s_listTop = Mathf.Clamp(s_listTop, 0, Math.Max(0, count - MaxItems));
+            Vector3 step = s_itemPositions[1] - s_itemPositions[0];
+            for (int i = 0; i < s_items.Count; i++)
+            {
+                bool visible = !list || (i >= s_listTop && i < s_listTop + MaxItems);
+                Vector3 position = list ? s_itemPositions[0] + step * (i - s_listTop) : s_itemPositions[i];
+                s_items[i].transform.position = s_root.transform.TransformPoint(position);
+                s_items[i].Size = visible ? s_itemSizes[i] : Vector2.zero;
+                s_items[i].SetOpacity(visible ? 1f : 0f);
+            }
+        }
+
         // Write labels / descriptions into the items, show only as many items as there are rows.
         static void ApplyRows(string[][] rows)
         {
+            EnsureRowItems(rows.Length);
             LastLabels.Clear();
             for (int i = 0; i < s_items.Count; i++)
             {
                 bool on = i < rows.Length;
-                if (s_items[i].gameObject.activeSelf != on) s_items[i].gameObject.SetActive(on);
+                if (s_items[i].gameObject.activeSelf != on)
+                {
+                    s_items[i].gameObject.SetActive(on);
+                    if (on) s_items[i].TweenColor(s_items[i].IsHighlighted ? s_items[i].Transition.HighlightedColor : s_items[i].Transition.NormalColor);
+                }
                 if (!on) { s_labelCache[i] = null; s_descCache[i] = null; continue; }
                 string label = PickResolved(rows[i][0], rows[i][2]), desc = PickResolved(rows[i][1], rows[i][3]);
                 LastLabels.Add(label);
@@ -771,6 +967,7 @@ namespace OriCoop
             int shown = Math.Min(rows.Length, s_items.Count);
             if (s_mgr.MenuItems.Count != shown) { s_mgr.MenuItems.Clear(); for (int i = 0; i < shown; i++) s_mgr.MenuItems.Add(s_items[i]); }
             if (s_mgr.Index >= rows.Length && rows.Length > 0) { bool q = s_quiet; s_quiet = true; try { s_mgr.SetCurrentItem(0); } finally { s_quiet = q; } }
+            LayoutServerRows(rows.Length);
         }
 
         // Long labels (a full IP:port, a relay address) are wider than the orb. MessageBox scales its text by

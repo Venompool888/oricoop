@@ -20,8 +20,8 @@ try {
   Wait-TestSeconds $Seconds
   $p.Refresh()
   if (-not $p.HasExited) {
-    $h = @([OriTestLaunch4]::Windows($p.Id))[0]
-    $r = New-Object OriTestLaunch4+RECT; [void][OriTestLaunch4]::GetWindowRect($h, [ref]$r)
+    $h = @([OriTestLaunch5]::Windows($p.Id))[0]
+    $r = New-Object OriTestLaunch5+RECT; [void][OriTestLaunch5]::GetWindowRect($h, [ref]$r)
     $w = $r.Right - $r.Left; $hh = $r.Bottom - $r.Top
     if ($w -gt 0 -and $hh -gt 0) {
       $bmp = New-Object System.Drawing.Bitmap $w, $hh
