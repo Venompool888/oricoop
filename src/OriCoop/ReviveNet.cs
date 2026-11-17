@@ -50,6 +50,7 @@ namespace OriCoop
             {
                 FinalDeaths++; NetBothDown++;
                 Services.Net.Send(MsgBothDown, true, w => { });
+                ReleaseRemoteDowned();
                 KillP1Normally();
             }
         }
@@ -67,6 +68,7 @@ namespace OriCoop
                 FinalDeaths++; NetBothDown++;
                 Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
                 Services.Net.Send(MsgBothDown, true, w => { });
+                ReleaseRemoteDowned(); // T-026: the partners' skulls go now, not when their puppets later vanish
                 return false;
             }
             // Down; the partner can revive us. (Guest with the host already down: the host decides on our message.)
@@ -185,8 +187,17 @@ namespace OriCoop
                 FinalDeaths++; NetBothDown++;
                 Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
                 Services.Net.Send(MsgBothDown, true, w => { });
+                ReleaseRemoteDowned();
                 KillP1Normally();
             }
+        }
+
+        // Both down: every partner's downed state ends with the checkpoint reload. Clear it at once (host and guest
+        // alike) so no skull stays on screen while this PC's death and reload play (T-026).
+        static void ReleaseRemoteDowned()
+        {
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
+                if (seat != Host.LocalSeat && s_down[seat] != null) { Downed d = s_down[seat]; s_down[seat] = null; RestoreDowned(d, false); }
         }
 
         static void OnNetRevive(BinaryReader r)
@@ -231,8 +242,7 @@ namespace OriCoop
             if (!Services.Net.Enabled || Services.Net.Sender != 1) return;
             FinalDeaths++; NetBothDown++;
             Services.Log.Info("online: host says both Oris are down: checkpoint reload");
-            foreach (int seat in PresentSeats)
-                if (seat != Host.LocalSeat && s_down[seat] != null) { RestoreDowned(s_down[seat], false); s_down[seat] = null; }
+            ReleaseRemoteDowned();
             KillP1Normally();
         }
 

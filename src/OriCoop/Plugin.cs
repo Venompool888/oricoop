@@ -330,7 +330,9 @@ namespace OriCoop
         internal void DoLateUpdate()
         {
             SubsystemGuard.Run("NativeGui.LateUpdate", s_nativeGuiLate);
-            if (P2Context.P2 == null || P2Context.P1 == null) return;
+            // T-026: with no partner present (puppet gone during a death/reload) the HUD below is not updated, so hide
+            // the revive markers here; otherwise the last one stays frozen on the HUD layer until the partner returns.
+            if (P2Context.P2 == null || P2Context.P1 == null) { SubsystemGuard.Run("ReviveHud.Update", s_reviveHud); return; }
             if (NetPlay.Enabled)
             {
                 SubsystemGuard.Run("Plugin.UpdateOnlineHuds", m_onlineHudLoop);
