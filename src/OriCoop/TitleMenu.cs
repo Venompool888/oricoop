@@ -434,6 +434,7 @@ namespace OriCoop
                 go.transform.localPosition = start.transform.localPosition;
                 go.SetActive(start.gameObject.activeSelf);
                 CleverMenuItem coop = go.GetComponent<CleverMenuItem>();
+                FixClonedGlows(start, coop);
                 // Its copied "pressed" sequence holds the game's press sound (mainMenuPressStartGameSoundProvider):
                 // keep that for our press, drop the rest (it would go to the save slots).
                 s_tCoopSound = go.GetComponentInChildren<PlaySoundAction>(true);
@@ -480,6 +481,86 @@ namespace OriCoop
                 Plugin.Log.LogInfo("title menu: Single Player / Co-op items in (" + (layout != null ? "layout " + layout.name : "no layout") + ", " + string.Join(" | ", TitleLabels.ToArray()) + ")");
             }
             catch (Exception e) { Plugin.Log.LogError("title menu: install failed, keeping Start Game: " + e); s_tCoop = null; }
+        }
+
+        // T-020: the blue wisp behind a highlighted title item is its "glows" child (TransparencyAnimator, the item's
+        // HighlightAnimator). A TransparencyAnimator caches each renderer's alpha from the SHARED material when it
+        // initializes (decomp TransparencyAnimator.RendererData), and an unhighlighted item has written alpha 0 into those
+        // shared materials. Our copy initializes during Instantiate, while Start Game's glows are faded out, so it cached 0
+        // as the full alpha and its wisp could never show (only the text lifted). It also missed the main menu's own fade
+        // (the parent TransparencyAnimator registers its children once, before the copy existed).
+        // Fix: give the copy's glow renderers their own materials at the original's cached alpha, re-cache, start
+        // unhighlighted, and register the copy with the parent fade like a native item.
+        static readonly FieldInfo s_taData = typeof(TransparencyAnimator).GetField("m_rendererData", BindingFlags.Instance | BindingFlags.NonPublic);
+        static readonly string[] s_taProps = { "_Color", "_MaskDissolveColor", "_AdditiveLayerColor" };
+
+        static string RelPath(Transform root, Transform t)
+        {
+            string p = "";
+            for (; t != null && t != root; t = t.parent) p = t.name + "#" + t.GetSiblingIndex() + "/" + p;
+            return p;
+        }
+
+        // Visible wisp of an item: sum of the alpha its glow renderers draw with (enabled renderers only).
+        static float GlowOf(CleverMenuItem item)
+        {
+            float sum = 0f;
+            if (item == null) return 0f;
+            foreach (TransparencyAnimator ta in item.GetComponentsInChildren<TransparencyAnimator>(true))
+            {
+                string prop = s_taProps[Mathf.Clamp((int)ta.Mode, 0, s_taProps.Length - 1)];
+                foreach (Renderer r in ta.GetComponentsInChildren<Renderer>(true))
+                    if (r.enabled && r.gameObject.activeInHierarchy && r.sharedMaterial != null && r.sharedMaterial.HasProperty(prop))
+                        sum += r.sharedMaterial.GetColor(prop).a;
+            }
+            return sum;
+        }
+
+        static void FixClonedGlows(CleverMenuItem start, CleverMenuItem coop)
+        {
+            if (s_taData == null) { Plugin.Log.LogWarning("title menu: TransparencyAnimator.m_rendererData not found; Co-op wisp left as copied"); return; }
+            // Original alpha of every glow renderer of Start Game, by its path under the item.
+            Dictionary<string, float> alpha = new Dictionary<string, float>();
+            foreach (TransparencyAnimator ta in start.GetComponentsInChildren<TransparencyAnimator>(true))
+            {
+                ta.Initialize();   // menu not shown yet: cache now, while the shared materials still hold the real alpha
+                System.Collections.IList data = s_taData.GetValue(ta) as System.Collections.IList;
+                if (data == null) continue;
+                foreach (object d in data)
+                {
+                    Type t = d.GetType();
+                    Renderer r = t.GetField("Renderer").GetValue(d) as Renderer;
+                    if (r != null) alpha[RelPath(start.transform, r.transform)] = (float)t.GetField("OriginalAlpha").GetValue(d);
+                }
+            }
+            int fixedRenderers = 0, animators = 0;
+            foreach (TransparencyAnimator ta in coop.GetComponentsInChildren<TransparencyAnimator>(true))
+            {
+                string prop = s_taProps[Mathf.Clamp((int)ta.Mode, 0, s_taProps.Length - 1)];
+                foreach (Renderer r in ta.GetComponentsInChildren<Renderer>(true))
+                {
+                    float a;
+                    if (r.sharedMaterial == null || !r.sharedMaterial.HasProperty(prop) || !alpha.TryGetValue(RelPath(coop.transform, r.transform), out a)) continue;
+                    Material m = new Material(r.sharedMaterial);
+                    Color c = m.GetColor(prop); c.a = a; m.SetColor(prop, c);
+                    r.sharedMaterial = m;
+                    fixedRenderers++;
+                }
+                ta.CacheOriginals();
+                animators++;
+            }
+            // Start like a native unhighlighted item; the selection manager highlights it when it is chosen.
+            BaseAnimator hl = coop.HighlightAnimator;
+            if (hl != null) { hl.AnimatorDriver.GoToStart(); hl.SampleValue(0f, true); }
+            // Join the main menu's fade (it registered its children before the copy existed).
+            TransparencyAnimator.Register(coop.transform);
+            // Each animator whose nearest animator above it is outside the copy (the glows) joins that parent's fade.
+            foreach (TransparencyAnimator ta in coop.GetComponentsInChildren<TransparencyAnimator>(true))
+            {
+                TransparencyAnimator above = ta.transform.parent != null ? ta.transform.parent.GetComponentInParent<TransparencyAnimator>() : null;
+                if (above != null && !above.transform.IsChildOf(coop.transform)) TransparencyAnimator.Register(ta.transform);
+            }
+            Plugin.Log.LogInfo("title menu: Co-op wisp: " + fixedRenderers + " glow renderer(s) in " + animators + " animator(s) at Start Game's alpha, joined the menu fade");
         }
 
         // Does this action (or an action it runs) set the title screen to the save slots?
@@ -754,8 +835,17 @@ namespace OriCoop
             int si = s_tMain.MenuItems.IndexOf(s_tSingle), ci = s_tMain.MenuItems.IndexOf(s_tCoop);
             check(si >= 0 && ci == si + 1 && s_tCoop.gameObject.activeInHierarchy, "title menu: Co-op right under Single Player (" + si + ", " + ci + ")");
             check(Vector3.Distance(s_tSingle.transform.position, s_tCoop.transform.position) > 0.01f, "title menu: items do not overlap");
+            // T-020: the highlighted item shows its blue wisp ("glows"), the Co-op copy exactly like Single Player.
+            s_tMain.SetCurrentMenuItem(s_tSingle);
+            yield return s_tHost.StartCoroutine(TWait(1.2f));
+            float singleOn = GlowOf(s_tSingle), coopOff = GlowOf(s_tCoop);
             s_tMain.SetCurrentMenuItem(s_tCoop);
-            yield return s_tHost.StartCoroutine(TWait(0.8f));
+            yield return s_tHost.StartCoroutine(TWait(1.2f));
+            float coopOn = GlowOf(s_tCoop), singleOff = GlowOf(s_tSingle);
+            note("title menu: wisp alpha single on=" + singleOn.ToString("F3") + " off=" + singleOff.ToString("F3") + ", co-op on=" + coopOn.ToString("F3") + " off=" + coopOff.ToString("F3"));
+            check(singleOn > 0.05f && singleOff < singleOn * 0.2f, "title menu: Single Player's wisp shows only while highlighted (on " + singleOn.ToString("F3") + ", off " + singleOff.ToString("F3") + ")");
+            check(coopOn > singleOn * 0.8f && coopOn < singleOn * 1.25f && coopOff < singleOn * 0.2f,
+                "title menu: Co-op shows the same wisp as Single Player when highlighted (co-op on " + coopOn.ToString("F3") + ", off " + coopOff.ToString("F3") + "; single on " + singleOn.ToString("F3") + ")");
             TShot("title_items");
             yield return s_tHost.StartCoroutine(TWait(0.5f));
 
@@ -766,6 +856,8 @@ namespace OriCoop
             check(TitleOrbOpen && LastPage == "coop" && LastLabels.Count == 4 && HasKey(LastLabels, "title.local") && HasKey(LastLabels, "server.title"),
                 "title menu: Co-op page with 4 choices (" + Labels + ")");
             check(!s_tMain.IsVisible, "title menu: title items hidden under the Co-op page");
+            yield return s_tHost.StartCoroutine(TWait(0.8f));
+            check(GlowOf(s_tCoop) < 0.02f, "title menu: Co-op's wisp fades out with the title items (" + GlowOf(s_tCoop).ToString("F3") + ")");
             if (!TitleOrbOpen) yield break;
             yield return s_tHost.StartCoroutine(TWait(0.5f));
             TShot("title_coop_page");
