@@ -19,6 +19,10 @@ try {
     Copy-Item -LiteralPath (Join-Path $PSScriptRoot 'assets\kit\THIRD-PARTY-LICENSES.txt') -Destination $stage
     Copy-Item -LiteralPath (Join-Path $root 'public\GAME-ASSETS-NOTICE.md') -Destination $stage
     Copy-Item -Path (Join-Path $PSScriptRoot 'assets\zhpatch-kit\*') -Destination $stage
+    # The source README keeps an ASCII name (git ls-tree quotes non-ASCII paths, which the public sync skips);
+    # in the kit it gets its Chinese name (README + "simplified Chinese patch"), spelled with char codes so the script stays ASCII.
+    $zhName = 'README-' + (-join ([char[]](0x7B80, 0x4F53, 0x4E2D, 0x6587, 0x8865, 0x4E01))) + '.txt'
+    Rename-Item -LiteralPath (Join-Path $stage 'README-zh-CN.txt') -NewName $zhName
     Remove-Item -LiteralPath $zip -Force -ErrorAction SilentlyContinue
     Add-Type -AssemblyName System.IO.Compression.FileSystem
     [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
