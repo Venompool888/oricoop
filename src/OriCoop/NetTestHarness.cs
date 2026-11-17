@@ -1452,6 +1452,8 @@ namespace OriCoop
             s_enemyPackets.Clear(); s_ownEnemyReports.Clear(); s_ownEnemyHealth.Clear(); s_enemyOwnerTrace.Clear(); NetPlay.On(49, ReadEnemyTest); NetPlay.On(48, ReadEnemyTrace);
             s_harness = h; BotActive = true; Bot(0, 0);
             h.Note("net role=" + (host ? "host" : "guest"));
+            yield return NetIntroTest.Run(h, ClientCount);
+            if (Environment.GetEnvironmentVariable("ORICOOP_INTRO_ONLY") == "1") yield break;
             if (ClientCount == 4) { yield return FourClients(h); yield break; }
             float deadline = Time.realtimeSinceStartup + (ClientCount == 3 ? 120f : 40f);
             while ((Players.Remotes.Count != ClientCount - 1 || !SaveSync.Ready) && Time.realtimeSinceStartup < deadline) yield return null;

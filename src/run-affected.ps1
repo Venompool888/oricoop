@@ -19,6 +19,7 @@ $Suites = [ordered]@{
     'net'         = @('run-nettest.ps1')
     'net-relay'   = @('run-nettest.ps1', '-Relay')
     'net-3p'      = @('run-nettest.ps1', '-Clients', '3')
+    'net-4p'      = @('run-nettest.ps1', '-Clients', '4')
     'net-newgame' = @('run-nettest.ps1', '-GuestNewGame')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
@@ -34,7 +35,7 @@ $ModuleSuites = @{
     'M2' = @('local', 'net', 'net-3p', 'coopsave')
     'M3' = @('net', 'net-relay')
     'M4' = @('net', 'net-3p')
-    'M5' = @('net', 'local')
+    'M5' = @('net', 'net-4p', 'local')
     'M6' = @('net', 'local')
     'M7' = @('coopsave', 'titlejoin', 'net-newgame', 'rooms')
     'M8' = @('local', 'titlejoin')
@@ -43,7 +44,8 @@ $ModuleSuites = @{
 # Harness / test files -> the suite that runs them (checked before the module table).
 $FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
-    'NetTestHarness'   = @('net', 'net-3p'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
+    'NetIntroTest'     = @('net', 'net-4p');
+    'NetTestHarness'   = @('net', 'net-3p', 'net-4p'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
 }
 

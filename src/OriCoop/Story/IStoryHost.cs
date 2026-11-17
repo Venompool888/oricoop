@@ -5,7 +5,7 @@ using UnityEngine;
 
 namespace OriCoop.Story
 {
-    internal interface IStoryHost
+    internal interface IStoryHost : IIntroHost
     {
         SeinCharacter P1 { get; }
         SeinCharacter P2 { get; }
