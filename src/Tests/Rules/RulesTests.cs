@@ -299,7 +299,22 @@ static class RulesTests
             Pause(b[1], true); Pause(b[1], false); Pause(b[1], true);
             Check(m[0].InMenu(2), "last update was ignored");
         });
-        Console.WriteLine("RULES " + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
+        // T-031: a Steam invite accepted while an online game is already running.
+        Run("invite replaces an idle session in the menus", delegate {
+            Check(InviteRules.ReplacesSession(true, false, false, false), "idle host page / slots after 开房 kept the old session");
+        });
+        Run("invite never replaces a session with a partner, in gameplay or loading", delegate {
+            Check(!InviteRules.ReplacesSession(true, true, false, false), "partner present: session ended");
+            Check(!InviteRules.ReplacesSession(true, false, true, false), "in gameplay: session ended");
+            Check(!InviteRules.ReplacesSession(true, false, false, true), "loading a save: session ended");
+            Check(!InviteRules.ReplacesSession(false, false, false, false), "offline: nothing to replace");
+        });
+        Run("invite banner names what the player must do", delegate {
+            Check(InviteRules.BannerKey(true, true) == "steam.invite_end", "playing with someone: " + InviteRules.BannerKey(true, true));
+            Check(InviteRules.BannerKey(true, false) == "steam.invite_menu", "online alone: " + InviteRules.BannerKey(true, false));
+            Check(InviteRules.BannerKey(false, false) == "steam.invite_menu", "offline in gameplay: " + InviteRules.BannerKey(false, false));
+        });
+        Console.WriteLine("RULES" + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
         return failed == 0 ? 0 : 1;
     }
 }

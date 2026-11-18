@@ -23,6 +23,12 @@ foreach ($r in @(@('dead-marker\dead_marker.png', 'OriCoop.dead_marker.png'),
     $p = Join-Path $a $r[0]
     if (Test-Path $p) { $res += "/resource:$p,$($r[1])" } else { Write-Host "note: $($r[0]) not found, not embedded" }
 }
+# Build info (T-032): the commit this DLL comes from, "+local" when src\OriCoop has uncommitted changes (Ui\BuildInfo.cs).
+$sha = (git -C $root rev-parse --short HEAD 2>$null); if (-not $sha) { $sha = 'unknown' }
+$dirty = (git -C $root status --porcelain -- src/OriCoop 2>$null); if ($dirty) { $sha = "$sha+local" }
+$buildTxt = Join-Path $out 'build.txt'
+[IO.File]::WriteAllText($buildTxt, "commit=$sha`n")
+$res += "/resource:$buildTxt,OriCoop.build.txt"
 & $csc /nologo /noconfig /nostdlib+ /target:library /optimize+ /langversion:5 /out:"$out\OriCoop.dll" @refs @res @srcs
 if ($LASTEXITCODE -ne 0) { throw "csc failed" }
 if ($NoInstall) { "BUILD OK (not installed)"; return }

@@ -1,6 +1,7 @@
 using System;
 using Game;
 using OriCoop.Net;
+using OriCoop.Rules;
 using UnityEngine;
 
 namespace OriCoop
@@ -19,7 +20,9 @@ namespace OriCoop
     //     slot (NativeModeMenu.StartGuestNoSlot -> GuestJoin.BeginNoSlot); an open slot orb proceeds at once;
     //   * in gameplay the invite is kept and a banner says to return to the main menu (we do not tear down a
     //     running game); it is acted on as soon as the player is out of gameplay, and dropped after 5 minutes;
-    //   * while another online session runs (hosting, relay, direct) the invite is only announced.
+    //   * while another online session runs: in the menus with nobody in it (a host page waiting, the slots after
+    //     开房), the invite ends it and joins (T-031); while playing with someone the banner says to return to the
+    //     title, which ends that session, and the join then starts by itself (Rules\InviteRules).
     public static class SteamInviteHook
     {
         const double InviteLifetimeSeconds = 300.0;
@@ -56,8 +59,16 @@ namespace OriCoop
             {
                 // A Steam join page that is already waiting picks the invite up itself (NetPlay.PumpSteam).
                 if (!NetPlay.IsHost && NetPlay.UsesSteam) return;
-                Announce(lobby, "online play is already running (" + (NetPlay.IsHost ? "host" : "guest") + " via " + NetPlay.TransportName + ")");
-                return;
+                if (!InviteReplacesSession)
+                {
+                    Announce(lobby, "online play is already running (" + (NetPlay.IsHost ? "host" : "guest") + " via " + NetPlay.TransportName + ")");
+                    return;
+                }
+                // T-031: a session nobody joined yet, in the menus (a host page waiting, a join page, the save slots after
+                // 开房): accepting a friend's invite means "join them instead", so end it and join.
+                Plugin.Log.LogInfo("net: Steam: invite: ending the idle " + (NetPlay.IsHost ? "host" : "guest") + " session via " +
+                    NetPlay.TransportName + " to join the invite");
+                NetPlay.End("Steam invite accepted");
             }
             if (NetPlay.LocalInGameplay() || Loading)
             {
@@ -80,6 +91,12 @@ namespace OriCoop
             if (s_announced == lobby) return;
             s_announced = lobby;
             Plugin.Log.LogInfo("net: Steam: invite for lobby " + lobby + " kept for later: " + why);
+        }
+
+        // An online session the invite may replace: nobody else is in it, and this player is not in gameplay or loading.
+        internal static bool InviteReplacesSession
+        {
+            get { return InviteRules.ReplacesSession(NetPlay.Enabled, NetPlay.PartnerHere, NetPlay.LocalInGameplay(), Loading); }
         }
 
         static bool Loading
@@ -137,7 +154,7 @@ namespace OriCoop
                 if (NetPlay.Enabled && !NetPlay.IsHost && NetPlay.UsesSteam) return false;
                 string who = SteamTransport.FriendName(SteamTransport.PendingInviteFrom);
                 if (who.Length == 0) who = L10n.T("steam.friend");
-                text = NetPlay.Enabled ? L10n.F("steam.invite_end", who) : L10n.F("steam.invite_menu", who);
+                text = L10n.F(InviteRules.BannerKey(NetPlay.Enabled, NetPlay.PartnerHere), who);
                 return true;
             }
             if (!s_startedByInvite || NetPlay.LocalInGameplay() || NativeModeMenu.OnSteamJoinPage) return false;

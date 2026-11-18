@@ -24,6 +24,7 @@ namespace OriCoop.Authority
             s_installed = true;
             IAuthority touch = AuthoritySource.Current;  // registers the 0xB0-0xBA handlers now (needed before CsWelcome)
             NetPlay.TransportFactory = Create;
+            NetPlay.Stopped = delegate { Teardown(); };   // leaving the room: free the socket, routing and arbiter role (T-031)
             NetPlay.SendToOverride = delegate(int seat, byte type, bool reliable, Action<BinaryWriter> body)
             {
                 if (s_client == null) return false;

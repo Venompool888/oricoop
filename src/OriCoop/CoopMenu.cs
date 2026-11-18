@@ -1,6 +1,7 @@
 using System;
 using Game;
 using J2i.Net.XInputWrapper;
+using OriCoop.Ui;
 using UnityEngine;
 
 namespace OriCoop
@@ -22,6 +23,8 @@ namespace OriCoop
     {
         public const int PageSettings = 0, PageModeSelect = 1, PageSetup = 2;
         public static bool IsOpen { get; private set; }
+        // True while this panel froze the game itself (offline F8). Opened from the native pause it never does (tests).
+        public static bool FrozeGame { get { return IsOpen && s_changedTimeScale; } }
         public static int Page { get; private set; }
         static string s_testPage = "";
 
@@ -63,7 +66,7 @@ namespace OriCoop
         public static int[] TestPadButtons;
 
         const int A = 0x1000, B = 0x2000, BACK = 0x20, START = 0x10, DUP = 1, DDOWN = 2;
-        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : NetPlay.Enabled ? 1 : s_seats.LocalSeats.Length + 4; } }
+        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : NetPlay.Enabled ? 2 : s_seats.LocalSeats.Length + 5; } }
 
         static void PollPads()
         {
@@ -269,7 +272,7 @@ namespace OriCoop
 
         static void ActivateSettings(int row)
         {
-            if (NetPlay.Enabled) { if (row == 0) Close(); return; }
+            if (NetPlay.Enabled) { if (row == 0) OpenLogFolder(); else if (row == 1) Close(); return; }
             int[] seats = s_seats.LocalSeats;
             if (row < 0) return;
             if (row < seats.Length) { WaitForDevice(seats[row]); return; }
@@ -281,7 +284,8 @@ namespace OriCoop
                     else { s_seats.RemoveLocalPlayer(seats[seats.Length - 1]); s_settingsH = 0f; }
                     break;
                 case 2: GoTo(PageModeSelect); break;
-                case 3: Close(); break;
+                case 3: OpenLogFolder(); break;
+                case 4: Close(); break;
             }
             s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
         }
@@ -343,6 +347,7 @@ namespace OriCoop
                         L10n.T("coop.settings_hint"), s_small.fontSize, s_small.alignment, s_small.normal.textColor);
                     NativeGui.EndPage();
                 }
+                else if (OnTitleMenu()) DrawTitleBuild();
                 return;
             }
             Styles();
@@ -455,17 +460,20 @@ namespace OriCoop
                 seatRows[i] = s_waitFor == seats[i] ? L10n.T(seats[i] == 1 ? "coop.choose_p1" : "coop.choose_p2") :
                     online ? label : L10n.F("coop.change_device", label);
             }
-            string[] actions = online ? new string[] { L10n.T("coop.close") } : new string[] {
+            string[] actions = online ? new string[] { L10n.T("coop.open_logs"), L10n.T("coop.close") } : new string[] {
                 L10n.F("coop.cutscenes", Plugin.Instance.P2CanTriggerCutscenes ? L10n.T("coop.either") : L10n.T("coop.p1_only")),
                 s_waitFor < 0 ? L10n.T("coop.choose_local_pad") : seats.Length == 1 ? L10n.T("coop.add_local") : L10n.F("coop.remove_local", seats[seats.Length - 1]),
                 L10n.F("coop.mode", PlayMode.Current == PlayMode.Single ? L10n.T("coop.single") : L10n.T("coop.two_players")),
+                L10n.T("coop.open_logs"),
                 L10n.T("coop.close") };
+            string build = BuildLabel();
             float w = Mathf.Min(Screen.width - 40f, 760f), inner = w - 40f, lineH = s_text.fontSize * 1.9f;
             float h = 36f + LineH(s_title, L10n.T("coop.settings"), inner);
             foreach (string label in seatRows) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
             foreach (string label in actions) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
             if (s_message != "") h += LineH(s_text, s_message, inner);
             if (!online) h += LineH(s_small, L10n.T("coop.cutscene_hint"), inner);
+            h += LineH(s_small, build, inner);
             h = Mathf.Min(h, Screen.height - 20f);
             Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
             NativeGui.Panel("coop.settings.background", r, new Color(0.05f, 0.07f, 0.12f, 0.92f));
@@ -486,7 +494,67 @@ namespace OriCoop
             }
             if (s_message != "") NativeGui.LayoutLabel("coop.settings.message", s_message, s_text);
             if (!online) NativeGui.LayoutLabel("coop.settings.footer", L10n.T("coop.cutscene_hint"), s_small);
+            NativeGui.LayoutLabel("coop.settings.build", build, s_small);
             GUILayout.EndArea();
+        }
+
+        // ---- build info and logs (T-032) ----------------------------------------------------------------------
+        // Settings page rows (local play: seats, cutscenes, add/remove, mode, log folder, close; online: log folder, close).
+        public static int SettingsCloseRow { get { return NetPlay.Enabled ? 1 : s_seats.LocalSeats.Length + 4; } }
+        public static int SettingsLogsRow { get { return SettingsCloseRow - 1; } }
+
+        public static string BuildLabel() { return L10n.F("build.version", BuildInfo.Short(Plugin.Version, BuildInfo.Commit)); }
+
+        static bool OnTitleMenu()
+        {
+            if (GameStateMachine.Instance == null || !GameStateMachine.Instance.IsInExtendedTitleScreen()) return false;
+            TitleScreenManager.Screen screen = TitleScreenManager.CurrentScreen;
+            return screen == TitleScreenManager.Screen.MainMenu || screen == TitleScreenManager.Screen.PressStart;
+        }
+
+        // Bottom-right corner of the title screen, small and dim (the build a playtest report should name).
+        static void DrawTitleBuild()
+        {
+            Styles();
+            NativeGui.BeginPage("title.build");
+            try
+            {
+                NativeGui.Label("title.build.text", new Rect(Screen.width - 616f, Screen.height - 16f - s_small.fontSize * 1.6f, 600f, s_small.fontSize * 1.6f),
+                    BuildLabel(), s_small.fontSize, TextAnchor.LowerRight, new Color(0.7f, 0.75f, 0.85f, 0.75f));
+            }
+            finally { NativeGui.EndPage(); }
+        }
+
+        // The folder with BepInEx's LogOutput.log and the OriCoop trace files (trace dir if it was moved).
+        public static string LogFolder()
+        {
+            string trace = CoopTrace.FilePath;
+            if (!string.IsNullOrEmpty(trace)) { string dir = System.IO.Path.GetDirectoryName(trace); if (!string.IsNullOrEmpty(dir)) return dir; }
+            return BepInEx.Paths.BepInExRootPath;
+        }
+
+        // Test hook: replaces the shell call (tests must never open a window on the owner's desktop).
+        public static Action<string> OpenFolderHook;
+
+        static void OpenLogFolder()
+        {
+            string dir = LogFolder();
+            try
+            {
+                if (OpenFolderHook != null) OpenFolderHook(dir);
+                // A test game (every launch through test-launch.ps1 sets ORICOOP_LOG_TAG) never starts Explorer: the
+                // window would open on the owner's desktop, not the hidden test desktop.
+                else if (!string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ORICOOP_LOG_TAG")) || TestHarness.Enabled)
+                    Plugin.Log.LogInfo("co-op menu: test game, not opening Explorer on " + dir);
+                else System.Diagnostics.Process.Start("explorer.exe", "\"" + dir + "\"");
+                s_message = L10n.T("coop.logs_opened");
+                Plugin.Log.LogInfo("co-op menu: opened the log folder");
+            }
+            catch (Exception ex)
+            {
+                s_message = L10n.F("coop.logs_failed", ex.Message);
+                Plugin.Log.LogWarning("co-op menu: could not open the log folder: " + ex.Message);
+            }
         }
 
         static float s_settingsH, s_settingsW;   // measured setup panel height (last repaint) and the width it was for

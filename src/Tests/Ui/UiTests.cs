@@ -168,6 +168,34 @@ static class UiTests
             Check(state.ShouldWarn("draw", "a", new InvalidOperationException("other")), "different message lost");
         });
 
+        // T-032: build info shown on the title screen and in F8.
+        Run("build info: a clean commit line gives the commit", delegate {
+            Equal("abc1234", BuildInfo.ParseCommit("commit=abc1234\n"));
+            Equal("0123456789abcdef0123456789abcdef01234567", BuildInfo.ParseCommit("commit=0123456789abcdef0123456789abcdef01234567"));
+        });
+        Run("build info: a working-tree build keeps +local", delegate {
+            Equal("abc1234+local", BuildInfo.ParseCommit("commit=abc1234+local\r\n"));
+        });
+        Run("build info: missing or malformed resource is unknown", delegate {
+            Equal(BuildInfo.Unknown, BuildInfo.ParseCommit(null));
+            Equal(BuildInfo.Unknown, BuildInfo.ParseCommit(""));
+            Equal(BuildInfo.Unknown, BuildInfo.ParseCommit("sha=abc1234"));
+            Equal(BuildInfo.Unknown, BuildInfo.ParseCommit("commit=abc123"));      // 6 chars: below git's short form
+            Equal(BuildInfo.Unknown, BuildInfo.ParseCommit("commit=ABC1234"));     // git prints lower-case hex
+            Equal(BuildInfo.Unknown, BuildInfo.ParseCommit("commit=xyz1234"));
+            Equal(BuildInfo.Unknown, BuildInfo.ParseCommit("commit=" + new string('a', 41)));
+        });
+        Run("build info: label names version and commit in both languages", delegate {
+            Equal("0.2.0 (abc1234)", BuildInfo.Short("0.2.0", "abc1234"));
+            Equal("0.2.0 (unknown)", BuildInfo.Short("0.2.0", null));
+            foreach (bool zh in new[] { false, true })
+            {
+                string text = string.Format(L10n.T("build.version", zh), BuildInfo.Short("0.2.0", "abc1234"));
+                Check(text.Contains("0.2.0") && text.Contains("abc1234"), "build.version " + (zh ? "zh" : "en") + ": " + text);
+            }
+            Equal("打开日志文件夹", L10n.T("coop.open_logs", true));
+        });
+
         return s_failed == 0 ? 0 : 1;
     }
 }
