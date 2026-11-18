@@ -365,8 +365,29 @@ namespace OriCoop
             finally { P2Context.Exit(); }
         }
         void UpdateOnlineHud() { P2Hud.Update(m_latePuppet); }
-        // Online: follow the local Ori, pulled by nearby teammates (T-058, docs\multiplayer-model.md §3.2).
-        void UpdateOnlineCamera() { OnlineCamera.Apply(m_camTarget, P2Context.P1, Players.Remotes); }
+        // Online: follow the local Ori, pulled by nearby teammates (T-058, docs\multiplayer-model.md §3.2); while all
+        // local players are down, follow the spectated teammate instead (T-042).
+        void UpdateOnlineCamera()
+        {
+            SeinCharacter followed = Revive.SpectateSein;
+            if (followed != null || m_spectateSuspended) { OnlineCamera.Suspended = followed != null; m_spectateSuspended = followed != null; }
+            if (followed != null)
+            {
+                var cam = UI.Cameras.Current;
+                if (cam != null && cam.Target != followed.Transform
+                    && (cam.Target == P2Context.P1.Transform || cam.Target == m_camTarget || IsPuppetTransform(cam.Target)))
+                    cam.Target = followed.Transform;
+                OnlineCamera.Reset();
+                return;
+            }
+            OnlineCamera.Apply(m_camTarget, P2Context.P1, Players.Remotes);
+        }
+        bool m_spectateSuspended;
+        static bool IsPuppetTransform(Transform t)
+        {
+            foreach (Puppet puppet in Players.Remotes) if (puppet.Sein != null && t == puppet.Sein.Transform) return true;
+            return false;
+        }
         void ApplyLocalCamera()
         {
             CoopCamera.FocusOverride = Revive.OnlyAlive;
@@ -533,6 +554,11 @@ namespace OriCoop
             SeinCharacter p2 = puppet.Sein;
             if (p2 != null)
             {
+                if (Revive.SpectateActive)
+                {
+                    var cam = UI.Cameras.Current;
+                    if (cam != null && cam.Target == p2.Transform && P2Context.P1 != null) cam.Target = P2Context.P1.Transform;
+                }
                 if (Characters.Sein == p2) Characters.Sein = null;
                 if (object.ReferenceEquals(Characters.Current, p2)) Characters.Current = null;
                 P2Lifecycle.DropCarried(p2);
@@ -556,6 +582,7 @@ namespace OriCoop
 
         void Cleanup()
         {
+            Revive.ResetSpectate();
             P2Input.HoldStill = false;
             P2Hud.Destroy();
             P2Extras.ResetOccupancy();

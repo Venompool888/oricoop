@@ -333,6 +333,7 @@ namespace OriCoop
             "hud.role.partner", "{0} 伙伴", "{0} Partner",
             "hud.relay", "中继", "Relay",
             "hud.watching", "正在观看伙伴的过场", "Watching partner's cutscene",
+            "hud.spectate", "正在观看：{0}  A/D 或手柄左右键换人", "Spectating {0}  A/D or D-pad left/right",
             "hud.partner.menu", "伙伴在菜单中", "Partner is in the menu",
             "hud.room", "房间码  {0}", "Room code  {0}",
             "hud.room.loading", "获取中…", "Loading...",

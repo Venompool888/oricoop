@@ -1,5 +1,6 @@
 ﻿OriCoop\Seams\Seams.cs
 OriCoop\Rules\ReviveState.cs
+OriCoop\Rules\SpectateState.cs
 OriCoop\Rules\MenuPresence.cs
 OriCoop\Rules\ReviveWire.cs
 OriCoop\Rules\InviteRules.cs

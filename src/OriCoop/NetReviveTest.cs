@@ -139,6 +139,9 @@ namespace OriCoop
                 Hurt(Own, 1000f);
                 yield return Wait(0.6f);
                 h.Check(Revive.DownedOf(1) != null && TestHarness.RestoreCheckpointCalls == restores0, "R1 guest: own Ori downed, no reload");
+                h.Check(Revive.SpectateActive && Revive.SpectateTarget == 1 && UI.Cameras.Current != null
+                    && UI.Cameras.Current.Target == Puppet.Transform && CutsceneGuard.IsPlayerCameraTarget(Puppet.Transform),
+                    "R1 guest: camera follows host puppet while downed");
                 h.Check(Revive.NetDownedSent >= 1, "R1 guest: 'downed' sent to the host");
                 h.Check(PartnerFx.LocalDownPlayed >= 1 && PartnerFx.DownSent >= 1, "R1 guest: own death burst played and 'down' visuals sent");
             }
@@ -217,6 +220,8 @@ namespace OriCoop
                     "R2 guest: revive glow + sound played on own Ori (" + PartnerFx.LastReviveEffect + ", " + PartnerFx.LastReviveSound + ")");
                 yield return Wait(PartnerFx.GlowSeconds + PartnerFx.FadeSeconds + 0.2f);
                 h.Check(Revive.DownedOf(1) == null && Revive.NetRevivesApplied >= 1, "R2 guest: revived by the host");
+                h.Check(!Revive.SpectateActive && UI.Cameras.Current != null && (UI.Cameras.Current.Target == Own.Transform || OriCoop.Story.StoryHost.Current.IsPluginCameraTarget(UI.Cameras.Current.Target)),
+                    "R2 guest: camera returns to own Ori after revive");
                 int vis = 0; foreach (Renderer r in Own.GetComponentsInChildren<Renderer>()) if (r.enabled) vis++;
                 h.Note("R2 guest: health after revive " + F(Own.Mortality.Health.Amount));
                 h.Check(vis > 0 && !Own.Controller.IsSuspended, "R2 guest: own Ori visible and not frozen again");

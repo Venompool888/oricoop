@@ -60,7 +60,9 @@ namespace OriCoop
         }
         public static bool IsPlayerCameraTarget(Transform target)
         {
+            SeinCharacter spectated = Revive.SpectateSein;
             return Own != null && target == Own.Transform
+                || spectated != null && target == spectated.Transform
                 || target != null && StoryHost.Current.IsPluginCameraTarget(target);
         }
         public static void Init() { Services.Net.On(PedestalMessage, ReceivePedestal); Services.Net.On(LeverMessage, ReceiveLever); }
@@ -243,7 +245,8 @@ namespace OriCoop
             { UI.Fader.FadeOut(0.5f); s_fadeAt = now; s_blackSince = -1f; Repairs++; Log("repair black fade (black for 4 s)"); }
             CameraPuppetController puppet = CameraPuppet();
             // A held cinematic puppet is only a lock if it keeps the view away from the player.
-            if (puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f && CameraDistance(Own) > 10f && now - s_puppetAt >= 2f)
+            SeinCharacter followed = Revive.SpectateSein;
+            if (puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f && CameraDistance(followed != null ? followed : Own) > 10f && now - s_puppetAt >= 2f)
             { puppet.Tween = 0; puppet.CinematicPuppet = null; s_puppetAt = now; Repairs++; Log("repair camera puppet"); }
             if (UI.Cameras.Current != null && Own != null && !IsPlayerCameraTarget(UI.Cameras.Current.Target) && now - s_targetAt >= 2f)
             {

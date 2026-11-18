@@ -439,6 +439,7 @@ namespace OriCoop
                 {
                     DrawSignalBars(scale, hudOpacity);
                     DrawStatusChips(scale, hudOpacity);
+                    DrawSpectate(scale, hudOpacity);
                     DrawHostWaitingChip(scale, hudOpacity);
                     DrawPartnerIndicators(scale, hudOpacity);
                     if (s_collapsedChip)
@@ -567,6 +568,19 @@ namespace OriCoop
 
                 Color textC = new Color(0.95f, 0.88f, 0.65f, hudAlpha);
                 DrawText("hud.chips.text", new Rect(chipR.x + padX, chipR.y + padY, sz.x, sz.y), statusLine, s_chipStyle, textC);
+            }
+            finally { NativeGui.EndPage(); }
+        }
+
+        static void DrawSpectate(float scale, float hudAlpha)
+        {
+            if (!Revive.SpectateActive) return;
+            NativeGui.BeginPage("hud.spectate");
+            try
+            {
+                DrawText("hud.spectate.text", new Rect(0f, 100f * scale, Screen.width, 32f * scale),
+                    L10n.F("hud.spectate", Roles.Tag(Revive.SpectateTarget)), s_toastZh,
+                    new Color(0.95f, 0.88f, 0.65f, hudAlpha));
             }
             finally { NativeGui.EndPage(); }
         }
