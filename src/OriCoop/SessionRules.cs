@@ -25,6 +25,13 @@ namespace OriCoop
         static readonly Dictionary<MenuScreenManager, MenuDebt> Menus = new Dictionary<MenuScreenManager, MenuDebt>();
         static readonly Dictionary<ResumeGameController, MenuDebt> Focus = new Dictionary<ResumeGameController, MenuDebt>();
         static bool s_menu, s_paused, s_reported, s_hold;
+        // T-044: help / page popups and skill-tree item help whose native suspend was skipped online.
+        static readonly PopupLedger<object> Popups = new PopupLedger<object>();
+        public static int SkippedPopupSuspends, SkippedMenuSuspends;
+        public static bool PopupOpen { get { return Popups.AnyOpen; } }
+        // ORICOOP_NOPAUSE_OFF=1: screens pause online again (pre-T-044; mutation switch for the S4 checks).
+        static readonly bool NoPauseOff = Environment.GetEnvironmentVariable("ORICOOP_NOPAUSE_OFF") == "1";
+        static bool NoPause { get { return Online && !NoPauseOff; } }
         // Suspendables this PC froze because the partner paused, released exactly once.
         static List<ISuspendable> s_remoteHeld;
         static readonly FieldInfo RegisteredField = AccessTools.Field(typeof(SuspensionManager), "s_suspendedIterate");
@@ -54,7 +61,7 @@ namespace OriCoop
         public static bool Respawning { get { return s_dead != null; } }
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         static SeinCharacter Own { get { return Host.P1 != null ? Host.P1 : Characters.Sein; } }
-        public static bool LocalLocked { get { return Online && (s_menu || Respawning || Host.StoryWatching); } }
+        public static bool LocalLocked { get { return Online && (s_menu || Popups.AnyOpen || Respawning || Host.StoryWatching); } }
 
         public static void Init()
         {
@@ -99,10 +106,11 @@ namespace OriCoop
             MenuDebt d;
             if (!Menus.TryGetValue(menu, out d)) { d = new MenuDebt(); Menus.Add(menu, d); }
             d.Excluded = excluded;
-            // An explicit pause (Esc / pause menu / map) pauses this game online too; RefreshMenu
-            // reports it and the partner pauses as well. Only menus opened before the session
-            // started were retired to Skipped in Started().
-            d.Vanilla++; SuspensionManager.SuspendExcluding(excluded);
+            // T-044: online nothing pauses (pause menu, map, skill tree, inventory): the world and the enemies keep
+            // running on every PC, only this player's Ori is held (LocalLocked) while the screen is open. The skipped
+            // suspend is remembered so its close skips the resume too. Offline the menu pauses as before.
+            if (NoPause) { d.Skipped++; SkippedMenuSuspends++; }
+            else { d.Vanilla++; SuspensionManager.SuspendExcluding(excluded); }
             RefreshMenu(); HoldLocal();
         }
         static void MenuResume(HashSet<ISuspendable> excluded, MenuScreenManager menu)
@@ -131,9 +139,47 @@ namespace OriCoop
             else SuspensionManager.ResumeAll();
             RefreshMenu();
         }
+        // T-044 popups. The receiver (the native screen) comes last: Replace() pushes it after the original arguments.
+        // The message box each skipped popup opened (help and item help open theirs right after the suspend call; a page
+        // popup keeps it in m_message). Its box going away without the hide event means the popup is gone.
+        static readonly Dictionary<object, MessageBox> PopupBoxes = new Dictionary<object, MessageBox>();
+        static object s_opening;
+        // Test hook (NetStoryTest): close every popup whose suspend was skipped, the way the player's button press does.
+        internal static int HideSkippedPopups()
+        {
+            int hidden = 0;
+            foreach (MessageBox box in new List<MessageBox>(PopupBoxes.Values)) if (box != null) { box.HideMessageScreen(); hidden++; }
+            return hidden;
+        }
+        static readonly FieldInfo PagesMessage = AccessTools.Field(AccessTools.TypeByName("ShowPagesAction"), "m_message");
+        static void PopupSuspend(object owner)
+        {
+            s_opening = owner;
+            if (Popups.Open(owner, NoPause)) SuspensionManager.SuspendAll(); else SkippedPopupSuspends++;
+            HoldLocal();
+        }
+        static void PopupSuspendExcluding(HashSet<ISuspendable> excluded, object owner)
+        {
+            MessageBox box = PagesMessage == null ? null : PagesMessage.GetValue(owner) as MessageBox;
+            if (box != null) PopupBoxes[owner] = box;
+            if (Popups.Open(owner, NoPause)) SuspensionManager.SuspendExcluding(excluded); else SkippedPopupSuspends++;
+            HoldLocal();
+        }
+        static void PopupResume(object owner) { if (Popups.Close(owner)) SuspensionManager.ResumeAll(); }
+        static bool PopupGone(object owner)
+        {
+            // Help / page actions often live on inactive story objects, and ShowHelpTextAction never stores its box
+            // (IsPerforming stays false): only the box it opened tells whether the popup is still up.
+            if (owner as Component == null) return true;
+            MessageBox box;
+            if (!PopupBoxes.TryGetValue(owner, out box)) return false;
+            return box == null || !box.gameObject.activeInHierarchy;
+        }
+        static readonly Predicate<object> s_popupGone = PopupGone;
         static void RefreshMenu()
         {
             PruneScreens();
+            if (Popups.AnyOpen && Popups.Prune(s_popupGone) > 0) Services.Log.Info("net: forgot a popup that closed without its hide event");
             s_menu = s_paused = false;
             foreach (KeyValuePair<MenuScreenManager, MenuDebt> pair in Menus)
                 if (pair.Key != null && pair.Key.MainMenuVisible && pair.Value.Skipped + pair.Value.Vanilla > 0)
@@ -304,6 +350,54 @@ namespace OriCoop
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             { return Replace(instructions, "ResumeAll", "FocusResume"); }
+        }
+        [HarmonyPatch(typeof(MessageControllerB), "ShowMessageBoxB")]
+        static class PopupBox
+        {
+            static void Postfix(MessageBox __result)
+            {
+                if (s_opening != null && __result != null) PopupBoxes[s_opening] = __result;
+                s_opening = null;
+            }
+        }
+        // T-044: native popups that freeze the game (ability help, page popups, skill-tree item help).
+        [HarmonyPatch(typeof(ShowHelpTextAction), "Perform")]
+        static class OpenHelp
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            { return Replace(Replace(instructions, "SuspendAll", "PopupSuspend"), "ResumeAll", "PopupResume"); }
+        }
+        [HarmonyPatch(typeof(ShowHelpTextAction), "OnMessageScreenHide")]
+        static class CloseHelp
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            { return Replace(instructions, "ResumeAll", "PopupResume"); }
+        }
+        [HarmonyPatch]
+        static class OpenPages
+        {
+            static MethodBase TargetMethod() { return AccessTools.Method(AccessTools.TypeByName("ShowPagesAction"), "Perform"); }
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            { return Replace(instructions, "SuspendExcluding", "PopupSuspendExcluding"); }
+        }
+        [HarmonyPatch]
+        static class ClosePages
+        {
+            static MethodBase TargetMethod() { return AccessTools.Method(AccessTools.TypeByName("ShowPagesAction"), "OnFinishedReading"); }
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            { return Replace(instructions, "ResumeAll", "PopupResume"); }
+        }
+        [HarmonyPatch(typeof(InventoryManager), "OnMenuItemPressed")]
+        static class OpenItemHelp
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            { return Replace(Replace(instructions, "SuspendAll", "PopupSuspend"), "ResumeAll", "PopupResume"); }
+        }
+        [HarmonyPatch(typeof(InventoryManager), "OnMessageScreenHide")]
+        static class CloseItemHelp
+        {
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            { return Replace(instructions, "ResumeAll", "PopupResume"); }
         }
         [HarmonyPatch(typeof(GameController), "get_InputLocked")]
         static class NeutralFrames

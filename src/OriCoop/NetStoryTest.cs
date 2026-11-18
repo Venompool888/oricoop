@@ -191,31 +191,37 @@ namespace OriCoop
                 yield return Barrier(h, 11); yield return Wait(0.4f);
                 ownStart = Own.Position; puppetStart = P2Context.P2.Position; frames = NetPlay.FramesPlayed;
                 int disconnects = SessionRules.Disconnects;
-                // An explicit pause pauses both players. Hold it longer than NetPeer's 5 s timeout.
+                // T-044: online nothing pauses. The guest's pause menu holds only the guest's own Ori; the world keeps
+                // running on both PCs and the host keeps playing. Hold it longer than NetPeer's 5 s timeout.
                 // ORICOOP_S4_SKEW (seconds, host only) stretches the host's window to reproduce the race below on
                 // purpose: the two windows start a few ms apart (each side starts when it sees barrier 11).
                 float skew = 0f; if (!guest) float.TryParse(Environment.GetEnvironmentVariable("ORICOOP_S4_SKEW") ?? "",
                     System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out skew);
-                Bot(1); float maxOwn = 0, maxPuppet = 0, start = Now;
+                Bot(1); float maxOwn = 0, maxPuppet = 0, start = Now; int suspendedFrames = 0, sampled = 0;
                 while (Now - start < 6f + skew)
                 {
                     maxOwn = Mathf.Max(maxOwn, Vector3.Distance(ownStart, Own.Position));
                     maxPuppet = Mathf.Max(maxPuppet, Vector3.Distance(puppetStart, P2Context.P2.Position));
+                    sampled++; if (Paused(SuspensionCounts())) suspendedFrames++;
                     yield return null;
                 }
                 h.Note("S4 menu seconds=" + F(Now - start) + " ownMax=" + F(maxOwn) + " puppetMax=" + F(maxPuppet)
                     + " frames=" + (NetPlay.FramesPlayed - frames) + " remoteMenu=" + SessionRules.PartnerInMenu
                     + " pausedByPartner=" + SessionRules.PausedByPartner + " localPaused=" + SessionRules.LocalPaused);
-                h.Check(maxOwn < 0.3f && maxPuppet < 0.3f, "S4 explicit pause: both Oris stay still on this PC");
+                h.Note("S4 menu suspendedFrames=" + suspendedFrames + "/" + sampled + " skippedMenus=" + SessionRules.SkippedMenuSuspends);
+                h.Check(suspendedFrames == 0, "S4 no pause: the game is not paused on this PC while the guest is in the menu");
+                h.Check(!SessionRules.LocalPaused && !SessionRules.PausedByPartner && !SessionRules.PartnerInMenu, "S4 no pause: no pause reported or applied");
                 if (guest)
                 {
-                    h.Check(SessionRules.LocalPaused, "S4 guest pause menu counts as an explicit pause");
-                    h.Check(NetPlay.FramesPlayed - frames > 30, "S4 guest receives frames while paused");
+                    h.Check(maxOwn < 0.3f, "S4 no pause: the guest's own Ori is held while its menu is open");
+                    h.Check(maxPuppet > 2f, "S4 no pause: the host keeps playing on the guest's screen");
+                    h.Check(SessionRules.LocalLocked && SessionRules.SkippedMenuSuspends > 0, "S4 no pause: the menu skipped its suspend and locks own input");
+                    h.Check(NetPlay.FramesPlayed - frames > 30, "S4 guest receives frames while its menu is open");
                 }
                 else
                 {
-                    h.Check(SessionRules.PartnerInMenu, "S4 partner pause reliable status received");
-                    h.Check(SessionRules.PausedByPartner, "S4 host game paused by the guest's pause");
+                    h.Check(maxOwn > 2f, "S4 no pause: the host keeps playing while the guest is in the menu");
+                    h.Check(maxPuppet < 0.3f, "S4 no pause: the guest's Ori stays still on the host's screen");
                 }
                 h.Check(NetPlay.Connected && SessionRules.Disconnects == disconnects, "S4 session survives a 6 s pause");
                 // The guest keeps its menu open until both sides have checked. Without this the guest's window,
@@ -227,7 +233,7 @@ namespace OriCoop
             }
             finally { Bot(0); if (guest && UI.Menu != null) UI.Menu.HideMenuScreen(true); }
             yield return Wait(0.5f);
-            h.Check(!SessionRules.PausedByPartner && !SessionRules.LocalPaused, "S4 unpause resumes both");
+            h.Check(!SessionRules.PausedByPartner && !SessionRules.LocalPaused && !SessionRules.LocalLocked, "S4 menu closed: nothing paused or locked");
             Dictionary<ISuspendable, int> after = SuspensionCounts(); int compared = 0, changed = 0;
             foreach (KeyValuePair<ISuspendable, int> pair in before)
             { int count; if (after.TryGetValue(pair.Key, out count)) { compared++; if (count != pair.Value) changed++; } }
@@ -239,11 +245,115 @@ namespace OriCoop
             h.Check(Vector3.Distance(Own.Position, ownStart) > 0.5f && Vector3.Distance(P2Context.P2.Position, puppetStart) > 0.5f,
                 "S4 both move after closing menu");
         }
+        // T-044: the world map and an ability help popup do not pause online either. The guest opens them while both
+        // walk right: nothing is suspended on either PC, the guest's Ori is held while a screen is open, the host walks on.
+        static ShowHelpTextAction FindHelp()
+        {
+            foreach (ShowHelpTextAction a in Resources.FindObjectsOfTypeAll<ShowHelpTextAction>())
+                if (a != null && a.HelpMessage != null && a.Avatar != null && a.gameObject.scene.IsValid()) return a;
+            foreach (ShowHelpTextAction a in Resources.FindObjectsOfTypeAll<ShowHelpTextAction>())
+                if (a != null && a.HelpMessage != null && a.Avatar != null) return a;
+            return null;
+        }
+        static Vector3 s_runStart;
+        // A pause suspends (nearly) everything; single objects the game suspends itself out of view
+        // (SuspendWhenOutOfFrustrum, liana physics, force appliers) are not a pause.
+        static bool Paused(Dictionary<ISuspendable, int> counts)
+        {
+            int suspended = 0; foreach (int n in counts.Values) if (n > 0) suspended++;
+            return counts.Count > 0 && suspended * 4 > counts.Count;
+        }
+        // Which kinds of objects are suspended (top types), for the failure note.
+        static string SuspendedKinds()
+        {
+            Dictionary<string, int> kinds = new Dictionary<string, int>();
+            foreach (KeyValuePair<ISuspendable, int> pair in SuspensionCounts())
+            {
+                if (pair.Value <= 0) continue;
+                Component c = pair.Key as Component;
+                string name = pair.Key.GetType().Name + (c != null ? "@" + c.gameObject.name : "");
+                int n; kinds.TryGetValue(name, out n); kinds[name] = n + 1;
+            }
+            List<string> parts = new List<string>();
+            foreach (KeyValuePair<string, int> pair in kinds) { parts.Add(pair.Key + "x" + pair.Value); if (parts.Count >= 8) break; }
+            return kinds.Count + " kinds: " + string.Join(", ", parts.ToArray());
+        }
+        static IEnumerator NoPauseScreens(TestHarness h)
+        {
+            bool guest = !NetPlay.IsHost;
+            // Back to the start of S4 (the menu / focus steps walked ~50 units right, into story / tutorial areas).
+            yield return PlaceAtStart(h, s_runStart, 180);
+            yield return Barrier(h, 18);
+            string firstSuspended = "";
+            int menus = SessionRules.SkippedMenuSuspends, popups = SessionRules.SkippedPopupSuspends, suspendedFrames = 0;
+            float mapOwn = -1f, popupOwn = -1f, maxPuppet = 0f, hostTravel = 0f;
+            bool mapShown = false, popupShown = false, popupClosed = false; string popupName = "none";
+            Vector3 puppetStart = P2Context.P2.Position, hostStart = Own.Position;
+            try
+            {
+                for (int phase = 0; phase < 2; phase++)
+                {
+                    Bot(phase == 0 ? 1 : -1);
+                    if (guest && phase == 0)
+                    {
+                        AccessTools.Method(typeof(MenuScreenManager), "ShowMenuScreen", new Type[] { typeof(MenuScreenManager.Screens), typeof(bool) })
+                            .Invoke(UI.Menu, new object[] { MenuScreenManager.Screens.WorldMap, false });
+                        yield return null; mapShown = UI.Menu.MainMenuVisible;
+                    }
+                    if (guest && phase == 1)
+                    {
+                        UI.Menu.HideMenuScreen(true); yield return Wait(0.3f);
+                        ShowHelpTextAction help = FindHelp();
+                        if (help != null) { popupName = help.name; help.Perform(null); }
+                        yield return null; popupShown = SessionRules.PopupOpen;
+                    }
+                    Vector3 anchor = Own.Position; float own = 0f, start = Now;
+                    while (Now - start < 3f)
+                    {
+                        own = Mathf.Max(own, Vector3.Distance(anchor, Own.Position));
+                        maxPuppet = Mathf.Max(maxPuppet, Vector3.Distance(puppetStart, P2Context.P2.Position));
+                        hostTravel = Mathf.Max(hostTravel, Vector3.Distance(hostStart, Own.Position));
+                        if (Paused(SuspensionCounts())) { suspendedFrames++; if (firstSuspended == "") firstSuspended = "phase" + phase + " " + SuspendedKinds(); }
+                        yield return null;
+                    }
+                    if (phase == 0) mapOwn = own; else popupOwn = own;
+                }
+                if (guest)
+                {
+                    SessionRules.HideSkippedPopups();
+                    float end = Now + 4f;
+                    while (SessionRules.PopupOpen && Now < end) yield return null;
+                    popupClosed = !SessionRules.PopupOpen;
+                }
+            }
+            finally { Bot(0); if (guest && UI.Menu != null && UI.Menu.MainMenuVisible) UI.Menu.HideMenuScreen(true); }
+            h.Note("S4 screens map=" + mapShown + " mapOwn=" + F(mapOwn) + " popup=" + popupName + "/" + popupShown + " popupOwn=" + F(popupOwn)
+                + " closed=" + popupClosed + " puppetMax=" + F(maxPuppet) + " ownTravel=" + F(hostTravel) + " suspendedFrames=" + suspendedFrames
+                + " skippedMenus=" + (SessionRules.SkippedMenuSuspends - menus) + " skippedPopups=" + (SessionRules.SkippedPopupSuspends - popups)
+                + (firstSuspended == "" ? "" : " firstSuspended=" + firstSuspended));
+            h.Check(suspendedFrames == 0, "S4 no pause: the game is not paused on this PC while the guest has the map / a help popup open");
+            if (guest)
+            {
+                h.Check(mapShown && SessionRules.SkippedMenuSuspends > menus, "S4 no pause: the world map opens without suspending");
+                h.Check(mapOwn >= 0f && mapOwn < 0.3f, "S4 no pause: own Ori held while the map is open");
+                h.Check(popupShown && SessionRules.SkippedPopupSuspends > popups, "S4 no pause: an ability help popup opens without suspending");
+                h.Check(popupOwn >= 0f && popupOwn < 0.3f, "S4 no pause: own Ori held while the help popup is open");
+                h.Check(popupClosed && !SessionRules.LocalLocked, "S4 no pause: closing the popup frees own input");
+                h.Check(maxPuppet > 2f, "S4 no pause: the host keeps playing on the guest's screen");
+            }
+            else h.Check(hostTravel > 2f, "S4 no pause: the host keeps playing while the guest has the map / a popup open");
+            Publish(h, 19, false); yield return Barrier(h, 19);
+            // Leave both players together at the S4 start, standing: the guest-death step respawns the guest beside the
+            // host's last known position (this step left them ~25 units apart, the host possibly still falling).
+            yield return PlaceAtStart(h, s_runStart, 184);
+        }
         // Losing window focus online is not a pause: the game and the network keep running.
         static IEnumerator Focus(TestHarness h)
         {
             bool guest = !NetPlay.IsHost; int disconnects = SessionRules.Disconnects;
             int suppressed = SessionScreens.SuppressedResumeScreens;
+            // T-044: the menu step no longer freezes the host, who walked ~45 units right into a wall; start again.
+            yield return PlaceAtStart(h, s_runStart, 182);
             yield return Barrier(h, 16);
             Vector3 ownStart = Own.Position, puppetStart = P2Context.P2.Position;
             try
@@ -456,7 +566,7 @@ namespace OriCoop
 
         public static IEnumerator Run(TestHarness h)
         {
-            h.Note("--- phase S4 story / session rules"); s_performs = 0;
+            h.Note("--- phase S4 story / session rules"); s_performs = 0; s_runStart = Own != null ? Own.Position : Vector3.zero;
             Register(); bool revive = Revive.Enabled;
             bool immortal = Own != null && Own.Mortality.DamageReciever.IsImmortal;
             try
@@ -465,6 +575,7 @@ namespace OriCoop
                 Revive.Enabled = false; Bot(0); yield return Barrier(h, 1);
                 yield return Step(h, 10, Menu(h));
                 yield return Step(h, 15, Focus(h));
+                yield return Step(h, 17, NoPauseScreens(h));
                 yield return Step(h, 20, GuestDeath(h));
                 yield return Step(h, 30, HostDeath(h));
                 yield return Step(h, 40, Story(h));
