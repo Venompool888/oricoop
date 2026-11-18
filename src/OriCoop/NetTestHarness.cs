@@ -1686,6 +1686,7 @@ namespace OriCoop
                 { string bad = UnknownPhases(); h.Check(bad.Length == 0, "net every selected phase exists" + (bad.Length > 0 ? " (unknown: " + bad + "; phases are " + string.Join(",", AllPhases) + ")" : "")); }
                 yield return BottomBars(h, host);
                 Vector3 phaseAStart = Own.Position;
+                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") != "SWEEP") goto AfterSweep; yield return Safely(h, "SWEEP", NetSceneSweep.Run(h)); yield break; AfterSweep:
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4R")   // only the S4 drop + rejoin step (T-030)
                 {
                     yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62);
