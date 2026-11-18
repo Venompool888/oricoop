@@ -34,7 +34,7 @@ namespace OriCoop.Net
         private const double PunchIntervalSeconds = 0.1;
         private const double PunchSeconds = 2.0;
         private const double DirectTimeoutSeconds = 3.0;
-        private const string CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        private const string CodeAlphabet = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";   // T-046: digit codes; letter codes from older servers still accepted
 
         private static readonly IPAddress VirtualAddress = IPAddress.Parse("10.255.255.1");
         private static readonly EndPoint VirtualRemote = new IPEndPoint(VirtualAddress, 1);

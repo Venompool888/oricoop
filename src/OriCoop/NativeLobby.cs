@@ -19,7 +19,7 @@ namespace OriCoop
         const int PageRole = 2, PageEntry = 3, PageHost = 4, PageJoin = 5, PageCoop = 6, PageServerMode = 7;
         const int PageServerList = 8, PageServerAdd = 9, PageServerRemove = 10;
         static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove" };
-        const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // legacy letter codes (text entry); new codes are digits 2-9 typed on the dial (T-046)
         const string IpAlphabet = "0123456789.:";
         const string ServerAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-:";
         const string CServerHostAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-";
@@ -51,6 +51,13 @@ namespace OriCoop
         static bool s_ipAdvanced;           // the last digit filled an octet and moved on: swallow a following '.'
         static string s_port = "";
         static int s_portPos;
+        // T-046: the IP, the port and the room code are edited with combination-lock dials (Ui/DigitDial). The dial is the
+        // editor; s_ip / s_port / s_entry stay the values Connect reads, written back on every change.
+        static OriCoop.Ui.DigitDial s_dial;
+        static string s_dialBefore = "";
+        static bool s_legacyCode;   // the room code being typed is an older letter code: plain text entry instead of the dial
+        static bool DialMode { get { return IpMode || (s_entryKind == 0 && !s_legacyCode); } }
+        static bool HasLegacyLetter(string s) { foreach (char c in s ?? "") if (char.ToUpperInvariant(c) >= 'A' && char.ToUpperInvariant(c) <= 'Z') return true; return false; }
         static int s_editField;             // direct join: 0 = IP row, 1 = port row
         static bool IpMode { get { return s_entryKind == 1; } }
 
@@ -138,14 +145,15 @@ namespace OriCoop
             else if (s_page == PageEntry && IpMode)
             {
                 bool ipEdit = s_editing && s_editField == 0, portEdit = s_editing && s_editField == 1;
-                r.Add(new[] { IpDisplay(zh), L10n.T(ipEdit ? "lobby.edit.digits" : "lobby.ip.desc", zh) });
-                r.Add(new[] { PortDisplay(zh), portEdit ? L10n.T("lobby.edit.digits", zh) : string.Format(L10n.T("lobby.port.desc", zh), DefaultPort) });
+                r.Add(new[] { IpDisplay(zh), L10n.T(ipEdit ? "lobby.dial.help" : "lobby.ip.desc", zh) });
+                r.Add(new[] { PortDisplay(zh), portEdit ? L10n.T("lobby.dial.help", zh) : string.Format(L10n.T("lobby.port.desc", zh), DefaultPort) });
                 r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T("lobby.connect.back.desc", zh) + SaveNote(zh) });
             }
             else if (s_page == PageEntry)
             {
                 string titleKey = s_entryKind == 0 ? "lobby.room.code" : s_entryKind == 1 ? "lobby.ip" : s_entryKind == 3 ? "cserver.addr" : s_entryKind == 4 ? "cserver.port" : "lobby.relay.address";
-                string help = s_editing ? L10n.T(CServerEntry ? "cserver.typing.desc" : "lobby.edit.chars", zh) : string.Format(L10n.T("lobby.entry.desc", zh), L10n.T(titleKey, zh));
+                string help = s_editing ? L10n.T(CServerEntry ? "cserver.typing.desc" : s_entryKind == 0 ? "lobby.dial.help" : "lobby.edit.chars", zh) : string.Format(L10n.T("lobby.entry.desc", zh), L10n.T(titleKey, zh));
+                if (s_entryKind == 0 && !s_editing && !s_legacyCode) help += "\n" + L10n.T("lobby.room.legacy", zh);   // T-046: older letter codes still work
                 r.Add(new[] { EntryDisplay(zh), help });
                 if (s_entryKind == 2 || CServerEntry) r.Add(new[] { L10n.T("common.save", zh), L10n.T(CServerEntry ? "cserver.save.desc" : "lobby.server.save.desc", zh) });
                 else r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T("lobby.connect.desc", zh) + SaveNote(zh) });
@@ -241,6 +249,7 @@ namespace OriCoop
         static string EntryDisplay(bool zh)
         {
             int max = EntryMax;
+            if (s_entryKind == 0 && s_editing && s_dial != null) return s_dial.Render(true, Mark);
             if (s_entryKind == 0)
             {
                 var sb = new StringBuilder();
@@ -264,6 +273,7 @@ namespace OriCoop
         static string IpDisplay(bool zh)
         {
             bool cur = s_editing && s_editField == 0;
+            if (cur && s_dial != null) return s_dial.Render(true, Mark);
             if (!cur && IpText.Replace(".", "").Length == 0) return L10n.T("lobby.ip.enter", zh);
             var sb = new StringBuilder();
             for (int o = 0; o < 4; o++)
@@ -280,6 +290,7 @@ namespace OriCoop
         static string PortDisplay(bool zh)
         {
             string head = L10n.T("lobby.port.prefix", zh);
+            if (s_editing && s_editField == 1 && s_dial != null) return head + s_dial.Render(true, Mark);
             if (!(s_editing && s_editField == 1)) return head + (s_port.Length > 0 ? s_port : "_");
             var sb = new StringBuilder(head);
             for (int i = 0; i < s_port.Length; i++) sb.Append(i == s_portPos ? Mark(s_port[i].ToString()) : s_port[i].ToString());
@@ -405,6 +416,7 @@ namespace OriCoop
                     s_entryKind = relay ? 0 : 1;
                     if (relay)
                     {
+                        s_legacyCode = HasLegacyLetter(NetPlay.ConfigRoomCode);   // a remembered older letter code stays a text entry
                         s_entry = Filter((NetPlay.ConfigRoomCode ?? "").Trim().ToUpperInvariant());
                         s_cursor = Math.Min(s_entry.Length, EntryMax - 1);
                         GoPage(PageEntry, s_entry.Length > 0 ? 1 : 0);
@@ -535,6 +547,16 @@ namespace OriCoop
         {
             if (!IsOpen || !IsLobbyPage) return;
             if (s_editing) EditTick();
+            else if (s_page == PageEntry && !s_mgr.IsLocked && s_entryKind == 0 && !s_legacyCode && s_mgr.Index == 0 && HasLegacyLetter(Input.inputString))
+            {
+                s_legacyCode = true; s_entry = ""; s_cursor = 0;   // an older letter code: plain text entry
+                StartEdit(0); Insert(TypedChars()); RefreshTexts(true);
+            }
+            else if (s_page == PageEntry && !s_mgr.IsLocked && DialMode && (s_mgr.Index == 0 || (IpMode && s_mgr.Index == 1)))
+            {
+                int key = DigitKeyDown();
+                if (key >= 0) { StartEdit(IpMode ? s_mgr.Index : 0); s_dial.Type(key); DialWriteBack(); RefreshTexts(true); }
+            }
             else if (s_page == PageEntry && !s_mgr.IsLocked && (s_mgr.Index == 0 || (IpMode && s_mgr.Index == 1)))
             {
                 string typed = TypedChars();
@@ -560,6 +582,7 @@ namespace OriCoop
             s_ipOct = Mathf.Clamp(s_ipOct, 0, 3);
             s_ipPos = Mathf.Clamp(s_ipPos, 0, IpMaxPos(s_ipOct));
             s_portPos = Mathf.Clamp(s_portPos, 0, PortMaxPos);
+            if (DialMode) BeginDial();
             s_mgr.IsLocked = true;          // we read the input ourselves while editing
             RefreshTexts(true);
         }
@@ -588,6 +611,7 @@ namespace OriCoop
         static void EditTick()
         {
             if (Time.realtimeSinceStartup - s_editStartedAt < 0.15f) return;   // the press that started editing
+            if (DialMode && s_dial != null) { DialEditTick(); return; }
             if (CServerEntry)
             {
                 if (Input.GetKeyDown(KeyCode.Escape) || Core.Input.Cancel.OnPressed) { LobbyBack(); return; }
@@ -707,10 +731,122 @@ namespace OriCoop
             s_entry = s_entry.Substring(0, s_cursor) + alpha[i] + s_entry.Substring(s_cursor + 1);
         }
 
+        // ---- digit dials (T-046) ----------------------------------------------------------------------------
+        // Keys come from key codes, never from typed text: an IME (Chinese input) swallows typed characters, a key code
+        // still arrives. Pad and arrow keys come through the game's own menu input.
+        static int DigitKeyDown()
+        {
+            if (TestDialKey >= 0) { int k = TestDialKey; TestDialKey = -1; return k; }
+            for (int d = 0; d <= 9; d++)
+                if (Input.GetKeyDown(KeyCode.Alpha0 + d) || Input.GetKeyDown(KeyCode.Keypad0 + d)) return d;
+            return -1;
+        }
+        internal static int TestDialKey = -1;   // test hook: one digit key press for the next tick
+        internal static bool TestDialConfirm;   // test hook: Enter / A on the next tick
+
+        static void BeginDial()
+        {
+            if (IpMode && s_editField == 0)
+            {
+                s_dial = OriCoop.Ui.DigitDial.Ip();
+                bool any = false; foreach (string part in s_ip) if (part.Length > 0) any = true;
+                if (any) s_dial.Load(IpText);
+                s_dialBefore = string.Join(".", s_ip);
+            }
+            else if (IpMode)
+            {
+                s_dial = OriCoop.Ui.DigitDial.Port();
+                s_dial.Load(s_port.Length > 0 ? s_port : DefaultPort.ToString());
+                s_dialBefore = s_port;
+            }
+            else
+            {
+                s_dial = OriCoop.Ui.DigitDial.Room();
+                s_dial.Load(s_entry);
+                s_dialBefore = s_entry;
+            }
+            DialWriteBack();
+        }
+
+        // The dial -> the values Connect reads (numbers without leading zeros; the room code keeps all six digits).
+        static void DialWriteBack()
+        {
+            if (s_dial == null) return;
+            if (IpMode && s_editField == 0) { for (int o = 0; o < 4; o++) s_ip[o] = int.Parse(s_dial.Group(o)).ToString(); }
+            else if (IpMode) s_port = int.Parse(s_dial.Digits).ToString();
+            else s_entry = s_dial.Digits;
+        }
+
+        static void DialCancel()
+        {
+            if (IpMode && s_editField == 0)
+            {
+                string[] parts = (s_dialBefore ?? "").Split('.');
+                for (int o = 0; o < 4; o++) s_ip[o] = o < parts.Length ? parts[o] : "";
+            }
+            else if (IpMode) s_port = s_dialBefore ?? "";
+            else s_entry = s_dialBefore ?? "";
+            s_dial = null;
+            StopEdit();
+        }
+
+        static void DialEditTick()
+        {
+            bool changed = false;
+            if (s_entryKind == 0 && HasLegacyLetter(Input.inputString))
+            {
+                // A letter on the room-code dial: an older letter code. Switch to the text entry and keep typing there.
+                string typedLetters = Filter(Input.inputString);
+                s_dial = null; s_legacyCode = true; s_entry = ""; s_cursor = 0;
+                Insert(typedLetters); RefreshTexts(true); return;
+            }
+            if (Input.GetKeyDown(KeyCode.Escape) || Core.Input.Cancel.OnPressed) { DialCancel(); return; }
+            bool testConfirm = TestDialConfirm; TestDialConfirm = false;
+            if (testConfirm || Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter) || Core.Input.ActionButtonA.OnPressed)
+            { DialWriteBack(); s_dial = null; StopEdit(); return; }
+            int key = DigitKeyDown();
+            if (key >= 0) { s_dial.Type(key); changed = true; }
+            if (Input.GetKeyDown(KeyCode.Backspace) || Input.GetKeyDown(KeyCode.Delete) || (Core.Input.Copy.OnPressed && key < 0)) { s_dial.Back(); changed = true; }
+            bool ctrl = Input.GetKey(KeyCode.LeftControl) || Input.GetKey(KeyCode.RightControl);
+            if ((ctrl && Input.GetKeyDown(KeyCode.V)) || Core.Input.Delete.OnPressed) { DialPaste(GUIUtility.systemCopyBuffer ?? ""); changed = true; }
+            if (key < 0)
+            {
+                if (Core.Input.MenuLeft.OnPressed) { s_dial.Left(); changed = true; }
+                if (Core.Input.MenuRight.OnPressed) { s_dial.Right(); changed = true; }
+                if (Core.Input.MenuUp.OnPressed) { s_dial.Up(); changed = true; }
+                if (Core.Input.MenuDown.OnPressed) { s_dial.Down(); changed = true; }
+            }
+            if (changed) { DialWriteBack(); RefreshTexts(true); }
+        }
+
+        // Ctrl+V: "a.b.c.d[:port]" on the IP dial fills both dials (an address that doesn't check out is refused);
+        // otherwise the digits of the clipboard fill the dial.
+        static void DialPaste(string text)
+        {
+            text = (text ?? "").Trim();
+            if (IpMode && s_editField == 0)
+            {
+                string beforeIp = string.Join(".", s_ip), beforePort = s_port;
+                int keepPort; int.TryParse(s_port, out keepPort);
+                LoadAddress(text, keepPort);
+                if (!IpComplete) { LoadAddress(beforeIp + ":" + beforePort, keepPort); ToastKey("lobby.ip.clipboard"); }
+                s_dial.Load(IpText);
+                return;
+            }
+            s_dial.Load(text);
+        }
+
         // ---- direct join: IP octets + port ------------------------------------------------------------------
 
         static string IpText { get { return string.Join(".", s_ip); } }
-        static bool IpComplete { get { for (int o = 0; o < 4; o++) if (!ValidOctet(s_ip[o])) return false; return true; } }
+        static bool IpComplete
+        {
+            get
+            {
+                for (int o = 0; o < 4; o++) if (!ValidOctet(s_ip[o])) return false;
+                return IpText != "0.0.0.0";   // an untouched IP dial reads 0.0.0.0: not an address to join (T-046)
+            }
+        }
         static int IpMaxPos(int o) { return s_ip[o].Length < 3 ? s_ip[o].Length : 2; }
         static int PortMaxPos { get { return s_port.Length < 5 ? s_port.Length : 4; } }
 

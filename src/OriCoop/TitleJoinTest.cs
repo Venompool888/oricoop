@@ -271,6 +271,18 @@ namespace OriCoop
                 }
             }
 
+            // Digit keys on the focused dial row, then Enter, through the lobby's own key handling (NativeLobby test hooks).
+            IEnumerator DialType(string digits)
+            {
+                foreach (char c in digits)
+                {
+                    TestDialKey = c - '0';
+                    yield return StartCoroutine(TWait(0.2f));   // the edit ignores 0.15 s after it starts
+                }
+                TestDialConfirm = true;
+                yield return StartCoroutine(TWait(0.4f));
+            }
+
             IEnumerator Join(int savesAtStart)
             {
                 bool full = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_FULL") == "1";
@@ -280,7 +292,12 @@ namespace OriCoop
                 Check(TitleOrbOpen && LastPage == "entry" && !SlotsReady, "guest: join page on the title, no save slot (" + Labels + ")");
                 if (m_tr == "direct")
                 {
-                    LoadAddress("127.0.0.1", NetPlay.ConfigPort);
+                    LoadAddress("", NetPlay.ConfigPort);
+                    // T-046: the IP dial, typed with digit keys as a player does: loopback, four groups of three digits.
+                    s_mgr.SetCurrentItem(0);
+                    yield return StartCoroutine(TWait(0.4f));
+                    yield return StartCoroutine(DialType("127000000001"));
+                    Check(!s_editing && IpText == "127.0.0.1", "guest: IP typed on the digit dial (" + IpText + ")");
                 }
                 else
                 {
@@ -292,7 +309,18 @@ namespace OriCoop
                         yield return StartCoroutine(TWait(0.5f));
                     }
                     Check(code.Length == 6, "guest: got the host's room code '" + code + "'");
-                    s_entry = code; s_cursor = Math.Min(code.Length, EntryMax - 1);
+                    // T-046: servers issue six-digit codes, typed on the room-code dial with digit keys as a player does.
+                    bool digits = code.Length == 6; foreach (char c in code) if (c < '0' || c > '9') digits = false;
+                    Check(digits, "guest: the room code is six digits ('" + code + "')");
+                    s_mgr.SetCurrentItem(0);
+                    yield return StartCoroutine(TWait(0.4f));
+                    yield return StartCoroutine(DialType(code));
+                    Check(!s_editing && s_entry == code, "guest: room code typed on the digit dial ('" + s_entry + "')");
+                    // T-046: older letter codes still enter: a letter switches the dial to text entry, whose alphabet keeps letters.
+                    bool legacyBefore = s_legacyCode; s_legacyCode = true;
+                    Check(HasLegacyLetter("AB12") && !HasLegacyLetter("1234") && Filter("ab2z") == "AB2Z" && !DialMode,
+                        "guest: older letter room codes still enter (Filter ab2z -> " + Filter("ab2z") + ")");
+                    s_legacyCode = legacyBefore;
                 }
                 RefreshTexts(true);
                 yield return StartCoroutine(TWait(0.5f));

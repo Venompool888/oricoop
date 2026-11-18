@@ -12,7 +12,8 @@ namespace OriCoop.Rooms
         public const int Protocol = 1;
         public const int MaximumBodyBytes = 5 * 1024 * 1024;
         public const int MaximumSaveBytes = 4 * 1024 * 1024 - 64;
-        public const string CodeAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+        public const string CodeAlphabet = "0123456789ABCDEFGHJKLMNPQRSTUVWXYZ";   // accepted (older rooms keep letter codes)
+        public const string NewCodeAlphabet = "23456789";   // T-046: six-digit codes from 2-9 only, so older clients (alphabet A-Z + 2-9) can still type and accept them
 
         public static long Now
         {
