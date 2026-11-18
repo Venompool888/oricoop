@@ -83,7 +83,10 @@ namespace OriCoop
             }
 
             // Vertical: no wall (falling into a wall of air looks broken in Ori); off-screen too long -> glide back.
-            if (Mathf.Abs(a.y - b.y) > maxY) s_offscreenT += Time.unscaledDeltaTime; else s_offscreenT = 0f;
+            // While P2 is off-screen its companion stays in view and cannot be next to P2, and nobody sees either: the
+            // visual self-check does not judge that (run-test's regroup hold failed "companion far from P2" at 9-16
+            // units in 6 of 41 local runs on 2026-11-18, T-078). The regroup itself grants its own grace (StartRegroup).
+            if (Mathf.Abs(a.y - b.y) > maxY) { s_offscreenT += Time.unscaledDeltaTime; VisualInvariants.Grace(1f); } else s_offscreenT = 0f;
             if (s_offscreenT > RegroupAfter) StartRegroup(p2);
 
             s_last1 = p1.Position; s_last2 = p2.Position; s_haveLast = true;

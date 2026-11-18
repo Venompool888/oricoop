@@ -239,7 +239,10 @@ namespace OriCoop
             { int count; if (after.TryGetValue(pair.Key, out count)) { compared++; if (count != pair.Value) changed++; } }
             h.Note("S4 suspension before=" + Counts(before) + " after=" + Counts(after) + " common=" + compared + " changed=" + changed);
             h.Check(compared > 0 && changed == 0, "S4 surviving suspendables retain exact reference counts");
-            ownStart = Own.Position; puppetStart = P2Context.P2.Position; Bot(1); yield return Wait(1f); Bot(0);
+            // The host walked right through the whole menu step: at full game speed (a lightly loaded PC, ~330 frames)
+            // it reached a wall 57.9 to the right and could not move right any more (ownDx=0, T-083). It walks back
+            // left, the way it came; the guest stood still and walks right as before.
+            ownStart = Own.Position; puppetStart = P2Context.P2.Position; Bot(guest ? 1 : -1); yield return Wait(1f); Bot(0);
             h.Note("S4 closed menu ownDx=" + F(Vector3.Distance(Own.Position, ownStart))
                 + " puppetDx=" + F(Vector3.Distance(P2Context.P2.Position, puppetStart)));
             h.Check(Vector3.Distance(Own.Position, ownStart) > 0.5f && Vector3.Distance(P2Context.P2.Position, puppetStart) > 0.5f,

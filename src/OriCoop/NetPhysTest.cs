@@ -368,10 +368,13 @@ namespace OriCoop
             h.Check(travel[0] >= 0.5f, "PC pushing alone moves the stone (peak " + F(travel[0]) + "/s)");
             // The game's own push speed ratio is what drives both Oris and the stone; it is the oracle (1.0 alone, 1.5 together,
             // on both PCs). The measured peak speed is noisy (the Oris need ~0.5 s to reach their cap within the stone's ~1.4
-            // of travel, a follower's copy is interpolated), so it is only noted, with a loose >=1.05x check on the host.
+            // of travel, a follower's copy is interpolated), so it is only noted.
             h.Check(Mathf.Abs(ratio[0] - 1f) < 0.01f && Mathf.Abs(ratio[1] - 1.5f) < 0.01f,
                 "PC push speed ratio is 1.0 pushing alone and 1.5 with both pushing (alone " + F(ratio[0]) + ", together " + F(ratio[1]) + ")");
-            if (host) h.Check(travel[1] >= travel[0] * 1.05f, "PC two pushers' peak stone speed is not below one pusher's (alone " + F(travel[0]) + "/s, together " + F(travel[1]) + "/s)");
+            // Only noted (T-083): the stone hits its stop after ~1.4, before both Oris reach their capped speed, so the
+            // peak failed on plain main (631dcc9) although the ratio above passed. The ratio and the engaged count below
+            // are the checks.
+            if (host) h.Note("PC two pushers' peak stone speed vs one pusher's: " + F(travel[1] / Mathf.Max(0.01f, travel[0])) + "x (alone " + F(travel[0]) + "/s, together " + F(travel[1]) + "/s)");
             h.Check(boosted[0] == 0 && boosted[1] >= 1, "PC the push speed-up engaged on this PC only while both pushed (alone " + boosted[0] + ", together " + boosted[1] + ")");
         }
 

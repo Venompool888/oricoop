@@ -558,8 +558,13 @@ namespace OriCoop
             go.SetActive(false);
             RisingWater water = go.AddComponent<RisingWater>();
             water.Speed = 1f;
-            water.SpeedOverDistance = AnimationCurve.Linear(0f, 0f, 40f, 8f);       // faster the further the Ori is above it
-            water.EasySpeedOverDistance = AnimationCurve.Linear(0f, 0f, 40f, 8f);
+            // Faster the further the Ori is above it. 2 units/s at 40 above (T-078): at the old 8/s (about 6/s here) the
+            // height error is speed x latency jitter, so a 0.2 s RTT spike under load already cost more than the 1-unit
+            // tolerance (WO9L: 23 of ~750 runs failed with err -1.1..-2.1), and the guest's capped extrapolation could
+            // overshoot by > 2 units and snap down (worst drop 2.87). At 2/s the two PCs' own speeds (host 40 above,
+            // guest 30 above) still drift 2-3 units apart by the probe, so a guest that does not follow still fails.
+            water.SpeedOverDistance = AnimationCurve.Linear(0f, 0f, 40f, 2f);
+            water.EasySpeedOverDistance = AnimationCurve.Linear(0f, 0f, 40f, 2f);
             go.transform.position = new Vector3(origin.x, origin.y - 30f, 0f);
             // Different heights above the water (host 10 higher), so the native speeds differ on the two PCs.
             Place(new Vector3(origin.x + (host ? 0f : 3f), origin.y + (host ? 10f : 0f), 0f));
@@ -575,7 +580,9 @@ namespace OriCoop
                 yield return null;
             }
             h.Check(worstDrop <= 0.05f, tag + " water never jumps down on this PC while rising (worst drop=" + F(worstDrop) + ")");
-            h.Check(water.transform.position.y - risenFrom >= 1f, tag + " water actually rose on this PC (" + F(risenFrom) + " -> " + F(water.transform.position.y) + ", follows=" + WorldObjSync.WaterFollows + ")");
+            // >= 0.3: at 2 units/s a guest whose host ran at a quarter of real time saw 0.77 in the 4 s (T-078); a water
+            // that does not move at all still shows 0.
+            h.Check(water.transform.position.y - risenFrom >= 0.3f, tag + " water actually rose on this PC (" + F(risenFrom) + " -> " + F(water.transform.position.y) + ", follows=" + WorldObjSync.WaterFollows + ")");
             if (!host) s_probe = () => water == null ? float.NaN : water.transform.position.y;
             yield return Barrier(h, step + 2, 0, 0f, 0f);
             if (host) yield return Probes(step + 10, () => water.transform.position.y, () => WorldObjSync.WaterSpeed(water));

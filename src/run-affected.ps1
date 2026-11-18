@@ -13,83 +13,10 @@ $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
 $root = Split-Path -Parent $src
 
-# --- suites (name -> script + arguments). Keep names short: they appear in the plan and the summary.
-$Suites = [ordered]@{
-    'local'       = @('run-test.ps1')
-    'net'         = @('run-nettest.ps1')
-    'net-relay'   = @('run-nettest.ps1', '-Relay')
-    'net-3p'      = @('run-nettest.ps1', '-Clients', '3')
-    'net-4p'      = @('run-nettest.ps1', '-Clients', '4')
-    'net-newgame' = @('run-nettest.ps1', '-GuestNewGame')
-    'coopsave'    = @('run-coopsave.ps1')
-    'titlejoin'   = @('run-titlejoin.ps1')
-    'titlejoin-relay' = @('run-titlejoin.ps1', '-Transport', 'relay')
-    'rooms'       = @('run-rooms.ps1')
-}
-$AllSuites = @($Suites.Keys)
-
-# --- module -> suites (see docs\modules.md for what each module contains)
-$ModuleSuites = @{
-    'M0' = $AllSuites
-    'M1' = @('net', 'net-relay', 'net-3p', 'titlejoin', 'titlejoin-relay', 'coopsave')
-    'M2' = @('local', 'net', 'net-3p', 'coopsave')
-    'M3' = @('net', 'net-relay')
-    'M4' = @('net', 'net-3p')
-    'M5' = @('net', 'net-4p', 'local')
-    'M6' = @('net', 'local')
-    'M7' = @('coopsave', 'titlejoin', 'net-newgame', 'rooms')
-    'M8' = @('local', 'titlejoin')
-    'M9' = @()            # harness files map to their own suite below
-}
-# Harness / test files -> the suite that runs them (checked before the module table).
-$FileSuites = [ordered]@{
-    'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
-    'NetIntroTest'     = @('net', 'net-4p');
-    'NetTestHarness'   = @('net', 'net-3p', 'net-4p'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
-    'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
-}
-
-function Get-ModuleMap {
-    # Parses the "| M<n> | name | Files | ..." rows of docs\modules.md into file base name -> module.
-    $map = @{}
-    $doc = Join-Path $root 'docs\modules.md'
-    if (-not (Test-Path $doc)) { return $map }
-    foreach ($line in Get-Content $doc) {
-        if ($line -notmatch '^\|\s*(M\d)\s*\|[^|]*\|([^|]*)\|') { continue }
-        $module = $Matches[1]; $files = $Matches[2]
-        # Expand "Dir\{A, B}" and "Name(+Hooks)" forms, then split on commas.
-        $files = [regex]::Replace($files, '(\w+)\\\{([^}]*)\}', { param($m) (($m.Groups[2].Value -split ',') | ForEach-Object { $m.Groups[1].Value + '\' + $_.Trim() }) -join ', ' })
-        $files = [regex]::Replace($files, '(\w+)\(\+(\w+)\)', '$1, $1$2')
-        foreach ($f in $files -split ',') {
-            $name = ($f.Trim() -replace '`', '' -replace '\.cs$', '')
-            if ($name -match '^[A-Za-z][\w\\]*$') { $map[(Split-Path -Leaf $name)] = $module }
-        }
-    }
-    $map
-}
-
-function Get-SuitesFor([string]$path, $moduleMap) {
-    $p = $path -replace '/', '\'
-    $leaf = [IO.Path]::GetFileNameWithoutExtension($p)
-    if ($p -like 'docs\*' -or $p -like '*.md') { return @{ Suites = @(); Why = 'docs' } }
-    if ($p -like 'src\Tests\*') { return @{ Suites = @(); Why = 'unit tests only' } }
-    if ($p -like 'src\RelayServer\*') { return @{ Suites = @('net-relay', 'titlejoin-relay'); Why = 'relay server' } }
-    if ($p -like 'src\RoomServer\*') { return @{ Suites = @('rooms'); Why = 'room server' } }
-    if ($p -like 'src\CServer\*') { return @{ Suites = @('net'); Why = 'C-server (run-nettest -CServer by hand if it exists)' } }
-    if ($p -like 'src\TestQuiet\*' -or $p -eq 'src\test-launch.ps1') { return @{ Suites = @('local', 'net'); Why = 'test launcher' } }
-    if ($p -match '^src\\run-(\w+)\.ps1$') {
-        $s = @{ 'test' = @('local'); 'nettest' = @('net'); 'coopsave' = @('coopsave'); 'titlejoin' = @('titlejoin'); 'rooms' = @('rooms') }[$Matches[1]]
-        return @{ Suites = @($s | Where-Object { $_ }); Why = 'its own script' }
-    }
-    if ($p -like 'src\assets\*') { return @{ Suites = @('local'); Why = 'assets' } }
-    if ($p -like 'src\OriCoop\*') {
-        foreach ($k in $FileSuites.Keys) { if ($leaf -eq $k) { return @{ Suites = $FileSuites[$k]; Why = 'harness ' + $k } } }
-        if ($leaf -like 'Net*Test' -or $leaf -like '*SyncTest' -or $leaf -like 'NetStory*') { return @{ Suites = @('net'); Why = 'net harness' } }
-        if ($moduleMap.ContainsKey($leaf)) { $m = $moduleMap[$leaf]; return @{ Suites = $ModuleSuites[$m]; Why = $m } }
-        return @{ Suites = $AllSuites; Why = 'unknown mod file: everything' }
-    }
-    return @{ Suites = @(); Why = 'not covered by game suites' }
-}
+# --- suites, module map and net phases: src\test-selection.ps1 (+ src\phase-map.psd1), shared with the selfcheck.
+$TS_Root = $root
+. (Join-Path $src 'test-selection.ps1')
+$Suites = $TS_Suites
 
 # --- changed files
 Push-Location $root
@@ -102,18 +29,22 @@ try {
 if ($Files) { $changed = @($Files) }
 $changed = @($changed | Where-Object { $_ } | Sort-Object -Unique)
 
-$moduleMap = Get-ModuleMap
-$plan = [ordered]@{}
+$sel = Get-Selection $changed
 'CHANGED (' + $changed.Count + ' files, base ' + $Base + $(if ($WorkingTree) { ' + working tree' } else { '' }) + ')'
 foreach ($f in $changed) {
-    $r = Get-SuitesFor $f $moduleMap
-    '  ' + $f + '  ->  ' + $(if ($r.Suites.Count) { $r.Suites -join ', ' } else { '-' }) + '  (' + $r.Why + ')'
-    foreach ($s in $r.Suites) { $plan[$s] = $true }
+    $r = $sel.Why[$f]
+    '  ' + $f + '  ->  ' + $(if ($r.Suites.Count) { $r.Suites -join ', ' } else { '-' }) + '  (' + $r.Why + ')' + $(if ($sel.PhaseWhy[$f]) { '  phases ' + $sel.PhaseWhy[$f] } else { '' })
 }
-$toRun = @($Suites.Keys | Where-Object { $plan.Contains($_) })
-if ($All) { $toRun = @($Suites.Keys) }
-'PLAN: unit tests, then ' + $(if ($toRun.Count) { $toRun -join ', ' } else { 'no game suites' })
+$toRun = @($sel.Suites)
+$phaseEnv = Get-PhaseEnv $sel
+if ($All) { $toRun = @($Suites.Keys); $phaseEnv = '' }
+'PLAN: selection selfcheck, unit tests, then ' + $(if ($toRun.Count) { $toRun -join ', ' } else { 'no game suites' }) +
+    $(if (@($toRun | Where-Object { $TS_PhasedSuites -contains $_ }).Count) { '; net phases ' + $(if ($phaseEnv) { $phaseEnv } else { 'ALL' }) } else { '' })
 if ($DryRun) { return }
+
+# --- layer 0: the selection must not be able to skip a check that catches a known break (T-078)
+& (Join-Path $src 'test-selection-selfcheck.ps1') -Root $root | Select-Object -Last 1
+if ($LASTEXITCODE -ne 0) { 'AFFECTED FAIL: selection selfcheck failed (src\phase-map.psd1); run src\test-selection-selfcheck.ps1 for the details'; exit 1 }
 
 # --- layer 1: unit tests
 $unitGame = Join-Path $root 'game'
@@ -124,7 +55,7 @@ if ($LASTEXITCODE -ne 0) { 'AFFECTED FAIL: unit tests failed; game suites not ru
 # --- layer 2: affected game suites (each in its own PowerShell, so they can share the copy locks)
 $outDir = Join-Path $env:TEMP ('oricoop-affected-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force $outDir | Out-Null
-$running = @(); $results = [ordered]@{}; $queue = New-Object System.Collections.Queue
+$running = @(); $results = [ordered]@{}; $times = @{}; $queue = New-Object System.Collections.Queue
 foreach ($s in $toRun) { $queue.Enqueue($s) }
 $sw = [Diagnostics.Stopwatch]::StartNew()
 while ($queue.Count -gt 0 -or $running.Count -gt 0) {
@@ -132,24 +63,48 @@ while ($queue.Count -gt 0 -or $running.Count -gt 0) {
         $s = $queue.Dequeue(); $def = $Suites[$s]
         $log = Join-Path $outDir ($s + '.txt')
         $args = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', (Join-Path $src $def[0])) + @($def | Select-Object -Skip 1)
+        # 2-player net suites run only the selected phases (child processes inherit the environment at start).
+        $env:ORICOOP_PHASES = $(if ($TS_PhasedSuites -contains $s) { $phaseEnv } else { '' })
         $p = Start-Process powershell -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError ($log + '.err')
-        $running += [pscustomobject]@{ Name = $s; Proc = $p; Log = $log; Start = $sw.Elapsed.TotalSeconds }
+        $env:ORICOOP_PHASES = ''
+        $running += [pscustomobject]@{ Name = $s; Proc = $p; Log = $log; Start = $sw.Elapsed.TotalSeconds; Got = -1.0 }
         'START ' + $s + ' (' + ($def -join ' ') + ')'
         Start-Sleep -Seconds 5   # stagger lock grabs
     }
     Start-Sleep -Seconds 5
     foreach ($r in @($running)) {
+        # Queue time vs own time (T-078): wall time is mostly waiting for a free test copy; the launcher prints
+        # "TEST COPY x:" once it holds one. Read with FileShare.ReadWrite (the child is still writing the log).
+        if ($r.Got -lt 0) {
+            try {
+                $fs = [IO.File]::Open($r.Log, 'Open', 'Read', 'ReadWrite'); $rd = New-Object IO.StreamReader($fs)
+                if ($rd.ReadToEnd() -match '(?m)^TEST COPY \w+:') { $r.Got = $sw.Elapsed.TotalSeconds }
+                $rd.Close()
+            } catch { }
+        }
         if (-not $r.Proc.HasExited) { continue }
         $text = if (Test-Path $r.Log) { Get-Content $r.Log -Raw } else { '' }
         $ok = $text -match '(?m)(NETTEST PASS|COOPSAVE PASS|TITLEJOIN \w+ PASS|ROOMS PASS|\] RESULT PASS)' -and $text -notmatch '(?m)(NETTEST FAIL|COOPSAVE FAIL|TITLEJOIN \w+ FAIL|\] RESULT FAIL|no result file)'
-        if ($text -match 'OWNER IS PLAYING') { $ok = $false; $status = 'STOPPED (owner playing)' } else { $status = $(if ($ok) { 'PASS' } else { 'FAIL' }) }
+        if ($text -cmatch 'OWNER IS PLAYING') { $ok = $false; $status = 'STOPPED (owner playing)' } else { $status = $(if ($ok) { 'PASS' } else { 'FAIL' }) }
         $results[$r.Name] = $status
-        'DONE ' + $r.Name + ': ' + $status + ' in ' + [int]($sw.Elapsed.TotalSeconds - $r.Start) + ' s (log ' + $r.Log + ')'
+        $now = $sw.Elapsed.TotalSeconds; $got = $(if ($r.Got -ge 0) { $r.Got } else { $r.Start })
+        $times[$r.Name] = @([int]($got - $r.Start), [int]($now - $got))
+        'DONE ' + $r.Name + ': ' + $status + ' in ' + [int]($now - $r.Start) + ' s (queued ' + [int]($got - $r.Start) + ' s, own ' + [int]($now - $got) + ' s) (log ' + $r.Log + ')'
         $running = @($running | Where-Object { $_ -ne $r })
     }
 }
 '--- summary (' + [int]$sw.Elapsed.TotalSeconds + ' s) ---'
-$lines = @(foreach ($k in $results.Keys) { $k + ': ' + $results[$k] })
+$lines = @(foreach ($k in $results.Keys) { $k + ': ' + $results[$k] + $(if ($times[$k]) { ' (queued ' + $times[$k][0] + ' s, own ' + $times[$k][1] + ' s)' } else { '' }) })
 $lines
 if ($Summary) { Set-Content -LiteralPath $Summary -Value (@('suites run ' + [DateTime]::Now.ToString('s') + ' (' + [int]$sw.Elapsed.TotalSeconds + ' s), logs ' + $outDir) + $lines) -Encoding UTF8 }
+# History for the nightly report ("merges since last night ran only these phases"): one line per run, shared by all
+# worktrees (the main checkout's logs folder).
+try {
+    $common = (git -C $root rev-parse --path-format=absolute --git-common-dir).Trim()
+    $hist = Join-Path (Join-Path (Split-Path -Parent $common) 'logs') 'affected-history.tsv'
+    New-Item -ItemType Directory -Force (Split-Path -Parent $hist) | Out-Null
+    $head = (git -C $root rev-parse --short HEAD).Trim(); $branch = (git -C $root rev-parse --abbrev-ref HEAD).Trim()
+    $ok = $(if (@($results.Values | Where-Object { $_ -ne 'PASS' }).Count -eq 0) { 'PASS' } else { 'FAIL' })
+    Add-Content -LiteralPath $hist -Value (([DateTime]::Now.ToString('s'), $branch, $head, ($toRun -join ','), $(if ($phaseEnv) { $phaseEnv } else { 'ALL' }), $ok, [int]$sw.Elapsed.TotalSeconds) -join "`t")
+} catch { 'NOTE: could not write the affected history: ' + $_.Exception.Message }
 if (@($results.Values | Where-Object { $_ -ne 'PASS' }).Count -eq 0) { 'AFFECTED PASS' } else { 'AFFECTED FAIL'; exit 1 }
