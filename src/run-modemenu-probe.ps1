@@ -21,6 +21,7 @@ try {
     if (-not $finished -and -not $p.HasExited) { "TIMEOUT: probe did not finish in $TimeoutSec s"; '--- BepInEx log tail ---'; Get-Content $logPath -Tail 25 | ForEach-Object { $_.Substring(0, [Math]::Min(200, $_.Length)) } }
     if ($p.HasExited -and -not $finished) { "game exited early, code $($p.ExitCode)"; Get-ChildItem $TL_TestDir -Filter 'modeprobe*' | ForEach-Object { '--- ' + $_.Name; Get-Content $_.FullName -Tail 12 } }
     if (-not $p.HasExited) { $p.Kill() }
+    if (Fresh) { Copy-Item $logPath (Join-Path $TL_TestDir 'modeprobe-LogOutput.log') -Force }   # full log for digging
     $log = $(if (Fresh) { Get-Content $logPath } else { 'no fresh BepInEx log (game exited or never started)' })   # read while this run still holds the copy (the log is shared)
 }
 finally { Complete-TestRun }

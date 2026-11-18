@@ -46,8 +46,8 @@ $TS_FileSuites = [ordered]@{
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('net-lp2', 'net-lp3')
-    'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'RoomsHookTest' = @('rooms');
-    'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
+    'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'RoomsHookTest' = @('rooms');
+   'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
 }
 
 function Get-TSModuleMap {

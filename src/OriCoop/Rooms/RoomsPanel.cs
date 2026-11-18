@@ -61,7 +61,21 @@ namespace OriCoop.Rooms
             NetPlay.SessionEnded += delegate { if (Instance.Session != null) Instance.Session.Leave(); };
         }
 
-        public static void Open()
+        static string RoomsDir { get { return TestValue("ORICOOP_ROOMS_DIR", Path.GetFullPath(Path.Combine(Paths.ConfigPath, "../OriCoop/rooms"))); } }
+
+        // T-095: the room to show on the 上次游玩 row (null = no record yet).
+        internal static string LastPlayedRoom()
+        {
+            try { string id, server; return new RoomLocalStore(RoomsDir).LoadLastRoom(out id, out server) ? id : null; }
+            catch (Exception) { return null; }
+        }
+
+        string autoOpen;
+
+        public static void Open() { Open(null); }
+
+        // autoRoom: open that room as soon as the room service answers (the 上次游玩 row).
+        public static void Open(string autoRoom)
         {
             EnsureInstance();
             RoomsPanel p = Instance;
@@ -74,9 +88,9 @@ namespace OriCoop.Rooms
             p.nick = TestValue("ORICOOP_TEST_NICK", SteamTransport.LocalPersonaName);
             p.serviceName = L10n.T("rooms.service");
             p.Show("list");
+            p.autoOpen = autoRoom;
             if (p.steam == "0") { p.message = L10n.T("rooms.steam_required"); return; }
-            p.store = new RoomLocalStore(TestValue("ORICOOP_ROOMS_DIR",
-                Path.GetFullPath(Path.Combine(Paths.ConfigPath, "../OriCoop/rooms"))));
+            p.store = new RoomLocalStore(RoomsDir);
             p.rooms = p.store.ListRooms();
             p.refreshed.Clear();
             p.relay = TestValue("ORICOOP_NET_RELAY", RelayList.Current);
@@ -96,6 +110,7 @@ namespace OriCoop.Rooms
             {
                 p.online = reply.Ok;
                 if (!p.online) p.message = L10n.T("rooms.offline");
+                else if (p.autoOpen != null) { string room = p.autoOpen; p.autoOpen = null; p.OpenRoom(room); }
                 else p.RefreshNext(0);
             });
         }
@@ -287,7 +302,11 @@ namespace OriCoop.Rooms
 
         internal void CopySave(string id) { busy = true; Session.Copy(id); }
         internal void CopyLocal(string room, string id) { SetRoom(room); Session.Online = false; CopySave(id); }
-        internal void Enter(string save) { busy = true; Session.Enter(save); }
+        internal void Enter(string save)
+        {
+            try { store.SaveLastRoom(auth.Room, server); } catch (Exception e) { Plugin.Log.LogWarning("rooms: could not record the last room: " + e.Message); }
+            busy = true; Session.Enter(save);
+        }
 
         internal void PickSlot(int slot)
         {

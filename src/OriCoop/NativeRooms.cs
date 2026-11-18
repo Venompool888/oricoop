@@ -10,13 +10,18 @@ namespace OriCoop
     {
         static readonly List<Action> s_roomActions = new List<Action>();
         static string s_roomsCode = "", s_roomsPassword = "";
-        static bool IsRoomsPage { get { return s_page >= PageRooms && s_page <= PageRoomSlots; } }
+        static bool IsRoomsPage { get { return (s_page >= PageRooms && s_page <= PageRoomSlots) || s_page == PageRoomsMenu; } }
+        static bool s_roomsList;   // T-095: the room list page (房间列表) is open; false = the 我的房间 submenu
 
-        internal static void OpenRooms()
+        internal static void OpenRooms() { OpenRooms(null); }
+
+        // lastRoom != null: the 上次游玩 row, open that room once the room service answers.
+        internal static void OpenRooms(string lastRoom)
         {
             s_transport = "relay";
-            RoomsPanel.Open();
-            GoPage(PageRooms, 0);
+            s_roomsList = false;
+            RoomsPanel.Open(lastRoom);
+            GoPage(PageRoomsMenu, 0);
         }
 
         static bool s_roomProbeWasOpen;
@@ -53,7 +58,7 @@ namespace OriCoop
                 case "join": return PageRoomJoin;
                 case "password": return PageRoomPassword;
                 case "slots": return PageRoomSlots;
-                default: return PageRooms;
+                default: return s_roomsList ? PageRooms : PageRoomsMenu;
             }
         }
 
@@ -62,9 +67,9 @@ namespace OriCoop
             RoomsPanel p = RoomsPanel.Instance;
             int next = RoomPage(p.Screen);
             if (next == s_page) return;
-            if (next == PageRoomPassword || next == PageRoomCreate || (next == PageRoomJoin && s_page == PageRooms))
+            if (next == PageRoomPassword || next == PageRoomCreate || (next == PageRoomJoin && (s_page == PageRooms || s_page == PageRoomsMenu)))
                 s_roomsPassword = "";
-            if (next == PageRoomJoin && s_page == PageRooms) s_roomsCode = "";
+            if (next == PageRoomJoin && (s_page == PageRooms || s_page == PageRoomsMenu)) s_roomsCode = "";
             GoPage(next, 0);
         }
 
@@ -104,7 +109,16 @@ namespace OriCoop
                 {
                     if (p.Message.Length > 0)
                         RoomRow(rows, RF("rooms.title", zh, p.ServiceName), p.Message, null);
-                    if (s_page == PageRooms)
+                    if (s_page == PageRoomsMenu)
+                    {
+                        RoomRow(rows, L10n.T("rooms.create", zh), L10n.T(p.Online ? "rooms.choose_save" : "rooms.offline", zh),
+                            delegate { if (p.Online) p.BeginCreate(); });
+                        RoomRow(rows, L10n.T("rooms.list", zh), L10n.T("rooms.list.desc", zh),
+                            delegate { s_roomsList = true; });
+                        RoomRow(rows, L10n.T("rooms.join_room", zh), L10n.T(p.Online ? "lobby.room.legacy" : "rooms.offline", zh),
+                            delegate { if (p.Online) p.BeginJoin(); });
+                    }
+                    else if (s_page == PageRooms)
                     {
                         if (!p.Online && p.Message.Length == 0)
                             RoomRow(rows, RF("rooms.title", zh, p.ServiceName), L10n.T("rooms.offline", zh), null);
@@ -125,10 +139,6 @@ namespace OriCoop
                                             delegate { p.CopyLocal(id, sid); });
                                     }
                             }
-                        RoomRow(rows, L10n.T("rooms.create", zh), L10n.T(p.Online ? "rooms.choose_save" : "rooms.offline", zh),
-                            delegate { if (p.Online) p.BeginCreate(); });
-                        RoomRow(rows, L10n.T("rooms.join_code", zh), L10n.T(p.Online ? "lobby.room.legacy" : "rooms.offline", zh),
-                            delegate { if (p.Online) p.BeginJoin(); });
                     }
                     else if (s_page == PageRoomView && p.Info != null)
                     {
@@ -228,8 +238,9 @@ namespace OriCoop
         static void RoomBack()
         {
             RoomsPanel p = RoomsPanel.Instance;
+            if (s_page == PageRooms) { s_roomsList = false; GoPage(PageRoomsMenu, 1); return; }
             p.Back();
-            if (!p.Visible) GoPage(PageServerMode, 1);
+            if (!p.Visible) GoPage(PageServerMode, ServerModeRoomsRow);
             else SyncRoomPage();
         }
 
@@ -286,6 +297,7 @@ namespace OriCoop
             if (Time.realtimeSinceStartup >= s_nextRefresh) RefreshTexts(false);
         }
 
+        internal static int TestServerModeRoomsRow { get { return ServerModeRoomsRow; } }
         static bool RoomTestOn { get { return Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1"; } }
         internal static string[] TestRoomRows() { return RoomTestOn && IsOpen && IsRoomsPage ? LastLabels.ToArray() : new string[0]; }
         internal static string TestRoomState()

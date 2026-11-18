@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Text;
@@ -152,6 +152,24 @@ namespace OriCoop.Rooms
                 }
             }
             return list;
+        }
+
+        // T-095: the room played last, for the 上次游玩 row (file "last-room.txt": room id, server).
+        public void SaveLastRoom(string roomId, string server)
+        {
+            RoomWire.AtomicWrite(Path.Combine(root, "last-room.txt"), Encoding.UTF8.GetBytes(Id(roomId) + "\n" + (server ?? "")));
+        }
+
+        public bool LoadLastRoom(out string roomId, out string server)
+        {
+            roomId = server = "";
+            string path = Path.Combine(root, "last-room.txt");
+            if (!File.Exists(path)) return false;
+            string[] parts = File.ReadAllText(path, Encoding.UTF8).Split('\n');
+            if (parts.Length < 1 || parts[0].Length == 0) return false;
+            roomId = parts[0].Trim(); server = parts.Length > 1 ? parts[1].Trim() : "";
+            foreach (RoomBackupInfo room in ListRooms()) if (room.Id == roomId) return true;
+            return false;
         }
 
         public string LoadToken(string roomId)

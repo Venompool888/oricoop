@@ -100,7 +100,7 @@ namespace OriCoop
                     for (int i = 0; i < zh.Length; i++) lobby.Add(new[] { zh[i][0], zh[i][1], en[i][0], en[i][1] });
                     return lobby.ToArray();
                 }
-                string[][] keys = s_page == 0 ? MainPage : s_page == 1 ? OnlinePage : s_page == PageCoop ? TitlePage : ServerModePage;
+                string[][] keys = s_page == 0 ? MainPage : s_page == 1 ? OnlinePage : s_page == PageCoop ? TitlePage : ServerModeKeys();
                 var rows = new List<string[]>();
                 foreach (string[] row in keys) rows.Add(Row(row[0], row[1]));
                 return rows.ToArray();
@@ -267,6 +267,7 @@ namespace OriCoop
 
         static void Destroy()
         {
+            RestoreGlows();
             if (s_root != null)
             {
                 if (s_mgr != null) { s_mgr.IsLocked = true; s_mgr.SetVisible(false); }
@@ -335,6 +336,7 @@ namespace OriCoop
                 s_mgr.SetCurrentItem(Mathf.Clamp(focus, 0, Math.Max(0, Math.Min(s_items.Count, rows.Length) - 1)));
             }
             finally { s_quiet = quiet; }
+            UpdateGlowTint();   // T-095: red wisp on the remove page
         }
 
         static void Set(MessageBox box, string text)
@@ -635,7 +637,7 @@ namespace OriCoop
 
         class Driver : MonoBehaviour
         {
-            float m_probeT = -1f; int m_probeStep, m_probeRoomsStep;
+            float m_probeT = -1f; int m_probeStep, m_probeRoomsStep, m_probeSub;
 
             void Update()
             {
@@ -684,17 +686,16 @@ namespace OriCoop
                     case 6:
                         if (m_probeRoomsStep == 0)
                         {
-                            if (LastPage != "servermode" || LastLabels.Count != 2 || s_mgr.Index != 0
-                                || !HasKey(new List<string> { LastLabels[0] }, "server.cserver")
-                                || !HasKey(new List<string> { LastLabels[1] }, "lobby.rooms") || HasKey(LastLabels, "server.relay"))
-                                Plugin.Log.LogError("mode menu probe: expected server mode / My rooms and no host mode, default focus on server mode (" + Labels + ")");
-                            s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem();
+                            if (!ServerModeLabelsMatch() || s_mgr.Index != 0)
+                                Plugin.Log.LogError("mode menu probe: expected My rooms / Server management and no host mode, default focus on My rooms (" + Labels + ")");
+                            s_mgr.SetCurrentItem(ServerModeRoomsRow); s_mgr.PressCurrentItem();
                         }
                         else if (m_probeRoomsStep == 1)
                         {
                             bool noPopup = typeof(Rooms.RoomsPanel).GetMethod("OnGUI", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) == null;
-                            if (LastPage != "rooms" || LastLabels.Count < 2 || !HasKey(LastLabels, "common.back")
-                                || !s_mgr.IsVisible || !s_mgr.IsActive || !noPopup)
+                            if (LastPage != "roomsmenu" || LastLabels.Count < 4 || !HasKey(LastLabels, "rooms.create")
+                                || !HasKey(LastLabels, "rooms.list") || !HasKey(LastLabels, "rooms.join_room")
+                                || !HasKey(LastLabels, "common.back") || !s_mgr.IsVisible || !s_mgr.IsActive || !noPopup)
                                 Plugin.Log.LogError("mode menu probe: expected native rooms rows and no popup (" + Labels + ")");
                             else Plugin.Log.LogInfo("mode menu probe: native rooms rows verified (no popup)");
                             Shot("modemenu_rooms"); s_mgr.OnBackPressed();
@@ -716,19 +717,39 @@ namespace OriCoop
                     case 14: StopEdit(); break;
                     case 15: s_mgr.OnBackPressed(); break;                        // -> role
                     case 16: s_mgr.OnBackPressed(); break;                        // -> server mode
-                    case 17: s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); break;   // cserver -> list
+                    case 17:   // 自建服务器 -> 服务器管理 -> 服务器列表 -> back -> 添加服务器
+                        if (m_probeSub == 0) { s_mgr.SetCurrentItem(ServerModeRoomsRow + 1); s_mgr.PressCurrentItem(); }
+                        else if (m_probeSub == 1)
+                        {
+                            if (!ServerManageLabelsMatch()) Plugin.Log.LogError("mode menu probe: expected Add / Remove / Server list (" + Labels + ")");
+                            s_mgr.SetCurrentItem(2); s_mgr.PressCurrentItem();
+                        }
+                        else if (m_probeSub == 2)
+                        {
+                            if (!CServerListLabelsMatch()) Plugin.Log.LogError("mode menu probe: expected the saved C-servers only (" + Labels + ")");
+                            s_mgr.OnBackPressed();
+                        }
+                        else if (m_probeSub == 3) { s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); wait = 1.5f; }   // Remove: red wisp
+                        else if (m_probeSub == 4)
+                        {
+                            if (LastPage != "serverremove" || !GlowsAreRed()) Plugin.Log.LogError("mode menu probe: expected the remove page with a red wisp (" + Labels + ")");
+                            Shot("modemenu_remove");
+                        }
+                        else if (m_probeSub == 5) s_mgr.OnBackPressed();   // the screenshot is taken at the end of the frame: leave the page one step later
+                        else { s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); }
+                        if (++m_probeSub < 7) m_probeStep--; else m_probeSub = 0;
+                        break;
                     case 18:
-                        if (!CServerListLabelsMatch()) Plugin.Log.LogError("mode menu probe: expected C-server Add / Remove / saved rows (" + Labels + ")");
-                        s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); break;   // -> add
+                        if (LastPage != "serveradd" || LastLabels.Count != 4 || !HasKey(LastLabels, "common.ok") || s_cserverHost.Length != 0 || s_cserverPort.Length != 0)
+                            Plugin.Log.LogError("mode menu probe: expected empty address / empty port / Test connection / OK (" + Labels + ")");
+                        s_cserverHost = "127.0.0.1"; s_cserverPort = "1"; s_testState = 0; RefreshTexts(true);
+                        s_mgr.SetCurrentItem(2); s_mgr.PressCurrentItem(); wait = 3f; break;   // Test connection (nothing listens there)
                     case 19:
-                        if (LastPage != "serveradd" || LastLabels.Count != 3 || !HasKey(LastLabels, "common.save"))
-                            Plugin.Log.LogError("mode menu probe: expected address / port / Save (" + Labels + ")");
-                        if (!OriCoop.Authority.CServerConfig.IsValidAddress(s_cserverHost + ":" + s_cserverPort))
-                        { s_cserverHost = "127.0.0.1"; s_cserverPort = "1"; }
-                        s_mgr.SetCurrentItem(2); s_mgr.PressCurrentItem(); break;
+                        if (s_testState != 3) Plugin.Log.LogError("mode menu probe: connection test to a dead address must report failure (state " + s_testState + ")");
+                        s_mgr.SetCurrentItem(3); s_mgr.PressCurrentItem(); break;   // OK -> saved, list
                     case 20:
                         if (!CServerListLabelsMatch() || LastLabels[LastLabels.Count - 1] != s_cserverHost + ":" + s_cserverPort)
-                            Plugin.Log.LogError("mode menu probe: Save did not append to the C-server list (" + Labels + ")");
+                            Plugin.Log.LogError("mode menu probe: OK did not append to the C-server list (" + Labels + ")");
                         s_mgr.SetCurrentItem(LastLabels.Count - 1); s_mgr.PressCurrentItem(); break;
                     case 21:
                         if (LastPage != "role" || s_transport != "cserver" || LastLabels.Count != 2 ||
@@ -741,7 +762,10 @@ namespace OriCoop
                             Plugin.Log.LogError("mode menu probe: expected cserver room code entry (" + Labels + ")");
                         Shot("lobby_entry_cserver"); s_mgr.OnBackPressed(); break;
                     case 23: s_mgr.OnBackPressed(); break;                        // -> list
-                    case 24: s_mgr.OnBackPressed(); break;                        // -> server mode
+                    case 24:                                                      // -> server management, then the 自建服务器 page
+                        s_mgr.OnBackPressed();
+                        if (m_probeSub++ == 0) m_probeStep--; else m_probeSub = 0;
+                        break;
                     case 25: s_mgr.OnBackPressed(); break;                        // -> online
                     case 26: s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;   // direct -> role
                     case 27: s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); wait = 2f; break;   // host
