@@ -42,6 +42,7 @@
         @{ Switch = 'ORICOOP_MUTATE_KEEP_NET';       File = 'src\OriCoop\TitleReturn.cs';    Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_PLATFORMFIX'; File = 'src\OriCoop\PlatformFix.cs';    Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_BOTTOMHUD_P1VALUES'; File = 'src\OriCoop\BottomHud.cs'; Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_BOTTOMHUD_LAYOUT'; File = 'src\OriCoop\BottomHud.cs'; Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_SIGNPOST';       File = 'src\OriCoop\P2Extras.cs';       Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
         @{ Switch = 'ORICOOP_TEST_THROW';            File = 'src\OriCoop\Plugin.cs';         Suite = 'local';     Phase = '' }

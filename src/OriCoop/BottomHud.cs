@@ -32,6 +32,7 @@ namespace OriCoop
             public TransparencyAnimator Fade;
             public GameObject Label;   // the game's hint text (letters and digits), placed beside the copy each frame
             public TextBox LabelBox;
+            public Vector3 LabelScale = Vector3.one;
             public float LabelAlpha = -1f;
             public readonly List<FloatValueProvider> Providers = new List<FloatValueProvider>();
             public GameObject EnergyBar, SoulFlameFull, SoulFlameFlame;
@@ -81,6 +82,7 @@ namespace OriCoop
 
             Rect native;
             bool haveNative = NativeFrame(ui, out native);
+            List<KeyValuePair<int, Copy>> toPlace = new List<KeyValuePair<int, Copy>>();
             for (int i = 0; i < seats.Count; i++)
             {
                 int seat = seats[i];
@@ -99,10 +101,33 @@ namespace OriCoop
                     bool have = Feed(c, puppets.TryGetValue(seat, out puppet) ? puppet : null, dt);
                     float a = have && !TestHide ? hud * (c.Model.Now.Downed ? DownedOpacity : 1f) : 0f;
                     Show(c, a);
-                    if (a > 0f && haveNative) Place(ui, c, i, seats.Count, native);
+                    if (a > 0f && haveNative) toPlace.Add(new KeyValuePair<int, Copy>(i, c));
                 }
                 catch (Exception e) { Warn("bar P" + seat, e); if (c != null) Show(c, 0f); }
             }
+            if (toPlace.Count == 0) return;
+            // All copies share one scale and one column, sized for the one with the most cells (and for this PC's own strip).
+            float nativeEnergy = 1f, copyEnergy = 1f, copyHealth = 1f;
+            VitalsSample own = Sample(Characters.Sein);
+            if (own.MaxEnergy > 0f && Finite(own.MaxEnergy)) nativeEnergy = own.MaxEnergy;
+            foreach (KeyValuePair<int, Copy> e in toPlace)
+            {
+                VitalsSample v = e.Value.Model.Now;
+                if (Finite(v.MaxEnergy)) copyEnergy = Mathf.Max(copyEnergy, v.MaxEnergy);
+                copyHealth = Mathf.Max(copyHealth, v.MaxHealth / 4f);
+            }
+            foreach (KeyValuePair<int, Copy> e in toPlace)
+            {
+                try { Place(ui, e.Value, e.Key, native, nativeEnergy, copyEnergy, copyHealth); }
+                catch (Exception ex) { Warn("place bar P" + e.Value.Seat, ex); }
+            }
+        }
+
+        // The game's own strip, as the layout sees it: how many energy cells it shows (for what it covers on the left).
+        public static float NativeEnergyCells()
+        {
+            VitalsSample own = Sample(Characters.Sein);
+            return own.MaxEnergy > 0f && Finite(own.MaxEnergy) ? own.MaxEnergy : 1f;
         }
 
         // ---------------------------------------------------------------- values
@@ -192,6 +217,28 @@ namespace OriCoop
             return true;
         }
 
+        // The part of the copy that is drawn (label, cells, orb) in pixels, origin bottom-left; false when it has none.
+        public static bool SeenScreenRect(int seat, out Rect r)
+        {
+            r = new Rect();
+            Copy c; Rect frame;
+            if (!s_copies.TryGetValue(seat, out c) || c.Root == null || !c.Root.activeSelf || !ScreenRect(seat, out frame)) return false;
+            r = Rect.MinMaxRect(c.Slot.SeenLeft * Screen.width, frame.yMin, c.Slot.VisRight * Screen.width, frame.yMax);
+            return true;
+        }
+
+        // The game's own strip, the part that is drawn (orb and as many cells as this PC's Ori has), in pixels.
+        public static bool NativeSeenScreenRect(out Rect r)
+        {
+            r = new Rect(); Rect frame;
+            if (!NativeScreenRect(out frame)) return false;
+            float l, rr;
+            VitalsSample own = Sample(Characters.Sein);
+            StatusBarLayout.NativeSeen(frame.xMin / Screen.width, frame.xMax / Screen.width, NativeEnergyCells(), Mathf.Max(1f, own.MaxHealth / 4f), out l, out rr);
+            r = Rect.MinMaxRect(l * Screen.width, frame.yMin, rr * Screen.width, frame.yMax);
+            return true;
+        }
+
         public static bool NativeScreenRect(out Rect r)
         {
             r = new Rect();
@@ -268,7 +315,7 @@ namespace OriCoop
             box.TextBox.horizontalAnchor = HorizontalAnchorMode.Center;
             box.TextBox.verticalAnchor = VerticalAnchorMode.Middle;
             box.TextBox.alignment = AlignmentMode.Center;
-            c.Label = text.Go; c.LabelBox = box.TextBox;
+            c.Label = text.Go; c.LabelBox = box.TextBox; c.LabelScale = text.Go.transform.localScale;
         }
 
         static void ShowLabel(Copy c, float a)
@@ -331,43 +378,60 @@ namespace OriCoop
             return any;
         }
 
-        static void Place(SeinUI ui, Copy c, int order, int count, Rect native)
+        static bool Finite(float f) { return !float.IsNaN(f) && !float.IsInfinity(f); }
+
+        static void Place(SeinUI ui, Copy c, int order, Rect native, float nativeEnergyCells, float copyEnergyCells, float copyHealthCells)
         {
             Camera gui = P2Hud.GuiCamera();
             if (gui == null || !gui.orthographic) return;
+            // While a scene loads the camera or the HUD can report no size: skip this frame instead of moving the copy to NaN.
+            if (!Finite(gui.aspect) || gui.aspect <= 0f || !Finite(native.xMin + native.xMax + native.yMin + native.yMax) || native.width <= 0f || native.height <= 0f) return;
             float halfH = gui.orthographicSize, halfW = halfH * gui.aspect;
             Vector3 cam = gui.transform.position;
             float left = cam.x - halfW, bottom = cam.y - halfH, w = 2f * halfW, h = 2f * halfH;
-            SlotRect s = StatusBarLayout.Place(order, count, (native.xMin - left) / w, (native.xMax - left) / w,
-                (native.yMin - bottom) / h, native.height / h);
+            SlotRect s = StatusBarLayout.Place(order, (native.xMin - left) / w, (native.xMax - left) / w,
+                (native.yMin - bottom) / h, native.height / h, nativeEnergyCells, copyEnergyCells, copyHealthCells);
+            // Mutation switches (docs/DEVELOPMENT-PROCESS.md): the layout checks must fail with the old size or the wrong side.
+            string mutate = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_BOTTOMHUD_LAYOUT");
+            if (mutate == "small") { s.Scale *= 0.4f; s.Width *= 0.4f; s.Height *= 0.4f; }
+            else if (mutate == "right") { s.CenterX += 0.5f; s.VisLeft += 0.5f; s.VisRight += 0.5f; s.LabelRight += 0.5f; }
             c.Slot = s;
             // The copy scales about its own origin (the game's HUD origin): frame' = origin + s * (frame - nativeOrigin).
             Vector3 o = ui.UI.transform.position;
             float targetCx = left + s.CenterX * w, targetBottom = bottom + s.Bottom * h;
             Vector3 p = new Vector3(targetCx - s.Scale * (native.center.x - o.x), targetBottom - s.Scale * (native.yMin - o.y), o.z);
+            if (!Finite(p.x + p.y + p.z + s.Scale)) return;
             Transform t = c.Root.transform;
             Vector3 parentScale = t.parent != null ? t.parent.lossyScale : Vector3.one;
             t.localScale = new Vector3(s.Scale * ui.UI.transform.localScale.x, s.Scale * ui.UI.transform.localScale.y, ui.UI.transform.localScale.z);
             if (parentScale.x != 0f) t.position = p;
-            PlaceLabel(c, h);
+            PlaceLabel(c, h, left + s.LabelRight * w);
         }
 
-        // The label keeps a fixed share of the screen height whatever the copy's scale, centred above the orb. Its size
-        // and offset are read from what the text renderer really draws (the TextBox lays the glyphs out itself).
-        public const float LabelScreenHeight = 0.024f;
-        static void PlaceLabel(Copy c, float screenWorldH)
+        // The label keeps a fixed share of the screen height whatever the copy's scale, to the left of the cells, level
+        // with the orb (its right edge at labelRight). Its size and offset are read from what the text renderer really
+        // draws (the TextBox lays the glyphs out itself).
+        public const float LabelScreenHeight = 0.03f;
+        static void PlaceLabel(Copy c, float screenWorldH, float labelRight)
         {
             if (c.Label == null) return;
             Rect frame, text;
             if (!Frame(c.Root.transform, out frame) || !LabelBounds(c, out text) || text.height <= 1e-5f) return;
             Transform lt = c.Label.transform;
+            // The label moves and scales relative to where it is; one bad frame would stay NaN for ever (and the game's
+            // render-order code throws every frame on a NaN position), so a non-finite label is put back first.
+            if (!Finite(lt.position.x + lt.position.y + lt.position.z) || !Finite(lt.localScale.x + lt.localScale.y + lt.localScale.z))
+            { lt.localScale = c.LabelScale; lt.position = c.Root.transform.position; if (!LabelBounds(c, out text)) return; }
             Camera gui = P2Hud.GuiCamera();
             if (gui != null) lt.rotation = gui.transform.rotation;
             float want = LabelScreenHeight * screenWorldH;
-            lt.localScale *= Mathf.Clamp(want / text.height, 0.25f, 4f);
+            float k = want / text.height;
+            if (!Finite(k) || !Finite(want)) return;
+            lt.localScale *= Mathf.Clamp(k, 0.25f, 4f);
             if (!LabelBounds(c, out text)) return;
-            Vector3 target = new Vector3(frame.center.x, frame.yMax + want * 0.35f + text.height / 2f, c.Root.transform.position.z);
-            lt.position = new Vector3(lt.position.x + target.x - text.center.x, lt.position.y + target.y - text.center.y, target.z);
+            Vector3 target = new Vector3(labelRight - text.width / 2f, frame.center.y, c.Root.transform.position.z);
+            Vector3 moved = new Vector3(lt.position.x + target.x - text.center.x, lt.position.y + target.y - text.center.y, target.z);
+            if (Finite(moved.x + moved.y + moved.z)) lt.position = moved;
         }
 
         static bool LabelBounds(Copy c, out Rect r)

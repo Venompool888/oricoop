@@ -1013,7 +1013,7 @@ namespace OriCoop
             int err0 = m_errors;
             Plugin.Teleport(P2, P1.Position + new Vector3(1.5f, 0f, 0f));
             yield return StartCoroutine(Wait(2f));
-            Check(P2Hud.Visible, "hud: P2 health shown in gameplay");
+            Check(P2Hud.Visible, "hud: P2 name tag shown in gameplay");
             Ori comp = P2Context.P2Companion;
             Check(comp != null && comp.gameObject.activeInHierarchy, "companion: P2 has an active companion");
             // Companion on screen, from real pixels: P2's companion renderers off vs on, count new bright blue-white pixels.
@@ -1039,11 +1039,20 @@ namespace OriCoop
             P2HudTestHide = false; yield return StartCoroutine(Wait(0.3f));
             string shotOn = Shot("visual_gameplay"); yield return StartCoroutine(Wait(0.4f)); // taken at end of frame
             string hudRegion = Path.Combine(Path.GetDirectoryName(shotOn), "visual_hud_region.png");
-            int newYellow = NewPixels(shotOff, shotOn, hudScreen, 90, c => c.r > 0.75f && c.g > 0.55f && c.b < 0.45f && c.r - c.b > 0.35f, hudRegion);
+            // Count inside the tag's own screen bounds (the wide region around it picked up background animation).
+            Vector3 tagCentre = hudScreen; int tagRadius = 90;
+            Renderer tagRenderer = P2Hud.Renderer; Camera tagGui = P2Hud.GuiCamera();
+            if (tagRenderer != null && tagGui != null)
+            {
+                Bounds tb = tagRenderer.bounds;
+                Vector3 lo = tagGui.WorldToScreenPoint(tb.min), hi = tagGui.WorldToScreenPoint(tb.max);
+                tagCentre = (lo + hi) / 2f; tagRadius = (int)(Mathf.Max(Mathf.Abs(hi.x - lo.x), Mathf.Abs(hi.y - lo.y)) / 2f + 4f);
+            }
+            int newYellow = NewPixels(shotOff, shotOn, tagCentre, tagRadius, c => c.r > 0.75f && c.g > 0.55f && c.b < 0.45f && c.r - c.b > 0.35f, hudRegion);
             Note("screenshot " + hudRegion);
             Note("hud pixels: " + newYellow + " new HUD-yellow pixels around screen " + hudScreen + " (layer " + (P2Hud.Renderer != null ? P2Hud.Renderer.gameObject.layer : -1) + ")");
-            // Background animation alone produced 50-85 such pixels in this spot; readable text gives several hundred.
-            Check(newYellow >= 200, "hud: P2 health is actually visible on screen (" + newYellow + " pixels)");
+            // The "P2" tag alone (no health dots since T-061b) gives about 100-140 yellow pixels; its own box has next to no background.
+            Check(newYellow >= 40, "hud: P2 name tag is actually visible on screen (" + newYellow + " pixels in a " + tagRadius * 2 + " px box)");
 
             UI.Menu.ShowMenuScreen();
             yield return StartCoroutine(Wait(1.2f));
@@ -1125,11 +1134,15 @@ namespace OriCoop
             P1.Energy.Current = eWas; P2.Energy.Current = eWas;
 
             // Layout: P2's bar beside the native HUD, not over it, on screen.
-            Rect native, bar;
+            Rect native, bar, seen, nativeSeen;
             yield return StartCoroutine(Wait(0.5f));
-            bool geo = BottomHud.NativeScreenRect(out native) & BottomHud.ScreenRect(2, out bar);
-            Note("bottomhud: native HUD " + native + ", P2 bar " + bar + ", screen " + Screen.width + "x" + Screen.height);
-            Check(geo && !bar.Overlaps(native) && bar.xMin >= 0f && bar.xMax <= Screen.width && bar.yMin >= 0f, "bottomhud: P2's bar is on screen and does not cover the game's HUD");
+            bool geo = BottomHud.NativeScreenRect(out native) & BottomHud.ScreenRect(2, out bar) & BottomHud.SeenScreenRect(2, out seen) & BottomHud.NativeSeenScreenRect(out nativeSeen);
+            Note("bottomhud: native HUD " + native + " (seen " + nativeSeen + "), P2 bar " + bar + " (seen " + seen + "), screen " + Screen.width + "x" + Screen.height);
+            Check(geo && !seen.Overlaps(nativeSeen) && seen.xMin >= 0f && seen.xMax <= Screen.width && seen.yMin >= 0f, "bottomhud: P2's bar is on screen and does not cover the game's HUD");
+            // T-061b layout: the bottom-left corner, on the native HUD's bottom line, big (the native size when there is no room for 70 %).
+            float ratio = geo ? bar.height / native.height : 0f;
+            Check(geo && Mathf.Abs(bar.yMin - native.yMin) < 3f && seen.xMax < Screen.width * 0.35f, "bottomhud: P2's bar is in the bottom-left corner on the native HUD's bottom line (" + seen + ")");
+            Check(ratio >= 0.4f && ratio <= 0.72f, "bottomhud: P2's bar is large, about 70 % of the native strip (" + F(ratio * 100f) + " %)");
 
             // Pixels: the bar is really drawn (bright HUD colours appear where it is when it is shown).
             Func<Color, bool> hudColour = c => Mathf.Max(c.r, Mathf.Max(c.g, c.b)) > 0.5f && Mathf.Max(c.r, Mathf.Max(c.g, c.b)) - Mathf.Min(c.r, Mathf.Min(c.g, c.b)) > 0.18f;
@@ -1137,7 +1150,7 @@ namespace OriCoop
             string off = Shot("bottomhud_hidden"); yield return StartCoroutine(Wait(0.3f));
             BottomHud.TestHide = false; yield return StartCoroutine(Wait(0.3f));
             string on = Shot("bottomhud_2p"); yield return StartCoroutine(Wait(0.3f));
-            int px = NewPixels(off, on, new Vector3(bar.center.x, bar.center.y + bar.height * 0.4f, 0f), (int)(Mathf.Max(bar.width, bar.height * 2f) / 2f + 6f), hudColour,
+            int px = NewPixels(off, on, new Vector3(seen.center.x, seen.center.y, 0f), (int)(seen.width / 2f + 4f), hudColour,
                 Path.Combine(Path.GetDirectoryName(on), "bottomhud_region_p2.png"));
             int nativePx = NewPixels(off, on, new Vector3(native.center.x, native.center.y, 0f), (int)(native.height / 2f), hudColour);
             Note("bottomhud: " + px + " new HUD-coloured pixels at P2's bar, " + nativePx + " at the native HUD's orb");
@@ -1146,12 +1159,13 @@ namespace OriCoop
             // about as many as P2's bar itself (300+). So the limit is a fifth of the bar's count, at least 40.
             int nativeLimit = Mathf.Max(40, px / 5);
             Check(nativePx <= nativeLimit, "bottomhud: showing P2's bar does not change the game's own HUD (" + nativePx + " pixels, limit " + nativeLimit + ")");
-            // The "P2" label: above P2's bar, readable size, drawn in P2's name-tag colour.
+            // The "P2" label: left of P2's cells, level with them, readable size, drawn in P2's name-tag colour.
             Rect label;
             bool haveLabel = BottomHud.LabelScreenRect(2, out label);
             Note("bottomhud: P2 label " + label);
-            Check(haveLabel && label.yMin >= bar.yMax - 1f && label.xMin >= bar.xMin && label.xMax <= bar.xMax && !label.Overlaps(native)
-                && label.height >= Screen.height * 0.015f, "bottomhud: P2's label sits above P2's bar, readable, off the game's HUD");
+            Check(haveLabel && label.center.y >= bar.yMin && label.center.y <= bar.yMax && label.xMax < bar.center.x && label.xMin >= 0f && !label.Overlaps(nativeSeen)
+                && label.xMax <= seen.xMin + StatusBarLayout.LabelWidth * Screen.width + 2f && label.height >= Screen.height * 0.015f,
+                "bottomhud: P2's label sits left of P2's cells, level with them, readable, off the game's HUD");
             Color tag = Roles.ColorOf(2);
             int labelPx = NewPixels(off, on, new Vector3(label.center.x, label.center.y, 0f), (int)(Mathf.Max(label.width, label.height) / 2f + 3f),
                 c => Mathf.Abs(c.r - tag.r) < 0.25f && Mathf.Abs(c.g - tag.g) < 0.25f && Mathf.Abs(c.b - tag.b) < 0.3f && c.r > 0.5f,
@@ -1167,18 +1181,22 @@ namespace OriCoop
             BottomHud.SetTestVitals(3, v3); BottomHud.SetTestVitals(4, v4);
             yield return StartCoroutine(Wait(1.5f));
             Check(BottomHud.Count == 3 && BottomHud.Visible(2) && BottomHud.Visible(3) && BottomHud.Visible(4), "bottomhud: 3 teammates -> 3 bars shown (" + BottomHud.Count + ")");
-            Rect[] rs = new Rect[5];
+            Rect[] rs = new Rect[5], ss = new Rect[5];
             bool all = true;
-            for (int s = 2; s <= 4; s++) all &= BottomHud.ScreenRect(s, out rs[s]);
+            for (int s = 2; s <= 4; s++) all &= BottomHud.ScreenRect(s, out rs[s]) & BottomHud.SeenScreenRect(s, out ss[s]);
             string overlaps = "";
             for (int s = 2; s <= 4; s++)
             {
-                if (rs[s].Overlaps(native)) overlaps += "P" + s + "/native ";
-                if (rs[s].xMin < 0f || rs[s].xMax > Screen.width || rs[s].yMin < 0f || rs[s].yMax > Screen.height) overlaps += "P" + s + "/offscreen ";
-                for (int o = 2; o < s; o++) if (rs[s].Overlaps(rs[o])) overlaps += "P" + s + "/P" + o + " ";
+                if (ss[s].Overlaps(nativeSeen)) overlaps += "P" + s + "/native ";
+                if (ss[s].xMin < 0f || ss[s].xMax > Screen.width || ss[s].yMin < 0f || ss[s].yMax > Screen.height) overlaps += "P" + s + "/offscreen ";
+                for (int o = 2; o < s; o++) if (ss[s].Overlaps(ss[o])) overlaps += "P" + s + "/P" + o + " ";
             }
-            Note("bottomhud 4p: P2 " + rs[2] + " P3 " + rs[3] + " P4 " + rs[4]);
+            Note("bottomhud 4p: P2 " + ss[2] + " P3 " + ss[3] + " P4 " + ss[4] + " (frames " + rs[2] + ")");
             Check(all && overlaps == "", "bottomhud: 3 bars do not overlap each other or the game's HUD and stay on screen (" + overlaps + ")");
+            // Stacked in the bottom-left corner: P2 at the bottom, P3 above it, P4 above P3, one column, not covering much of the left side.
+            Check(all && ss[3].yMin >= ss[2].yMax - 1f && ss[4].yMin >= ss[3].yMax - 1f && Mathf.Abs(rs[3].center.x - rs[2].center.x) < 2f && Mathf.Abs(rs[4].center.x - rs[2].center.x) < 2f,
+                "bottomhud: P2 at the bottom, P3 above, P4 above P3, in one column");
+            Check(all && ss[4].yMax <= Screen.height * 0.4f && ss[4].xMax <= Screen.width * 0.35f, "bottomhud: 3 bars take only the bottom-left corner (top " + F(ss[4].yMax / Screen.height * 100f) + " % of the height, right edge " + F(ss[4].xMax / Screen.width * 100f) + " % of the width)");
             float h3, mh3, e3, me3;
             Check(BottomHud.TryShown(3, out h3, out mh3, out e3, out me3) && Mathf.Abs(h3 - 8f) < 0.01f && Mathf.Abs(e3 - 2f) < 0.01f,
                 "bottomhud: P3's bar shows P3's own values (health " + F(h3) + ", energy " + F(e3) + ")");
@@ -1188,7 +1206,7 @@ namespace OriCoop
             string on4 = Shot("bottomhud_4p"); yield return StartCoroutine(Wait(0.3f));
             for (int s = 2; s <= 4; s++)
             {
-                int n = NewPixels(off4, on4, new Vector3(rs[s].center.x, rs[s].center.y + rs[s].height * 0.4f, 0f), (int)(Mathf.Max(rs[s].width, rs[s].height * 2f) / 2f + 6f), hudColour);
+                int n = NewPixels(off4, on4, new Vector3(rs[s].center.x, ss[s].center.y, 0f), (int)(ss[s].height * 0.6f + 2f), hudColour);
                 Check(n >= 60, "bottomhud: P" + s + "'s bar is actually visible with 4 players (" + n + " pixels)");
             }
             BottomHud.TestFakeSeats.Clear();
