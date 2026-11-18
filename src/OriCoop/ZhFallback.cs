@@ -36,13 +36,14 @@ namespace OriCoop
             return sb.ToString();
         }
 
-        // English -> Chinese for the entries the game left blank: zh_extra.txt (embedded), one "English<TAB>Chinese"
-        // per line (escapes above). Lines starting with # are comments.
+        // Chinese for the entries the game left blank: zh_extra.txt (embedded), one "key<TAB>Chinese" per line, where
+        // key = Ui.ZhTextKey.Of(English) so the file carries no game text (escapes above). Lines starting with # are
+        // comments.
         static Dictionary<string, string> Map()
         {
             if (s_zhMap != null) return s_zhMap;
             s_zhMap = new Dictionary<string, string>(StringComparer.Ordinal);
-            s_zhMap["Empty"] = "空"; s_zhMap["Empty Slot"] = "空的栏位";
+            s_zhMap[Ui.ZhTextKey.Of("Empty")] = "空"; s_zhMap[Ui.ZhTextKey.Of("Empty Slot")] = "空的栏位";
             try
             {
                 using (var st = typeof(ZhFallback).Assembly.GetManifestResourceStream("OriCoop.zh_extra.txt"))
@@ -56,7 +57,9 @@ namespace OriCoop
                                 if (line.Length == 0 || (line[0] == '#' && line.IndexOf('\t') < 0)) continue;
                                 int tab = line.IndexOf('\t');
                                 if (tab <= 0 || tab == line.Length - 1) continue;
-                                s_zhMap[Unescape(line.Substring(0, tab))] = Unescape(line.Substring(tab + 1));
+                                string key = line.Substring(0, tab);
+                                if (!Ui.ZhTextKey.IsKey(key)) continue;   // only hashed keys; never English text
+                                s_zhMap[key] = Unescape(line.Substring(tab + 1));
                             }
                         }
                 }
@@ -64,6 +67,17 @@ namespace OriCoop
             catch (Exception e) { Plugin.Log.LogWarning("zh fallback: can't read zh_extra.txt: " + e.Message); }
             Plugin.Log.LogInfo("zh fallback: " + s_zhMap.Count + " Chinese texts for blank entries");
             return s_zhMap;
+        }
+
+        // The Chinese for a blank entry's English text (tried as stored, then trimmed), or null.
+        internal static string Lookup(string english)
+        {
+            if (string.IsNullOrEmpty(english)) return null;
+            string zh;
+            if (Map().TryGetValue(Ui.ZhTextKey.Of(english), out zh)) return zh;
+            string trimmed = english.Trim();
+            if (trimmed != english && Map().TryGetValue(Ui.ZhTextKey.Of(trimmed), out zh)) return zh;
+            return null;
         }
 
         static List<KeyValuePair<string, string>> Terms()
@@ -209,7 +223,7 @@ namespace OriCoop
                             if (string.IsNullOrEmpty(it.Chinese))
                             {
                                 blank++;
-                                if (!string.IsNullOrEmpty(it.English) && !Map().ContainsKey(it.English) && !Map().ContainsKey(it.English.Trim()))
+                                if (!string.IsNullOrEmpty(it.English) && Lookup(it.English) == null)
                                     Plugin.Log.LogInfo("ZHSCAN still English: " + it.English.Replace("\n", "\\n"));
                             }
                             MessageDescriptor d = it.GetDescriptor(Language.Chinese);
@@ -288,8 +302,7 @@ namespace OriCoop
                     if (language != Language.Chinese || !string.IsNullOrEmpty(__instance.Chinese)) return true;
                     string en = __instance.English;
                     if (string.IsNullOrEmpty(en)) return true;
-                    string zh;
-                    string text = Map().TryGetValue(en, out zh) || Map().TryGetValue(en.Trim(), out zh) ? zh : en;
+                    string text = Lookup(en) ?? en;
                     Used++;
                     if (s_logged.Count < 50 && s_logged.Add(en)) Plugin.Log.LogInfo("zh fallback: blank Chinese entry for '" + en + "' -> '" + text + "'");
                     __result = new MessageDescriptor(text, __instance.Emotion, __instance.Sound);

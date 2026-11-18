@@ -195,6 +195,30 @@ static class UiTests
             }
             Equal("打开日志文件夹", L10n.T("coop.open_logs", true));
         });
+        Run("zh text keys are short SHA-1 hashes of the English line", delegate {
+            Equal("3159fe421b322138", ZhTextKey.Of("Empty"));
+            Equal("fec334bd25f727f9", ZhTextKey.Of("I am #Sein#, the light and eyes of the #Spirit Tree#."));
+            Check(ZhTextKey.IsKey("0123456789abcdef") && !ZhTextKey.IsKey("Empty") && !ZhTextKey.IsKey("0123456789ABCDEF"), "IsKey");
+        });
+        Run("published zh_extra.txt holds hashed keys only, no game text", delegate {
+            string dir = AppDomain.CurrentDomain.BaseDirectory, file = null;
+            for (int i = 0; i < 8 && dir != null && file == null; i++)
+            {
+                string f = System.IO.Path.Combine(dir, System.IO.Path.Combine("src", System.IO.Path.Combine("assets", System.IO.Path.Combine("zh-text", "zh_extra.txt"))));
+                if (System.IO.File.Exists(f)) file = f; else dir = System.IO.Path.GetDirectoryName(dir.TrimEnd('\\', '/'));
+            }
+            if (file == null) { Console.WriteLine("  (zh_extra.txt not in this checkout; skipped)"); return; }   // public OriCoop repo
+            int rows = 0; bool sein = false;
+            foreach (string line in System.IO.File.ReadAllLines(file, System.Text.Encoding.UTF8))
+            {
+                if (line.Length == 0 || line[0] == '#') continue;
+                int tab = line.IndexOf('\t');
+                Check(tab > 0 && ZhTextKey.IsKey(line.Substring(0, tab)), "not a hashed row: " + line);
+                rows++;
+                if (line.StartsWith("fec334bd25f727f9\t")) sein = true;
+            }
+            Check(rows >= 50 && sein, rows + " rows, Sein line " + sein);
+        });
 
         return s_failed == 0 ? 0 : 1;
     }

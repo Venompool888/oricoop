@@ -8,7 +8,7 @@ $core = "$game\BepInEx\core"
 $out = Join-Path $PSScriptRoot 'bin'
 New-Item -ItemType Directory -Force $out | Out-Null
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$srcs = @('ZhPatch\ZhPatchPlugin.cs', 'OriCoop\LanguageUnlock.cs', 'OriCoop\FontGlyphs.cs', 'OriCoop\ZhFallback.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
+$srcs = @('ZhPatch\ZhPatchPlugin.cs', 'OriCoop\LanguageUnlock.cs', 'OriCoop\FontGlyphs.cs', 'OriCoop\ZhFallback.cs', 'OriCoop\Ui\ZhTextKey.cs') | ForEach-Object { Join-Path $PSScriptRoot $_ }
 $refs = @("$m\mscorlib.dll","$m\System.dll","$m\System.Core.dll","$m\UnityEngine.dll","$m\Assembly-CSharp.dll","$m\Assembly-CSharp-firstpass.dll","$m\J2i.Net.XInputWrapper.dll","$m\SteamworksManaged.dll","$core\BepInEx.dll","$core\0Harmony.dll") | ForEach-Object { "/r:$_" }
 $res = @()
 foreach ($r in @(@('zh-glyphs\zh_glyphs.png', 'OriCoop.zh_glyphs.png'),
