@@ -242,13 +242,14 @@ function Read-LockInfo([string]$path) {
     $h
 }
 
-# Stale = older than 90 min, or (for locks written by this launcher) the PowerShell that took it has exited.
+# Stale = (for locks written by this launcher) the PowerShell that took it has exited; foreign-format (hand-made)
+# locks go stale after 90 min. A lock whose PowerShell is still alive is never stale, however old: long runs (scene
+# sweeps, story sweeps) hold a copy for hours, and treating them as stale handed their copy (and games) to another run.
 function Test-LockStale([string]$path) {
     $info = Read-LockInfo $path
     $age = $null
     try { $age = [DateTime]::UtcNow - (Get-Item -LiteralPath $path).LastWriteTimeUtc } catch { return $false }
-    if ($age.TotalMinutes -gt $script:TL_LockStaleMin) { return $true }
-    if (-not $info.ContainsKey('pid')) { return $false }   # foreign format: only the 90-minute rule applies
+    if (-not $info.ContainsKey('pid')) { return $age.TotalMinutes -gt $script:TL_LockStaleMin }   # foreign format
     $holder = Get-Process -Id ([int]$info['pid']) -ErrorAction SilentlyContinue
     if (-not $holder) { return $true }
     if ($info.ContainsKey('pidStart')) {
@@ -372,7 +373,8 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
                 # Games of this copy while nobody holds its lock. If the PowerShell that started them is gone, they are
                 # orphans of a dead run: stop them (test games only, by pid) and take the copy. If it is alive, a run
                 # holds the copy without its lock: leave everything alone and skip the copy.
-                $alive = @($orphans | Where-Object { $pp = $null; try { $pp = (Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_.Id)).ParentProcessId } catch { }; $pp -and (Get-Process -Id $pp -ErrorAction SilentlyContinue) })
+                # A game whose parent cannot be read (CIM query failed, e.g. under load) counts as alive: never kill on doubt.
+                $alive = @($orphans | Where-Object { $pp = $null; try { $pp = (Get-CimInstance Win32_Process -Filter ("ProcessId=" + $_.Id) -ErrorAction Stop).ParentProcessId } catch { return $true }; (-not $pp) -or (Get-Process -Id $pp -ErrorAction SilentlyContinue) })
                 if ($alive.Count -eq 0) {
                     'ORPHAN test games in copy ' + $c.Name + ' (their run is gone: ' + (Format-Games $orphans) + '): stopped.'
                     foreach ($o in $orphans) { if (Test-IsTestGame $o) { try { $o.Kill(); [void]$o.WaitForExit(10000) } catch { } } }
@@ -735,6 +737,10 @@ function Wait-TestGames($Processes, [int]$TimeoutSec, [System.Diagnostics.Stopwa
         }
         Start-Sleep -Milliseconds 500
     }
+    # A game still running when the time is up: the caller kills it. Remember it, so Get-NoResultReason says
+    # "timed out" instead of "killed from outside" (2026-11-18: run-tracetest -Net passed -TimeoutSec 300 to a
+    # ~10-minute run-nettest, and the result blamed an outside kill).
+    if (@($Processes | Where-Object { -not $_.HasExited }).Count -gt 0 -and $Stopwatch.Elapsed.TotalSeconds -ge $TimeoutSec) { $script:TL_TimedOutSec = $TimeoutSec }
     return (@($Processes | Where-Object { -not $_.HasExited }).Count -eq 0)
 }
 
@@ -755,6 +761,7 @@ function Exit-TestRun { Exit-CopyLock }
 # Why a result file is missing, for the "no result file" line of a suite.
 function Get-NoResultReason {
     if ($script:TL_FailFastHit) { return 'fail-fast stopped the run after: ' + ($script:TL_FailFastHit -replace '^.*\] (TEST )?', '') }
+    if ($script:TL_TimedOutSec) { return 'the run timed out after ' + $script:TL_TimedOutSec + ' s and stopped its games (-TimeoutSec too short for this suite?)' }
     if ($script:TL_LockFile) {
         if (-not (Test-Path -LiteralPath $script:TL_LockFile)) { return 'the copy lock ' + $script:TL_LockFile + ' was removed during the run (taken over by another run?)' }
         $i = Read-LockInfo $script:TL_LockFile

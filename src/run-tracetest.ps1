@@ -28,7 +28,9 @@ function Last-Utc([string[]]$lines) {
 if ($Net) {
     $env:ORICOOP_TRACE_DIR = $traceDir; $env:ORICOOP_TRACE_LEVEL = '2'
     $runStart = Get-Date
-    try { & (Join-Path $PSScriptRoot 'run-nettest.ps1') -TimeoutSec $TimeoutSec | Tee-Object -FilePath (Join-Path $traceDir 'nettest-output.txt') | Select-Object -Last 8 }
+    # -TimeoutSec is passed on only when given: run-nettest's own default fits a full net run (300 s does not).
+    $netArgs = @{}; if ($PSBoundParameters.ContainsKey('TimeoutSec')) { $netArgs.TimeoutSec = $TimeoutSec }
+    try { & (Join-Path $PSScriptRoot 'run-nettest.ps1') @netArgs | Tee-Object -FilePath (Join-Path $traceDir 'nettest-output.txt') | Select-Object -Last 8 }
     finally { Remove-Item Env:ORICOOP_TRACE_DIR, Env:ORICOOP_TRACE_LEVEL -ErrorAction SilentlyContinue }
     $files = @(Get-ChildItem $traceDir -Filter 'OriCoop-trace-*.log')
     $sids = @{}; $roles = @{}
