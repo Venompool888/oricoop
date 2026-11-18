@@ -26,13 +26,13 @@ $code = $LASTEXITCODE
 # check's name). Fail-fast is OFF here: with it on, any baseline failure earlier in the suite (e.g. E3) stopped the run
 # before the mutated check and was counted as "caught". Verdicts: caught (an Expect check failed), MISSED (it passed),
 # BLOCKED (the suite died or never reached it; other failures listed), ERROR (the script failed, see <log>.err).
-# A MISSED mutation makes the nightly fail. ORICOOP_NET_ONLY (P3 = CUT, WO) skips the earlier net phases.
+# A MISSED mutation makes the nightly fail. MUTATE_KEEP_MODAL runs leave mode "host" (T-072): with "drop" the guest picks 回到标题, which closes the dialog by itself, so the auto-close this switch turns off never ran. ORICOOP_NET_ONLY (P3 = CUT, WO) skips the earlier net phases.
 $Mutations = @(
     @{ Name = 'MUTATE_NO_LIFECYCLE';    Env = @{ ORICOOP_MUTATE_NO_LIFECYCLE = '1' };    Script = @('run-test.ps1', '-Scenarios', 'title');    Expect = '^title: ' }
     @{ Name = 'MUTATE_KEEP_NET';        Env = @{ ORICOOP_MUTATE_KEEP_NET = '1' };        Script = @('run-test.ps1', '-Scenarios', 'title');    Expect = '^title: ' }
     @{ Name = 'MUTATE_NO_PLATFORMFIX';  Env = @{ ORICOOP_MUTATE_NO_PLATFORMFIX = '1' };  Script = @('run-test.ps1', '-Scenarios', 'platform'); Expect = '^platform: ' }
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
-    @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'drop' }; Script = @('run-titlejoin.ps1'); Expect = '回到标题|disconnect|dialog' }
+    @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
     @{ Name = 'TEST_THROW';             Env = @{ ORICOOP_TEST_THROW = 'mutation' };      Script = @('run-test.ps1', '-Scenarios', 'move');     Expect = '^move: |TestThrow' }
     @{ Name = 'P3_OFF (CUT)';           Env = @{ ORICOOP_P3_OFF = '1'; ORICOOP_NET_ONLY = 'P3' }; Script = @('run-nettest.ps1');               Expect = '^CUT ' }
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
