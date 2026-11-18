@@ -236,11 +236,11 @@ namespace OriCoop.Rooms
                 && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, "title ready")) yield break;
             yield return NativeModeMenu.RoomsTestMenu(this, false);
             if (!Check(NativeModeMenu.LastLabels.Exists(x => x.Contains("我的房间")
-                || x.IndexOf("My rooms", StringComparison.OrdinalIgnoreCase) >= 0), "relay My rooms row"))
+                || x.IndexOf("My rooms", StringComparison.OrdinalIgnoreCase) >= 0), "自建服务器 My rooms row"))
                 yield break;
             // Dispatch the actual My rooms row, not an independent panel initialization.
-            typeof(NativeModeMenu).GetMethod("LobbyPressed", BindingFlags.Static | BindingFlags.NonPublic)
-                .Invoke(null, new object[] { 2 });
+            typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { 1 });   // the 自建服务器 page's My rooms row (T-045)
             panel = RoomsPanel.Instance;
             if (!Check(panel != null, "My rooms opens panel")) yield break;
             yield return Wait(() => Idle, 25);

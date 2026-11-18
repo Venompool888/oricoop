@@ -13,7 +13,7 @@ namespace OriCoop
     // Title menu: the game's "Start Game" item becomes two items in the game's own style (design 2026-11-15):
     //   单人游玩 / Single Player -> save slots -> single player (no "how do you want to play?" page)
     //   多人游玩 / Co-op         -> the native orb (NativeModeMenu, opened on the title instead of a save slot):
-    //     双人同屏                -> save slots -> local co-op loads at once (controller setup next)
+    //     本地同屏                -> save slots -> local co-op loads at once (controller setup next)
     //     局域网直连 / Steam / 中继 -> 开房 / 加入 (same orb)
     //        开房 -> save slots (existing save, or empty -> difficulty -> new game) -> the slot orb opens on the
     //               host page of that transport (room code / address / Steam invite) -> 开始游戏
@@ -73,9 +73,11 @@ namespace OriCoop
             new[] { "server.title", "server.title.desc" },
         };
         static readonly string[] TitleTransports = { "", "direct", "steam", "relay" };
+        // T-045 (owner's choice B): the 自建服务器 page lists the server mode and 「我的房间」; the host-mode row is gone from the
+        // menu (the relay path stays in code behind My rooms and for the tests).
         static readonly string[][] ServerModePage = {
             new[] { "server.cserver", "server.cserver.desc" },
-            new[] { "server.relay", "server.relay.desc" },
+            new[] { "lobby.rooms", "lobby.rooms.desc" },
         };
 
         // ---- hooks ------------------------------------------------------------------------------------------
@@ -219,7 +221,8 @@ namespace OriCoop
             }
             if (s_page == PageServerMode)
             {
-                LobbyOpen(index == 0 ? "cserver" : "relay");
+                if (index == 0) LobbyOpen("cserver");
+                else { s_transport = "relay"; Rooms.RoomsPanel.Open(); }   // 「我的房间」: the rooms panel on the relay + rooms services
                 return true;
             }
             if (s_onTitle && s_page == PageRole && index == 0)
@@ -887,6 +890,7 @@ namespace OriCoop
             // Online: transport -> 开房 / 加入 on the title.
             for (int row = 1; row <= 4; row++)
             {
+                if (row == 3) continue;   // the relay row is gone (T-045); the 自建服务器 page is checked below
                 string tr = row == 4 ? "cserver" : TitleTransports[row];
                 yield return s_tHost.StartCoroutine(PressCoop());
                 if (!TitleOrbOpen) { check(false, "title menu: Co-op page opens again (" + tr + ")"); yield break; }
@@ -894,17 +898,16 @@ namespace OriCoop
                 yield return s_tHost.StartCoroutine(Row(row == 4 ? 3 : row, 1f));
                 if (row == 1) check(PressSounds == rowPress0 + 1 && MoveSounds == rowMove0 + 1,
                     "sounds: a row press plays the select sound once, the page change itself is silent (press " + (PressSounds - rowPress0) + ", move " + (MoveSounds - rowMove0) + ")");
-                if (tr == "relay" || tr == "cserver")
+                if (tr == "cserver")
                 {
                     check(TitleOrbOpen && LastPage == "servermode" && LastLabels.Count == 2 && s_mgr.Index == 0
-                        && HasKey(LastLabels, "server.relay") && HasKey(LastLabels, "server.cserver"),
-                        "title menu: equal / relay mode choice, default focus on equal mode (" + Labels + ")");
-                    yield return s_tHost.StartCoroutine(Row(tr == "cserver" ? 0 : 1, 1f));
-                    if (tr == "cserver") yield return s_tHost.StartCoroutine(CheckCServerList(check));
+                        && HasKey(LastLabels, "server.cserver") && HasKey(LastLabels, "lobby.rooms") && !HasKey(LastLabels, "server.relay"),
+                        "title menu: own-server page lists server mode and My rooms, no host mode, default focus on server mode (" + Labels + ")");
+                    yield return s_tHost.StartCoroutine(Row(0, 1f));
+                    yield return s_tHost.StartCoroutine(CheckCServerList(check));
                 }
                 check(TitleOrbOpen && LastPage == "role" && s_transport == tr && HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join")
-                    // relay: Host, Join, My rooms (server room saves, 67b8d9a), Relay Server
-                    && (tr != "relay" || (LastLabels.Count == 4 && HasKey(LastLabels, "lobby.rooms"))) && !SlotsReady,
+                    && !SlotsReady,
                     "title menu: " + tr + " asks host / join before any save slot (" + Labels + ")");
                 if (tr == "cserver") check(LastLabels.Count == 2, "title menu: selected C-server has only Host / Join (" + Labels + ")");
                 TShot("title_" + tr + "_role");

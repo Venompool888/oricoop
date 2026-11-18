@@ -116,9 +116,11 @@ namespace OriCoop
                 yield return StartCoroutine(Row(row, 1f));
                 if (m_tr == "relay" || m_tr == "cserver")
                 {
-                    Check(TitleOrbOpen && LastPage == "servermode" && LastLabels.Count == 2 && s_mgr.Index == 0,
-                        m_tr + ": server mode choice defaults to equal mode (" + Labels + ")");
-                    yield return StartCoroutine(Row(m_tr == "cserver" ? 0 : 1, 1f));
+                    Check(TitleOrbOpen && LastPage == "servermode" && LastLabels.Count == 2 && s_mgr.Index == 0
+                        && HasKey(LastLabels, "server.cserver") && HasKey(LastLabels, "lobby.rooms") && !HasKey(LastLabels, "server.relay"),
+                        m_tr + ": 自建服务器 page lists server mode and My rooms (" + Labels + ")");
+                    if (m_tr == "cserver") yield return StartCoroutine(Row(0, 1f));
+                    else { LobbyOpen("relay"); yield return StartCoroutine(TWait(1f)); }   // the relay host / join pages are no longer in the menu (T-045): tests open them directly
                 }
                 if (m_tr == "cserver") yield return StartCoroutine(CheckCServerEditor());
                 bool roleReady = TitleOrbOpen && LastPage == "role" && HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join");
