@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -133,6 +133,8 @@ namespace OriCoop.Rooms
             if (Time.realtimeSinceStartup - began > 345) Check(false, "overall timeout");
             if (TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.PressStart)
                 TestHarness.PulseMenu = true;
+            // T-059: the room page comes up before the game starts; press its drawn continue / start button.
+            if (OnlineRoomScreen.Visible && OnlineRoomScreen.Click("room.continue") && !roomScreenSeen) { roomScreenSeen = true; Plugin.Log.LogInfo("ROOMS room screen continued"); }
             if (UI.MainMenuVisible && GameController.Instance != null && GameController.Instance.IsLoadingGame)
             {
                 UI.Menu.HideResumeScreen();
@@ -140,6 +142,7 @@ namespace OriCoop.Rooms
             }
         }
 
+        bool roomScreenSeen;
         void OnDestroy() { if (reads != null) reads.Dispose(); }
 
         IEnumerator Wait(Func<bool> ready, float seconds)
@@ -312,6 +315,7 @@ namespace OriCoop.Rooms
             yield return Wait(() => NetPlay.LocalInGameplay(), 90);
             if (!Check(NetPlay.LocalInGameplay() && SaveSlotsManager.CurrentSlotIndex == panel.Game.Slot,
                 "room slot loaded and gameplay running")) yield break;
+            if (!Check(roomScreenSeen, "room screen shown before the game starts")) yield break;
             // live() is queued independently of game loading; allow the job to finish before asserting.
             float liveEnd = Time.realtimeSinceStartup + 20;
             do

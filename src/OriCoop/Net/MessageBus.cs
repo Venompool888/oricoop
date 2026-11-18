@@ -39,6 +39,8 @@ namespace OriCoop.Net
         }
 
         public int Sender { get; internal set; }
+        // Validated before any handler or forwarding (multi-seat bodies must not bypass ownership checks).
+        public Func<byte[], int, bool> Validate;
         public void Forward(params byte[] types) { foreach (byte type in types) forward.Add(type); }
 
         public void On(byte type, Action<BinaryReader> handler)
@@ -125,7 +127,7 @@ namespace OriCoop.Net
 
         public void Dispatch(byte[] message, bool reliable, int sourceSeat)
         {
-            if (message.Length < 2) return;
+            if (message.Length < 2 || Validate != null && !Validate(message, sourceSeat)) return;
             BinaryReader r = new BinaryReader(new MemoryStream(message));
             byte type = r.ReadByte();
             int previous = Sender;

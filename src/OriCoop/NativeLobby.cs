@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.Text;
 using UnityEngine;
@@ -551,6 +551,9 @@ namespace OriCoop
         {
             if (!IsOpen || !IsLobbyPage) return;
             if (IsRoomsPage) { RoomTick(); return; }
+            if (OnlineRoomScreen.Visible) return;
+            if (s_page == PageHost && !OnlineRoomScreen.Confirmed && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected))
+            { OnlineRoomScreen.Show(OnlineProceed); return; }
             if (s_editing) EditTick();
             else if (s_page == PageEntry && !s_mgr.IsLocked && s_entryKind == 0 && !s_legacyCode && s_mgr.Index == 0 && HasLegacyLetter(Input.inputString))
             {

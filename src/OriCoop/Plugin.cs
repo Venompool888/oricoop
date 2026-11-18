@@ -30,6 +30,7 @@ namespace OriCoop
         static readonly Action s_netHudDraw = NetHud.Draw, s_sessionDraw = SessionScreens.Draw, s_controlsGuideDraw = ControlsGuideHud.Draw;
         static readonly Action s_localRefreshIds = P2Context.RefreshIds;
         static readonly Action s_testThrow = TestThrow;
+        static readonly Action s_localWall = OnlineLocalPlayers.ApplyWall, s_roomDraw = OnlineRoomScreen.Draw, s_roomTick = OnlineRoomScreen.Tick;
 
         Action m_tick, m_lifecycle, m_sampleInput, m_sharedProgress, m_tickCamera;
         Action m_onlineMirror, m_onlineRefreshIds, m_localMirror;
@@ -156,6 +157,7 @@ namespace OriCoop
             NativeGui.PageChanged = L10nProbe.Where;   // test-side hooks wired here so production code never reads test flags
             NativeModeMenu.SuppressAutomaticMenu = delegate { return TestHarness.Enabled; };
             SaveSync.Init(); WorldSync.Init(); ProgressSync.Init(); EnemySync.Init();
+            NetPlay.DevicePrimaryChanged += SaveSync.RebindDevice;
             SessionRules.Init(); NetHud.Init(); OriCoop.Authority.CServerLink.Install();
             P2Context.PatchProximityTypes(H);
             float tp = Time.realtimeSinceStartup; P2Context.PatchTouchTypes(H); Log.LogInfo("touch patching took " + (Time.realtimeSinceStartup - tp).ToString("F2") + " s");
@@ -208,6 +210,7 @@ namespace OriCoop
         internal void DoUpdate()
         {
             SubsystemGuard.Run("NetPlay.Update", s_netUpdate);
+            SubsystemGuard.Run("OnlineRoomScreen.Tick", s_roomTick);
             if (!string.IsNullOrEmpty(m_testThrowName)) SubsystemGuard.Run(m_testThrowName, s_testThrow);
             SubsystemGuard.Run("SaveSync.Tick", s_saveTick);
             SubsystemGuard.Run("WorldSync.Tick", s_worldTick);
@@ -338,6 +341,7 @@ namespace OriCoop
             if (P2Context.P2 == null || P2Context.P1 == null) { SubsystemGuard.Run("ReviveHud.Update", s_reviveHud); return; }
             if (NetPlay.Enabled)
             {
+                SubsystemGuard.Run("OnlineLocalPlayers.ApplyWall", s_localWall);
                 SubsystemGuard.Run("Plugin.UpdateOnlineHuds", m_onlineHudLoop);
                 SubsystemGuard.Run("ReviveHud.Update", s_reviveHud);
                 SubsystemGuard.Run("Plugin.UpdateOnlineCamera", m_onlineCamera);
@@ -424,6 +428,8 @@ namespace OriCoop
         // own HUD, so menus, maps, cutscenes and fades never get a mod overlay on top.
         internal void DoGUI()
         {
+            SubsystemGuard.Run("OnlineRoomScreen.Draw", s_roomDraw);
+            if (OnlineRoomScreen.Visible) return;
             SubsystemGuard.Run("CoopMenu.Draw", s_menuDraw);
             if (CoopMenu.IsOpen) return;
             SubsystemGuard.Run("NetPlay.DrawGUI", s_netDraw);
@@ -503,11 +509,11 @@ namespace OriCoop
             Puppet puppet;
             if (NetPlay.Enabled)
             {
-                puppet = new Puppet { Seat = seat, Sein = p2 };
+                puppet = new Puppet { Seat = seat, Sein = p2, IsLocal = Players.IsLocal(seat) };
                 Players.Remotes.Add(puppet);
                 Players.Remotes.Sort((a, b) => a.Seat.CompareTo(b.Seat));
             }
-            else { P2Context.P2 = p2; puppet = Players.First; }
+            else { P2Context.P2 = p2; puppet = Players.First; puppet.IsLocal = true; }
             P2Context.RefreshIds(puppet);
             P2Context.PatchTypesOn(go, H);
             MirrorProgress(p1, p2, true);
@@ -648,7 +654,8 @@ namespace OriCoop
                 Puppet puppet = Players.OfInstance(__instance.GetInstanceID());
                 bool isP2 = puppet != null;
                 // Online: the partner's Ori lives and dies in its owner's game; here it just keeps following them.
-                if (isP2 && NetPlay.Enabled) { puppet.Sein.Mortality.Health.RestoreAllHealth(); return false; }
+                if (isP2 && NetPlay.Enabled && !puppet.IsLocal) { puppet.Sein.Mortality.Health.RestoreAllHealth(); return false; }
+                if (isP2 && NetPlay.Enabled && puppet.IsLocal && Revive.Enabled) return !Revive.HandleDeathOnline(puppet.Sein);
                 // Online: the local Ori dying goes downed while the partner can revive it (ReviveNet.cs).
                 if (NetPlay.Enabled && !isP2 && Revive.Enabled && P2Context.P1 != null && __instance.transform.IsChildOf(P2Context.P1.transform)) return !Revive.HandleDeathOnline(P2Context.P1);
                 if (NetPlay.Enabled && !isP2 && SessionRules.HandleOwnDeathOnline(__instance)) return false;

@@ -66,7 +66,7 @@ namespace OriCoop
         public static int[] TestPadButtons;
 
         const int A = 0x1000, B = 0x2000, BACK = 0x20, START = 0x10, DUP = 1, DDOWN = 2;
-        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : NetPlay.Enabled ? 2 : s_seats.LocalSeats.Length + 5; } }
+        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : NetPlay.Enabled ? s_seats.LocalSeats.Length + 2 : s_seats.LocalSeats.Length + 5; } }
 
         static void PollPads()
         {
@@ -165,7 +165,6 @@ namespace OriCoop
                 return;
             }
             if (!inGame && s_testPage == "") { Close(); return; }
-            if (Page == PageSettings && NetPlay.Enabled && s_waitFor != 0) s_waitFor = 0;
             s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
             PollPads();
 
@@ -272,7 +271,14 @@ namespace OriCoop
 
         static void ActivateSettings(int row)
         {
-            if (NetPlay.Enabled) { if (row == 0) OpenLogFolder(); else if (row == 1) Close(); return; }
+            if (NetPlay.Enabled)
+            {
+                int[] local = s_seats.LocalSeats;
+                if (row >= 0 && row < local.Length) WaitForDevice(local[row]);
+                else if (row == local.Length) OpenLogFolder();
+                else if (row == local.Length + 1) Close();
+                return;
+            }
             int[] seats = s_seats.LocalSeats;
             if (row < 0) return;
             if (row < seats.Length) { WaitForDevice(seats[row]); return; }
@@ -444,21 +450,21 @@ namespace OriCoop
         {
             bool online = NetPlay.Enabled;
             int[] seats = s_seats.LocalSeats;
-            if (!online && s_waitFor == 1)
+            if (online ? s_waitFor > 0 : s_waitFor == 1)
             {
                 Event e = Event.current;
                 if (e != null && e.type == EventType.KeyDown && e.keyCode != KeyCode.None && e.keyCode != KeyCode.Escape && e.keyCode != KeyCode.F8)
-                { Assign(1, -1); e.Use(); }
+                { Assign(s_waitFor, -1); e.Use(); }
             }
             string[] seatRows = new string[seats.Length];
             for (int i = 0; i < seats.Length; i++)
             {
                 InputDevice device = s_seats.InputOf(seats[i]);
-                string input = online ? L10n.T("coop.online_input") : device.Kind == InputDevice.DeviceKind.KeyboardMouse ?
+                string input = device.Kind == InputDevice.DeviceKind.KeyboardMouse ?
                     L10n.T("coop.keyboard_only") : L10n.F("coop.controller", device.Pad + 1);
                 string label = L10n.F("coop.local_seat", seats[i], input);
                 seatRows[i] = s_waitFor == seats[i] ? L10n.T(seats[i] == 1 ? "coop.choose_p1" : "coop.choose_p2") :
-                    online ? label : L10n.F("coop.change_device", label);
+                    L10n.F("coop.change_device", label);
             }
             string[] actions = online ? new string[] { L10n.T("coop.open_logs"), L10n.T("coop.close") } : new string[] {
                 L10n.F("coop.cutscenes", Plugin.Instance.P2CanTriggerCutscenes ? L10n.T("coop.either") : L10n.T("coop.p1_only")),
@@ -482,13 +488,12 @@ namespace OriCoop
             for (int i = 0; i < seatRows.Length; i++)
             {
                 string id = "coop.settings.seat." + seats[i];
-                if (online) NativeGui.LayoutLabel(id, seatRows[i], s_text);
-                else if (RowButton(id, seatRows[i], s_focus == i, Mathf.Max(lineH * 1.15f, LineH(s_row, seatRows[i], inner))))
+                if (RowButton(id, seatRows[i], s_focus == i, Mathf.Max(lineH * 1.15f, LineH(s_row, seatRows[i], inner))))
                 { s_focus = i; if (s_waitFor == 0) Activate(i); }
             }
             for (int i = 0; i < actions.Length; i++)
             {
-                int row = online ? i : seats.Length + i;
+                int row = seats.Length + i;
                 if (RowButton("coop.settings.action." + i, actions[i], s_focus == row, Mathf.Max(lineH * 1.15f, LineH(s_row, actions[i], inner))))
                 { s_focus = row; if (s_waitFor == 0) Activate(row); }
             }
@@ -499,7 +504,7 @@ namespace OriCoop
         }
 
         // ---- build info and logs (T-032) ----------------------------------------------------------------------
-        // Settings page rows (local play: seats, cutscenes, add/remove, mode, log folder, close; online: log folder, close).
+        // Settings page rows (local play: seats, cutscenes, add/remove, mode, log folder, close; online: local seats, log folder, close).
         public static int SettingsCloseRow { get { return NetPlay.Enabled ? 1 : s_seats.LocalSeats.Length + 4; } }
         public static int SettingsLogsRow { get { return SettingsCloseRow - 1; } }
 

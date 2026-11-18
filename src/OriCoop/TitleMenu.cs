@@ -147,6 +147,16 @@ namespace OriCoop
             return 2;
         }
 
+        // T-059: the online room page (OnlineRoomScreen) hides and locks the title orb menu while it is up.
+        internal static void RoomPanelVisible(bool visible)
+        {
+            if (s_mgr == null) return;
+            s_mgr.SetVisible(!visible);
+            s_mgr.IsActive = !visible;
+            s_mgr.IsLocked = visible;
+            if (s_tooltip != null) s_tooltip.gameObject.SetActive(!visible);
+        }
+
         // Rooms already selected and wrote the slot; use the same host page and load action.
         internal static void RoomHostSlot(int slot, string relay)
         {
@@ -300,6 +310,7 @@ namespace OriCoop
         public static void StartGuestNoSlot(string why)
         {
             if (s_guestStarted || !NetPlay.Enabled || NetPlay.IsHost) return;
+            if (OnlineRoomScreen.BeforeProceed(delegate { StartGuestNoSlot(why); })) return;
             s_guestAborts = GuestJoin.Aborts;
             if (!GuestJoin.BeginNoSlot())
             {

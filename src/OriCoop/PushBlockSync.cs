@@ -220,12 +220,12 @@ namespace OriCoop
         }
 
         // ---------------------------------------------------------------- per-pair collision
-        static PlatformMovement LocalPm { get { SeinCharacter s = P2Context.P1; return s == null ? null : s.PlatformBehaviour.PlatformMovement; } }
+        static PlatformMovement LocalPm { get { SeinCharacter s = P2Context.Current != null && P2Context.Current.IsLocal ? P2Context.Current.Sein : P2Context.P1; return s == null ? null : s.PlatformBehaviour.PlatformMovement; } }
 
         static bool IsPuppet(PlatformMovement pm)
         {
             if (!NetPlay.Enabled || pm == null) return false;
-            foreach (Puppet p in Players.Remotes) if (p.Sein != null && p.Sein.PlatformBehaviour.PlatformMovement == pm) return true;
+            foreach (Puppet p in Players.Remotes) if (!p.IsLocal && p.Sein != null && p.Sein.PlatformBehaviour.PlatformMovement == pm) return true;
             return false;
         }
 
@@ -333,7 +333,7 @@ namespace OriCoop
         {
             if (!Enabled || !Online || !Ready(b)) return true;
             Inst i = InstOf(b);
-            if (IsPuppet(pm) || P2Context.Inside)
+            if (IsPuppet(pm) || Players.RemoteContext)
             {
                 PuppetCallsIgnored++;
                 if (what != "push") Log("puppet " + what + " " + i.St.Name + " ignored here (its owner moves it)");
@@ -431,7 +431,7 @@ namespace OriCoop
                 if (!Ready(__instance)) return true;
                 try
                 {
-                    bool puppet = Online && (IsPuppet(platformMovement) || P2Context.Inside);
+                    bool puppet = Online && (IsPuppet(platformMovement) || Players.RemoteContext);
                     // A puppet still ignores the block it holds, so it can stand next to it without being stopped by it.
                     if (puppet && Enabled) { SetIgnore(__instance, platformMovement, true); PuppetCallsIgnored++; return false; }
                     if (!Allow(__instance, platformMovement, "grab")) return false;
@@ -451,7 +451,7 @@ namespace OriCoop
                 if (!Ready(__instance)) return true;
                 try
                 {
-                    if (Online && Enabled && (IsPuppet(platformMovement) || P2Context.Inside)) { SetIgnore(__instance, platformMovement, true); PuppetCallsIgnored++; return false; }
+                    if (Online && Enabled && (IsPuppet(platformMovement) || Players.RemoteContext)) { SetIgnore(__instance, platformMovement, true); PuppetCallsIgnored++; return false; }
                     if (!Allow(__instance, platformMovement, "push")) return false;
                     return true;
                 }
@@ -467,7 +467,7 @@ namespace OriCoop
                 if (!Ready(__instance)) return true;
                 try
                 {
-                    if (Online && Enabled && (IsPuppet(platformMovement) || P2Context.Inside)) { SetIgnore(__instance, platformMovement, false); return false; }
+                    if (Online && Enabled && (IsPuppet(platformMovement) || Players.RemoteContext)) { SetIgnore(__instance, platformMovement, false); return false; }
                     if (Online && Enabled && platformMovement == LocalPm) InstOf(__instance).St.InteractionUntil = -10f;
                     if (Online && Enabled && platformMovement == LocalPm && !Simulates(InstOf(__instance).St))
                     {
@@ -497,7 +497,7 @@ namespace OriCoop
                     PlatformMovement pm = s == null ? null : s.PlatformBehaviour.PlatformMovement;
                     Inst i = InstOf(__instance);
                     if (pm == null) return true;
-                    if (Online && (IsPuppet(pm) || P2Context.Inside)) { PuppetCallsIgnored++; }
+                    if (Online && (IsPuppet(pm) || Players.RemoteContext)) { PuppetCallsIgnored++; }
                     else if (!Allow(__instance, pm, "bash")) return false;
                     i.Basher = pm;
                     SetIgnoreTime(__instance, 20f);
@@ -524,7 +524,7 @@ namespace OriCoop
                 try
                 {
                     Inst i = InstOf(__instance);
-                    if (P2Context.Inside) { PuppetCallsIgnored++; return false; }
+                    if (Players.RemoteContext) { PuppetCallsIgnored++; return false; }
                     if (!PlayerAttack(damage.Type)) return Simulates(i.St);
                     if (!Allow(__instance, LocalPm, "hit " + damage.Type)) return false;
                     if (Simulates(i.St)) return true;
@@ -678,7 +678,7 @@ namespace OriCoop
             if (cols == null) return;
             foreach (Puppet p in Players.Remotes)
             {
-                if (p.Sein == null || !p.Sein.gameObject.activeInHierarchy) continue;
+                if (p.IsLocal || p.Sein == null || !p.Sein.gameObject.activeInHierarchy) continue;
                 Collider cap = p.Sein.PlatformBehaviour.PlatformMovement.GetComponent<CapsuleCollider>();
                 if (cap == null || !cap.enabled) continue;
                 foreach (Collider c in cols) if (c != null && c.enabled && c.gameObject.activeInHierarchy) Physics.IgnoreCollision(c, cap, true);

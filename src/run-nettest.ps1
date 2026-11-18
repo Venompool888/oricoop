@@ -3,15 +3,19 @@
 # -Relay: all games go through a local RelayServer.exe with one room code (the "server version") instead of direct UDP;
 #   works with -Clients 2..4 (every guest joins the same room). $env:ORICOOP_TEST_RELAY = 'host:port' uses that
 #   relay server instead of starting a local one.
-# -TimeoutSec: whole run (default 780). -HarnessSec: the in-game suite limit (ORICOOP_HARNESS_SEC, default 660; the
-#   harness needed ~360 s at HEAD 2026-11-16 and phase WO adds ~120 s, more under load; TestHarness defaults to 420).
+# -TimeoutSec: whole run (default 1020). -HarnessSec: the in-game suite limit (ORICOOP_HARNESS_SEC, default 900; the
+#   harness needed ~360 s at HEAD 2026-11-16 and phase WO adds ~120 s, more under load; main reached ~655 s on 2026-11-18 and T-059's local-player checks need more; TestHarness defaults to 420).
 # -Width/-Height: window size of both games (default 640x360; larger for readable screenshots).
 # -GuestNewGame: the guest has NO saves (appdata2 emptied) and picks an empty slot -> Normal -> new game; it must skip
 #   the prologue, load the host's save from the title and join the host (GuestJoin.cs; "W empty slot" checks).
 # -GuestNoSlot: same empty guest, but it never picks a slot (title 加入 path): GuestJoin.BeginNoSlot once connected.
-param([int]$TimeoutSec = 780, [int]$HarnessSec = 660, [string]$Sim = '', [switch]$Force, [switch]$Relay, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
-    [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0)
+param([int]$TimeoutSec = 1020, [int]$HarnessSec = 900, [string]$Sim = '', [switch]$Force, [switch]$Relay, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
+    [switch]$LocalPlayers, [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0)
 $script:ExtraEnv = @{}
+if ($LocalPlayers) {
+    if ($Clients -eq 4) { throw 'LocalPlayers requires 2 or 3 devices (four seats maximum).' }
+    $script:ExtraEnv['ORICOOP_NET_LOCAL_PLAYERS'] = '1'
+}
 $ErrorActionPreference = 'Stop'
 if (-not $PSBoundParameters.ContainsKey('LateJoinSec') -and $Clients -ge 3) { $LateJoinSec = 20 }
 . (Join-Path $PSScriptRoot 'test-launch.ps1')   # copy lock, quiet launch, owner watchdog (docs\testing-rules.md)

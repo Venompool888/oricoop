@@ -176,6 +176,9 @@ namespace OriCoop
                 h.Note("S4 waited " + F(settle.GameElapsed) + " game s (" + F(settle.RealElapsed) + " real) for earlier suspensions to end ("
                     + Counts(SuspensionCounts()) + ")");
             Dictionary<ISuspendable, int> before = SuspensionCounts(); bool guest = !NetPlay.IsHost;
+            // Both snapshots precede opening either menu. T-044 skips online suspension, but keep the fence:
+            // the pause mutation / offline debt paths must not capture an already-open menu as the baseline.
+            yield return Barrier(h, 13);
             Vector3 ownStart = Vector3.zero, puppetStart = Vector3.zero; long frames = 0;
             try
             {
@@ -244,7 +247,12 @@ namespace OriCoop
             // left, the way it came; the guest stood still and walks right as before.
             ownStart = Own.Position; puppetStart = P2Context.P2.Position; Bot(guest ? 1 : -1); yield return Wait(1f); Bot(0);
             h.Note("S4 closed menu ownDx=" + F(Vector3.Distance(Own.Position, ownStart))
-                + " puppetDx=" + F(Vector3.Distance(P2Context.P2.Position, puppetStart)));
+                + " puppetDx=" + F(Vector3.Distance(P2Context.P2.Position, puppetStart))
+                + " ownStart=" + ownStart + " ownNow=" + Own.Position + " speed=" + Own.Speed
+                + " wallLeft=" + Own.PlatformBehaviour.PlatformMovement.HasWallLeft + " wallRight=" + Own.PlatformBehaviour.PlatformMovement.HasWallRight
+                + " suspended=" + Own.PlatformBehaviour.PlatformMovement.IsSuspended + " canMove=" + Own.Controller.CanMove
+                + " input=" + Core.Input.HorizontalAnalogLeft + " localLocked=" + SessionRules.LocalLocked
+                + " gameLocked=" + GameController.Instance.InputLocked);
             h.Check(Vector3.Distance(Own.Position, ownStart) > 0.5f && Vector3.Distance(P2Context.P2.Position, puppetStart) > 0.5f,
                 "S4 both move after closing menu");
         }

@@ -13,7 +13,7 @@ using UnityEngine;
 namespace OriCoop
 {
     // Only the local Ori is driven by this bot. The partner always uses NetPlay's received input.
-    public static class NetTestHarness
+    public static partial class NetTestHarness
     {
         public static bool BotActive;
         public static int BotButtons;
@@ -40,6 +40,7 @@ namespace OriCoop
         static void ReadTestSignal(int seat, string signal)
         {
             if (NetPlay.IsHost && signal == "ready") s_readySeats.Add(seat);
+            if (NetPlay.IsHost && signal == "locals-finished") localFinishAcks.Add(seat);
             if (NetPlay.IsHost && FourTesting && signal == "4P done") s_fourDoneSeats.Add(seat);
             if (seat == 1 && signal == "leave") s_leaveReleased = true;
             if (seat == 1 && signal == "done") s_done = true;
@@ -1603,7 +1604,7 @@ namespace OriCoop
             s_goAt = s_pickupAt = s_collectedAt = 0; s_threeEnded = s_leaveReleased = s_done = false;
             NetPlay.TestSignalReceived += ReadTestSignal;
             NetPlay.SessionEnded += ThreeSessionEnded;
-            if (ClientCount == 3 || ClientCount == 4) NetPlay.On(MsgThreeTest, ReadThree);
+            if (ClientCount == 3 || ClientCount == 4 || Environment.GetEnvironmentVariable("ORICOOP_NET_LOCAL_PLAYERS") == "1") NetPlay.On(MsgThreeTest, ReadThree);
             try { yield return Safely(h, ClientCount == 4 ? "4P suite" : "net suite", RunCore(h)); }
             finally
             {
@@ -1651,6 +1652,8 @@ namespace OriCoop
             s_enemyPackets.Clear(); s_ownEnemyReports.Clear(); s_ownEnemyHealth.Clear(); s_enemyOwnerTrace.Clear(); NetPlay.On(49, ReadEnemyTest); NetPlay.On(48, ReadEnemyTrace);
             s_harness = h; BotActive = true; Bot(0, 0);
             h.Note("net role=" + (host ? "host" : "guest"));
+            if (Environment.GetEnvironmentVariable("ORICOOP_NET_LOCAL_PLAYERS") == "1")
+            { yield return LocalPlayersChecks(h); yield break; }
             if (ClientCount != 2 || PhaseOn("INTRO")) yield return NetIntroTest.Run(h, ClientCount);
             if (ClientCount == 2) h.Note("net phases: " + string.Join(",", new List<string>(AllPhases).FindAll(PhaseOn).ToArray()));
             if (Environment.GetEnvironmentVariable("ORICOOP_INTRO_ONLY") == "1") yield break;

@@ -65,7 +65,7 @@ namespace OriCoop
         // Called from the OnKill prefix for the LOCAL Ori online. true = turned into downed (skip the game's death).
         public static bool HandleDeathOnline(SeinCharacter p1)
         {
-            if (s_passThrough || !Online || p1 == null || p1 != Host.P1) return false;
+            if (s_passThrough || !Online || p1 == null || !Players.IsLocal(PlayerOf(p1))) return false;
             RegisterNet(); Subscribe();
             if (IsDowned(p1)) return true;
             bool partnerDown = AllDown(p1);
@@ -76,11 +76,12 @@ namespace OriCoop
                 Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
                 Services.Net.Send(MsgBothDown, true, w => { });
                 ReleaseRemoteDowned(); // T-026: the partners' skulls go now, not when their puppets later vanish
+                if (p1 != Host.P1) { MakeDowned(p1); KillP1Normally(); return true; }
                 return false;
             }
             // Down; the partner can revive us. (Guest with the host already down: the host decides on our message.)
             MakeDowned(p1);
-            int seat = Host.LocalSeat;
+            int seat = PlayerOf(p1);
             Vector3 m = s_down[seat].Marker;
             Services.Net.Send(MsgDowned, true, w => ReviveWire.WritePosition(w, seat, m.x, m.y, m.z));
             NetDownedSent++;
@@ -99,11 +100,14 @@ namespace OriCoop
             }
             RegisterNet(); Subscribe();
             TrackSafeGround();
-            Downed own = s_down[Host.LocalSeat];
-            if (own != null)
+            foreach (int localSeat in Players.LocalSeats)
             {
-                KeepPinned(own);
-                if (Host.RemoteCount > 1 && !GameController.Instance.GameplaySuspended && !SessionRules.LocalPaused && !SessionRules.PausedByPartner)
+                Downed own = s_down[localSeat];
+                if (own == null) continue;
+                if (own.Sein == Host.P1) KeepPinned(own);
+                Step(own);
+                if (s_down[localSeat] != own) continue;
+                if (Host.PuppetCount > 1 && !GameController.Instance.GameplaySuspended && !SessionRules.LocalPaused && !SessionRules.PausedByPartner)
                 {
                     SeinCharacter teammate = ReviveLogic.RespawnDue(own, Time.deltaTime) ? NearestLiving(own.Marker, own.Sein) : null;
                     if (teammate != null)
@@ -119,7 +123,7 @@ namespace OriCoop
             foreach (int seat in PresentSeats)
             {
                 Downed d = s_down[seat];
-                if (seat != Host.LocalSeat && d != null)
+                if (!Players.IsLocal(seat) && d != null)
                 {
                     if (d.Sein == null) d.Sein = SeinAt(seat);
                     KeepHidden(d); Step(d);
@@ -172,7 +176,7 @@ namespace OriCoop
 
         static void SendProgress(Downed d)
         {
-            if (!ReviveLogic.ShouldSend(d, Host.LocalSeat, Host.RemoteCount > 1, Time.unscaledTime)) return;
+            if (!Players.IsLocal(d.Rescuer) || !ReviveLogic.ShouldSend(d, d.Rescuer, Host.PuppetCount > 1, Time.unscaledTime)) return;
             float p = d.Progress;
             Services.Net.Send(MsgProgress, false, w => ReviveWire.WriteProgress(w, d.Player, d.Rescuer, p, d.Given));
         }
@@ -185,7 +189,7 @@ namespace OriCoop
             // The partner's game puts its Ori next to us (RestoreDowned there); the glow plays at that spot here.
             SeinCharacter me = saver;
             if (me != null) PartnerFx.PlayRevive(d.Sein, me.Position + new Vector3(me.FaceLeft ? 1f : -1f, 0f, 0f));
-            Services.Net.Send(MsgRevive, true, w => ReviveWire.WriteRevive(w, d.Player, health));
+            Services.Net.Send(MsgRevive, true, w => { ReviveWire.WriteRevive(w, d.Player, health); w.Write((byte)PlayerOf(saver)); });
             NetRevivesSent++; Revives++;
             Services.Log.Info("online: revived the partner, giving " + health.ToString("F1") + " health");
         }
@@ -196,7 +200,7 @@ namespace OriCoop
             ReviveWire.Position message = ReviveWire.ReadPosition(r);
             int seat = message.Seat;
             Vector3 m = new Vector3(message.X, message.Y, message.Z);
-            if (!Online || seat != Services.Net.Sender) return;
+            if (!Online || NetPlay.DeviceSeat(seat) != Services.Net.Sender || Players.IsLocal(seat)) return;
             NetDownedReceived++;
             if (s_down[seat] == null)
             {
@@ -233,10 +237,12 @@ namespace OriCoop
             float health = message.Health;
             if (!Online || s_down[seat] == null) return;
             Downed d = s_down[seat];
-            d.Rescuer = Services.Net.Sender;
-            if (seat != Host.LocalSeat) return;
+            int rescuer = r.BaseStream.Position < r.BaseStream.Length ? r.ReadByte() : Services.Net.Sender;
+            if (NetPlay.DeviceSeat(rescuer) != Services.Net.Sender) return;
+            d.Rescuer = rescuer;
+            if (!Players.IsLocal(seat)) return;
             s_down[seat] = null;
-            RestoreDowned(d, true, SeinAt(Services.Net.Sender), health);
+            RestoreDowned(d, true, SeinAt(rescuer), health);
             if (d.Sein != null) PartnerFx.PlayRevive(d.Sein, d.Sein.Position);
             NetRevivesApplied++;
             SendRevived(seat, d.Sein.Position);
@@ -248,7 +254,8 @@ namespace OriCoop
             ReviveWire.Position message = ReviveWire.ReadPosition(r);
             int seat = message.Seat;
             Vector3 position = new Vector3(message.X, message.Y, message.Z);
-            Downed d = s_roster.TakeRevived(seat, Services.Net.Sender);
+            if (NetPlay.DeviceSeat(seat) != Services.Net.Sender || Players.IsLocal(seat)) return;
+            Downed d = s_roster.TakeRevived(seat, seat);
             if (d == null) return;
             RestoreDowned(d, false);
             if (d.Sein != null)
@@ -275,7 +282,8 @@ namespace OriCoop
         static void OnNetProgress(BinaryReader r)
         {
             ReviveWire.Progress message = ReviveWire.ReadProgress(r);
-            s_roster.MergeProgress(message.Seat, message.Rescuer, Services.Net.Sender, Host.LocalSeat, message.Value, message.Given);
+            if (NetPlay.DeviceSeat(message.Rescuer) != Services.Net.Sender) return;
+            s_roster.MergeProgress(message.Seat, message.Rescuer, message.Rescuer, Host.LocalSeat, message.Value, message.Given);
         }
     }
 }

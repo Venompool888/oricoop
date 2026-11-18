@@ -8,6 +8,13 @@ namespace OriCoop.Saves
         readonly Dictionary<int, GuestState> m_guests = new Dictionary<int, GuestState>();
 
         public IEnumerable<int> Seats { get { return m_guests.Keys; } }
+        public void Rebind(int previous, int primary)
+        {
+            if (previous == primary) return;
+            GuestState device;
+            if (!m_guests.TryGetValue(previous, out device)) return;
+            m_guests.Remove(previous); m_guests[primary] = device;
+        }
         public void Join(int seat) { m_guests[seat] = new GuestState(); }
         public void Leave(int seat) { m_guests.Remove(seat); }
         public void Clear() { m_guests.Clear(); }

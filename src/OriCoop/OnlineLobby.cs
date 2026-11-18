@@ -283,6 +283,9 @@ namespace OriCoop
 
         void Update()
         {
+            if (OnlineRoomScreen.Visible) return;
+            if (m_page == PageHosting && !OnlineRoomScreen.Confirmed && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected))
+            { OnlineRoomScreen.Show(delegate { OnlineLobby.Close(); NativeModeMenu.OnlineProceed(); }); return; }
             PollPads();
             if (Time.unscaledTime < m_ignoreInputUntil) return;
 

@@ -63,7 +63,7 @@ namespace OriCoop
             return false;
         }
         static int PlayerOf(SeinCharacter s) { return Host.SeatOf(s); }
-        internal static bool MultiRevive { get { return Services.Net.Enabled && Host.RemoteCount > 1; } }
+        internal static bool MultiRevive { get { return Services.Net.Enabled && Host.PuppetCount > 1; } }
         internal static SeinCharacter Partner(SeinCharacter s)
         {
             if (!MultiRevive)
@@ -308,7 +308,7 @@ namespace OriCoop
             if (multi && saver == null) { ReviveLogic.Release(d); return; }
             bool holding = multi || SaverNear(saver, d) && SaverHolding(saver);
             if (!holding) { ReviveLogic.Release(d); return; }
-            if (multi && saver != Host.P1) return;
+            if (!ReviveLogic.CanSimulateHold(Services.Net.Enabled, Players.IsLocal(PlayerOf(saver)))) return;
             if (multi && d.Rescuer != PlayerOf(saver))
             {
                 ReviveLogic.Release(d);
@@ -333,6 +333,7 @@ namespace OriCoop
             RestoreDowned(d, true, saver, health);
             PartnerFx.PlayRevive(d.Sein, d.Sein.Position);
             Revives++;
+            if (Services.Net.Enabled) SendRevived(d.Player, d.Sein.Position);
             Services.Log.Info("P" + d.Player + " revived by P" + PlayerOf(saver) + " with " + health.ToString("F1") + " health");
         }
 

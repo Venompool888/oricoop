@@ -116,6 +116,11 @@ static class RulesTests
 
     static int Main()
     {
+        Run("only the rescuer device advances online holds even with two seats", delegate {
+            Check(ReviveLogic.CanSimulateHold(true, true), "local saver must advance");
+            Check(!ReviveLogic.CanSimulateHold(true, false), "victim must not simulate the remote saver and finish early");
+            Check(ReviveLogic.CanSimulateHold(false, false), "offline two-player path unchanged");
+        });
         Run("downed seat is recorded", delegate {
             DownedRoster<DownedState> r = Roster(); Check(r.TryAdd(2, Down(2)), "first down rejected");
             Check(r.AnyDowned && r.Seats[2].Player == 2, "seat not downed");

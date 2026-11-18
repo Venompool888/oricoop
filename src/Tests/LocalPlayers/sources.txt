@@ -1,0 +1,4 @@
+OriCoop\Seats\SeatTable.cs
+OriCoop\Seats\SeatInputs.cs
+OriCoop\Seats\FrameStreams.cs
+OriCoop\Rules\LocalEdgeWall.cs

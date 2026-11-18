@@ -251,6 +251,7 @@ namespace OriCoop
                 end = Time.realtimeSinceStartup + 90f;
                 while (Time.realtimeSinceStartup < end && !NetPlay.LocalInGameplay()) { DismissResume(); yield return null; }
                 Check(NetPlay.LocalInGameplay(), "host: in game after 开始游戏");
+                Check(m_roomSeen, "host: room screen shown before the game starts");
                 end = Time.realtimeSinceStartup + 150f;
                 while (Time.realtimeSinceStartup < end && !(NetPlay.PartnerHere && SaveSync.Ready)) { DismissResume(); yield return null; }
                 Check(NetPlay.PartnerHere && SaveSync.Ready, "host: guest joined and loaded (net=" + NetPlay.CurrentPhase + ")");
@@ -363,6 +364,7 @@ namespace OriCoop
                     Check(nb >= 1, "guest: the overwritten save was backed up first (" + nb + " file(s) in OriCoop-backups)");
                 }
                 Check(sawStart || GuestStatus.Length > 0, "guest: no-slot join started (" + GuestStatus + ")");
+                Check(m_roomSeen, "guest: room screen shown before the join starts");
                 Check(NetPlay.LocalInGameplay() && SaveSync.Ready, "guest: in game with the host's save (net=" + NetPlay.CurrentPhase + ", status=" + GuestStatus + ", aborts=" + GuestJoin.Aborts + " " + GuestJoin.LastAbort + ")");
                 Check(SaveSync.JoinedHost && SaveSync.GuestJoinDistance < 3f, "guest: placed beside the host (distance " + SaveSync.GuestJoinDistance.ToString("F2") + ")");
                 if (!full) Check(TitleChoice == TitleNone && !LastSlotPick.StartsWith("title-") && !LastSlotPick.StartsWith("guest-slot"), "guest: no save slot was picked (" + LastSlotPick + ")");
@@ -385,10 +387,12 @@ namespace OriCoop
 
             void DismissResume()
             {
+                // T-059: the room page comes up before the game starts; press its drawn continue / start button.
+                if (OnlineRoomScreen.Visible && OnlineRoomScreen.Click("room.continue") && !m_roomSeen) { m_roomSeen = true; Note("room screen: continue pressed"); }
                 if (UI.MainMenuVisible && GameController.Instance != null && GameController.Instance.IsLoadingGame) { UI.Menu.HideResumeScreen(); UI.Menu.HideMenuScreen(true); }
             }
 
-            bool m_finished;
+            bool m_finished, m_roomSeen;
             void Finish()
             {
                 if (m_finished) return;

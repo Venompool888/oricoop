@@ -73,10 +73,14 @@ namespace OriCoop
             Ready = false;
         }
 
+        internal static void RebindDevice(int previous, int primary) { s_guests.Rebind(previous, primary); }
+
         public static bool ReadyForSeat(int seat)
         {
+            if (Services.Net.IsHost && Players.IsLocal(seat) && !Services.Net.Connected) return true;
             if (!Ready) return false;
-            return s_guests.ReadyForSeat(seat, Services.Net.IsHost, Ready);
+            if (Players.IsLocal(seat)) return true;
+            return s_guests.ReadyForSeat(NetPlay.DeviceSeat(seat), Services.Net.IsHost, Ready);
         }
 
         static void UpdateHostReady()

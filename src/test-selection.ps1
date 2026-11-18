@@ -13,6 +13,8 @@ $TS_Suites = [ordered]@{
     'net-3p'      = @('run-nettest.ps1', '-Clients', '3')
     'net-4p'      = @('run-nettest.ps1', '-Clients', '4')
     'net-newgame' = @('run-nettest.ps1', '-GuestNewGame')
+    'net-lp2'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '2')
+    'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
     'titlejoin-relay' = @('run-titlejoin.ps1', '-Transport', 'relay')
@@ -26,7 +28,7 @@ $TS_AllPhases = @('INTRO', 'MOVE', 'W', 'E3', 'E5', 'R', 'S4', 'P', 'WO', 'CAM',
 # --- module -> suites (see docs\modules.md for what each module contains)
 $TS_ModuleSuites = @{
     'M0' = $TS_AllSuites
-    'M1' = @('net', 'net-relay', 'net-3p', 'net-4p', 'titlejoin', 'titlejoin-relay', 'coopsave')
+    'M1' = @('net', 'net-relay', 'net-3p', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-relay', 'coopsave')
     'M2' = @('local', 'net', 'net-3p', 'coopsave')
     'M3' = @('net', 'net-relay')
     'M4' = @('net', 'net-3p')
@@ -40,7 +42,10 @@ $TS_ModuleSuites = @{
 $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-4p');
-    'NetTestHarness'   = @('net', 'net-3p', 'net-4p'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
+    'NetTestHarness'   = @('net', 'net-3p', 'net-4p', 'net-lp2', 'net-lp3'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
+    # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
+    'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
+    'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('net-lp2', 'net-lp3')
     'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'RoomsHookTest' = @('rooms');
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
 }

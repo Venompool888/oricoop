@@ -38,8 +38,22 @@ partial class SaveTests
 
     static int Main()
     {
+        Run("room save selection cannot redirect a live or linked save", delegate {
+            Check(RoomSaveSelection.CanSelect(true, false, false, false), "host may pick before connecting/loading");
+            Check(!RoomSaveSelection.CanSelect(false, false, false, false), "guest cannot change host save");
+            Check(!RoomSaveSelection.CanSelect(true, true, false, false), "live game must not autosave into another slot");
+            Check(!RoomSaveSelection.CanSelect(true, false, true, false), "negotiated network save is fixed");
+            Check(!RoomSaveSelection.CanSelect(true, false, false, true), "persistent room backup target is fixed");
+        });
         Run("save message round trip", SaveRoundTrip);
         Run("seat readiness after departure", SeatReady);
+        Run("device primary rebind preserves save handshake", delegate {
+            SeatReadiness seats = new SeatReadiness(); seats.Join(3); seats.MarkSent(3); seats.Loaded(3);
+            seats.Rebind(3, 2);
+            Check(seats.ReadyForSeat(2, true, true) && !seats.ReadyForSeat(3, true, true), "ready state must follow device primary");
+            seats.Join(4); seats.Rebind(4, 3);
+            Check(seats.HasUnsent && !seats.ReadyForSeat(3, true, true), "pending device stays pending after rebind");
+        });
         Run("matching save handshake", SameSave);
         Run("guest without save", NewSave);
         Run("guest without free slot", NoFreeSlot);

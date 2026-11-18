@@ -189,6 +189,16 @@ static class NetCoreTests
             r.Bus.On(70, delegate(BinaryReader b) { try { r.Receive(71, 3, true, 0, Empty); } catch (Exception) { } after = r.Bus.Sender; });
             r.Receive(70, 1, true, 0, Empty); Equal(1, after); Equal(0, r.Bus.Sender);
         });
+        Run("seat validator rejects before handler and host forwarding", delegate {
+            Rig r = new Rig(true, false, true); FakePeer source = new FakePeer(), other = new FakePeer();
+            r.Add(2, source); r.Add(4, other); r.Bus.Forward(9); int handled = 0;
+            r.Bus.On(9, delegate(BinaryReader b) { handled++; });
+            r.Bus.Validate = delegate(byte[] bytes, int connection) { return connection == 2 && bytes[1] == 2 && bytes[2] == 3; };
+            r.Receive(9, 2, false, 2, delegate(BinaryWriter w) { w.Write((byte)4); });
+            Equal(0, handled); Equal(0, other.Sent.Count);
+            r.Receive(9, 2, false, 2, delegate(BinaryWriter w) { w.Write((byte)3); });
+            Equal(1, handled); Equal(1, other.Sent.Count); Equal(0, source.Sent.Count);
+        });
         Run("send serializes type seat and body once to hub", delegate {
             Rig r = new Rig(true, false, true); FakePeer a = new FakePeer(), b = new FakePeer(); r.Add(2, a); r.Add(3, b); int calls = 0;
             r.Bus.Send(70, true, delegate(BinaryWriter w) { calls++; w.Write((byte)42); });
