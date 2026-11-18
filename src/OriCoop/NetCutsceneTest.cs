@@ -65,15 +65,19 @@ namespace OriCoop
                 if (NetPlay.Connected && Now >= resend) { Send(Local[step]); resend = Now + 1f; }
                 yield return null;
             }
-            h.Check(Remote.ContainsKey(step), "CUT barrier " + step + " received");
-            h.Check(Acknowledged.Contains(step), "CUT barrier " + step + " acknowledged");
-            if (Remote.ContainsKey(step)) h.Check(!Remote[step].Failed, "CUT partner step " + step + " completed");
+            string label = step >= 400 ? "GATE " : "CUT ";
+            h.Check(Remote.ContainsKey(step), label + "barrier " + step + " received");
+            h.Check(Acknowledged.Contains(step), label + "barrier " + step + " acknowledged");
+            if (Remote.ContainsKey(step)) h.Check(!Remote[step].Failed, label + "partner step " + step + " completed");
+            if (step >= 400 && (!Remote.ContainsKey(step) || !Acknowledged.Contains(step) || Remote[step].Failed))
+                h.Note("GATE barrier " + step + ": " + GateDiag());
             if (NetPlay.Connected) NetPlay.Peer.Flush();
             yield return Wait(0.25f);
         }
         internal static IEnumerator Step(TestHarness h, int step, IEnumerator routine)
         {
             int failures = Failures(h); bool failed = false;
+            string label = step >= 400 ? "GATE " : "CUT ";
             Stack<IEnumerator> stack = new Stack<IEnumerator>(); stack.Push(routine);
             try
             {
@@ -81,11 +85,11 @@ namespace OriCoop
                 {
                     IEnumerator top = stack.Peek(); bool moved = false; object value = null;
                     try { moved = top.MoveNext(); if (moved) value = top.Current; }
-                    catch (Exception e) { failed = true; h.Check(false, "CUT step " + step + " threw " + e); }
+                    catch (Exception e) { failed = true; h.Check(false, label + "step " + step + " threw " + e); }
                     if (!moved)
                     {
                         stack.Pop(); IDisposable d = top as IDisposable;
-                        if (d != null) try { d.Dispose(); } catch (Exception e) { failed = true; h.Check(false, "CUT cleanup " + e.Message); }
+                        if (d != null) try { d.Dispose(); } catch (Exception e) { failed = true; h.Check(false, label + "cleanup " + e.Message); }
                     }
                     else { IEnumerator child = value as IEnumerator; if (child == null) yield return value; else stack.Push(child); }
                 }
@@ -97,10 +101,15 @@ namespace OriCoop
                     while (stack.Count > 0)
                     {
                         IDisposable d = stack.Pop() as IDisposable;
-                        if (d != null) try { d.Dispose(); } catch (Exception e) { failed = true; h.Check(false, "CUT dispose " + e.Message); }
+                        if (d != null) try { d.Dispose(); } catch (Exception e) { failed = true; h.Check(false, label + "dispose " + e.Message); }
                     }
                 }
-                finally { Bot(); Publish(step, failed || Failures(h) > failures); }
+                finally
+                {
+                    Bot();
+                    if (step >= 400 && (failed || Failures(h) > failures)) h.Note("GATE step " + step + ": " + GateDiag());
+                    Publish(step, failed || Failures(h) > failures);
+                }
             }
             yield return Barrier(h, step);
         }
@@ -452,9 +461,187 @@ namespace OriCoop
             h.Check(HudRestored(), "CUT reload: HUD restored");
             h.Check(Ability, "CUT reload: WallJump still true");
         }
+        static PlayerCollisionTrigger s_gateTrigger;
+        static Rect s_gateRect;
+        static float s_gateFiredAt;
+        static string GatePath(Component component)
+        {
+            string path = component.transform.name;
+            for (Transform t = component.transform.parent; t != null; t = t.parent) path = t.name + "/" + path;
+            return path;
+        }
+        static PlayerCollisionTrigger FindGateTrigger()
+        {
+            foreach (PlayerCollisionTrigger trigger in Resources.FindObjectsOfTypeAll<PlayerCollisionTrigger>())
+            {
+                if (trigger == null || !GatePath(trigger).EndsWith("storySetups/storyTextWithTrigger/triggerCollider", StringComparison.Ordinal)) continue;
+                for (Transform t = trigger.transform; t != null; t = t.parent)
+                {
+                    SceneRoot root = t.GetComponent<SceneRoot>();
+                    if (root != null && root.MetaData != null && root.MetaData.SceneName == SceneName) return trigger;
+                }
+            }
+            return null;
+        }
+        static string GateDiag()
+        {
+            string positions = "";
+            foreach (Puppet puppet in Players.Remotes)
+                positions += " seat" + puppet.Seat + "=" + (puppet.Sein == null ? "null" : puppet.Sein.Position.ToString());
+            return "key=" + ForcedSync.LocalGateKey + " count=" + ForcedSync.LastCount + "/" + ForcedSync.LastTotal
+                + " hold=" + ForcedSync.HoldProgress + " fires=" + ForcedSync.Fires + " forces=" + ForcedSync.Forces
+                + " blocked=" + ForcedSync.Blocked + " pillars=" + ForcedSync.PillarsShown
+                + " top=" + ForcedSync.TopText + " bottom=" + ForcedSync.BottomText
+                + " own=" + (Own == null ? "null" : Own.Position.ToString())
+                + " trigger=" + (s_gateTrigger == null ? "null" : s_gateTrigger.transform.position.ToString())
+                + positions + " starts=" + StorySync.StartsSent + "/" + StorySync.StartsMirrored + " " + Diag();
+        }
+        static void GateCheck(TestHarness h, bool ok, string label)
+        {
+            h.Check(ok, "GATE " + label);
+            if (!ok) h.Note("GATE " + label + ": " + GateDiag());
+        }
+        static void GateMove(bool inside)
+        {
+            float x = inside ? s_gateRect.center.x : s_gateRect.xMin - 10f;
+            float z = s_gateTrigger.transform.position.z; RaycastHit hit;
+            float y = Physics.Raycast(new Vector3(x, s_gateRect.yMax + 0.5f, z), Vector3.down, out hit, s_gateRect.height + 30f, -1, QueryTriggerInteraction.Ignore)
+                ? hit.point.y + 0.5f : s_gateRect.yMin + 0.5f;
+            Plugin.Teleport(Own, new Vector3(x, y, z));
+        }
+        static IEnumerator GateSetup(TestHarness h)
+        {
+            foreach (RuntimeSceneMetaData scene in Core.Scenes.Manager.AllScenes)
+            {
+                if (scene.Scene != SceneName) continue;
+                Vector2 center = scene.SceneBounds.center;
+                Plugin.Teleport(Own, new Vector3(center.x, center.y, 0));
+                Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(scene.SceneBounds, true, false, false); break;
+            }
+            float end = Now + 20f;
+            while (Now < end)
+            {
+                s_gateTrigger = FindGateTrigger();
+                if (s_gateTrigger != null && !GameController.Instance.IsLoadingGame) break;
+                yield return null;
+            }
+            GateCheck(h, s_gateTrigger != null, "setup trigger found");
+            if (s_gateTrigger == null) yield break;
+            GateCheck(h, s_gateTrigger.ActionToRun != null
+                && GatePath(s_gateTrigger.ActionToRun).EndsWith("storySetups/storyTextWithTrigger/action", StringComparison.Ordinal), "setup story action found");
+            s_gateRect = Utility.RectFromBounds(Utility.BoundsFromTransform(s_gateTrigger.transform));
+            s_gateTrigger.Active = true; GateMove(false);
+            end = Now + 5f;
+            while (!Own.PlatformBehaviour.PlatformMovement.IsOnGround && Now < end) yield return null;
+            GateCheck(h, Own.PlatformBehaviour.PlatformMovement.IsOnGround && Own.Position.x < s_gateRect.xMin - 5f, "setup outside on ground");
+            Publish(new Sample { Step = 401, Found = s_gateTrigger != null });
+            yield return Barrier(h, 401);
+            yield return Settle();
+        }
+        static IEnumerator GateHolds(TestHarness h)
+        {
+            int sent = StorySync.StartsSent, mirrored = StorySync.StartsMirrored, blocked = ForcedSync.Blocked;
+            yield return Barrier(h, 411);
+            if (!NetPlay.IsHost) GateMove(true);
+            bool sawStory = false; float end = Now + 3f;
+            while (Now < end)
+            {
+                sawStory |= Letterbox.ShowLetterboxes || StorySync.StartsSent != sent || StorySync.StartsMirrored != mirrored;
+                yield return null;
+            }
+            GateCheck(h, !sawStory && StorySync.StartsSent == sent && StorySync.StartsMirrored == mirrored, "G1 no story before all here");
+            if (!NetPlay.IsHost)
+            {
+                GateCheck(h, ForcedSync.LocalGateKey != null, "G1 local gate remembered");
+                GateCheck(h, ForcedSync.LastCount == 1 && ForcedSync.LastTotal == 2, "G1 count 1/2");
+                GateCheck(h, ForcedSync.PillarsShown, "G1 pillars shown");
+                h.Note("GATE visuals " + ForcedSync.VisualDebug());
+                // For review of the look (ward pillars, hint lines, Y ring): kept next to the result file.
+                try { Application.CaptureScreenshot(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(h.ResultPath)), "gate-" + (NetPlay.IsHost ? "host" : "guest") + ".png")); }
+                catch (Exception e) { h.Note("gate screenshot failed: " + e.Message); }
+                GateCheck(h, !string.IsNullOrEmpty(ForcedSync.TopText) && !string.IsNullOrEmpty(ForcedSync.BottomText)
+                    && ForcedSync.BottomText.Contains("1/2"), "G1 two hint lines with 1/2");
+                GateCheck(h, ForcedSync.Blocked > blocked, "G1 native trigger blocked");
+            }
+        }
+        static IEnumerator GateStarted(TestHarness h, string label, int starts, int fires, bool hostPulled)
+        {
+            bool sawLetterbox = false, pulled = false; float end = Now + 8f;
+            while (Now < end)
+            {
+                sawLetterbox |= Letterbox.ShowLetterboxes;
+                pulled |= Vector3.Distance(Own.Position, s_gateTrigger.transform.position) < 4f;
+                bool started = NetPlay.IsHost ? StorySync.StartsSent >= starts + 1 : StorySync.StartsMirrored >= starts + 1 || sawLetterbox;
+                if (started && ForcedSync.Fires >= fires + 1 && (!hostPulled || !NetPlay.IsHost || pulled)) break;
+                yield return null;
+            }
+            GateCheck(h, NetPlay.IsHost ? StorySync.StartsSent == starts + 1 : StorySync.StartsMirrored == starts + 1 || sawLetterbox,
+                label + " story started here");
+            GateCheck(h, ForcedSync.Fires == fires + 1, label + " fired exactly once");
+            if (hostPulled && NetPlay.IsHost) GateCheck(h, pulled, label + " host pulled within 4 units");
+            s_gateFiredAt = Now;
+        }
+        static IEnumerator GateAllHere(TestHarness h)
+        {
+            int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored, fires = ForcedSync.Fires;
+            yield return Barrier(h, 421);
+            if (NetPlay.IsHost) GateMove(true);
+            yield return GateStarted(h, "G2", starts, fires, false);
+            GateCheck(h, ForcedSync.Fires == 1, "G2 first fire on this end");
+            yield return Settle();
+        }
+        static IEnumerator GateReset(TestHarness h, int step)
+        {
+            yield return Settle();
+            GateMove(false);
+            float end = Now + 20f;
+            while (StorySync.StoryActive && Now < end) yield return null;
+            while (Now - s_gateFiredAt < 15.5f) yield return null;
+            s_gateTrigger.Active = true;
+            GateCheck(h, !StorySync.StoryActive && !Letterbox.ShowLetterboxes, "reset story settled");
+            yield return Barrier(h, step);
+        }
+        static IEnumerator GateHold(TestHarness h, string label, int step)
+        {
+            yield return GateReset(h, step);
+            int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored;
+            int fires = ForcedSync.Fires, forces = ForcedSync.Forces;
+            if (!NetPlay.IsHost) GateMove(true);
+            float end = Now + 4f, peak = 0f;
+            try
+            {
+                while (Now < end)
+                {
+                    if (!NetPlay.IsHost) NetTestHarness.BotButtons = P2Input.BTN_Y;
+                    peak = Mathf.Max(peak, ForcedSync.HoldProgress);
+                    if (!NetPlay.IsHost && ForcedSync.Forces > forces || NetPlay.IsHost && ForcedSync.Fires > fires) break;
+                    yield return null;
+                }
+            }
+            finally { Bot(); }
+            if (!NetPlay.IsHost) GateCheck(h, peak >= 1f && ForcedSync.Forces >= forces + 1, label + " hold filled and force sent");
+            yield return GateStarted(h, label, starts, fires, true);
+            yield return Settle();
+        }
+        static IEnumerator GateRun(TestHarness h)
+        {
+            Local.Clear(); Bot(); NetPlay.SetSim(0, 0, 0, 0);
+            try
+            {
+                yield return Step(h, 400, GateSetup(h));
+                if (s_gateTrigger == null || !Remote.ContainsKey(401) || !Remote[401].Found) yield break;
+                yield return Step(h, 410, GateHolds(h));
+                yield return Step(h, 420, GateAllHere(h));
+                yield return Step(h, 430, GateHold(h, "G3", 431));
+                NetPlay.SetSim(100, 0, 0, 0);
+                yield return Step(h, 440, GateHold(h, "G4 lag", 441));
+            }
+            finally { Bot(); NetPlay.SetSim(0, 0, 0, 0); }
+        }
         public static IEnumerator Run(TestHarness h)
         {
             if (!s_registered) { NetPlay.On(BarrierMessage, Receive); s_registered = true; }
+            if (Environment.GetEnvironmentVariable("ORICOOP_P3_GATE") == "1") { yield return GateRun(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_SCAN") == "1") { yield return NetStoryScan.Run(h); yield break; }
             // Keep Remote/Acknowledged: the partner's first barrier can arrive before this end reaches P3 (one run per
             // process, so nothing stale is in there).
