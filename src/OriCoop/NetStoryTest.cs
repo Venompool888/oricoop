@@ -415,19 +415,45 @@ namespace OriCoop
             }
             finally { if (NetPlay.IsHost) NetPlay.SetSim(0, 0, 0, 0); }
             float clearAt = Now;
+            // Timeline after the link is back (T-030): when each rejoin condition first holds, seconds after clearAt.
+            float tConn = -1f, tSession = -1f, tReady = -1f, tPuppet = -1f, tJoined = -1f, tDisc = -1f;
+            int discAt0 = SessionRules.Disconnects;
             while (Now - clearAt < 15f && (!NetPlay.Connected || SessionRules.Sessions == sessions
-                || !SaveSync.Ready || P2Context.P2 == null || (!NetPlay.IsHost && !SaveSync.JoinedHost))) yield return null;
+                || !SaveSync.Ready || P2Context.P2 == null || (!NetPlay.IsHost && !SaveSync.JoinedHost)))
+            {
+                float t = Now - clearAt;
+                if (tDisc < 0f && SessionRules.Disconnects > discAt0) tDisc = t;
+                if (tConn < 0f && NetPlay.Connected) tConn = t;
+                if (tSession < 0f && SessionRules.Sessions > sessions) tSession = t;
+                if (tReady < 0f && SaveSync.Ready) tReady = t;
+                if (tPuppet < 0f && P2Context.P2 != null) tPuppet = t;
+                if (tJoined < 0f && SaveSync.JoinedHost) tJoined = t;
+                yield return null;
+            }
+            h.Note("S4 rejoin timeline after clear: disconnected=" + F(tDisc) + " connected=" + F(tConn) + " session=" + F(tSession)
+                + " saveReady=" + F(tReady) + " puppet=" + F(tPuppet) + " joinedHost=" + F(tJoined) + " (-1 = already true or never)"
+                + " disconnectsDuringDrop=" + (discAt0 - disconnects));
             int puppets = PuppetCount(); float distance = Vector3.Distance(Own.Position, NetPlay.LatestRemotePos);
             h.Note("S4 reconnect total=" + F(Now - start) + " afterClear=" + F(Now - clearAt)
                 + " disconnectDelta=" + (SessionRules.Disconnects - disconnects) + " sessionDelta=" + (SessionRules.Sessions - sessions)
                 + " puppets=" + puppets + " distance=" + F(distance) + " " + NetPlay.StatusLine());
             h.Check(SessionRules.Disconnects > disconnects, "S4 observed Disconnected event");
             h.Check(NetPlay.Connected && SessionRules.Sessions > sessions && SaveSync.Ready && Now - clearAt < 15f, "S4 rejoined within 15s");
+            // T-030: once the link is back, the rejoin (connect, session, save ready, guest placed) takes seconds, not 12 s.
+            h.Check(NetPlay.Connected && SessionRules.Sessions > sessions && SaveSync.Ready && Now - clearAt < 5f,
+                "S4 rejoined within 5 s after the link is back (" + F(Now - clearAt) + " s)");
             h.Check(puppets == 1 && P2Context.P2 != null, "S4 exactly one puppet");
             if (!NetPlay.IsHost) h.Check(SaveSync.JoinedHost && distance <= 3f, "S4 guest re-placed beside host");
             h.Check(!SessionRules.PartnerInMenu && !StorySync.Watching, "S4 no stale remote menu or watching lock");
             yield return Digests(h, 52);
         }
+        // ORICOOP_NET_ONLY=S4R: just the drop + rejoin step (fast iteration on T-030).
+        public static IEnumerator RunReconnect(TestHarness h)
+        {
+            h.Note("--- phase S4 reconnect only");
+            yield return Step(h, 50, Reconnect(h));
+        }
+
         public static IEnumerator Run(TestHarness h)
         {
             h.Note("--- phase S4 story / session rules"); s_performs = 0;

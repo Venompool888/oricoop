@@ -758,7 +758,9 @@ namespace OriCoop
             EndSession();
             ResetSession();
             // Host keeps listening for a new guest; a guest retries after a moment.
-            s_retryAt = Time.realtimeSinceStartup + (IsHost ? 0.5f : 3f);
+            // T-030: a guest tries again after 1 s (was 3 s). Each connect attempt itself keeps asking for up to 10 s, so this
+            // only shortens the gap after a timeout; the host listens again after 0.5 s.
+            s_retryAt = Time.realtimeSinceStartup + (IsHost ? 0.5f : 1f);
             // A relay host keeps its room (same code for the friend): new peer on the same relay transport.
             if (IsHost && ((s_relay != null && s_relay.Ready) || (s_steam != null && s_steam.Ready))) { s_reListen = true; }
         }

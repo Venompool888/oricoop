@@ -253,6 +253,33 @@ static partial class NetTests
         Check(hostEvents == 1 && guestEvents == 1, "wrong timeout event count");
     }
 
+    // T-030: the partner restarts its connection from the same address (its link timed out, ours did not).
+    // The stale session must end at once, not after our own 10 s timeout, so the new connect is accepted.
+    static void PartnerReconnects()
+    {
+        PeerRig r = new PeerRig(); r.Connect(); string reason = null; int events = 0;
+        r.Host.Disconnected += delegate(string text) { events++; reason = text; };
+        r.Guest.Connect(r.HostTransport.Endpoint);   // new nonce, same endpoint
+        r.Pump(300);
+        Check(r.Host.State == PeerState.Disconnected && events == 1 && reason == "partner reconnected",
+            "host kept the stale session (state " + r.Host.State + ", reason " + reason + ")");
+        r.Host.Listen();   // what NetPlay does 0.5 s after a disconnect
+        for (int i = 0; i < 200 && (r.Host.State != PeerState.Connected || r.Guest.State != PeerState.Connected); i++) r.Step();
+        Check(r.Host.State == PeerState.Connected && r.Guest.State == PeerState.Connected, "reconnect was not accepted");
+    }
+
+    // A different endpoint while connected is still refused, and the session it hit stays up.
+    static void StrangerIsRefused()
+    {
+        PeerRig r = new PeerRig(); r.Connect();
+        FakeTransport other = r.Network.Open(11003);
+        NetPeer stranger = new NetPeer(other, delegate { return r.Clock.Milliseconds; });
+        stranger.Connect(r.HostTransport.Endpoint);
+        for (int i = 0; i < 50; i++) { r.Step(); stranger.Poll(); }
+        Check(r.Host.State == PeerState.Connected, "a stranger ended the session");
+        Check(stranger.State == PeerState.Disconnected && stranger.DisconnectReason == "full", "stranger not refused (" + stranger.State + ", " + stranger.DisconnectReason + ")");
+    }
+
     static void Goodbye()
     {
         PeerRig r = new PeerRig(); r.Connect(); int events = 0; string reason = null;

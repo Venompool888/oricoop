@@ -83,6 +83,8 @@ static partial class NetTests
         Run("unanswered connection times out", ConnectTimeout);
         Run("connected peers time out after silence", ConnectedTimeout);
         Run("goodbye carries the disconnect reason", Goodbye);
+        Run("partner reconnecting from the same address ends the stale session at once", PartnerReconnects);
+        Run("a different address is refused while connected", StrangerIsRefused);
         Run("RTT and traffic statistics are sane", Statistics);
         Run("packet loss is reflected in statistics", LossStatistics);
         Run("relay host identity and room creation", RelayHostIdentity);
