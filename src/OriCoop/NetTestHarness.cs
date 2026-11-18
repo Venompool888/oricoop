@@ -889,7 +889,7 @@ namespace OriCoop
             {
                 // An action failure is reported, but its barrier always runs and later tests continue.
                 // A peer therefore never waits for an action's coroutine to complete successfully.
-                for (int step = 1; step <= 7; step++)
+                for (int step = 1; step <= 9; step++)
                 {
                     bool failed = false, completed = false;
                     try
@@ -905,7 +905,7 @@ namespace OriCoop
                     }
                     // No wait after the last step: the guest moves on to the quit test right away, so its final
                     // barrier may still be unacknowledged when it closes.
-                    if (step < 7) yield return Safely(h, "W barrier " + step, WorldBarrier(h, step));
+                    if (step < 9) yield return Safely(h, "W barrier " + step, WorldBarrier(h, step));
                 }
             }
             finally
@@ -1024,7 +1024,91 @@ namespace OriCoop
                 h.Note("W final digest local=" + local.Digest.ToString("X16") + " objects=" + local.WorldCount + " remote=" + remote.Digest.ToString("X16") + " objects=" + remote.WorldCount + " localMatch=" + local.DigestMatch + " remoteMatch=" + remote.DigestMatch);
                 h.Check(local.DigestMatch && remote.DigestMatch && local.Digest == remote.Digest && local.WorldCount == remote.WorldCount, "W both world digests match");
                 h.Check(host || SaveSync.GuestSaveWrites == 0, "W guest save writes remain zero");
+                yield break;
             }
+            if (step == 8) { yield return SkillStep(h, host, start, false); yield break; }
+            if (step == 9)
+            {
+                WorldTestPacket partner = PartnerWorld(8), local = s_ownWorldPackets[8];
+                h.Check(local.ProgressHash != 0 && local.ProgressHash == partner.ProgressHash,
+                    "W skills: shared progress still equal after the guest's purchase (local=" + local.ProgressHash.ToString("X16") + ", remote=" + partner.ProgressHash.ToString("X16") + ")");
+                yield return SkillStep(h, host, start, true);
+            }
+        }
+
+        // T-047 / #9: each player has their own skill tree and points. The buyer (guest in step 8, host in step 9) pays,
+        // gets the skill and sees the gain-skill flash (SkillTreeManager.GainSkillEffect); the other player gets none of it.
+        static IEnumerator SkillStep(TestHarness h, bool host, float start, bool hostBuys)
+        {
+            string who = hostBuys ? "host" : "guest";
+            SkillTreeManager m = SkillTreeManager.Instance;
+            h.Check(m != null && m.GainSkillEffect != null,
+                "W skills: skill tree loaded (manager=" + (m != null) + ")");
+            if (m == null || m.GainSkillEffect == null) yield break;
+            string clone = m.GainSkillEffect.name + "(Clone)";
+            if (!hostBuys && host) { Own.Level.SkillPoints += 10; yield return Wait(0.5f); }   // a shared gain: every player gets it
+            if (!hostBuys) while (Own.Level.SkillPoints < 10 && Time.realtimeSinceStartup - start < 5f) yield return null;
+            string treeBefore = OwnedTreeSkills(m); int pointsBefore = Own.Level.SkillPoints, flashesBefore = CountNamed(clone);
+            if (host == hostBuys)
+            {
+                SkillItem pick = null;
+                foreach (SkillItem item in m.GetComponentsInChildren<SkillItem>(true))
+                    if (!Own.PlayerAbilities.HasAbility(item.Ability) && item.CanEarnSkill
+                        && (pick == null || item.ActualRequiredSkillPoints < pick.ActualRequiredSkillPoints)) pick = item;
+                h.Check(pick != null, "W skills: the " + who + " has an affordable skill (points=" + pointsBefore + ")");
+                if (pick == null) yield break;
+                int cost = pick.ActualRequiredSkillPoints;
+                SkillItem previous = m.CurrentSkillItem;
+                pick.HasSkillItem = false;
+                m.CurrentSkillItem = pick;
+                try { m.OnMenuItemPressed(); }
+                finally { m.CurrentSkillItem = previous; }
+                int shown = CountNamed(clone) - flashesBefore;
+                h.Check(shown == 1, "W skills: the " + who + " who bought " + pick.Ability + " sees the gain-skill flash (" + shown + ")");
+                yield return Wait(3f);   // snapshots both ways must not undo the purchase
+                h.Check(Own.PlayerAbilities.HasAbility(pick.Ability) && Own.Level.SkillPoints == pointsBefore - cost,
+                    "W skills: the " + who + " keeps " + pick.Ability + " and paid " + cost + " (points " + pointsBefore + " -> " + Own.Level.SkillPoints + ")");
+            }
+            else
+            {
+                // Watch every frame for a NEW flash object (one already there may expire meanwhile).
+                HashSet<int> seen = NamedIds(clone); int flashes = 0;
+                float until = Time.realtimeSinceStartup + 4f;
+                while (Time.realtimeSinceStartup < until)
+                {
+                    foreach (int id in NamedIds(clone)) if (seen.Add(id)) flashes++;
+                    yield return null;
+                }
+                string treeNow = OwnedTreeSkills(m);
+                h.Check(flashes == 0, "W skills: the " + (host ? "host" : "guest") + " does not see the " + who + "'s skill-tree flash (" + flashes + ")");
+                h.Check(treeNow == treeBefore && Own.Level.SkillPoints == pointsBefore,
+                    "W skills: the " + who + "'s purchase leaves the " + (host ? "host" : "guest") + "'s tree and points alone (tree [" + treeBefore + "] -> ["
+                    + treeNow + "], points " + pointsBefore + " -> " + Own.Level.SkillPoints + ")");
+            }
+        }
+
+        // The skill-tree abilities this player owns, read from the game's own skill items (independent of ProgressSync).
+        static string OwnedTreeSkills(SkillTreeManager m)
+        {
+            List<string> owned = new List<string>();
+            foreach (SkillItem item in m.GetComponentsInChildren<SkillItem>(true))
+                if (Own.PlayerAbilities.HasAbility(item.Ability)) owned.Add(item.Ability.ToString());
+            owned.Sort();
+            return string.Join(",", owned.ToArray());
+        }
+
+        static HashSet<int> NamedIds(string name)
+        {
+            HashSet<int> ids = new HashSet<int>();
+            foreach (GameObject go in UnityEngine.Object.FindObjectsOfType<GameObject>()) if (go.name == name) ids.Add(go.GetInstanceID());
+            return ids;
+        }
+
+        static int CountNamed(string name)
+        {
+            int n = 0;
+            foreach (GameObject go in UnityEngine.Object.FindObjectsOfType<GameObject>()) if (go.name == name) n++;
+            return n;
         }
         static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
         // E3 has its own reliable numbered barriers; no shared single-slot test signals.
