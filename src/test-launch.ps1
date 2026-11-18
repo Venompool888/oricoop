@@ -580,8 +580,14 @@ function New-TestClientRoot([string]$Tag) {
     $bepRoot = Join-Path $script:TL_RuntimeDir ($Tag + '\BepInEx')
     foreach ($dir in @($bepRoot, (Join-Path $bepRoot 'core'), (Join-Path $bepRoot 'config'))) { New-Item -ItemType Directory -Force -Path $dir | Out-Null }
     $src = Join-Path $script:TL_GameDir 'BepInEx'
-    Copy-Item -Path "$src\core\*" -Destination (Join-Path $bepRoot 'core') -Recurse -Force
-    Copy-Item -Path "$src\config\*" -Destination (Join-Path $bepRoot 'config') -Recurse -Force
+    # A game of this copy stopped a moment ago (an orphan of a dead run) can keep its core DLLs mapped for a few seconds:
+    # "user-mapped section open" (T-080, 2026-11-18). Retry like the DLL install.
+    foreach ($dir in @('core', 'config')) {
+        for ($try = 1; ; $try++) {
+            try { Copy-Item -Path "$src\$dir\*" -Destination (Join-Path $bepRoot $dir) -Recurse -Force -ErrorAction Stop; break }
+            catch [System.IO.IOException] { if ($try -ge 30) { throw }; Start-Sleep -Seconds 1 }
+        }
+    }
     foreach ($dir in @('plugins', 'patchers')) {
         $link = Join-Path $bepRoot $dir
         # A real folder in place of the junction (seen in copy e: empty plugins/patchers) starts the game with no mod
