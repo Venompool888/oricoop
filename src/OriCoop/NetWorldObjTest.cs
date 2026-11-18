@@ -173,6 +173,12 @@ namespace OriCoop
             if (Environment.GetEnvironmentVariable("ORICOOP_WORLDOBJ_OFF") == "1") h.Note("WO mutation: ORICOOP_WORLDOBJ_OFF=1, WorldObjSync.Enabled=" + WorldObjSync.Enabled);
             if (Own == null || P2Context.P2 == null) { h.Check(false, "WO needs both Oris"); yield break; }
             Vector3 home = Own.Position;
+            // T-081: the object search teleports into nine scenes, sometimes into mid-air above lava (WO7 laser stomp):
+            // the Ori was downed for good (KeepAlive only heals, nobody revives) and CAM / CUT after this phase failed.
+            // WO tests world objects, not player damage: the local Ori takes no damage for the whole phase.
+            SeinDamageReciever guard = Own.Mortality != null ? Own.Mortality.DamageReciever : null;
+            bool wasImmortal = guard != null && guard.IsImmortal;
+            if (guard != null) guard.IsImmortal = true;
             int resyncsBefore = WorldSync.DigestResyncs;
             try
             {
@@ -197,7 +203,7 @@ namespace OriCoop
                     + " puppetSuppressed=" + WorldObjSync.PuppetSuppressed + " liveApplies=" + WorldObjSync.LiveApplies + " sin=" + WorldObjSync.SinCorrections
                     + " water=" + WorldObjSync.WaterFollows + " flipFix=" + WorldObjSync.FlipHeartbeatFixes);
             }
-            finally { NetPlay.SetSim(0, 0, 0, 0); s_probe = null; s_water = null; }
+            finally { NetPlay.SetSim(0, 0, 0, 0); s_probe = null; s_water = null; if (guard != null) guard.IsImmortal = wasImmortal; }
             // Back where the phase started, so the next phase (P3) finds its scene loaded.
             yield return Settle(h, "WO end");
             if (Own != null)

@@ -44,25 +44,12 @@ namespace OriCoop
         // T-074: events held back until the object's scene has finished starting (see SceneStarted).
         public static int EventsDeferred, EventsReplayed;
         sealed class Deferred { public byte Kind; public int Id; public byte[] Payload; public Component Target; public float Until; }
-        static readonly List<Deferred> s_deferred = new List<Deferred>();
+        static readonly World.HeldEvents<Deferred> s_deferred = new World.HeldEvents<Deferred>();   // replays in arrival order
 
         // A scene's saved state is loaded in SceneRoot.LateStart, a frame or more after its objects exist
         // (ScenesManager.OnSceneStartCompleted sets HasStartBeenCalled at its end). A change made to one of its objects
         // before that is overwritten by the saved state: a floor broken by the partner's event came back whole on this PC
         // (WO5L / WO6L, 2026-11-18, heavy load: scenes start late). Not inside any scene (DontDestroyOnLoad) = started.
-        public static bool SceneStarted(Component c)
-        {
-            if (c == null || Core.Scenes.Manager == null) return true;
-            SceneRoot root = c.GetComponentInParent<SceneRoot>();
-            if (root == null) return true;
-            foreach (SceneManagerScene s in Core.Scenes.Manager.ActiveScenes)
-                if (s != null && s.SceneRoot == root) return s.HasStartBeenCalled;
-            return true;
-        }
-
-        // A scene's saved state is loaded in SceneRoot.LateStart, a frame or more after its objects exist
-        // (ScenesManager.OnSceneStartCompleted sets HasStartBeenCalled at its end). Before that a broken floor or a
-        // collapsed block still looks whole. Not inside any scene (DontDestroyOnLoad) = started.
         public static bool SceneStarted(Component c)
         {
             if (c == null || Core.Scenes.Manager == null) return true;
@@ -197,14 +184,10 @@ namespace OriCoop
         static void ReplayDeferred()
         {
             if (s_deferred.Count == 0) return;
-            for (int i = s_deferred.Count - 1; i >= 0; i--)
-            {
-                Deferred d = s_deferred[i];
-                if (d.Target == null || Time.realtimeSinceStartup > d.Until) { s_deferred.RemoveAt(i); EventsMissing++; continue; }
-                if (!SceneStarted(d.Target)) continue;
-                s_deferred.RemoveAt(i); EventsReplayed++;
-                ApplyEvent(d.Kind, d.Id, d.Payload, true);
-            }
+            int dropped;
+            List<Deferred> ready = s_deferred.TakeReady(d => d.Target == null || Time.realtimeSinceStartup > d.Until, d => SceneStarted(d.Target), out dropped);
+            EventsMissing += dropped;
+            foreach (Deferred d in ready) { EventsReplayed++; ApplyEvent(d.Kind, d.Id, d.Payload, true); }
         }
 
         static void ApplyEvent(byte kind, int id, byte[] payload, bool replay)
