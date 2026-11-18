@@ -53,6 +53,13 @@ if (-not (Test-Path "$unitGame\oriDE_Data\Managed")) { $unitGame = Join-Path (Sp
 if ($LASTEXITCODE -ne 0) { 'AFFECTED FAIL: unit tests failed; game suites not run'; exit 1 }
 
 # --- layer 2: affected game suites (each in its own PowerShell, so they can share the copy locks)
+# Every suite tests the same build: the caller's ORICOOP_TEST_DLL, else a clean build of HEAD (T-084: without it each
+# suite tested whatever DLL its copy last had, and run-rooms refused to start).
+if ($toRun.Count -and -not $env:ORICOOP_TEST_DLL) {
+    $env:ORICOOP_TEST_DLL = (& (Join-Path $src 'build-commit.ps1') HEAD | Select-Object -Last 1)
+    'DLL: ' + $env:ORICOOP_TEST_DLL + ' (clean build of HEAD' + $(if ($WorkingTree) { '; uncommitted changes are NOT in it' } else { '' }) + ')'
+}
+if ($env:ORICOOP_TEST_DLL -and -not (Test-Path -LiteralPath $env:ORICOOP_TEST_DLL)) { 'AFFECTED FAIL: ORICOOP_TEST_DLL not found: ' + $env:ORICOOP_TEST_DLL; exit 1 }
 $outDir = Join-Path $env:TEMP ('oricoop-affected-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))
 New-Item -ItemType Directory -Force $outDir | Out-Null
 $running = @(); $results = [ordered]@{}; $times = @{}; $queue = New-Object System.Collections.Queue
@@ -66,6 +73,7 @@ while ($queue.Count -gt 0 -or $running.Count -gt 0) {
         # 2-player net suites run only the selected phases (child processes inherit the environment at start).
         $env:ORICOOP_PHASES = $(if ($TS_PhasedSuites -contains $s) { $phaseEnv } else { '' })
         $p = Start-Process powershell -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput $log -RedirectStandardError ($log + '.err')
+        [void]$p.Handle   # keeps the exit code readable after the process ends
         $env:ORICOOP_PHASES = ''
         $running += [pscustomobject]@{ Name = $s; Proc = $p; Log = $log; Start = $sw.Elapsed.TotalSeconds; Got = -1.0 }
         'START ' + $s + ' (' + ($def -join ' ') + ')'
@@ -84,7 +92,9 @@ while ($queue.Count -gt 0 -or $running.Count -gt 0) {
         }
         if (-not $r.Proc.HasExited) { continue }
         $text = if (Test-Path $r.Log) { Get-Content $r.Log -Raw } else { '' }
-        $ok = $text -match '(?m)(NETTEST PASS|COOPSAVE PASS|TITLEJOIN \w+ PASS|ROOMS PASS|\] RESULT PASS)' -and $text -notmatch '(?m)(NETTEST FAIL|COOPSAVE FAIL|TITLEJOIN \w+ FAIL|\] RESULT FAIL|no result file)'
+        # PASS needs a verdict line, no failure line and exit code 0: a suite that threw or was refused (exit != 0) is a
+        # FAIL even if it printed nothing (T-084), and run-rooms' per-step "ROOMS PASS n" lines are no verdict (T-082).
+        $ok = $text -match '(?m)(NETTEST PASS|COOPSAVE PASS|TITLEJOIN \w+ PASS|ROOMS RESULT PASS|\] RESULT PASS)' -and $text -notmatch '(?m)(NETTEST FAIL|COOPSAVE FAIL|TITLEJOIN \w+ FAIL|ROOMS (RESULT FAIL|FAIL|DONE fail)|\] RESULT FAIL|no result file)' -and $r.Proc.ExitCode -eq 0
         if ($text -cmatch 'OWNER IS PLAYING') { $ok = $false; $status = 'STOPPED (owner playing)' } else { $status = $(if ($ok) { 'PASS' } else { 'FAIL' }) }
         $results[$r.Name] = $status
         $now = $sw.Elapsed.TotalSeconds; $got = $(if ($r.Got -ge 0) { $r.Got } else { $r.Start })

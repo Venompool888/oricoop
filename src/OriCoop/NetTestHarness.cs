@@ -1628,10 +1628,18 @@ namespace OriCoop
                 if (list.Trim().Length == 0)
                     list = only == "P3" ? "CUT" : only == "WO" ? "WO,CAM,CUT" : only == "CAM" ? "CAM,CUT" : only == "S4" ? "S4" : string.Join(",", AllPhases);
                 s_phases = new HashSet<string>();
-                foreach (string part in list.Split(',')) if (part.Trim().Length > 0) s_phases.Add(part.Trim().ToUpperInvariant());
+                foreach (string part in list.Split(',', ' ', ';')) if (part.Trim().Length > 0) s_phases.Add(part.Trim().ToUpperInvariant());
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_NO_WO") == "1") s_phases.Remove("WO");
             }
             return s_phases.Contains(phase);
+        }
+        // T-086: a phase name that does not exist selects nothing; the run then passed with only the start-up and G checks.
+        static string UnknownPhases()
+        {
+            PhaseOn("INTRO");
+            List<string> bad = new List<string>();
+            foreach (string p in s_phases) if (Array.IndexOf(AllPhases, p) < 0) bad.Add(p);
+            return string.Join(",", bad.ToArray());
         }
         static bool PhasesSelected { get { foreach (string p in AllPhases) if (!PhaseOn(p)) return true; return false; } }
 
@@ -1675,6 +1683,7 @@ namespace OriCoop
                 catch (Exception e) { h.Check(false, "F open track: " + e.Message); }
                 yield return Wait(1.5f);
                 yield return RoleTag(h, host);
+                { string bad = UnknownPhases(); h.Check(bad.Length == 0, "net every selected phase exists" + (bad.Length > 0 ? " (unknown: " + bad + "; phases are " + string.Join(",", AllPhases) + ")" : "")); }
                 yield return BottomBars(h, host);
                 Vector3 phaseAStart = Own.Position;
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4R")   // only the S4 drop + rejoin step (T-030)

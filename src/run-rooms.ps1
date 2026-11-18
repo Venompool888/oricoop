@@ -4,7 +4,9 @@
 param([switch]$Force)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'test-launch.ps1')
-if (-not $env:ORICOOP_TEST_DLL) { throw 'Set ORICOOP_TEST_DLL to your built OriCoop.dll' }
+# Like the other suites: without ORICOOP_TEST_DLL it tests the DLL installed in the copy it gets (T-084: the throw
+# here made run-affected's rooms suite end in 10 s having tested nothing).
+if (-not $env:ORICOOP_TEST_DLL) { 'NOTE: ORICOOP_TEST_DLL not set; testing the DLL installed in the test copy' }
 Start-TestRun -Force:$Force
 $serverProc = $null
 $relayProc = $null
@@ -109,5 +111,7 @@ try {
     if ($relayProc -and -not $relayProc.HasExited) { $relayProc.Kill(); $relayProc.WaitForExit() }
     Complete-TestRun
 }
-if ($ok) { exit 0 }
+# One verdict line for callers (run-affected): the per-step "ROOMS PASS n" lines are no verdict (T-082).
+if ($ok) { 'ROOMS RESULT PASS'; exit 0 }
+'ROOMS RESULT FAIL'
 exit 1

@@ -31,7 +31,8 @@ if ((Test-Path $log) -and -not (Select-String -Path $log -Pattern 'TEST test har
 }
 
 $vars = @{ LOCALAPPDATA = $TL_AppData[0]; ORICOOP_TEST = '1'; ORICOOP_SLOT = "$Slot"; ORICOOP_TEST_OUT = $out }
-if ($Scenarios) { $vars['ORICOOP_SCENARIOS'] = $Scenarios }
+# Commas, spaces or semicolons separate names ("visual bottomhud" used to arrive as one unknown name, T-086).
+if ($Scenarios) { $vars['ORICOOP_SCENARIOS'] = (($Scenarios -split '[\s,;]+') | Where-Object { $_ }) -join ',' }
 # The harness flips settings during a run (P2CanTriggerCutscenes, pad assignments...) and BepInEx saves them at
 # once; a run that crashes or is killed before the harness puts them back left them set for every later run
 # (2026-11-15: a stuck P2CanTriggerCutscenes = true broke the interact scenario in all runs). Put the file back.

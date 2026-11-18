@@ -63,7 +63,7 @@ try {
 $passed = $true
 foreach ($r in @($hostOut, $guestOut)) {
     '--- {0} ---' -f $r
-    if (Test-Path $r) { $lines = @(Get-Content $r); $lines; if (-not ($lines -match '\] RESULT PASS \d+/\d+$')) { $passed = $false } }
+    if (Test-Path $r) { $lines = @(Get-Content $r); $lines; if (-not ($lines -match '\] RESULT PASS [1-9]\d*/\d+$')) { $passed = $false } }
     else { 'no result file: ' + (Get-NoResultReason); $passed = $false }
 }
 if ($passed) { "TITLEJOIN $Transport PASS" } else { "TITLEJOIN $Transport FAIL" }

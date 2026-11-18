@@ -58,7 +58,19 @@ namespace OriCoop
 
         internal void Note(string s) { string l = string.Format("[{0,7:F2}] {1}", m_t, s); m_lines.Add(l); Plugin.Log.LogInfo("TEST " + s); }
         internal void Check(bool ok, string what) { m_checks++; Note((ok ? "PASS " : "FAIL ") + what); if (!ok) m_fails.Add(what); }
-        bool Want(string s) { return ("," + m_scenarios + ",").Contains("," + s + ","); }
+        // Every scenario name the run asks about is recorded, so a requested name nobody asked about is unknown (T-086).
+        readonly HashSet<string> m_asked = new HashSet<string>();
+        bool Want(string s) { m_asked.Add(s); return ("," + m_scenarios + ",").Contains("," + s + ","); }
+        // T-086: an unknown scenario name (e.g. "visual bottomhud" as one name) ran nothing and still PASSED with only the
+        // setup / closing checks. Unknown names and a run whose scenarios made no check at all are failures.
+        void CheckScenariosRan(int checksBefore)
+        {
+            List<string> unknown = new List<string>();
+            foreach (string part in m_scenarios.Split(','))
+                if (part.Trim().Length > 0 && !m_asked.Contains(part.Trim())) unknown.Add(part.Trim());
+            Check(unknown.Count == 0, "scenarios: every requested scenario exists" + (unknown.Count > 0 ? " (unknown: '" + string.Join("', '", unknown.ToArray()) + "')" : ""));
+            Check(m_checks > checksBefore, "scenarios: the selected scenarios made checks (" + (m_checks - checksBefore) + ")");
+        }
         static string F(float f) { return f.ToString("F2"); }
 
         void Update()
@@ -205,6 +217,7 @@ namespace OriCoop
                 if (a != null && b != null && a.IsInstantiated != b.IsInstantiated) mismatch += f.Name + "(P1 " + a.IsInstantiated + ") ";
             }
             Check(mismatch == "", "abilities: P2 has the same ability components as P1 " + mismatch);
+            int scenarioChecks0 = m_checks;
             if (Want("lifecycle")) yield return StartCoroutine(Lifecycle());
 
             if (Want("interact")) yield return StartCoroutine(Interact());
@@ -229,6 +242,7 @@ namespace OriCoop
             if (Want("bothdown")) yield return StartCoroutine(BothDown());
             if (Want("title")) yield return StartCoroutine(ReturnToTitle());
             if (Want("signpost")) yield return StartCoroutine(SignpostTest.Run(this));
+            CheckScenariosRan(scenarioChecks0);
 
             Check(P2 != null, "P2 still exists at end");
             Check(!P2Context.Inside, "context stack balanced at end");
