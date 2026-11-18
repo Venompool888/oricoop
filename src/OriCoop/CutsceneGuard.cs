@@ -21,6 +21,20 @@ namespace OriCoop
         static float s_spiritAt = -2f, s_uiAt = -2f, s_letterboxAt = -2f, s_puppetAt = -2f, s_targetAt = -2f, s_fadeAt = -2f, s_actionLockSince = -1f, s_blackSince = -1f;
         public static bool ReplayingPedestal;
         static float s_pedestalUntil = -1f;
+        // Since when the gameplay camera has been in straight-line Move motion (-1 = it is chasing). Only the sequence that
+        // started the move sends it back to Chase (MoveCameraToPlayerAction / GoToChaseMode); a sequence cut off mid-way
+        // (its scene unloaded under it) leaves the camera parked on a fixed point for good (T-058 hotfix).
+        static float s_moveSince = -1f, s_chaseAt = -2f;
+        public static int CameraMoveRepairs;
+        static readonly bool s_mutateNoUnpark = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_CAM_NO_UNPARK") == "1";
+        static readonly FieldInfo StraightLineTime = AccessTools.Field(typeof(CameraStraightLineMotion), "m_time");
+        // In Move motion with the straight-line move already finished: parked on a fixed point, waiting for a sequence.
+        static bool ParkedInMove(GameplayCamera cam)
+        {
+            if (cam == null || cam.Motion != GameplayCamera.MotionType.Move) return false;
+            if (cam.StraightLineMotion == null || StraightLineTime == null) return true;
+            return (float)StraightLineTime.GetValue(cam.StraightLineMotion) >= 1f;
+        }
         public static bool PedestalWindow { get { return Time.realtimeSinceStartup < s_pedestalUntil; } }
         static float CameraDistance(SeinCharacter own)
         {
@@ -171,6 +185,8 @@ namespace OriCoop
             if (!black) s_blackSince = -1f; else if (s_blackSince < 0) s_blackSince = now;
             if (gc != null && gc.LockInputByAction && !gc.IsLoadingGame) { if (s_actionLockSince < 0) s_actionLockSince = now; }
             else s_actionLockSince = -1f;
+            bool parked = ParkedInMove(UI.Cameras.Current);
+            if (!parked) s_moveSince = -1f; else if (s_moveSince < 0) s_moveSince = now;
             if (!Off && s_actionLockSince >= 0 && now - s_actionLockSince >= 20f)
             { gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++; Log("repair stale LockInputByAction (held 20 s)"); }
             if (StoryHost.Current.Inside || own == null || gc == null || gc.IsLoadingGame || gc.GameplaySuspended
@@ -212,6 +228,13 @@ namespace OriCoop
             { Game.UI.SeinUI.ShowUI = true; s_uiAt = now; Repairs++; Log("repair ShowUI"); }
             if (Letterbox.ShowLetterboxes && (immediate || now - s_letterboxAt >= 2f))
             { Letterbox.ShowLetterboxes = false; s_letterboxAt = now; Repairs++; Log("repair letterbox"); }
+            // Repair runs only once no story is active and the player has been free for 3 s; a camera whose move finished and
+            // that stays in Move for 4 s has no sequence left to bring it back (mirrored stomp post whose scene unloaded, net CAM 0/1738).
+            if (!s_mutateNoUnpark && s_moveSince >= 0 && now - s_moveSince >= 4f && now - s_chaseAt >= 2f && UI.Cameras.Current != null)
+            {
+                UI.Cameras.Current.GoToChaseMode(); s_chaseAt = now; s_moveSince = -1f;
+                Repairs++; CameraMoveRepairs++; Log("repair camera left in Move motion (nothing playing)");
+            }
             if (!camera) return;
             // FadeToBlackAction holds black (FadeStay) until a FadeFromBlack: a story cut in between leaves the screen
             // black. Only a screen that has stayed black for 4 s is stuck: a fade that is still going (deaths, doors,

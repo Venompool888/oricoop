@@ -30,6 +30,10 @@ namespace OriCoop
             NetTestHarness.BotLX = 0f; NetTestHarness.BotButtons = 0;
             if (host) yield return HostWalk(h);
             else yield return GuestWatch(h);
+            // Part 2 (hotfix): a camera left parked in Move motion by a cut-off sequence is repaired and the influence
+            // camera takes over again. The host only waits out the same window.
+            if (host) { float until = Now + ParkWindow; while (Now < until) yield return null; }
+            else yield return GuestParkedCamera(h);
         }
 
         static IEnumerator HostWalk(TestHarness h)
@@ -57,6 +61,31 @@ namespace OriCoop
                 Own.Mortality.DamageReciever.IsImmortal = immortal;
                 Plugin.Teleport(Own, back - Vector3.up * 0.5f);
             }
+        }
+
+        const float ParkWindow = 14f;
+        // Mutation: ORICOOP_MUTATE_CAM_NO_UNPARK=1 skips CutsceneGuard's Move repair, so this check must fail.
+        static IEnumerator GuestParkedCamera(TestHarness h)
+        {
+            float start = Now;
+            GameplayCamera cam = UI.Cameras.Current;
+            if (cam == null || Own == null) { h.Check(false, "CAM guest: camera present for the parked-camera check"); yield break; }
+            int repairsBefore = CutsceneGuard.CameraMoveRepairs;
+            cam.MoveToTarget(Own.Position + new Vector3(40f, 0f, 0f), 0.3f, true);   // what a stomp post / door cinematic does
+            bool parked = false, repaired = false, back = false; float repairedAt = 0f;
+            while (Now - start < ParkWindow - 0.5f)
+            {
+                yield return null;
+                cam = UI.Cameras.Current; if (cam == null || Own == null) break;
+                if (cam.Motion == GameplayCamera.MotionType.Move) parked = true;
+                if (!repaired && parked && cam.Motion == GameplayCamera.MotionType.Chase) { repaired = true; repairedAt = Now - start; }
+                if (repaired && OnlineCamera.Active && cam.Target != Own.Transform) { back = true; break; }
+            }
+            h.Note("CAM guest parked camera: parked=" + parked + " repaired=" + repaired + " after " + F(repairedAt) + " s, repairs="
+                + (CutsceneGuard.CameraMoveRepairs - repairsBefore) + " influence camera back=" + back);
+            h.Check(parked && repaired && CutsceneGuard.CameraMoveRepairs > repairsBefore, "CAM guest: a camera left parked in Move is sent back to Chase (after " + F(repairedAt) + " s)");
+            h.Check(back, "CAM guest: the influence camera takes over again after the repair");
+            while (Now - start < ParkWindow) yield return null;
         }
 
         static IEnumerator GuestWatch(TestHarness h)
