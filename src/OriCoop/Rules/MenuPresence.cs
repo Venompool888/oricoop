@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 using System.IO;
 
@@ -24,5 +25,39 @@ namespace OriCoop.Rules
         {
             return online && partner && ready && hasPlayer && !respawning && gameplay;
         }
+    }
+
+    // T-044: online nothing pauses. Native screens that suspend the game (help popups, page popups, skill-tree item
+    // help) call Suspend/Resume in pairs, sometimes Resume without Suspend. Online the suspend is skipped and remembered
+    // per owner, so its matching resume is skipped too and no other suspension's reference count moves. Offline, and a
+    // popup opened before going online, stay vanilla.
+    public sealed class PopupLedger<T> where T : class
+    {
+        readonly Dictionary<T, int> skipped = new Dictionary<T, int>();
+        // true = do the native suspend (offline)
+        public bool Open(T owner, bool online)
+        {
+            if (!online) return true;
+            int n; skipped.TryGetValue(owner, out n); skipped[owner] = n + 1; return false;
+        }
+        // true = do the native resume (it was not skipped)
+        public bool Close(T owner)
+        {
+            int n;
+            if (!skipped.TryGetValue(owner, out n)) return true;
+            if (n <= 1) skipped.Remove(owner); else skipped[owner] = n - 1;
+            return false;
+        }
+        public int OpenCount { get { int total = 0; foreach (int n in skipped.Values) total += n; return total; } }
+        public bool AnyOpen { get { return skipped.Count > 0; } }
+        // Owners that are gone (destroyed screen) without closing: forget them so nothing stays locked.
+        public int Prune(Predicate<T> gone)
+        {
+            List<T> dead = new List<T>();
+            foreach (T owner in skipped.Keys) if (gone(owner)) dead.Add(owner);
+            foreach (T owner in dead) skipped.Remove(owner);
+            return dead.Count;
+        }
+        public void Clear() { skipped.Clear(); }
     }
 }

@@ -314,6 +314,43 @@ static class RulesTests
             Check(InviteRules.BannerKey(true, false) == "steam.invite_menu", "online alone: " + InviteRules.BannerKey(true, false));
             Check(InviteRules.BannerKey(false, false) == "steam.invite_menu", "offline in gameplay: " + InviteRules.BannerKey(false, false));
         });
+        // T-044: no pause online.
+        Run("popup ledger: offline suspends and resumes natively", delegate {
+            PopupLedger<string> l = new PopupLedger<string>();
+            Check(l.Open("help", false), "offline open skipped the native suspend");
+            Check(l.Close("help"), "offline close skipped the native resume");
+            Check(!l.AnyOpen, "offline open left a skip");
+        });
+        Run("popup ledger: online skips the suspend and its matching resume", delegate {
+            PopupLedger<string> l = new PopupLedger<string>();
+            Check(!l.Open("help", true), "online open suspended the game");
+            Check(l.AnyOpen && l.OpenCount == 1, "open popup not counted");
+            Check(!l.Close("help"), "online close resumed a suspension it never took");
+            Check(!l.AnyOpen && l.OpenCount == 0, "closed popup still counted");
+        });
+        Run("popup ledger: resume without suspend stays native", delegate {
+            PopupLedger<string> l = new PopupLedger<string>();
+            Check(l.Close("pages"), "a resume with no skipped suspend was swallowed");
+        });
+        Run("popup ledger: opened offline then closed online stays native", delegate {
+            PopupLedger<string> l = new PopupLedger<string>();
+            Check(l.Open("help", false) && l.Close("help"), "offline-opened popup lost its native resume");
+        });
+        Run("popup ledger: nested opens need as many closes, per owner", delegate {
+            PopupLedger<string> l = new PopupLedger<string>();
+            l.Open("a", true); l.Open("a", true); l.Open("b", true);
+            Check(l.OpenCount == 3, "count " + l.OpenCount);
+            Check(!l.Close("a") && l.AnyOpen, "first close of a");
+            Check(!l.Close("b") && l.AnyOpen, "close of b");
+            Check(!l.Close("a") && !l.AnyOpen, "second close of a");
+            Check(l.Close("a"), "extra close of a was swallowed");
+        });
+        Run("popup ledger: prune forgets owners that are gone", delegate {
+            PopupLedger<string> l = new PopupLedger<string>();
+            l.Open("gone", true); l.Open("alive", true);
+            Check(l.Prune(delegate(string o) { return o == "gone"; }) == 1 && l.OpenCount == 1, "prune");
+            Check(l.Close("gone"), "pruned owner still swallowed its resume");
+        });
         Console.WriteLine("RULES" + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
         return failed == 0 ? 0 : 1;
     }

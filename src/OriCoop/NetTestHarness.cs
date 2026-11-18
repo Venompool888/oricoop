@@ -455,16 +455,16 @@ namespace OriCoop
             if (Players.LocalSeat == 3) AccessTools.Method(typeof(MenuScreenManager), "ShowMenuScreen",
                 new Type[] { typeof(MenuScreenManager.Screens), typeof(bool) }).Invoke(UI.Menu,
                 new object[] { MenuScreenManager.Screens.Pause, false });
+            // T-044: online nothing pauses. P3's menu holds only P3's Ori; the other three keep playing, no banner.
             yield return FourAwait(h, delegate {
-                return SessionRules.InMenu(3) && (SessionRules.LocalPaused || SessionRules.PausedByPartner)
-                    && SessionRules.PauseText == L10n.F("pause.by", "P3");
-            }, 8f, "P3 pause and banner");
+                return Players.LocalSeat != 3 || (UI.Menu != null && UI.Menu.MainMenuVisible && SessionRules.LocalLocked);
+            }, 8f, "P3 menu open without a pause");
             Vector3 origin = Own.Position; s_threeTravel = 0; Bot(1, 0);
             yield return FourTicks(h, 30, delegate { s_threeTravel = Mathf.Max(s_threeTravel, Vector3.Distance(origin, Own.Position)); });
             Bot(0, 0);
             yield return ThreeRound(h, 421, 4);
-            h.Check(AllFour(421, p => p.Paused && p.MenuMask == 8 && p.BannerP3 && p.Travel < 0.3f && p.Frames > Three(420, p.Seat).Frames),
-                "4P P3 pauses all four with banner P3 and no movement");
+            h.Check(AllFour(421, p => !p.Paused && !p.BannerP3 && (p.Seat == 3 ? p.Travel < 0.3f : p.Travel > 0.5f) && p.Frames > Three(420, p.Seat).Frames),
+                "4P P3's menu pauses nobody: P3 held, the other three keep moving, no banner");
             if (Players.LocalSeat == 3) UI.Menu.HideMenuScreen(true);
             yield return FourAwait(h, delegate { return !SessionRules.InMenu(3) && !SessionRules.LocalPaused && !SessionRules.PausedByPartner; }, 8f, "P3 menu closed");
             origin = Own.Position; Bot(1, 0);
@@ -1573,6 +1573,7 @@ namespace OriCoop
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "P3") goto P3;
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "WO") goto WO;   // phase WO only (world-physics)
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "CAM") goto CAM;   // phase CAM only (T-058 camera)
+                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4") goto S4;   // phase S4 only (menus / no pause, deaths, story, reconnect)
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4R")   // only the S4 drop + rejoin step (T-030)
                 {
                     yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62);
@@ -1705,8 +1706,10 @@ namespace OriCoop
                 yield return Safely(h, "E5", EnemySyncTest.Run(h));   // enemy AI/death/damage/difficulty (EnemySyncTest.cs, enemy-sync)
                 yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 60);
                 yield return Safely(h, "R", NetReviveTest.Run(h));   // online downed/revive (NetReviveTest.cs)
+            S4:
                 yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62);
                 yield return Safely(h, "S4", NetStoryTest.Run(h));
+                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4") goto G;
                 yield return Safely(h, "P", NetPhysTest.Run(h));   // pushable stones (NetPhysTest.cs, world-physics)
             WO:
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_NO_WO") != "1")   // ORICOOP_NET_NO_WO=1 skips it (~2-3 min)
