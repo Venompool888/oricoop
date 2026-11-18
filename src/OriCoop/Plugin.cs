@@ -133,6 +133,7 @@ namespace OriCoop
             apply();
             Config.SettingChanged += (s, e) => apply();
             m_sharedCamera = Config.Bind("Camera", "SharedCamera", true, "Camera follows the midpoint of both Oris.");
+            BindOnlineCamera();
             m_p1Keyboard = Config.Bind("Player1", "KeyboardOnly", false, "Legacy: true is the same as Player1.ControllerIndex = -1 (converted on start).");
             m_p1Pad = Config.Bind("Player1", "ControllerIndex", 0,
                 "-1 = player 1 uses only keyboard/mouse (all controllers ignored for P1, e.g. one controller + one keyboard); " +
@@ -364,13 +365,8 @@ namespace OriCoop
             finally { P2Context.Exit(); }
         }
         void UpdateOnlineHud() { P2Hud.Update(m_latePuppet); }
-        void UpdateOnlineCamera()
-        {
-            var cam = UI.Cameras.Current;
-            if (cam != null)
-                foreach (Puppet puppet in Players.Remotes)
-                    if (cam.Target == puppet.Sein.Transform) cam.Target = P2Context.P1.Transform;
-        }
+        // Online: follow the local Ori, pulled by nearby teammates (T-058, docs\multiplayer-model.md §3.2).
+        void UpdateOnlineCamera() { OnlineCamera.Apply(m_camTarget, P2Context.P1, Players.Remotes); }
         void ApplyLocalCamera()
         {
             CoopCamera.FocusOverride = Revive.OnlyAlive;
@@ -379,6 +375,27 @@ namespace OriCoop
         void CheckLocalVisual() { VisualInvariants.Check(P2Context.P1, P2Context.P2); }
         void UpdateLocalHud() { P2Hud.Update(P2Context.P2); }
         void UpdateLateCamera() { UpdateCamera(P2Context.P1, P2Context.P2); }
+
+        // [Coop] camera settings for online play (T-058). Live: changing the config file applies at once.
+        void BindOnlineCamera()
+        {
+            var on = Config.Bind("Coop", "CameraInfluence", true, "Online: teammates near you pull your camera toward them (false = the camera follows only your own Ori).");
+            var radius = Config.Bind("Coop", "CameraInfluenceRadius", 20f, "Online: teammates farther than this (world units, about one screen width) do not affect your camera.");
+            var inner = Config.Bind("Coop", "CameraInfluenceInner", 0.35f, "Online: fraction of the radius where a teammate has full influence; it fades smoothly to zero at the radius.");
+            var weight = Config.Bind("Coop", "CameraTeammateWeight", 0.8f, "Online: a close teammate's weight (your own Ori counts 1; at most 1).");
+            var safe = Config.Bind("Coop", "CameraSafeArea", 0.55f, "Online: your Ori always stays within this fraction of the half screen from the centre.");
+            var zoom = Config.Bind("Coop", "CameraMaxZoomOut", 1.25f, "Online: most nearby teammates can zoom your camera out (multiple of the normal distance; 1 = never).");
+            var smooth = Config.Bind("Coop", "CameraSmoothTime", 0.45f, "Online: seconds the camera takes to ease toward teammates' pull.");
+            Action apply = () =>
+            {
+                var s = OnlineCamera.Settings;
+                s.Enabled = on.Value; s.Radius = Mathf.Max(1f, radius.Value); s.InnerFraction = Mathf.Clamp(inner.Value, 0f, 0.95f);
+                s.TeammateWeight = Mathf.Clamp01(weight.Value); s.SafeFraction = Mathf.Clamp(safe.Value, 0f, 0.95f);
+                s.MaxZoom = Mathf.Max(1f, zoom.Value); s.SmoothTime = Mathf.Max(0.05f, smooth.Value);
+            };
+            apply();
+            Config.SettingChanged += (s2, e2) => apply();
+        }
 
         // Screen overlays drawn here: the co-op menu (F8) and, without P2, the join hint. P2's health pips are in the
         // game world (P2Hud), not here. The hint follows the same rule as the pips: shown only while the game shows its
@@ -482,7 +499,7 @@ namespace OriCoop
             P2Extras.SpawnCompanion(puppet);
             P2Skin.Preload();
 
-            if (!NetPlay.Enabled && m_camTarget == null)
+            if (m_camTarget == null)
             {
                 GameObject t = new GameObject("OriCoop_CameraTarget");
                 UnityEngine.Object.DontDestroyOnLoad(t);
@@ -544,6 +561,7 @@ namespace OriCoop
             P2Extras.ResetOccupancy();
             m_parked = false;
             P2Context.Reset();
+            OnlineCamera.Reset();
             var cam = UI.Cameras.Current;
             if (cam != null && m_camTarget != null && cam.Target == m_camTarget)
                 cam.Target = P2Context.P1 != null ? P2Context.P1.Transform : null;
