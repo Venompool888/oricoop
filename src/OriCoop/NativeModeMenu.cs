@@ -1,6 +1,7 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using System.Text;
 using CatlikeCoding.TextBox;
 using Game;
@@ -614,7 +615,7 @@ namespace OriCoop
 
         class Driver : MonoBehaviour
         {
-            float m_probeT = -1f; int m_probeStep;
+            float m_probeT = -1f; int m_probeStep, m_probeRoomsStep;
 
             void Update()
             {
@@ -661,12 +662,30 @@ namespace OriCoop
                         Shot("modemenu_online"); break;
                     case 5: s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); break;   // Server -> mode
                     case 6:
-                        if (LastPage != "servermode" || LastLabels.Count != 2 || s_mgr.Index != 0
-                            || !HasKey(new List<string> { LastLabels[0] }, "server.cserver")
-                            || !HasKey(new List<string> { LastLabels[1] }, "lobby.rooms") || HasKey(LastLabels, "server.relay"))
-                            Plugin.Log.LogError("mode menu probe: expected server mode / My rooms and no host mode, default focus on server mode (" + Labels + ")");
-                        // T-045: the relay host / join pages are no longer a menu row; the probe opens them directly for the screenshots.
-                        LobbyOpen("relay"); break;   // relay -> role
+                        if (m_probeRoomsStep == 0)
+                        {
+                            if (LastPage != "servermode" || LastLabels.Count != 2 || s_mgr.Index != 0
+                                || !HasKey(new List<string> { LastLabels[0] }, "server.cserver")
+                                || !HasKey(new List<string> { LastLabels[1] }, "lobby.rooms") || HasKey(LastLabels, "server.relay"))
+                                Plugin.Log.LogError("mode menu probe: expected server mode / My rooms and no host mode, default focus on server mode (" + Labels + ")");
+                            s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem();
+                        }
+                        else if (m_probeRoomsStep == 1)
+                        {
+                            bool noPopup = typeof(Rooms.RoomsPanel).GetMethod("OnGUI", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) == null;
+                            if (LastPage != "rooms" || LastLabels.Count < 2 || !HasKey(LastLabels, "common.back")
+                                || !s_mgr.IsVisible || !s_mgr.IsActive || !noPopup)
+                                Plugin.Log.LogError("mode menu probe: expected native rooms rows and no popup (" + Labels + ")");
+                            else Plugin.Log.LogInfo("mode menu probe: native rooms rows verified (no popup)");
+                            Shot("modemenu_rooms"); s_mgr.OnBackPressed();
+                        }
+                        else
+                        {
+                            if (LastPage != "servermode") Plugin.Log.LogError("mode menu probe: expected rooms Back to server mode (" + Labels + ")");
+                            LobbyOpen("relay");
+                        }
+                        if (++m_probeRoomsStep < 3) m_probeStep--;
+                        break;
                     case 7: Shot("lobby_role_relay"); break;
                     case 8: s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;   // join -> room code entry
                     case 9: Shot("lobby_entry"); break;

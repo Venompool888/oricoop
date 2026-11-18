@@ -19,9 +19,7 @@ namespace OriCoop
             {
                 yield return host.StartCoroutine(PressCoop());
                 yield return host.StartCoroutine(Row(Array.IndexOf(TitleTransports, "relay"), 0.5f));
-                // Since the C-server menu (950e23c) the relay entry first asks equal / relay mode (row 1 = relay); the
-                // walk stopped on that page and never saw My rooms (T-082).
-                if (LastPage == "servermode") yield return host.StartCoroutine(Row(1, 0.5f));
+                // Stop on server mode; Run checks and presses the actual My rooms row next.
             }
         }
     }
@@ -85,11 +83,6 @@ namespace OriCoop.Rooms
         static object Get(object target, string name)
         {
             return target.GetType().GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).GetValue(target);
-        }
-
-        void Set(string name, object value)
-        {
-            typeof(RoomsPanel).GetField(name, BindingFlags.Instance | BindingFlags.NonPublic).SetValue(panel, value);
         }
 
         bool Check(bool ok, string text)
@@ -203,20 +196,28 @@ namespace OriCoop.Rooms
             }
         }
 
-        IEnumerator Click(string screen, string id, string label)
+        static string RowText(string key) { return L10n.T(key).Split('{')[0].Trim(); }
+
+        IEnumerator Press(string page, string key, string label = null)
         {
-            bool clicked = false;
-            yield return Wait(() => clicked = panel.TestClick(screen, id), 15);
+            bool pressed = false;
+            yield return Wait(() => pressed = NativeModeMenu.LastPage == page
+                && NativeModeMenu.TestRoomPress(label ?? RowText(key)), 15);
             if (done) yield break;
-            string detail = "screen '" + screen + "' button '" + label + "' (" + id + ")";
-            if (!clicked)
-            {
-                detail = "timeout waiting for " + detail + "; " + panel.TestDrawState;
-                if (id == "create-slot-0")
-                    detail += "; slot 0 path=" + RoomGame.PathFor(0)
-                        + ", exists=" + File.Exists(RoomGame.PathFor(0)) + ", slots=" + SaveSlotsManager.SaveSlotCount;
-            }
-            Check(clicked, detail);
+            string detail = "native page '" + page + "' row '" + L10n.T(key) + "'";
+            if (!pressed)
+                detail = "timeout waiting for " + detail + "; " + NativeModeMenu.TestRoomState()
+                    + "; slot 0 path=" + RoomGame.PathFor(0)
+                    + ", exists=" + File.Exists(RoomGame.PathFor(0)) + ", slots=" + SaveSlotsManager.SaveSlotCount;
+            Check(pressed, detail);
+        }
+
+        IEnumerator Dial(string page, string key, string value)
+        {
+            bool set = false;
+            yield return Wait(() => set = NativeModeMenu.LastPage == page
+                && NativeModeMenu.TestRoomPress(RowText(key)) && NativeModeMenu.TestSetDial(value), 15);
+            if (!set && !done) Check(false, "native dial " + key + "; " + NativeModeMenu.TestRoomState());
         }
 
         bool Idle { get { return !(bool)Get(panel, "busy"); } }
@@ -242,27 +243,40 @@ namespace OriCoop.Rooms
             typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
                 .Invoke(null, new object[] { 1 });   // the 自建服务器 page's My rooms row (T-045)
             panel = RoomsPanel.Instance;
-            if (!Check(panel != null, "My rooms opens panel")) yield break;
+            if (!Check(panel != null, "My rooms opens controller")) yield break;
+            if (!Check(NativeModeMenu.LastPage == "rooms" && NativeModeMenu.TestRoomRows().Length >= 2,
+                "native rooms page has rows")) yield break;
             yield return Wait(() => Idle, 25);
             if (!Check(Idle && (bool)Get(panel, "online"), "room service hello")) yield break;
+            bool backed = false;
+            yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
+            if (!Check(backed && NativeModeMenu.LastPage == "servermode", "native rooms Back/Esc returns to server mode")) yield break;
+            typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { 1 });
+            yield return Wait(() => Idle, 25);
             if (role == "host")
             {
-                yield return Click("list", "create-room", "???? / Create room");
+                yield return Press("rooms", "rooms.create");
                 if (done) yield break;
-                Set("roomName", "Rooms hookup test");
-                Set("password", "test-pass");
-                yield return Click("create", "create-slot-0", "?? / Create ? slot 0");
+                string name = panel.AutoName;
+                string prefix = L10n.F("rooms.default_name", Environment.GetEnvironmentVariable("ORICOOP_TEST_NICK")) + " #";
+                int number;
+                if (!Check(name.StartsWith(prefix) && int.TryParse(name.Substring(prefix.Length), out number) && number >= 1,
+                    "no text entry: generated room name matches nick's room #N")) yield break;
+                Publish("name", name);
+                yield return Dial("roomcreate", "rooms.password", "1234");
+                yield return Press("roomcreate", "rooms.create_slot", L10n.F("rooms.create_slot", 1, ""));
                 if (done) yield break;
             }
             else
             {
                 yield return Wait(() => Shared().GetString("live").Length > 0, 150);
                 if (!Check(Shared().GetString("live").Length > 0, "host published shared live code")) yield break;
-                yield return Click("list", "join-code", "?????? / Join by code");
+                yield return Press("rooms", "rooms.join_code");
                 if (done) yield break;
-                Set("code", Shared().GetString("code"));
-                Set("password", "test-pass");
-                yield return Click("join", "join-room", "?? / Join");
+                yield return Dial("roomjoin", "rooms.code", Shared().GetString("code"));
+                yield return Dial("roomjoin", "rooms.password", "1234");
+                yield return Press("roomjoin", "rooms.join");
                 if (done) yield break;
             }
             yield return Wait(() => RoomReady, 25);
@@ -272,13 +286,15 @@ namespace OriCoop.Rooms
             room = auth.Room;
             var info = (RoomWire.Fields)Get(panel, "info");
             save = info.GetString("save.0.id");
+            if (!Check(info.GetString("name") == Shared().GetString("name"),
+                "4-digit password authenticated auto-named room end to end (" + role + ")")) yield break;
             if (role == "host")
             {
                 Publish("room", room);
                 Publish("code", info.GetString("code"));
             }
             else if (!Check(room == Shared().GetString("room"), "joined shared room id")) yield break;
-            yield return Click("room", "continue-" + save, "?? / Continue");
+            yield return Press("roomview", "rooms.continue");
             if (done) yield break;
             if (role == "host") yield return Host();
             else yield return Join();
