@@ -253,6 +253,8 @@ namespace OriCoop
         {
             while (Now - s_lastActivation < 30.5f) yield return null;
             s_pedestal = FindPedestal();
+            if (s_pedestal == null) yield return Refind(h);   // its scene can stream out during the 30 s wait (T-073 hotfix)
+            if (s_pedestal == null) { h.Check(false, "CUT reset: wall-jump pedestal still loaded"); yield break; }
             s_pedestal.CurrentState = GetAbilityPedestal.States.OutOfRange;
             if (NetPlay.IsHost) Own.PlayerAbilities.SetAbility(AbilityType.WallJump, false);
             float end = Now + 20f;
@@ -260,11 +262,16 @@ namespace OriCoop
             yield return Barrier(h, step);
             if (Ability || !Remote.ContainsKey(step) || Remote[step].Ability) h.Note("CUT reset state: partnerAbility=" + (Remote.ContainsKey(step) ? Remote[step].Ability.ToString() : "?") + " " + Diag());
             h.Check(!Ability && Remote.ContainsKey(step) && !Remote[step].Ability, "CUT reset: WallJump false on both");
+            // The barrier can take a while on a busy PC; the pedestal's scene may have streamed out meanwhile (step 10
+            // "threw NullReferenceException at get_transform", 2026-11-18, also before T-073).
+            if (s_pedestal == null) yield return Refind(h);
+            if (s_pedestal == null) { h.Check(false, "CUT reset: wall-jump pedestal still loaded after the barrier"); yield break; }
             Plugin.Teleport(Own, s_pedestal.transform.position + Vector3.right * (NetPlay.IsHost ? -0.5f : 0.5f));
             end = Now + 5f;
             while (!Own.PlatformBehaviour.PlatformMovement.IsOnGround && Now < end) yield return null;
-            h.Check(Own.PlatformBehaviour.PlatformMovement.IsOnGround && Vector3.Distance(Own.Position, s_pedestal.transform.position) <= 1f,
+            h.Check(s_pedestal != null && Own.PlatformBehaviour.PlatformMovement.IsOnGround && Vector3.Distance(Own.Position, s_pedestal.transform.position) <= 1f,
                 "CUT reset: beside pedestal on ground");
+            if (s_pedestal == null) yield break;
             s_pedestal.CurrentState = GetAbilityPedestal.States.OutOfRange;
             s_baseline = CutsceneGuard.LocalPedestalActivations;
             yield return Barrier(h, step + 1);

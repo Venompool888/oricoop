@@ -42,6 +42,19 @@ namespace OriCoop
         public static bool Enabled = Environment.GetEnvironmentVariable("ORICOOP_WORLDOBJ_OFF") != "1";
         public static int EventsSent, EventsApplied, EventsMissing, PuppetSuppressed, LiveApplies, SinCorrections, WaterFollows, FlipHeartbeatFixes;
 
+        // A scene's saved state is loaded in SceneRoot.LateStart, a frame or more after its objects exist
+        // (ScenesManager.OnSceneStartCompleted sets HasStartBeenCalled at its end). Before that a broken floor or a
+        // collapsed block still looks whole. Not inside any scene (DontDestroyOnLoad) = started.
+        public static bool SceneStarted(Component c)
+        {
+            if (c == null || Core.Scenes.Manager == null) return true;
+            SceneRoot root = c.GetComponentInParent<SceneRoot>();
+            if (root == null) return true;
+            foreach (SceneManagerScene s in Core.Scenes.Manager.ActiveScenes)
+                if (s != null && s.SceneRoot == root) return s.HasStartBeenCalled;
+            return true;
+        }
+
         static bool s_registered, s_applying;
         static float s_sinAt, s_waterAt, s_flipAt, s_lastFlipActivity = -10f;
         static readonly int[] s_flipSentFrame = { -1, -1, -1, -1 };
