@@ -1573,6 +1573,12 @@ namespace OriCoop
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "P3") goto P3;
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "WO") goto WO;   // phase WO only (world-physics)
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "CAM") goto CAM;   // phase CAM only (T-058 camera)
+                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4R")   // only the S4 drop + rejoin step (T-030)
+                {
+                    yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62);
+                    yield return Safely(h, "S4R", NetStoryTest.RunReconnect(h));
+                    goto G;
+                }
                 yield return Movement(h, "A", host);
                 yield return Wait(1.5f);
                 yield return Movement(h, "B", !host);
@@ -1710,6 +1716,7 @@ namespace OriCoop
             P3:
                 yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64);
                 yield return Safely(h, "P3", NetCutsceneTest.Run(h));
+            G:
                 if (host)
                 {
                     start = Time.realtimeSinceStartup;
