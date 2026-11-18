@@ -25,7 +25,7 @@ namespace OriCoop
         static readonly Action s_sessionTick = SessionRules.Tick, s_netHudTick = NetHud.Tick, s_skinTick = P2Skin.Tick;
         static readonly Action s_menuTick = CoopMenu.Tick, s_zonesTick = P2Extras.TickZones, s_modeTick = PlayMode.Tick;
         static readonly Action s_reviveTick = Revive.Tick, s_reviveOnlineTick = Revive.TickOnline;
-        static readonly Action s_nativeGuiLate = NativeGui.LateUpdate, s_reviveHud = ReviveHud.Update;
+        static readonly Action s_nativeGuiLate = NativeGui.LateUpdate, s_reviveHud = ReviveHud.Update, s_bottomHud = BottomHud.Update;
         static readonly Action s_menuDraw = CoopMenu.Draw, s_netDraw = NetPlay.DrawGUI;
         static readonly Action s_netHudDraw = NetHud.Draw, s_sessionDraw = SessionScreens.Draw;
         static readonly Action s_localRefreshIds = P2Context.RefreshIds;
@@ -332,6 +332,7 @@ namespace OriCoop
         internal void DoLateUpdate()
         {
             SubsystemGuard.Run("NativeGui.LateUpdate", s_nativeGuiLate);
+            SubsystemGuard.Run("BottomHud.Update", s_bottomHud);   // T-061: every teammate's status bar, and our own vitals online
             // T-026: with no partner present (puppet gone during a death/reload) the HUD below is not updated, so hide
             // the revive markers here; otherwise the last one stays frozen on the HUD layer until the partner returns.
             if (P2Context.P2 == null || P2Context.P1 == null) { SubsystemGuard.Run("ReviveHud.Update", s_reviveHud); return; }
