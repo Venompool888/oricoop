@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.IO;
 using Game;
 using HarmonyLib;
+using OriCoop.Ui;
 using UnityEngine;
 
 namespace OriCoop
@@ -34,7 +35,7 @@ namespace OriCoop
         void Awake()
         {
             m_out = Environment.GetEnvironmentVariable("ORICOOP_TEST_OUT") ?? "oricoop_test.txt";
-            m_scenarios = Environment.GetEnvironmentVariable("ORICOOP_SCENARIOS") ?? "lifecycle,interact,menu,visual,companion,move,camera,platform,pause,p2death,revive,teleport,pool,enemy,pickup,p1death,bothdown,title";
+            m_scenarios = Environment.GetEnvironmentVariable("ORICOOP_SCENARIOS") ?? "lifecycle,interact,menu,visual,bottomhud,companion,move,camera,platform,pause,p2death,revive,teleport,pool,enemy,pickup,p1death,bothdown,title";
             int s; if (int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_SLOT"), out s)) m_slot = s;
             Application.logMessageReceived += OnLog;
             P2Input.BotActive = true;
@@ -210,6 +211,7 @@ namespace OriCoop
             if (Want("diag")) yield return StartCoroutine(Diag());
             if (Want("menu")) yield return StartCoroutine(Menu());
             if (Want("visual")) yield return StartCoroutine(Visual());
+            if (Want("bottomhud")) yield return StartCoroutine(BottomHudScenario());
             if (Want("companion")) yield return StartCoroutine(CompanionStates());
             if (Want("move")) yield return StartCoroutine(Move());
             if (Want("camera")) yield return StartCoroutine(CameraAndEdges());
@@ -1058,6 +1060,161 @@ namespace OriCoop
         }
 
         int m_visualBaseline;
+
+        // T-061: a status bar per teammate along the bottom, next to the game's own HUD (a copy of it, the teammate's values).
+        // Oracles from the ticket: P2's bar equals P2 within 1 s after damage / energy use; the game's own HUD keeps
+        // showing P1; downed = dimmed, gone = hidden; 3 bars do not overlap each other or the native HUD; every bar is
+        // really drawn (pixels).
+        IEnumerator BottomHudScenario()
+        {
+            Note("--- scenario: bottomhud (T-061: a status bar per teammate at the bottom)");
+            int err0 = m_errors;
+            float saveLeash = Plugin.LeashOverride;
+            Plugin.LeashOverride = 200f;
+            Plugin.Teleport(P2, P1.Position + new Vector3(1.5f, 0f, 0f));
+            P1.Mortality.Health.RestoreAllHealth(); P2.Mortality.Health.RestoreAllHealth();
+            yield return StartCoroutine(Wait(2f));
+            Check(BottomHud.Count == 1 && BottomHud.Visible(2), "bottomhud: one bar, for P2, shown in gameplay (count " + BottomHud.Count + ")");
+            Check(BottomHud.LabelText(2) == Roles.Tag(2), "bottomhud: P2's bar is labelled " + Roles.Tag(2) + " ('" + BottomHud.LabelText(2) + "')");
+            float h, mh, e, me, nh, nmh, ne, nme;
+            bool shown = BottomHud.TryShown(2, out h, out mh, out e, out me);
+            Note("bottomhud: P2 bar shows health " + F(h) + "/" + F(mh) + " energy " + F(e) + "/" + F(me) + "; P2 has " + F(P2.Mortality.Health.Amount) + "/" + P2.Mortality.Health.MaxHealth + ", " + F(P2.Energy.Current) + "/" + F(P2.Energy.Max));
+            Check(shown && Mathf.Abs(h - P2.Mortality.Health.Amount) < 0.01f && Mathf.Abs(mh - P2.Mortality.Health.MaxHealth) < 0.01f
+                && Mathf.Abs(e - P2.Energy.Current) < 0.01f && Mathf.Abs(me - P2.Energy.Max) < 0.01f, "bottomhud: P2's bar shows P2's health and energy");
+
+            // Damage P2 only: its bar follows within 1 s, the game's own HUD keeps P1's health.
+            Hurt(P2, 3f);
+            float t0 = Time.unscaledTime, took = -1f;
+            while (Time.unscaledTime - t0 < 1.5f)
+            {
+                yield return null;
+                if (BottomHud.TryShown(2, out h, out mh, out e, out me) && Mathf.Abs(h - P2.Mortality.Health.Amount) < 0.01f) { took = Time.unscaledTime - t0; break; }
+            }
+            Note("bottomhud: after damage P2 has " + F(P2.Mortality.Health.Amount) + ", bar " + F(h) + " after " + F(took) + " s");
+            Check(P2.Mortality.Health.Amount < P2.Mortality.Health.MaxHealth, "bottomhud: the test damage reached P2");
+            Check(took >= 0f && took <= 1f, "bottomhud: P2's bar shows P2's health within 1 s of damage (" + F(took) + " s)");
+            BottomHud.TryNativeShown(out nh, out nmh, out ne, out nme);
+            Check(Mathf.Abs(nh - P1.Mortality.Health.VisualMinAmount) < 0.01f && Mathf.Abs(nh - P2.Mortality.Health.Amount) > 0.01f,
+                "bottomhud: the game's own HUD still shows P1's health (" + F(nh) + " vs P1 " + F(P1.Mortality.Health.Amount) + ")");
+
+            // Energy use (energy is one pool in local co-op): the bar follows within 1 s.
+            float eWas = P1.Energy.Current;
+            P2.Energy.Current = 0f;
+            t0 = Time.unscaledTime; took = -1f;
+            while (Time.unscaledTime - t0 < 1.5f)
+            {
+                yield return null;
+                if (BottomHud.TryShown(2, out h, out mh, out e, out me) && Mathf.Abs(e - P2.Energy.Current) < 0.01f && P2.Energy.Current < 0.01f) { took = Time.unscaledTime - t0; break; }
+            }
+            Note("bottomhud: after energy use P2 has " + F(P2.Energy.Current) + ", bar " + F(e) + " after " + F(took) + " s");
+            Check(took >= 0f && took <= 1f, "bottomhud: P2's bar shows P2's energy within 1 s of use (" + F(took) + " s)");
+            P1.Energy.Current = eWas; P2.Energy.Current = eWas;
+
+            // Layout: P2's bar beside the native HUD, not over it, on screen.
+            Rect native, bar;
+            yield return StartCoroutine(Wait(0.5f));
+            bool geo = BottomHud.NativeScreenRect(out native) & BottomHud.ScreenRect(2, out bar);
+            Note("bottomhud: native HUD " + native + ", P2 bar " + bar + ", screen " + Screen.width + "x" + Screen.height);
+            Check(geo && !bar.Overlaps(native) && bar.xMin >= 0f && bar.xMax <= Screen.width && bar.yMin >= 0f, "bottomhud: P2's bar is on screen and does not cover the game's HUD");
+
+            // Pixels: the bar is really drawn (bright HUD colours appear where it is when it is shown).
+            Func<Color, bool> hudColour = c => Mathf.Max(c.r, Mathf.Max(c.g, c.b)) > 0.5f && Mathf.Max(c.r, Mathf.Max(c.g, c.b)) - Mathf.Min(c.r, Mathf.Min(c.g, c.b)) > 0.18f;
+            BottomHud.TestHide = true; yield return StartCoroutine(Wait(0.3f));
+            string off = Shot("bottomhud_hidden"); yield return StartCoroutine(Wait(0.3f));
+            BottomHud.TestHide = false; yield return StartCoroutine(Wait(0.3f));
+            string on = Shot("bottomhud_2p"); yield return StartCoroutine(Wait(0.3f));
+            int px = NewPixels(off, on, new Vector3(bar.center.x, bar.center.y + bar.height * 0.4f, 0f), (int)(Mathf.Max(bar.width, bar.height * 2f) / 2f + 6f), hudColour,
+                Path.Combine(Path.GetDirectoryName(on), "bottomhud_region_p2.png"));
+            int nativePx = NewPixels(off, on, new Vector3(native.center.x, native.center.y, 0f), (int)(native.height / 2f), hudColour);
+            Note("bottomhud: " + px + " new HUD-coloured pixels at P2's bar, " + nativePx + " at the native HUD's orb");
+            Check(px >= 60, "bottomhud: P2's bar is actually visible on screen (" + px + " pixels)");
+            // The orb's own sparkle and glow animate between the two shots (seen: 21 pixels); a bar drawn over the orb adds
+            // about as many as P2's bar itself (300+). So the limit is a fifth of the bar's count, at least 40.
+            int nativeLimit = Mathf.Max(40, px / 5);
+            Check(nativePx <= nativeLimit, "bottomhud: showing P2's bar does not change the game's own HUD (" + nativePx + " pixels, limit " + nativeLimit + ")");
+            // The "P2" label: above P2's bar, readable size, drawn in P2's name-tag colour.
+            Rect label;
+            bool haveLabel = BottomHud.LabelScreenRect(2, out label);
+            Note("bottomhud: P2 label " + label);
+            Check(haveLabel && label.yMin >= bar.yMax - 1f && label.xMin >= bar.xMin && label.xMax <= bar.xMax && !label.Overlaps(native)
+                && label.height >= Screen.height * 0.015f, "bottomhud: P2's label sits above P2's bar, readable, off the game's HUD");
+            Color tag = Roles.ColorOf(2);
+            int labelPx = NewPixels(off, on, new Vector3(label.center.x, label.center.y, 0f), (int)(Mathf.Max(label.width, label.height) / 2f + 3f),
+                c => Mathf.Abs(c.r - tag.r) < 0.25f && Mathf.Abs(c.g - tag.g) < 0.25f && Mathf.Abs(c.b - tag.b) < 0.3f && c.r > 0.5f,
+                Path.Combine(Path.GetDirectoryName(on), "bottomhud_region_label.png"));
+            Note("bottomhud: " + labelPx + " new P2-coloured pixels at the label");
+            Check(labelPx >= 15, "bottomhud: P2's label is visible in P2's colour (" + labelPx + " pixels)");
+
+            // 3 teammates (seats 3 and 4 as test bars with their own values): no overlaps, all visible.
+            BottomHud.TestFakeSeats.Add(3); BottomHud.TestFakeSeats.Add(4);
+            yield return StartCoroutine(Wait(0.3f));
+            VitalsSample v3 = new VitalsSample { Health = 8f, MaxHealth = 12, Energy = 2f, MaxEnergy = 3f, SoulFlame = 1f };
+            VitalsSample v4 = new VitalsSample { Health = 4f, MaxHealth = 12, Energy = 1f, MaxEnergy = 3f, SoulFlame = 1f };
+            BottomHud.SetTestVitals(3, v3); BottomHud.SetTestVitals(4, v4);
+            yield return StartCoroutine(Wait(1.5f));
+            Check(BottomHud.Count == 3 && BottomHud.Visible(2) && BottomHud.Visible(3) && BottomHud.Visible(4), "bottomhud: 3 teammates -> 3 bars shown (" + BottomHud.Count + ")");
+            Rect[] rs = new Rect[5];
+            bool all = true;
+            for (int s = 2; s <= 4; s++) all &= BottomHud.ScreenRect(s, out rs[s]);
+            string overlaps = "";
+            for (int s = 2; s <= 4; s++)
+            {
+                if (rs[s].Overlaps(native)) overlaps += "P" + s + "/native ";
+                if (rs[s].xMin < 0f || rs[s].xMax > Screen.width || rs[s].yMin < 0f || rs[s].yMax > Screen.height) overlaps += "P" + s + "/offscreen ";
+                for (int o = 2; o < s; o++) if (rs[s].Overlaps(rs[o])) overlaps += "P" + s + "/P" + o + " ";
+            }
+            Note("bottomhud 4p: P2 " + rs[2] + " P3 " + rs[3] + " P4 " + rs[4]);
+            Check(all && overlaps == "", "bottomhud: 3 bars do not overlap each other or the game's HUD and stay on screen (" + overlaps + ")");
+            float h3, mh3, e3, me3;
+            Check(BottomHud.TryShown(3, out h3, out mh3, out e3, out me3) && Mathf.Abs(h3 - 8f) < 0.01f && Mathf.Abs(e3 - 2f) < 0.01f,
+                "bottomhud: P3's bar shows P3's own values (health " + F(h3) + ", energy " + F(e3) + ")");
+            BottomHud.TestHide = true; yield return StartCoroutine(Wait(0.3f));
+            string off4 = Shot("bottomhud_4p_hidden"); yield return StartCoroutine(Wait(0.3f));
+            BottomHud.TestHide = false; yield return StartCoroutine(Wait(0.3f));
+            string on4 = Shot("bottomhud_4p"); yield return StartCoroutine(Wait(0.3f));
+            for (int s = 2; s <= 4; s++)
+            {
+                int n = NewPixels(off4, on4, new Vector3(rs[s].center.x, rs[s].center.y + rs[s].height * 0.4f, 0f), (int)(Mathf.Max(rs[s].width, rs[s].height * 2f) / 2f + 6f), hudColour);
+                Check(n >= 60, "bottomhud: P" + s + "'s bar is actually visible with 4 players (" + n + " pixels)");
+            }
+            BottomHud.TestFakeSeats.Clear();
+            yield return StartCoroutine(Wait(0.3f));
+            Check(BottomHud.Count == 1, "bottomhud: test bars removed again (" + BottomHud.Count + ")");
+
+            // Hidden with the game's HUD: pause menu.
+            UI.Menu.ShowMenuScreen();
+            yield return StartCoroutine(Wait(1.2f));
+            Check(!BottomHud.Visible(2), "bottomhud: hidden while the pause menu is open");
+            UI.Menu.HideMenuScreen();
+            yield return StartCoroutine(Wait(2f));
+            Check(BottomHud.Visible(2), "bottomhud: back after resuming");
+
+            // Downed: dimmed; revived: full again.
+            float full = BottomHud.Opacity(2);
+            Hurt(P2, 1000f);
+            yield return StartCoroutine(Wait(0.8f));
+            Revive.Downed d2 = Revive.DownedOf(2);
+            Check(d2 != null && BottomHud.Visible(2) && BottomHud.Opacity(2) < full * 0.5f, "bottomhud: downed P2's bar stays, dimmed (" + F(BottomHud.Opacity(2)) + " vs " + F(full) + ")");
+            Shot("bottomhud_downed");
+            if (d2 != null)
+            {
+                Plugin.Teleport(P1, d2.Marker + new Vector3(0.8f, 0f, 0f));
+                yield return StartCoroutine(Wait(0.8f));
+                yield return StartCoroutine(HoldP1(2.5f));
+                yield return StartCoroutine(Wait(1f));
+                Check(Revive.DownedOf(2) == null && BottomHud.Opacity(2) > full * 0.9f, "bottomhud: revived P2's bar is full again (" + F(BottomHud.Opacity(2)) + ")");
+            }
+
+            // Gone: P2 leaves -> no bar; joins again -> bar back.
+            Plugin.DespawnNow("test: bottomhud leave");
+            yield return StartCoroutine(Wait(0.5f));
+            Check(BottomHud.Count == 0 && !BottomHud.Visible(2), "bottomhud: P2 left -> P2's bar is gone");
+            Bot(0f, P2Input.BTN_A); yield return StartCoroutine(Wait(0.2f)); Bot(0f, 0);
+            yield return StartCoroutine(Wait(2.5f));
+            Check(P2 != null && BottomHud.Visible(2), "bottomhud: P2 joined again -> P2's bar is back");
+            Plugin.LeashOverride = saveLeash;
+            Check(m_errors == err0, "bottomhud: no errors");
+        }
 
         // P2 joins while P1's companion is on a scripted move (the owner's case: P2's companion flew to (0,0,0)),
         // and P2's companion gets stuck on a move nobody calls it back from.

@@ -1408,6 +1408,74 @@ namespace OriCoop
             while (Time.realtimeSinceStartup < end) yield return null;
         }
 
+        // T-061: every teammate's status bar along the bottom. The guest hurts itself, then uses up its energy, and tells
+        // the host (test message 81) what it now has and when (wall clock: both games run on this PC). The host's bar for
+        // P2 must show exactly that within 1 s. Both sides run the same 6 s, so later phases stay in step.
+        const byte MsgVitalsTest = 81;
+        static readonly List<long> s_vitalsAt = new List<long>();
+        static readonly List<float> s_vitalsHealth = new List<float>(), s_vitalsEnergy = new List<float>();
+        static void ReadVitalsTest(BinaryReader r)
+        {
+            if (!TestHarness.Enabled) return;
+            s_vitalsAt.Add(r.ReadInt64()); s_vitalsHealth.Add(r.ReadSingle()); s_vitalsEnergy.Add(r.ReadSingle());
+        }
+
+        static IEnumerator BottomBars(TestHarness h, bool host)
+        {
+            float start = Time.realtimeSinceStartup;
+            int partner = host ? 2 : 1;
+            float h0 = 0f, e0 = 0f;
+            if (!host)
+            {
+                h0 = Own.Mortality.Health.Amount; e0 = Own.Energy.Current;
+                yield return Wait(1f);
+                Own.Mortality.DamageReciever.OnRecieveDamage(new Damage(3f, Vector2.zero, Own.Position, DamageType.Spikes, null));
+                float hp = Own.Mortality.Health.Amount, en = Own.Energy.Current;
+                NetPlay.Send(MsgVitalsTest, true, w => { w.Write(DateTime.UtcNow.Ticks); w.Write(hp); w.Write(en); });
+                h.Note("bottom bars: guest hurt itself " + F(h0) + " -> " + F(hp));
+                yield return Wait(1.5f);
+                Own.Energy.Current = 0f;
+                hp = Own.Mortality.Health.Amount; en = Own.Energy.Current;
+                NetPlay.Send(MsgVitalsTest, true, w => { w.Write(DateTime.UtcNow.Ticks); w.Write(hp); w.Write(en); });
+                h.Note("bottom bars: guest used its energy " + F(e0) + " -> " + F(en));
+            }
+            else
+            {
+                int seen = 0;
+                List<float> took = new List<float>();
+                while (Time.realtimeSinceStartup - start < 4.5f)
+                {
+                    yield return null;
+                    float bh, bmh, be, bme;
+                    while (seen < s_vitalsAt.Count && BottomHud.TryShown(2, out bh, out bmh, out be, out bme)
+                        && Mathf.Abs(bh - s_vitalsHealth[seen]) < 0.01f && Mathf.Abs(be - s_vitalsEnergy[seen]) < 0.01f)
+                    {
+                        took.Add((float)TimeSpan.FromTicks(DateTime.UtcNow.Ticks - s_vitalsAt[seen]).TotalSeconds);
+                        seen++;
+                    }
+                }
+                float shH, shMH, shE, shME;
+                BottomHud.TryShown(2, out shH, out shMH, out shE, out shME);
+                h.Note("bottom bars: guest reported " + s_vitalsAt.Count + " changes, host bar matched " + took.Count + " (latency " + string.Join(", ", took.ConvertAll(t => F(t) + " s").ToArray())
+                    + "); bar now health " + F(shH) + "/" + F(shMH) + " energy " + F(shE) + "/" + F(shME) + "; vitals received " + BottomHud.VitalsReceived);
+                h.Check(s_vitalsAt.Count == 2 && took.Count == 2, "bottom bars: host's P2 bar showed both guest changes (damage, energy use)");
+                h.Check(took.Count == 2 && took[0] <= 1f && took[1] <= 1f, "bottom bars: each within 1 s of the guest's change");
+            }
+            h.Check(BottomHud.Count == 1 && BottomHud.Visible(partner) && BottomHud.LabelText(partner) == Roles.Tag(partner),
+                "bottom bars: one bar, for " + Roles.Tag(partner) + ", shown on the " + (host ? "host" : "guest") + " (" + BottomHud.Count + ")");
+            h.Check(BottomHud.VitalsSent > 0 && BottomHud.VitalsReceived > 0, "bottom bars: vitals sent " + BottomHud.VitalsSent + " and received " + BottomHud.VitalsReceived);
+            try
+            {
+                string p = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(h.ResultPath)), "net-bottomhud-" + (host ? "host" : "guest") + ".png");
+                Application.CaptureScreenshot(p);
+                h.Note("screenshot " + p);
+            }
+            catch (Exception e) { h.Note("bottom bars screenshot failed: " + e.Message); }
+            while (Time.realtimeSinceStartup - start < 5f) yield return null;
+            if (!host) { Own.Mortality.Health.SetAmount(Mathf.Max(h0, Own.Mortality.Health.Amount)); Own.Energy.Current = Mathf.Max(e0, Own.Energy.Current); }
+            while (Time.realtimeSinceStartup - start < 6f) yield return null;
+        }
+
         // Roles on both screens: host = P1, guest = P2. The partner's one overhead tag says so (P2Hud), and a
         // screenshot of each side is kept next to the result file (net-roles-host.png / net-roles-guest.png).
         static IEnumerator RoleTag(TestHarness h, bool host)
@@ -1549,6 +1617,7 @@ namespace OriCoop
         {
             bool host = NetPlay.IsHost;
             s_worldPackets.Clear(); s_ownWorldPackets.Clear(); NetPlay.On(MsgWorldTest, ReadWorldTest);
+            s_vitalsAt.Clear(); s_vitalsHealth.Clear(); s_vitalsEnergy.Clear(); NetPlay.On(MsgVitalsTest, ReadVitalsTest);
             s_enemyPackets.Clear(); s_ownEnemyReports.Clear(); s_ownEnemyHealth.Clear(); s_enemyOwnerTrace.Clear(); NetPlay.On(49, ReadEnemyTest); NetPlay.On(48, ReadEnemyTrace);
             s_harness = h; BotActive = true; Bot(0, 0);
             h.Note("net role=" + (host ? "host" : "guest"));
@@ -1583,6 +1652,7 @@ namespace OriCoop
                 catch (Exception e) { h.Check(false, "F open track: " + e.Message); }
                 yield return Wait(1.5f);
                 yield return RoleTag(h, host);
+                yield return BottomBars(h, host);
                 Vector3 phaseAStart = Own.Position;
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "P3") goto P3;
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "WO") goto WO;   // phase WO only (world-physics)
