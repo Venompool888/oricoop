@@ -11,7 +11,7 @@
 #    (D:\SteamLibrary\steamapps\common\Ori DE\OriDE.exe). Start refuses while any oriDE.exe runs. During the run the
 #    watchdog checks every 2 s: if an owner game appears, only the PIDs this run started are killed, the run is
 #    cleaned up and the script exits with code 3 ("owner is playing, test stopped, rerun later");
-#  * nothing is ever killed by name; Unity's display prefs in HKCU (shared with the owner's copy) are restored.
+#  * nothing is ever killed by name; each copy has its own Unity settings key in HKCU, the owner's is never written (T-094).
 # Simulation hook for checking the watchdog: set $env:ORICOOP_FAKE_OWNER_FILE to a path; while that file exists the
 # watchdog behaves as if the owner's game were running.
 #
@@ -44,8 +44,6 @@ $script:TL_Pids = New-Object 'System.Collections.Generic.List[int]'
 $script:TL_Procs = New-Object 'System.Collections.Generic.List[System.Diagnostics.Process]'
 $script:TL_Placed = @{}
 $script:TL_LastOwnerCheck = [DateTime]::MinValue
-$script:TL_RegPath = 'Software\Microsoft Studios\Ori And The Blind Forest: Definitive Edition'
-$script:TL_RegBefore = $null
 $script:TL_FocusFixes = 0
 $script:TL_PrevFg = [IntPtr]::Zero
 
@@ -413,6 +411,12 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
     $script = $(if ($MyInvocation.ScriptName) { Split-Path -Leaf $MyInvocation.ScriptName } else { 'interactive' })
     $candidates = @(Get-TestCopies | Where-Object { (Test-Path -LiteralPath $_.Exe) -and (-not $Copy -or $_.Name -eq $Copy) })
     if ($candidates.Count -eq 0) { 'NO TEST COPY ' + $Copy + ' (make it with src\make-test-copy.ps1)'; exit 2 }
+    # T-094: a copy that would read/write the owner's game settings is never used.
+    foreach ($c in $candidates) { $c | Add-Member -NotePropertyName KeyProblem -NotePropertyValue (Get-CopyKeyProblem $c) -Force }
+    $bad = @($candidates | Where-Object { $_.KeyProblem })
+    foreach ($c in $bad) { 'REFUSED copy ' + $c.Name + ': ' + $c.KeyProblem + '. Fix: src\make-test-copy.ps1 -Name ' + $c.Name + ' (T-094).' }
+    $candidates = @($candidates | Where-Object { -not $_.KeyProblem })
+    if ($candidates.Count -eq 0) { 'NO TEST COPY with its own Unity registry key: not starting, so no test can change the owner''s game settings (exit 6).'; exit 6 }
     $sw = [System.Diagnostics.Stopwatch]::StartNew(); $lastNote = -999
     while ($true) {
         $capped = -1
@@ -468,8 +472,10 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
             Use-Copy $c
             'TEST COPY ' + $c.Name + ': ' + $c.GameDir + ' (lock ' + $c.Lock + ', port offset ' + $c.PortOffset + ')'
             if ($Force) { 'NOTE: -Force no longer closes running games.' }
+            $why = Get-CopyKeyProblem $c
+            if ($why) { 'REFUSED copy ' + $c.Name + ': ' + $why + ' (exit 6, T-094).'; Exit-CopyLock; exit 6 }
             Install-TestPlugins
-            Save-OriDisplayPrefs
+            Save-OwnerRegSnapshot
             return
         }
         $min = [int][Math]::Floor($sw.Elapsed.TotalMinutes)
@@ -535,76 +541,121 @@ function Get-TestQuietBuild {
     return $dll
 }
 
-# Unity's screen prefs (HKCU, shared by every test copy and the owner's game). Each test game writes its own small
-# window size there when it exits (seen: 640x360, 375x22), and with parallel runs a per-run snapshot can catch another
-# run's value. So the OWNER's values live in C:\OriCoop\owner-display-prefs.json: refreshed only when no test copy is
-# locked and no oriDE.exe runs (then the registry holds the owner's values) and they don't look like a test size;
-# put back by the last run to finish (no other live lock) while the owner's game is not running. Never deletes values.
-$script:TL_PrefsFile = 'C:\OriCoop\owner-display-prefs.json'
+# T-094: Unity keeps PlayerPrefs (screen size, fullscreen, monitor, quality) in HKCU\Software\<company>\<product>, with
+# company and product read from oriDE_Data\globalgamemanagers. The test copies used to share the owner's key
+# (Microsoft Studios), so every test game wrote its small window size into the owner's game on exit (owner's game
+# started at 640x360 windowed, 2026-11-18). Each copy now has its own company name, patched by src\make-test-copy.ps1:
+# 'OriCoop-TestCopy' + copy letter, 17 characters like 'Microsoft Studios', so nothing in the file moves. The launcher
+# refuses a copy that still has another name (exit 6), and checks after every run that the owner's key is unchanged
+# (exit 7). Tests never write the owner's key; nothing restores it any more (that used to write stale values back).
+$script:TL_OwnerCompany = 'Microsoft Studios'
+$script:TL_UnityProduct = 'Ori And The Blind Forest: Definitive Edition'
+$script:TL_OwnerRegBefore = $null
+$script:TL_OwnerSeen = $false
+$script:TL_OwnerRegLeak = $null
 
-function Read-OriPrefsNow {
-    $h = @{}
-    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:TL_RegPath)
-    if ($k) {
-        try {
-            foreach ($n in $k.GetValueNames()) {
-                if ($n -like 'Screenmanager*' -or $n -like 'UnitySelectMonitor*') { $h[$n] = @([string]$k.GetValueKind($n), $k.GetValue($n)) }
-            }
-        } finally { $k.Close() }
+function Get-CopyCompany($copy) { 'OriCoop-TestCopy' + $copy.Name.ToUpperInvariant() }
+function Get-UnityManagersFile([string]$gameDir) { Join-Path $gameDir 'oriDE_Data\globalgamemanagers' }
+# The owner's key. ORICOOP_OWNER_REGPATH_SELFTEST points it at a scratch key (test-launch-selftest.ps1 only).
+function Get-OwnerRegPath {
+    if ($env:ORICOOP_OWNER_REGPATH_SELFTEST) { return $env:ORICOOP_OWNER_REGPATH_SELFTEST }
+    'Software\' + $script:TL_OwnerCompany + '\' + $script:TL_UnityProduct
+}
+
+# Finds PlayerSettings' company string in globalgamemanagers bytes: Unity serializes strings as int32 length + bytes,
+# padded to 4; company comes right before the product record. Returns @{ Offset (of the length); Length; Name } or
+# $null when the product string is not found exactly once or no company record precedes it (unknown layout).
+function Find-UnityCompany([byte[]]$bytes) {
+    $latin = [Text.Encoding]::GetEncoding(28591)
+    $text = $latin.GetString($bytes)
+    $prod = $script:TL_UnityProduct
+    $rec = $latin.GetString([BitConverter]::GetBytes([int]$prod.Length)) + $prod
+    $p = $text.IndexOf($rec, [StringComparison]::Ordinal)
+    if ($p -lt 0 -or $text.IndexOf($rec, $p + 1, [StringComparison]::Ordinal) -ge 0) { return $null }
+    for ($len = 1; $len -le 256; $len++) {
+        $s = $p - 4 - (($len + 3) -band -4)
+        if ($s -lt 0) { break }
+        if ([BitConverter]::ToInt32($bytes, $s) -ne $len) { continue }
+        $name = $latin.GetString($bytes, $s + 4, $len)
+        if ($name -notmatch '^[\x20-\x7e]+$') { continue }
+        return @{ Offset = $s; Length = $len; Name = $name }
     }
-    $h
+    return $null
 }
 
-function Test-OtherLiveLocks {
-    @(Get-TestCopies | Where-Object { $_.Lock -ne $script:TL_LockFile -and (Test-Path -LiteralPath $_.Lock) -and -not (Test-LockStale $_.Lock) }).Count -gt 0
+function Get-UnityCompany([string]$gameDir) {
+    $f = Get-UnityManagersFile $gameDir
+    if (-not (Test-Path -LiteralPath $f)) { return $null }
+    $r = Find-UnityCompany ([IO.File]::ReadAllBytes($f))
+    if ($r) { return $r.Name }
+    return $null
 }
 
-function Test-LooksLikeTestSize($prefs) {
-    $w = $null; $h = $null
-    foreach ($n in $prefs.Keys) {
-        if ($n -like 'Screenmanager Resolution Width_*') { $w = [int]$prefs[$n][1] }
-        if ($n -like 'Screenmanager Resolution Height_*') { $h = [int]$prefs[$n][1] }
-    }
-    if ($w -eq $null -or $h -eq $null) { return $false }
-    return ($w -lt 800 -or $h -lt 450 -or "$($w)x$($h)" -in @('800x450', '960x540', '1280x720'))
+# $null when the copy uses its own registry key, else why not.
+function Get-CopyKeyProblem($copy) {
+    $want = Get-CopyCompany $copy
+    $have = Get-UnityCompany $copy.GameDir
+    if ($have -eq $want) { return $null }
+    if (-not $have) { return 'company name not found in ' + (Get-UnityManagersFile $copy.GameDir) }
+    if ($have -eq $script:TL_OwnerCompany) { return "it still uses the owner's Unity registry key (company '" + $have + "')" }
+    return "its Unity company is '" + $have + "', expected '" + $want + "'"
 }
 
-function Save-OriDisplayPrefs {
-    $now = Read-OriPrefsNow
-    $quiet = -not (Test-OtherLiveLocks) -and @(Get-Process oriDE -ErrorAction SilentlyContinue).Count -eq 0
-    if ($quiet -and $now.Count -gt 0 -and -not (Test-LooksLikeTestSize $now)) {
-        $o = @{}; foreach ($n in $now.Keys) { $o[$n] = @($now[$n][0], $now[$n][1]) }
-        try { ($o | ConvertTo-Json -Compress) | Set-Content -LiteralPath $script:TL_PrefsFile -Encoding UTF8 } catch { }
-    }
-    $script:TL_RegBefore = @{}
-    if (Test-Path -LiteralPath $script:TL_PrefsFile) {
-        try {
-            $j = Get-Content -LiteralPath $script:TL_PrefsFile -Raw | ConvertFrom-Json
-            foreach ($p in $j.PSObject.Properties) { $script:TL_RegBefore[$p.Name] = @([string]$p.Value[0], $p.Value[1]) }
-        } catch { $script:TL_RegBefore = @{} }
-    }
+# Gives the copy its own company name. The file is a hard link shared with the other copies (and other projects), so
+# the patched bytes go to a NEW file: the old one is kept as globalgamemanagers.orig, other links never change.
+# Caller holds the copy's lock (no game may have the file open).
+function Set-CopyUnityCompany($copy) {
+    $f = Get-UnityManagersFile $copy.GameDir
+    $bytes = [IO.File]::ReadAllBytes($f)
+    $r = Find-UnityCompany $bytes
+    if (-not $r) { throw ('PlayerSettings company/product not found in ' + $f) }
+    $want = Get-CopyCompany $copy
+    if ($r.Name -eq $want) { return 'unity key: copy ' + $copy.Name + ' already uses HKCU\Software\' + $want }
+    if ($r.Length -ne $want.Length) { throw ("company '" + $r.Name + "' in " + $f + ' is not ' + $want.Length + ' characters; refusing to patch') }
+    $new = [Text.Encoding]::ASCII.GetBytes($want)
+    [Array]::Copy($new, 0, $bytes, $r.Offset + 4, $new.Length)
+    $tmp = $f + '.t094.tmp'; $orig = $f + '.orig'
+    [IO.File]::WriteAllBytes($tmp, $bytes)
+    if (Test-Path -LiteralPath $orig) { Remove-Item -LiteralPath $f -Force } else { Move-Item -LiteralPath $f -Destination $orig }
+    Move-Item -LiteralPath $tmp -Destination $f
+    if ((Get-UnityCompany $copy.GameDir) -ne $want) { throw ('patch did not stick: ' + $f) }
+    'unity key: copy ' + $copy.Name + ' now uses HKCU\Software\' + $want + '\' + $script:TL_UnityProduct + " (was '" + $r.Name + "')"
 }
 
-function Test-SameValue($a, $b) {
-    if ($a -is [byte[]] -and $b -is [byte[]]) { return [Convert]::ToBase64String($a) -eq [Convert]::ToBase64String($b) }
-    return ('' + $a) -eq ('' + $b)
-}
-
-function Restore-OriDisplayPrefs {
-    if ($script:TL_RegBefore -eq $null -or $script:TL_RegBefore.Count -eq 0) { return }
-    if (@(Get-OwnerGames | Where-Object { $_.Id -ne 0 }).Count -gt 0) { 'display prefs: owner game running, left alone'; return }
-    if (Test-OtherLiveLocks) { return }   # another run is still going: the last one to finish restores
-    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($script:TL_RegPath, $true)
-    if (-not $k) { return }
-    $changed = 0
+# Every value of a registry key as sorted text lines ('<missing>' when the key does not exist).
+function Read-RegSnapshot([string]$path) {
+    $k = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey($path)
+    if (-not $k) { return '<missing>' }
     try {
-        foreach ($n in $script:TL_RegBefore.Keys) {
-            $kind = $script:TL_RegBefore[$n][0]; $val = $script:TL_RegBefore[$n][1]
-            if ($kind -eq 'DWord') { $val = [int]$val } elseif ($kind -eq 'QWord') { $val = [long]$val }
-            if (-not (Test-SameValue $k.GetValue($n) $val)) { $k.SetValue($n, $val, [Microsoft.Win32.RegistryValueKind]$kind); $changed++ }
+        $lines = foreach ($n in $k.GetValueNames()) {
+            $v = $k.GetValue($n, $null, [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)
+            if ($v -is [byte[]]) { $v = [Convert]::ToBase64String($v) } elseif ($v -is [array]) { $v = $v -join '|' }
+            $n + '=' + $k.GetValueKind($n) + ':' + $v
         }
+        return ((@($lines) | Sort-Object) -join "`n")
     } finally { $k.Close() }
-    if ($changed -gt 0) { 'display prefs: restored ' + $changed + ' owner value(s)' }
+}
+
+function Save-OwnerRegSnapshot {
+    $script:TL_OwnerRegBefore = Read-RegSnapshot (Get-OwnerRegPath)
+    $script:TL_OwnerRegLeak = $null
+    if (@(Get-OwnerGames).Count -gt 0) { $script:TL_OwnerSeen = $true }
+}
+
+# After the run: the owner's key must be exactly as before. If the owner's game ran meanwhile it may have written its own
+# settings on exit, so a change is then only reported. Sets $TL_OwnerRegLeak (Exit-TestRun fails the run with exit 7).
+function Test-OwnerRegistry {
+    if ($script:TL_OwnerRegBefore -eq $null) { return }
+    $now = Read-RegSnapshot (Get-OwnerRegPath)
+    if ($now -eq $script:TL_OwnerRegBefore) { "owner settings: unchanged (HKCU\" + (Get-OwnerRegPath) + ')'; return }
+    $before = @($script:TL_OwnerRegBefore -split "`n"); $after = @($now -split "`n")
+    $diff = @($before | Where-Object { $after -notcontains $_ } | ForEach-Object { 'before ' + $_ }) + @($after | Where-Object { $before -notcontains $_ } | ForEach-Object { 'after ' + $_ })
+    if ($script:TL_OwnerSeen -or @(Get-OwnerGames).Count -gt 0) {
+        "owner settings: changed while the owner's game ran (its own writes; not counted against the test): " + ($diff -join '; ')
+        return
+    }
+    $script:TL_OwnerRegLeak = $diff -join '; '
+    "OWNER SETTINGS CHANGED BY A TEST (T-094): HKCU\" + (Get-OwnerRegPath) + ': ' + $script:TL_OwnerRegLeak
 }
 
 # Hidden desktop (default; ORICOOP_TEST_DESKTOP=0 = the owner's desktop, old behaviour): test games are created on a
@@ -790,7 +841,7 @@ function Stop-TestGames {
 # Play alongside the owner (default with the hidden desktop; ORICOOP_PLAY_ALONGSIDE=0 = stop when the owner plays): while the owner's game runs, exactly one test run
 # continues (it holds testcopy-alongside.lock in the repo root), its games pinned to ORICOOP_ALONGSIDE_CPUS (hex affinity mask,
 # default 0xFC0 = logical CPUs 6-11), Normal priority. Every other run stops (exit 3) or waits at start. The owner's
-# process is never touched; display prefs are left alone while it runs (Restore-OriDisplayPrefs).
+# process is never touched; the owner-settings check only reports a change of its registry key then (Test-OwnerRegistry).
 $script:TL_AlongsideLock = Join-Path $script:TL_Root 'testcopy-alongside.lock'
 $script:TL_Alongside = $false
 function Test-PlayAlongside { return ($env:ORICOOP_PLAY_ALONGSIDE -ne '0' -and (Get-TestDesktop) -ne '') }
@@ -804,6 +855,7 @@ function Enter-Alongside($owner, [string]$script) {
     $lock = [pscustomobject]@{ Name = 'alongside'; Lock = $script:TL_AlongsideLock }
     if (-not (Enter-CopyLock $lock $script)) { return $false }
     $script:TL_Alongside = $true
+    $script:TL_OwnerSeen = $true
     foreach ($p in $script:TL_Procs) { Set-AlongsideLimits $p }
     Write-Host ('PLAYING ALONGSIDE the owner (' + (Format-Games $owner) + '): this run continues on the hidden desktop, CPUs mask ' + $(if ($env:ORICOOP_ALONGSIDE_CPUS) { $env:ORICOOP_ALONGSIDE_CPUS } else { '0xFC0' }) + '; other runs wait.')
     return $true
@@ -832,7 +884,7 @@ function Test-InputBlocked {
         if ($why) {
             Stop-TestGames
             Write-Host ('INPUT NOT BLOCKED in test game ' + $c.Tag + ' (' + $c.Log + '): ' + $why + '. The run was stopped so it cannot vibrate or read the owner''s controller (T-085).')
-            Restore-OriDisplayPrefs | Write-Host
+            Test-OwnerRegistry | Write-Host
             Exit-CopyLock
             exit 5
         }
@@ -846,11 +898,12 @@ function Invoke-TestWatch([switch]$Force) {
     if (-not $Force -and ($now - $script:TL_LastOwnerCheck).TotalSeconds -lt 2) { return }
     $script:TL_LastOwnerCheck = $now
     $owner = @(Get-OwnerGames)
+    if ($owner.Count -gt 0) { $script:TL_OwnerSeen = $true }
     if ($owner.Count -gt 0 -and (Enter-Alongside $owner 'watchdog')) { return }
     if ($owner.Count -gt 0) {
         Stop-TestGames
         Write-Host ('OWNER IS PLAYING (' + (Format-Games $owner) + '): test stopped, only this run''s games (pid ' + ($script:TL_Pids -join ',') + ') were closed. Rerun later. / 有人开始玩游戏了，测试已停止，稍后再跑。')
-        Restore-OriDisplayPrefs | Write-Host
+        Test-OwnerRegistry | Write-Host
         Exit-CopyLock
         exit 3
     }
@@ -894,19 +947,26 @@ function Wait-TestGames($Processes, [int]$TimeoutSec, [System.Diagnostics.Stopwa
     return (@($Processes | Where-Object { -not $_.HasExited }).Count -eq 0)
 }
 
-# Call in finally: kills only this run's games, restores display prefs. The copy lock is NOT released here: the
+# Call in finally: kills only this run's games, checks the owner's settings key (T-094). The copy lock is NOT released here: the
 # script still has to read its result files, and the next run would delete them (2026-11-17: 3 c-server runs lost).
 # The script calls Exit-TestRun as its LAST step, after reading its results. If it dies before that, the lock goes
 # stale as soon as this PowerShell exits (its pid is gone). A later script in the same PowerShell reuses it.
 function Complete-TestRun {
     Stop-TestGames
     try { Remove-TestClientLinks } catch { Write-Host ('could not unlink client junctions: ' + $_) }
-    Restore-OriDisplayPrefs
+    Test-OwnerRegistry
     if ($script:TL_FocusFixes -gt 0) { 'focus: ' + $script:TL_FocusFixes + ' focus steal(s) by test windows undone' }
 }
 
 # Last line of every test script: releases the copy lock once the results have been read.
-function Exit-TestRun { Exit-CopyLock }
+# T-094: a run during which the owner's settings key changed (owner not playing) fails with exit 7.
+function Exit-TestRun {
+    Exit-CopyLock
+    if ($script:TL_OwnerRegLeak) {
+        Write-Host ('FAIL: this run changed the owner''s game settings (HKCU' + (Get-OwnerRegPath) + '): ' + $script:TL_OwnerRegLeak + ' (exit 7, T-094).')
+        exit 7
+    }
+}
 
 # Why a result file is missing, for the "no result file" line of a suite.
 function Get-NoResultReason {
