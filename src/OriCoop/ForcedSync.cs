@@ -12,7 +12,7 @@ namespace OriCoop
 {
     public static class ForcedSync
     {
-        const byte StateMessage = 54, CountMessage = 55, ForceMessage = 56, FireMessage = 57;
+        const byte StateMessage = 83, CountMessage = 84, ForceMessage = 85, FireMessage = 86;
         public static readonly bool Off = Environment.GetEnvironmentVariable("ORICOOP_GATE_OFF") == "1";
         static GateTable s_table = new GateTable();
         sealed class Gate

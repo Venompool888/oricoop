@@ -28,6 +28,9 @@ namespace OriCoop
         public static Func<int, byte, bool, Action<BinaryWriter>, bool> SendToOverride;
         // C-server hook: (transport, isHost, target from Begin) -> peer, or null when the transport is not handled.
         public static Func<string, bool, string, NetPeer> TransportFactory;
+        // Called by End() once the session is closed: a factory transport frees its own state (T-031: the C-server link
+        // kept its socket, routing and arbiter role, because its peer's queued Disconnected event is never polled after End).
+        public static Action Stopped;
         // Set by a factory transport (e.g. the C-server code after its welcome) so the lobby shows that room code.
         public static string RoomCodeOverride;
         static string s_factoryTarget = "";
@@ -387,6 +390,8 @@ namespace OriCoop
             }
             Close();
             s_reListen = false; s_modeNow = "off"; Problem = "";
+            if (Stopped != null) { try { Stopped(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: stop hook: " + e.Message); } }
+            HostOverride = false;      // a role from the ended session (server-mode arbiter) never carries into the next one
             Plugin.Log.LogInfo("online co-op: stopped (" + why + ")");
         }
 

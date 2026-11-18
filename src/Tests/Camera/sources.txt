@@ -1,0 +1,2 @@
+# T-058 online influence camera (pure math)
+OriCoop\Rules\InfluenceCamera.cs

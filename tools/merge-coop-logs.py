@@ -23,6 +23,9 @@ RATE = 0.5
 IP_RE = re.compile(r'\b(?:\d{1,3}\.){3}\d{1,3}\b')
 UTC_RE = re.compile(r'^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})\.(\d{3})Z$')
 PREFIX_RE = re.compile(r'^\[[A-Za-z]+\s*:\s*([^\]]*)\]\s?(.*)$')
+STAMP_RE = re.compile(r'^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z)\s+(.*)$')
+CLOCK_HDR_RE = re.compile(r'^clock: utc_offset=([+-]\d{2}:\d{2})\b')
+CLOCK_OFF_RE = re.compile(r'^clock: offset vs P(\d+) = ([+-]?\d+(?:\.\d+)?) ms')
 IDENT = ('id', 'obj', 'name', 'enemy')
 
 
@@ -53,6 +56,9 @@ class LogFile(object):
         self.lines = 0
         self.anchors = []
         self.header = {}
+        self.clock = {}
+        self.clock_fix = 0.0
+        self.utc_offset = None
 
     @property
     def last_line(self):
@@ -88,6 +94,21 @@ def parse_offset(s):
     s = s.lstrip('+-')
     h, m = s.split(':')
     return sign * timedelta(hours=int(h), minutes=int(m))
+
+
+def note_clock(f, msg):
+    m = CLOCK_HDR_RE.match(msg)
+    if m:
+        f.utc_offset = m.group(1)
+        return
+    m = CLOCK_OFF_RE.match(msg)
+    if m:
+        f.clock[int(m.group(1))] = float(m.group(2))
+
+
+def seat_of(role):
+    m = re.match(r'^P(\d+)$', role or '')
+    return int(m.group(1)) if m else None
 
 
 def parse_utc_token(tok):
@@ -228,6 +249,13 @@ def parse_new(f, lines, args):
         e = Event(f.path, lineno, 'new', fixed.get('role', f.role),
                   fixed.get('sid', '-'), subsys, name, fields, local, utc)
         f.events.append(e)
+        if e.subsys == 'net' and e.name == 'clock.offset':
+            try:
+                f.clock[int(e.fields['seat'])] = float(e.fields['offset_ms'])
+            except (KeyError, ValueError):
+                pass
+        if 'msg' in e.fields:
+            note_clock(f, e.fields['msg'])
         if e.role != '?':
             f.role = e.role
         if e.sid != '-':
@@ -235,15 +263,30 @@ def parse_new(f, lines, args):
 
 
 def parse_old(f, lines, args):
+    stamped = 0
     for lineno, line in enumerate(lines, 1):
         raw = line.rstrip('\r\n')
         if not raw.strip():
             continue
         m = PREFIX_RE.match(raw)
         msg = m.group(2) if m else raw
+        utc = local = None
+        sm = STAMP_RE.match(msg)
+        if sm:
+            utc = parse_utc_token(sm.group(1))
+            if utc is not None:
+                msg = sm.group(2)
+                local = (utc + args.offset).replace(tzinfo=None)
+                stamped += 1
+                f.anchors.append((lineno, local))
+        note_clock(f, msg)
         subsys, name = old_parts(msg)
         f.events.append(Event(f.path, lineno, 'old', f.role, '-', subsys, name,
-                              {'msg': msg}, approx=True))
+                              {'msg': msg}, local, utc, approx=utc is None))
+    if stamped:
+        f.fmt = 'stamped'
+        for e in f.events:
+            e.fmt = 'stamped'
 
 
 def load_files(args):
@@ -381,12 +424,41 @@ def align_old_files(files, args, base):
 
 def estimate_old(files, args, base):
     for f in files:
-        if f.fmt != 'old':
+        if f.fmt not in ('old', 'stamped'):
             continue
         for e in f.events:
+            if e.utc is not None:
+                continue
             e.local = estimate_time(f.anchors, e.lineno, base)
             e.utc = (e.local - args.offset).replace(tzinfo=timezone.utc)
             e.approx = True
+
+
+def apply_clock_fix(files, args):
+    if args.no_clock_fix or not files:
+        return
+    ref = next((f for f in files if f.role == 'P1'), files[0])
+    ref_seat = seat_of(ref.role)
+    for f in files:
+        if f is ref:
+            continue
+        seat = seat_of(f.role)
+        if seat is None:
+            continue
+        delta = None
+        if ref_seat is not None and ref_seat in f.clock:
+            delta = f.clock[ref_seat]
+        elif seat in ref.clock:
+            delta = -ref.clock[seat]
+        if not delta:
+            continue
+        f.clock_fix = delta
+        shift = timedelta(milliseconds=delta)
+        for e in f.events:
+            if e.utc is not None:
+                e.utc += shift
+            if e.local is not None:
+                e.local += shift
 
 
 def selected(events, args):
@@ -441,9 +513,9 @@ def old_key(e):
 
 
 def event_brief(e, args):
-    if e.fmt == 'old':
+    if e.fmt in ('old', 'stamped'):
         f = fmt_fields(e.fields)
-        return '%s %s %s%s' % (fmt_time(display_dt(e, args), True), e.subsys, e.name,
+        return '%s %s %s%s' % (fmt_time(display_dt(e, args), e.approx), e.subsys, e.name,
                                (' ' + f) if f else '')
     key = new_ident(e)
     ident = ''
@@ -466,7 +538,7 @@ def nearest(lst, dt):
 def build_diff(events, args):
     p1, p2 = [], []
     for e in events:
-        key = old_key(e) if e.fmt == 'old' else new_key(e)
+        key = old_key(e) if e.fmt in ('old', 'stamped') else new_key(e)
         if key is None or e.role not in ('P1', 'P2'):
             continue
         (p1 if e.role == 'P1' else p2).append((e, key))
@@ -508,17 +580,18 @@ def build_summary(files):
     out = []
     for f in files:
         times = [display_dt(e, ARGS) for e in f.events if e.local is not None]
+        approx = any(e.approx for e in f.events)
         if times:
-            rng = '%s~%s' % (fmt_time(min(times), f.fmt == 'old'),
-                             fmt_time(max(times), f.fmt == 'old'))
+            rng = '%s~%s' % (fmt_time(min(times), approx), fmt_time(max(times), approx))
         else:
             rng = '-'
         counts = {}
         for e in f.events:
             counts[e.subsys] = counts.get(e.subsys, 0) + 1
         subs = ','.join('%s:%d' % (k, counts[k]) for k in sorted(counts))
-        out.append('%s: format=%s lines=%d range=%s sid=%s role=%s subsys=%s' % (
-            f.path, f.fmt, f.lines, rng, f.sid, f.role, subs))
+        fix = ('%+.1fms' % f.clock_fix) if f.clock_fix else '0'
+        out.append('%s: format=%s lines=%d range=%s sid=%s role=%s subsys=%s utc_offset=%s clock_fix=%s' % (
+            f.path, f.fmt, f.lines, rng, f.sid, f.role, subs, f.utc_offset or '?', fix))
     return out
 
 
@@ -532,6 +605,7 @@ def run(argv):
     ap.add_argument('--date', metavar='YYYY-MM-DD')
     ap.add_argument('--utc-offset', default='+00:00')
     ap.add_argument('--utc', action='store_true')
+    ap.add_argument('--no-clock-fix', action='store_true')
     ap.add_argument('--subsys')
     ap.add_argument('--from', dest='from_', metavar='HH:MM:SS')
     ap.add_argument('--to', metavar='HH:MM:SS')
@@ -559,10 +633,11 @@ def run(argv):
     base = datetime.combine(args.date, time.min)
     align_old_files(files, args, base)
     estimate_old(files, args, base)
+    apply_clock_fix(files, args)
     events = []
     for f in files:
         events.extend(f.events)
-    events.sort(key=lambda e: (display_dt(e, args), e.role))
+    events.sort(key=lambda e: (e.utc, e.role))
     picked = selected(events, args)
     out = []
     if args.summary:
@@ -614,6 +689,46 @@ def selftest():
         assert len(conn) == 2 and conn[0].split()[0] == conn[1].split()[0]
         old_diff = '\n'.join(run([o1, o2, '--date', '2026-11-16', '--diff', '--window', '2']))
         assert 'ONLY P1:' in old_diff and 'p1-only' in old_diff
+
+        s1 = os.path.join(d, 'p1-stamped.log')
+        s2 = os.path.join(d, 'p2-stamped.log')
+        with open(s1, 'w', encoding='utf-8') as fh:
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:00.000Z clock: utc_offset=+09:00 local=2026-11-18T19:00:00.000 utc=2026-11-18T10:00:00.000Z\n')
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:02.500Z story Y\n')
+        with open(s2, 'w', encoding='utf-8') as fh:
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:00.000Z clock: utc_offset=+05:30 local=2026-11-18T15:30:00.000 utc=2026-11-18T10:00:00.000Z\n')
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:00.100Z clock: offset vs P1 = +2000.0 ms (P1 clock minus ours; rtt 114.0 ms, 8 samples)\n')
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:01.000Z story X\n')
+        a_merge = run([s1, s2])
+        assert next(i for i, x in enumerate(a_merge) if '"story Y"' in x) < \
+            next(i for i, x in enumerate(a_merge) if '"story X"' in x)
+        a_raw = run([s1, s2, '--no-clock-fix'])
+        assert next(i for i, x in enumerate(a_raw) if '"story X"' in x) < \
+            next(i for i, x in enumerate(a_raw) if '"story Y"' in x)
+        a_sum = '\n'.join(run([s1, s2, '--summary']))
+        assert 'format=stamped' in a_sum and 'utc_offset=+05:30' in a_sum and 'clock_fix=+2000.0ms' in a_sum
+
+        s3 = os.path.join(d, 'p1-stamped-gap.log')
+        with open(s3, 'w', encoding='utf-8') as fh:
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:00.000Z story start\n')
+            fh.write('[Info   :   BepInEx] middle line\n')
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:10.000Z story end\n')
+        gap = '\n'.join(run([s3]))
+        assert '10:00:05.000~ P1 log middle' in gap
+        assert 'format=stamped' in '\n'.join(run([s3, '--summary']))
+
+        c1 = os.path.join(d, 'p1-stamped-base.log')
+        c2 = os.path.join(d, 'p2-stamped-base.log')
+        with open(c1, 'w', encoding='utf-8') as fh:
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:00.000Z clock: utc_offset=+09:00 local=2026-11-18T19:00:00.000 utc=2026-11-18T10:00:00.000Z\n')
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:00.100Z clock: offset vs P2 = -2000.0 ms (P2 clock minus ours; rtt 114.0 ms, 8 samples)\n')
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:02.500Z story Y\n')
+        with open(c2, 'w', encoding='utf-8') as fh:
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:00.000Z clock: utc_offset=+05:30 local=2026-11-18T15:30:00.000 utc=2026-11-18T10:00:00.000Z\n')
+            fh.write('[Info   :Ori Local Co-op] 2026-11-18T10:00:01.000Z story X\n')
+        c_merge = run([c1, c2])
+        assert next(i for i, x in enumerate(c_merge) if '"story Y"' in x) < \
+            next(i for i, x in enumerate(c_merge) if '"story X"' in x)
 
 
 if __name__ == '__main__':

@@ -177,7 +177,8 @@ namespace OriCoop.Story
         public string Key;
         public uint Token;
         public int Sender;
-        public float Began, NextResolve, EndAt = -1f;
+        public float Began, NextResolve, EndAt = -1f, NextSceneLoad;
+        public int SceneLoads;
         public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
     }
 
@@ -241,6 +242,15 @@ namespace OriCoop.Story
         public static bool ResolveDue(T item, float now, float delay)
         { return now >= item.NextResolve && now - item.Began >= delay; }
         public static void ScheduleResolve(T item, float now) { item.NextResolve = now + 0.1f; }
+        // A resolve attempt failed: may it load the scenes around the story? (T-066) The 0.1 s resolve retry is cheap, but
+        // loading the scenes each time made 20 loads in the 2 s window. Now: at once, then after 0.5 s and 1 s more; that is all.
+        public const int MaxSceneLoads = 3;
+        public static bool SceneLoadDue(T item, float now)
+        {
+            if (item.SceneLoads >= MaxSceneLoads || now < item.NextSceneLoad) return false;
+            item.SceneLoads++; item.NextSceneLoad = now + 0.5f * item.SceneLoads;
+            return true;
+        }
         public static StoryResolution Resolution(T item, float now, bool off)
         {
             if (now - item.Began >= 2f) return !item.Classified && !off ? StoryResolution.Drop : StoryResolution.Watch;

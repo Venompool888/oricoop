@@ -174,6 +174,20 @@ namespace OriCoop
             if (P2 == null) { Finish(); yield break; }
             Check(P2 != P1, "P2 is a separate SeinCharacter");
             Check(Characters.Sein == P1, "Characters.Sein restored to P1 after spawn");
+            // T-032: the build is named (the build scripts embed the commit) and F8 opens the log folder.
+            Check(OriCoop.Ui.BuildInfo.Commit != OriCoop.Ui.BuildInfo.Unknown, "build info: DLL names its commit (" + OriCoop.Ui.BuildInfo.Commit + ")");
+            string opened = null;
+            CoopMenu.OpenFolderHook = delegate(string dir) { opened = dir; };
+            CoopMenu.Open();
+            yield return StartCoroutine(Wait(0.5f));
+            Check(CoopMenu.SettingsLogsRow == 2 + 3 && CoopMenu.SettingsCloseRow == 2 + 4, "F8: two seats, then cutscenes / remove P2 / mode / log folder / close (rows "
+                + CoopMenu.SettingsLogsRow + ", " + CoopMenu.SettingsCloseRow + ")");
+            CoopMenu.Activate(CoopMenu.SettingsLogsRow);
+            Check(opened != null && System.IO.File.Exists(System.IO.Path.Combine(opened, "LogOutput.log")),
+                "F8: 打开日志文件夹 opens the folder with LogOutput.log (" + (opened == null ? "not opened" : System.IO.File.Exists(System.IO.Path.Combine(opened, "LogOutput.log")) ? "LogOutput.log found" : "no LogOutput.log there") + ")");
+            Check(CoopMenu.IsOpen, "F8: panel stays open after opening the log folder");
+            CoopMenu.Close();
+            CoopMenu.OpenFolderHook = null;
             yield return StartCoroutine(Wait(1f));
             // Save isolation: P2 must not take over any of P1's checkpoint save entries.
             int p1SaveEntries1 = CountSaveEntriesUnder(P1.transform), p2Entries = CountSaveEntriesUnder(P2.transform);
@@ -516,15 +530,25 @@ namespace OriCoop
             P1.Mortality.Health.RestoreAllHealth(); P2.Mortality.Health.RestoreAllHealth();
             P1.Mortality.DamageReciever.MakeInvincible(10f); P2.Mortality.DamageReciever.MakeInvincible(10f);
             PickupBase best = null; float bestD = float.MaxValue;
-            // Include inactive ones: frustum-optimized pickups switch themselves off while off-screen.
-            foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+            // Include inactive ones: frustum-optimized pickups switch themselves off while off-screen. Skip template
+            // clones parked at the origin and anything far away: when the area had not streamed in yet, the old search
+            // took an inactive "healthContainerPickup(Clone)" at (0,0,0) ~290 units off and failed (2026-11-18, 1 run
+            // in 5). Wait a few seconds for a real one; otherwise report SKIP, not FAIL.
+            float searchEnd = Time.unscaledTime + 8f;
+            while (best == null)
             {
-                if (pb == null || pb.IsCollected || !pb.gameObject.scene.IsValid() || !pb.gameObject.scene.isLoaded) continue;
-                if (pb.transform.parent != null && !pb.transform.parent.gameObject.activeInHierarchy) continue;
-                float d = Vector3.Distance(pb.transform.position, P1.Position);
-                if (d < bestD) { bestD = d; best = pb; }
+                foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+                {
+                    if (pb == null || pb.IsCollected || !pb.gameObject.scene.IsValid() || !pb.gameObject.scene.isLoaded) continue;
+                    if (pb.transform.parent != null && !pb.transform.parent.gameObject.activeInHierarchy) continue;
+                    if (pb.transform.position == Vector3.zero) continue;
+                    float d = Vector3.Distance(pb.transform.position, P1.Position);
+                    if (d < 60f && d < bestD) { bestD = d; best = pb; }
+                }
+                if (best != null || Time.unscaledTime >= searchEnd) break;
+                float retryAt = Time.unscaledTime + 0.5f; while (Time.unscaledTime < retryAt) yield return null;
             }
-            if (best == null) { Skip("pickup: no uncollected pickup in loaded scenes"); yield break; }
+            if (best == null) { Skip("pickup: no uncollected pickup within 60 units of P1 in loaded scenes"); yield break; }
             Note("pickup: using " + best.name + " (" + best.GetType().Name + ") " + F(bestD) + " from P1");
             // P1 stays where it is (it must not touch the pickup); the leash is loosened so P2 can reach it.
             Vector3 pp = best.transform.position;
@@ -861,8 +885,13 @@ namespace OriCoop
                 pauseNav.SetCurrentMenuItem(pauseEntry);
                 pauseNav.PressCurrentItem();
                 yield return null;
-                Check(CoopMenu.IsOpen && UI.MainMenuVisible && !pauseNav.IsVisible && pauseNav.IsLocked && Time.timeScale == pauseScale,
-                    "menu: pause entry opens settings without adding a pause or releasing the native pause");
+                // "Without adding a pause": the panel must not freeze the game itself (the native pause keeps its own). Not an exact
+                // timeScale compare: the game's SyncFramesTest.Update writes 1 / 1.5 / 0.5 every frame to pace fixed updates
+                // (decomp SyncFramesTest.cs:28-50), so two frames' values differ by design.
+                Check(CoopMenu.IsOpen && UI.MainMenuVisible && !pauseNav.IsVisible && pauseNav.IsLocked && !CoopMenu.FrozeGame && Time.timeScale > 0f,
+                    "menu: pause entry opens settings without adding a pause or releasing the native pause (open=" + CoopMenu.IsOpen + " page=" + CoopMenu.Page
+                    + " menuVisible=" + UI.MainMenuVisible + " pauseVisible=" + pauseNav.IsVisible + " pauseLocked=" + pauseNav.IsLocked
+                    + " froze=" + CoopMenu.FrozeGame + " timeScale=" + Time.timeScale + " was " + pauseScale + ")");
                 CoopMenu.Close();
                 yield return StartCoroutine(Wait(0.4f));
                 Check(!CoopMenu.IsOpen && UI.MainMenuVisible && pauseNav.IsVisible && pauseNav.IsActive && !pauseNav.IsLocked && pauseNav.CurrentMenuItem == pauseEntry,
@@ -890,7 +919,7 @@ namespace OriCoop
 
             CoopMenu.Activate(2);
             Check(Plugin.Instance.P2CanTriggerCutscenes != cutWas, "menu: story cutscene option toggles");
-            CoopMenu.Activate(5);
+            CoopMenu.Activate(CoopMenu.SettingsCloseRow);
             yield return null;
             Check(!CoopMenu.IsOpen && Time.timeScale > 0f, "menu: closes and the game runs again");
             Check((P2 != null ? 1 : 0) == joins0, "menu: buttons pressed in the menu don't add/remove P2");
@@ -1120,9 +1149,10 @@ namespace OriCoop
             yield return StartCoroutine(Wait(0.3f));
             x0 = P2.Position.x;
             Bot(1f, 0);
-            yield return StartCoroutine(Wait(0.6f));
+            TestClock.Window run = new TestClock.Window(0.6f);   // game seconds (T-071): movement is game-timed
+            while (run.Open) yield return null;
             Bot(0f, 0);
-            Check(P2.Position.x - x0 > 1f, "lifecycle: P2 moves again after the hold (dx=" + F(P2.Position.x - x0) + ")");
+            Check(P2.Position.x - x0 > 1f, "lifecycle: P2 moves again after the hold (dx=" + F(P2.Position.x - x0) + " game=" + F(run.GameElapsed) + "s real=" + F(run.RealElapsed) + "s)");
             Check(m_errors == err0, "lifecycle: no errors");
         }
 

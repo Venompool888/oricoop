@@ -667,8 +667,11 @@ namespace OriCoop
                 if (StoryLedger<Story>.ResolveDue(story, now, TestResolveDelay))
                 {
                     StoryLedger<Story>.ScheduleResolve(story, now);
-                    if (!Resolve(story) && Core.Scenes.Manager != null)
+                    if (!Resolve(story) && Core.Scenes.Manager != null && StoryLedger<Story>.SceneLoadDue(story, now))
+                    {
+                        StoryHost.Current.Trace("story", "scene.load", "key", story.Key, "n", story.SceneLoads);
                         Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(new Rect(story.Position.x - 16, story.Position.y - 16, 32, 32), true, false, false);
+                    }
                 }
             }
             foreach (ulong token in ended) EndRemote(token);

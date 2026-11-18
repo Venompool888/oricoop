@@ -1,2 +1,3 @@
 OriCoop\L10n.cs
 OriCoop\Ui\NativeGuiState.cs
+OriCoop\Ui\BuildInfo.cs

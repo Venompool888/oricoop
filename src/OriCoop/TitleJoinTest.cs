@@ -258,6 +258,17 @@ namespace OriCoop
                     "host: guest Ori beside the host (distance " + (NetPlay.HaveRemotePos ? Vector3.Distance(NetPlay.LatestRemotePos, me).ToString("F2") : "?") + ")");
                 Shot("in_game");
                 yield return StartCoroutine(TWait(8f));                             // let the guest finish its checks
+                if (m_tr == "cserver")
+                {
+                    // T-031: the server-mode room's arbiter role must end with the session. It used to survive NetPlay.End,
+                    // so the next Steam join (an invite at the title) ran as a host and refused the invite.
+                    Check(NetPlay.HostOverride, "host: seat 1 is the server-mode arbiter while the session runs");
+                    NetPlay.End("title join test: session end check");
+                    yield return null;
+                    Check(!NetPlay.HostOverride && !NetPlay.IsHost && OriCoop.Authority.CServerLink.Client == null,
+                        "host: ending the session clears the arbiter role and the server link (HostOverride=" + NetPlay.HostOverride +
+                        ", link=" + (OriCoop.Authority.CServerLink.Client != null) + ")");
+                }
             }
 
             IEnumerator Join(int savesAtStart)

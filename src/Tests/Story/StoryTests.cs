@@ -24,6 +24,7 @@ static partial class StoryTests
         ProgressCases();
         ObjectCases();
         GateCases();
+        SkillCases();
         return failures == 0 ? 0 : 1;
     }
 }

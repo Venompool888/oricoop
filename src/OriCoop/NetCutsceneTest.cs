@@ -147,6 +147,26 @@ namespace OriCoop
             yield return Barrier(h, 2);
             h.Check(s_pedestal != null && Remote.ContainsKey(2) && Remote[2].Found, "CUT wall-jump pedestal found");
         }
+        static IEnumerator Refind(TestHarness h)
+        {
+            float start = Now;
+            foreach (RuntimeSceneMetaData scene in Core.Scenes.Manager.AllScenes)
+                if (scene.Scene == SceneName)
+                {
+                    Vector2 center = scene.SceneBounds.center;
+                    Plugin.Teleport(Own, new Vector3(center.x, center.y, 0));
+                    Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(scene.SceneBounds, true, false, false);
+                    break;
+                }
+            float end = Now + 20f;
+            while (Now < end)
+            {
+                s_pedestal = FindPedestal();
+                if (s_pedestal != null && !GameController.Instance.IsLoadingGame) break;
+                yield return null;
+            }
+            h.Note("CUT pedestal scene had streamed out; found again=" + (s_pedestal != null) + " after " + (Now - start).ToString("F1") + " s");
+        }
         static Lever FindLever()
         {
             foreach (ActionLeverSystem system in Resources.FindObjectsOfTypeAll<ActionLeverSystem>())
@@ -637,7 +657,16 @@ namespace OriCoop
                 {
                     yield return Step(h, 5, ProgressWhileNotInGameplay(h));
                     yield return Step(h, 3, Setup(h));
-                    if (s_pedestal == null || !Remote.ContainsKey(2) || !Remote[2].Found) yield break;
+                    // T-073: on a busy PC the pedestal's scene streamed out on the guest right after step 3; this end then
+                    // left P3 silently and the host waited 20 s at every later barrier. Find it again (reloading its
+                    // scene), and fail loudly if it stays gone.
+                    if (s_pedestal == null && Remote.ContainsKey(2) && Remote[2].Found) yield return Refind(h);
+                    if (s_pedestal == null || !Remote.ContainsKey(2) || !Remote[2].Found)
+                    {
+                        h.Check(false, "CUT wall-jump pedestal still loaded before the pedestal steps (local=" + (s_pedestal != null)
+                            + " partner=" + (Remote.ContainsKey(2) && Remote[2].Found) + ")");
+                        yield break;
+                    }
                     yield return Step(h, 10, Pedestal(h, "host", true, 11));
                     yield return Step(h, 20, Pedestal(h, "guest", false, 21));
                     NetPlay.SetSim(100, 0, 0, 0);   // ~200 ms round trip

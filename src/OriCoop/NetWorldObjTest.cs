@@ -89,7 +89,10 @@ namespace OriCoop
             RuntimeSceneMetaData meta = Core.Scenes.Manager.GetSceneInformation(via ?? scene);
             if (meta == null) { h.Check(false, tag + " scene " + (via ?? scene) + " exists"); yield break; }
             Place(meta.PlaceholderPosition);
-            float start = Time.realtimeSinceStartup, end = start + 20f; bool moved = false;
+            // T-073: on a busy PC (1) the first frame with any candidate can hold only part of the scene, so the two PCs
+            // picked different "smallest" ids: wait until the candidate count has been steady for 1 s; (2) the teleport
+            // did not always stick (WO8: the guest stood at (0.4, -256.7), 0 candidates after 20 s): place again every 6 s.
+            float start = Time.realtimeSinceStartup, end = start + 30f, steadySince = -1f, lastPlace = start; int lastCount = -1, places = 0;
             while (Time.realtimeSinceStartup < end)
             {
                 KeepAlive();
@@ -97,10 +100,17 @@ namespace OriCoop
                 // Inactive objects too (the Ginso escape water is switched on by its story): callers activate what they need.
                 foreach (T t in Resources.FindObjectsOfTypeAll<T>())
                     if (t != null && t.gameObject.scene.name == scene && (includeInactive || t.gameObject.activeInHierarchy) && (fresh == null || fresh(t))) s_found.Add(t);
-                if (s_found.Count > 0) break;
-                // Some placeholders sit outside their scene's streaming area: try the middle of its first boundary.
-                if (!moved && Time.realtimeSinceStartup - start > 6f && meta.SceneBoundaries.Count > 0)
-                { moved = true; Rect r = meta.SceneBoundaries[0]; Place(new Vector3(r.center.x, r.center.y, 0f)); }
+                float now = Time.realtimeSinceStartup;
+                if (s_found.Count != lastCount) { lastCount = s_found.Count; steadySince = now; }
+                if (s_found.Count > 0 && now - steadySince >= 1f) break;
+                if (s_found.Count == 0 && now - lastPlace > 6f)
+                {
+                    // Alternate: the placeholder, then the middle of the scene's first boundary (some placeholders sit
+                    // outside their scene's streaming area).
+                    lastPlace = now; places++;
+                    if (places % 2 == 1 && meta.SceneBoundaries.Count > 0) { Rect r = meta.SceneBoundaries[0]; Place(new Vector3(r.center.x, r.center.y, 0f)); }
+                    else Place(meta.PlaceholderPosition);
+                }
                 yield return null;
             }
             s_found.Sort((x, y) => WorldObjSync.IdOf(x).CompareTo(WorldObjSync.IdOf(y)));
@@ -136,6 +146,18 @@ namespace OriCoop
             yield return Barrier(h, step, id, 0f, 0f);
             Sample p = Partner(step);
             h.Check(mine != null && p != null && p.Id == id, tag + " both PCs picked the same object (id=" + id + " partner=" + (p == null ? "none" : p.Id.ToString()) + ")");
+            // T-073: on a mismatch list this PC's candidates, so the two logs show which object one side had and the other not.
+            if (mine == null || p == null || p.Id != id)
+            {
+                string list = "";
+                foreach (Component c in s_found)
+                {
+                    EntityDamageReciever dr = c.GetComponent<EntityDamageReciever>();
+                    list += " " + WorldObjSync.IdOf(c) + "@" + c.transform.position.x.ToString("F1") + "," + c.transform.position.y.ToString("F1")
+                        + (dr != null ? " hp=" + dr.Health.ToString("F0") : "") + (c.gameObject.activeInHierarchy ? "" : " (off)");
+                }
+                h.Note(tag + " candidates on this PC (" + s_found.Count + "):" + list);
+            }
             if (mine != null && p != null && p.Id == id) s_pick = mine;
         }
 
@@ -370,8 +392,8 @@ namespace OriCoop
             }
             else
             {
-                float until = Time.realtimeSinceStartup + 3f; bool done = false;
-                while (Time.realtimeSinceStartup < until && !done) { done = WorldObjSync.PostActivated(post) && WorldObjSync.PostActionsApplied > before; yield return null; }
+                TestClock.Window until = new TestClock.Window(3f); bool done = false;   // game seconds (T-071): the post slides in game time
+                while (until.Open && !done) { done = WorldObjSync.PostActivated(post) && WorldObjSync.PostActionsApplied > before; yield return null; }
                 h.Check(done, tag + " guest's post is in and its AllTheWayInAction ran within 3 s (activated=" + WorldObjSync.PostActivated(post)
                     + " actions=" + (WorldObjSync.PostActionsApplied - before) + ")");
             }

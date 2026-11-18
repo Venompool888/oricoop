@@ -150,6 +150,11 @@ namespace OriCoop
             return new Dictionary<ISuspendable, int>((Dictionary<ISuspendable, int>)
                 AccessTools.Field(typeof(SuspensionManager), "s_suspended").GetValue(null));
         }
+        static bool AnySuspended(Dictionary<ISuspendable, int> counts)
+        {
+            foreach (int count in counts.Values) if (count != 0) return true;
+            return false;
+        }
         static string Counts(Dictionary<ISuspendable, int> counts)
         {
             SortedDictionary<int, int> histogram = new SortedDictionary<int, int>();
@@ -160,6 +165,16 @@ namespace OriCoop
         }
         static IEnumerator Menu(TestHarness h)
         {
+            // T-073: on a busy PC the previous step's suspension (death / reload fade) could still hold when this step
+            // started, so "before" caught 3157 objects at refCount 1 and the check failed although the pause restored
+            // everything (net-relay, 2026-11-18). Every normal run starts at refCount 0: wait for that. The phase before
+            // ends with R3's checkpoint reload, whose fades run in game time, so wait up to 8 GAME seconds (T-071): at a
+            // forced 15 fps 5 real seconds were not enough. Still suspended after that = stuck, and the check fails.
+            TestClock.Window settle = new TestClock.Window(8f);
+            while (settle.Open && AnySuspended(SuspensionCounts())) yield return null;
+            if (settle.RealElapsed > 0.1f)
+                h.Note("S4 waited " + F(settle.GameElapsed) + " game s (" + F(settle.RealElapsed) + " real) for earlier suspensions to end ("
+                    + Counts(SuspensionCounts()) + ")");
             Dictionary<ISuspendable, int> before = SuspensionCounts(); bool guest = !NetPlay.IsHost;
             Vector3 ownStart = Vector3.zero, puppetStart = Vector3.zero; long frames = 0;
             try

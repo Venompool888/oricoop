@@ -8,7 +8,7 @@
 #   -Parallel N run up to N suites at once (each takes its own test copy through test-launch.ps1's lock).
 # Exit 0 = everything that ran passed.
 #   -Files a,b  use these paths instead of git (relative to the repo root).   -All  every suite (nightly / release).   -Summary f  also write the summary to file f.
-param([string]$Base = 'main', [switch]$WorkingTree, [switch]$DryRun, [ValidateRange(1, 3)][int]$Parallel = 2, [string[]]$Files, [switch]$All, [string]$Summary)
+param([string]$Base = 'main', [switch]$WorkingTree, [switch]$DryRun, [ValidateRange(1, 5)][int]$Parallel = 2, [string[]]$Files, [switch]$All, [string]$Summary)
 $ErrorActionPreference = 'Stop'
 $src = $PSScriptRoot
 $root = Split-Path -Parent $src
@@ -116,7 +116,9 @@ if ($All) { $toRun = @($Suites.Keys) }
 if ($DryRun) { return }
 
 # --- layer 1: unit tests
-& (Join-Path $src 'run-unittests.ps1')
+$unitGame = Join-Path $root 'game'
+if (-not (Test-Path "$unitGame\oriDE_Data\Managed")) { $unitGame = Join-Path (Split-Path -Parent (git -C $root rev-parse --path-format=absolute --git-common-dir).Trim()) 'game' }
+& (Join-Path $src 'run-unittests.ps1') -Game $unitGame
 if ($LASTEXITCODE -ne 0) { 'AFFECTED FAIL: unit tests failed; game suites not run'; exit 1 }
 
 # --- layer 2: affected game suites (each in its own PowerShell, so they can share the copy locks)

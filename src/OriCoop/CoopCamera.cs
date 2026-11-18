@@ -170,7 +170,8 @@ namespace OriCoop
             {
                 __state = __instance.AdditiveDefaultOffset;
                 OffsetUpdates++;
-                if (P2Context.P2 != null && s_extra > 0.001f) __instance.AdditiveDefaultOffset += new Vector3(0f, 0f, s_extra);
+                float extra = s_extra + OnlineCamera.ZoomExtra;   // local same-screen framing + online teammate influence (T-058)
+                if (P2Context.P2 != null && extra > 0.001f) __instance.AdditiveDefaultOffset += new Vector3(0f, 0f, extra);
             }
             static void Postfix(CameraOffsetController __instance, Vector3 __state)
             {

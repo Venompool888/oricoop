@@ -97,10 +97,66 @@ namespace OriCoop
         static ProgressSnapshot Capture()
         {
             SeinCharacter p = Own; ProgressSnapshot s = new ProgressSnapshot();
-            for (int i = 0; i < 43; i++) if (p.PlayerAbilities.Abilities[i].HasAbility) s.Abilities |= 1UL << i;
+            ulong owned = OwnedBits(p);
+            EnsureSkillTree(p);
+            // T-047: skill-tree abilities and points are per player; the snapshot carries the shared part only
+            // (Story\SkillSplit.cs): abilities without the tree, and `earned` instead of this player's points.
+            s.Abilities = SkillSplit.Shared(owned, s_tree);
             s.MaxHealth = p.Mortality.Health.MaxHealth; s.MaxEnergy = p.Energy.Max;
             s.Keys = p.Inventory.Keystones; s.Maps = p.Inventory.MapStones; s.Collected = p.Inventory.SkillPointsCollected;
-            s.Experience = p.Level.Experience; s.Level = p.Level.Current; s.Points = p.Level.SkillPoints; return s;
+            s.Experience = p.Level.Experience; s.Level = p.Level.Current;
+            s.Points = SkillSplit.Earned(p.Level.SkillPoints, owned, s_tree, s_cost); return s;
+        }
+
+        static ulong OwnedBits(SeinCharacter p)
+        {
+            ulong bits = 0;
+            for (int i = 0; i < 43; i++) if (p.PlayerAbilities.Abilities[i].HasAbility) bits |= 1UL << i;
+            return bits;
+        }
+
+        // Skill tree layout: which PlayerAbilities.Abilities slot each SkillItem buys, and its price. Read once from the
+        // game's SkillTreeManager. Unknown (no manager yet) = tree 0, which is the old fully shared behaviour.
+        static ulong s_tree;
+        static readonly int[] s_cost = new int[64];
+        static bool s_treeKnown;
+        public static ulong SkillTreeMask { get { return s_tree; } }
+
+        static void EnsureSkillTree(SeinCharacter p)
+        {
+            if (s_treeKnown) return;
+            SkillTreeManager m = SkillTreeManager.Instance;
+            if (m == null || DifficultyController.Instance == null) return;
+            ulong tree = 0;
+            foreach (SkillItem item in m.GetComponentsInChildren<SkillItem>(true))
+            {
+                int i = AbilitySlot(p.PlayerAbilities, item.Ability);
+                if (i < 0) continue;
+                tree |= 1UL << i;
+                s_cost[i] = item.ActualRequiredSkillPoints;
+            }
+            if (tree == 0) return;
+            s_tree = tree; s_treeKnown = true;
+            Services.Log.Info("net: skill tree: " + CountBits(tree) + " per-player abilities (mask " + tree.ToString("X") + ")");
+        }
+
+        static int CountBits(ulong v) { int n = 0; for (; v != 0; v &= v - 1) n++; return n; }
+
+        // Abilities[] is not in AbilityType order: find the slot whose flag HasAbility(type) reads (flip and restore one
+        // plain field at a time; SetAbility is patched elsewhere, so it is not used here).
+        static int AbilitySlot(PlayerAbilities a, AbilityType type)
+        {
+            bool before = a.HasAbility(type);
+            for (int i = 0; i < a.Abilities.Length; i++)
+            {
+                CharacterAbility c = a.Abilities[i];
+                if (c == null) continue;
+                c.HasAbility = !c.HasAbility;
+                bool moved = a.HasAbility(type) != before;
+                c.HasAbility = !c.HasAbility;
+                if (moved) return i;
+            }
+            return -1;
         }
         public static ulong Hash() { return Ready ? Capture().Hash() : 0; }
         public static void Tick()
@@ -172,14 +228,17 @@ namespace OriCoop
             SeinCharacter p = Own; bool changed = false; s_applying = true;
             try
             {
+                EnsureSkillTree(p);
+                ulong merged = SkillSplit.Merge(OwnedBits(p), s.Abilities, s_tree);   // keep this player's own skill tree
                 for (int i = 0; i < 43; i++)
                 {
-                    bool value = (s.Abilities & (1UL << i)) != 0;
+                    bool value = (merged & (1UL << i)) != 0;
                     if (p.PlayerAbilities.Abilities[i].HasAbility != value) { p.PlayerAbilities.Abilities[i].HasAbility = value; changed = true; }
                 }
                 p.Mortality.Health.MaxHealth = s.MaxHealth; p.Energy.Max = s.MaxEnergy;
                 p.Inventory.Keystones = s.Keys; p.Inventory.MapStones = s.Maps; p.Inventory.SkillPointsCollected = s.Collected;
-                p.Level.Experience = s.Experience; p.Level.Current = s.Level; p.Level.SkillPoints = s.Points;
+                p.Level.Experience = s.Experience; p.Level.Current = s.Level;
+                p.Level.SkillPoints = SkillSplit.Points(s.Points, merged, s_tree, s_cost);
                 // Prevent the guest's XP visual interpolation from independently awarding a level.
                 p.Level.ExperienceVisualMin = s.Experience; p.Level.ExperienceVisualMax = s.Experience;
                 if (changed && p.Prefabs != null) p.Prefabs.EnsureRightPrefabsAreThereForAbilities();
@@ -237,7 +296,7 @@ namespace OriCoop
                     case ActionKind.DoorEnergyDelta:
                         float energy = a.Amount / 1000f;
                         if (energy < 0) p.Energy.Spend(-energy); else p.Energy.Gain(energy); break;
-                    case ActionKind.Skill: BuySkill((AbilityType)a.Extra); break;
+                    case ActionKind.Skill: Services.Log.Info("net: skill purchase action ignored (each player buys in their own tree)"); break;
                     case ActionKind.Pedestal:
                         GetAbilityPedestal pedestal = StoryHost.Current.FindAny(guid) as GetAbilityPedestal;
                         AbilityType ability = pedestal != null ? pedestal.Ability : (AbilityType)a.Extra;
@@ -295,35 +354,6 @@ namespace OriCoop
             }
             finally { s_synthetic = null; if (temporary != null) UnityEngine.Object.Destroy(temporary); }
         }
-        static void BuySkill(AbilityType ability)
-        {
-            if (Own.PlayerAbilities.HasAbility(ability)) return; // a repeated press before the reply is harmless
-            SkillTreeManager m = SkillTreeManager.Instance;
-            if (!SkillPurchaseForwardingEnabled) return;
-            if (m == null)
-            {
-                DisableSkills("host SkillTreeManager absent (decomp SkillTreeManager.cs:142)"); return;
-            }
-            SkillItem previous = m.CurrentSkillItem;
-            foreach (SkillItem item in m.GetComponentsInChildren<SkillItem>(true))
-            {
-                if (item.Ability != ability || Own.PlayerAbilities.HasAbility(ability)) continue;
-                item.HasSkillItem = false;
-                if (!item.CanEarnSkill) return;
-                m.CurrentSkillItem = item;
-                try { m.OnMenuItemPressed(); }
-                finally { m.CurrentSkillItem = previous; }
-                return;
-            }
-            DisableSkills("host skill item unavailable: " + ability + " (decomp SkillTreeManager.cs:142)");
-        }
-        static void DisableSkills(string reason)
-        {
-            SkillPurchaseForwardingEnabled = false;
-            Services.Log.Warn("net: SkillPurchaseForwardingEnabled=false: " + reason);
-            Services.Net.Send(MsgSkillStatus, true, delegate(BinaryWriter w) { ProgressWire.WriteSkillStatus(w, false); });
-        }
-
         static ActionKind Kind(PickupBase p)
         {
             if (p is KeystonePickup) return ActionKind.Keystone;
@@ -382,18 +412,8 @@ namespace OriCoop
         {
             static bool Prefix(SeinLevel __instance) { return !(Guest && Ready && __instance == Own.Level); }
         }
-        [HarmonyPatch(typeof(SkillTreeManager), "OnMenuItemPressed")]
-        static class SkillPatch
-        {
-            static bool Prefix(SkillTreeManager __instance)
-            {
-                if (!Guest) return true;
-                SkillItem item = __instance.CurrentSkillItem;
-                if (Services.Session.Ready && SkillPurchaseForwardingEnabled && item != null && !item.HasSkillItem && item.CanEarnSkill)
-                    SendAction(ActionKind.Skill, MoonGuid.Empty, 0, (int)item.Ability);
-                return false;
-            }
-        }
+        // T-047: no SkillTreeManager.OnMenuItemPressed patch any more. Every player buys in their own tree with their own
+        // points, through the game's own code: the buyer sees the flash and hears the sound, nobody else (#9 / T-028).
         [HarmonyPatch(typeof(GetAbilityPedestal), "ActivatePedestal")]
         static class PedestalPatch
         {

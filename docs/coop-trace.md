@@ -9,6 +9,13 @@
   every 0.5 s from the game loop.
   Note: Windows Explorer can show "0 KB" for a file that is still open even when it holds data. Open the file, or use
   `Get-Content`, to see what is really there.
+  **UTC stamps (T-067):** every line this mod writes there starts with its UTC time, e.g.
+  `[Info   :Ori Local Co-op] 2026-11-18T10:44:35.123Z net: ...` (BepInEx / HarmonyX / Unity lines are unchanged).
+  At start: `clock: utc_offset=+09:00 local=... utc=...Z`. After a partner connects, both ends measure the wall-clock
+  difference (message 0x52 ClockSync, NTP style, best of 8 round trips, again every 5 min) and log
+  `clock: offset vs P2 = +12.3 ms (P2 clock minus ours; rtt 114.0 ms, 8 samples)`, also as trace event
+  `net clock.offset seat= offset_ms= rtt_ms= n=`. A recording made on either PC can then be placed on UTC: note that
+  PC's `utc_offset`, and the other PC's error from the offset line. Accuracy is about rtt/2 plus one frame per side.
 - Relay server players log (`src\RelayServer\RelayPlayerLog.cs`): already opens, appends and closes the file for
   each line, so nothing is lost; unchanged.
 
@@ -76,8 +83,13 @@ no time: lines are placed by line order, aligned across the two ends on shared e
 checkpoint send/receive, partner appears, enemy GUIDs); estimated times carry `~`. Pin them with
 `--anchor FILE:LINE=HH:MM:SS` or `--start FILE=HH:MM:SS` / `--end FILE=HH:MM:SS` (`--date`, `--utc-offset`).
 All output masks IPv4 addresses.
+LogOutput.log files with UTC stamps (format `stamped`) are placed by their own stamps; unstamped lines between two
+stamped ones are interpolated (`~`). Times are then moved onto P1's clock with the measured `clock: offset vs ...`
+line of either end (`--summary` shows `utc_offset=` and `clock_fix=` per file; `--no-clock-fix` turns it off).
 
 ## Test
 `src\run-tracetest.ps1` (single client): reads the trace and `LogOutput.log` **while the game runs** and requires the
 header, the mirrored "loaded" line, a scene line, P1 player samples, the newest line less than 2 s old, and no IP.
-`-Net` runs `run-nettest.ps1` with the trace redirected and requires both ends to share one session id.
+`-Net` runs `run-nettest.ps1` with the trace redirected and requires both ends to share one session id, and each end's
+own `LogOutput.log` to have every OriCoop line UTC stamped, one `clock: utc_offset=` header and a `clock: offset vs`
+line. Unit tests for the formats and the offset math: `srcun-unittests.ps1 -Only Clock`.
