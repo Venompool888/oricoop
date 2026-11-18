@@ -185,7 +185,8 @@ foreach ($resultPath in $results) {
     if (Test-Path -LiteralPath $resultPath) {
         $lines = @(Get-Content -LiteralPath $resultPath)
         $lines
-        if (-not ($lines -match '\] RESULT PASS \d+/\d+$') -or ($lines -match '\] RESULT FAIL')) { $passed = $false }
+        # A PASS needs at least one check (T-086: "RESULT PASS 0/0" is no pass).
+        if (-not ($lines -match '\] RESULT PASS [1-9]\d*/\d+$') -or ($lines -match '\] RESULT FAIL')) { $passed = $false }
     } else { 'no result file: ' + (Get-NoResultReason); $passed = $false }
 }
 if ($Clients -eq 2) {

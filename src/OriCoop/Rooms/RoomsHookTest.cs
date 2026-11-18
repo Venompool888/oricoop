@@ -19,6 +19,9 @@ namespace OriCoop
             {
                 yield return host.StartCoroutine(PressCoop());
                 yield return host.StartCoroutine(Row(Array.IndexOf(TitleTransports, "relay"), 0.5f));
+                // Since the C-server menu (950e23c) the relay entry first asks equal / relay mode (row 1 = relay); the
+                // walk stopped on that page and never saw My rooms (T-082).
+                if (LastPage == "servermode") yield return host.StartCoroutine(Row(1, 0.5f));
             }
         }
     }
@@ -160,7 +163,18 @@ namespace OriCoop.Rooms
             if (!Check(observed != null && observed.Ok, "info readable")) yield break;
         }
 
+        // The two clients replace share.dat atomically, but a read that lands inside the other client's replace can find
+        // no file for a moment (host: FileNotFoundException at step 14, T-082). Retry briefly instead of failing the run.
         RoomWire.Fields Shared()
+        {
+            for (int attempt = 0; ; attempt++)
+            {
+                try { return SharedOnce(); }
+                catch (IOException) { if (attempt >= 40) throw; System.Threading.Thread.Sleep(25); }
+            }
+        }
+
+        RoomWire.Fields SharedOnce()
         {
             if (!File.Exists(share)) return new RoomWire.Fields();
             using (var file = new FileStream(share, FileMode.Open, FileAccess.Read,
@@ -176,9 +190,17 @@ namespace OriCoop.Rooms
 
         void Publish(string key, string value)
         {
-            RoomWire.Fields fields = Shared();
-            fields.Set(key, value);
-            RoomWire.AtomicWrite(share, fields.Encode());
+            for (int attempt = 0; ; attempt++)
+            {
+                try
+                {
+                    RoomWire.Fields fields = Shared();
+                    fields.Set(key, value);
+                    RoomWire.AtomicWrite(share, fields.Encode());
+                    return;
+                }
+                catch (IOException) { if (attempt >= 40) throw; System.Threading.Thread.Sleep(25); }
+            }
         }
 
         IEnumerator Click(string screen, string id, string label)
