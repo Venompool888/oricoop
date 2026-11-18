@@ -43,10 +43,10 @@ $clients = @(); $relayProc = $null; $cserverProc = $null
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
 try {
     if ($Transport -eq 'relay') {
-        $relayProc = Start-Process -FilePath $TL_RelayExe -ArgumentList ([string](47020 + $TL_PortOffset)) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'titlejoin-relay.log')
+        $relayProc = Start-Process -FilePath (Get-TestServerExe 'RelayServer') -ArgumentList ([string](47020 + $TL_PortOffset)) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'titlejoin-relay.log')
     }
     if ($Transport -eq 'cserver') {
-        $cserverExe = $(if ($env:ORICOOP_CSERVER_EXE) { $env:ORICOOP_CSERVER_EXE } else { Join-Path $PSScriptRoot 'CServer\CServer.exe' })   # ORICOOP_CSERVER_EXE: another build, like ORICOOP_RELAY_EXE
+        $cserverExe = Get-TestServerExe 'CServer'   # ORICOOP_CSERVER_EXE: another build, like ORICOOP_RELAY_EXE
         $cserverProc = Start-Process -FilePath $cserverExe -ArgumentList @('--port', [string](47022 + $TL_PortOffset)) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'titlejoin-cserver.log')
     }
     # Both games start back to back (Unity refuses a copy started after another finished starting).

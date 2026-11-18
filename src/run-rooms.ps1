@@ -22,11 +22,7 @@ try {
         throw 'ORICOOP_NET_RELAY must be 127.0.0.1:port'
     }
     $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-    $serverDir = Join-Path $PSScriptRoot 'RoomServer'
-    $exe = Join-Path $serverDir 'RoomServer.exe'
-    & $csc /nologo /target:exe /optimize+ /langversion:5 "/out:$exe" `
-        (Join-Path $serverDir 'RoomServer.cs') (Join-Path $PSScriptRoot 'OriCoop\Rooms\RoomWire.cs')
-    if ($LASTEXITCODE -ne 0) { throw 'RoomServer compilation failed' }
+    $exe = Get-TestServerExe 'RoomServer'   # built from this checkout, not written into the shared src\RoomServer (T-088)
     $serverProc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden `
         -ArgumentList @('--prefix', $url, '--data', ('"' + (Join-Path $run 'server') + '"')) `
         -RedirectStandardOutput (Join-Path $run 'server.log') `

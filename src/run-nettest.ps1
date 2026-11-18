@@ -116,7 +116,7 @@ try {
         $script:ExtraEnv['ORICOOP_NET_RELAY'] = $env:ORICOOP_TEST_RELAY
     } elseif ($Relay) {
         $relayPort = 47020 + $TL_PortOffset
-        $relayProc = Start-Process -FilePath $TL_RelayExe -ArgumentList ([string]$relayPort) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'relay-server.log')
+        $relayProc = Start-Process -FilePath (Get-TestServerExe 'RelayServer') -ArgumentList ([string]$relayPort) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'relay-server.log')
         $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'relay'
         $script:ExtraEnv['ORICOOP_NET_RELAY'] = '127.0.0.1:' + $relayPort
     }
@@ -129,7 +129,7 @@ try {
         # C-server (equal mode, docs/c-server-design.md): every game connects to a local CServer.exe; seat 1 creates the room.
         $csPort = 47022 + $TL_PortOffset
         # ORICOOP_CSERVER_EXE picks another CServer build (e.g. a protocol change under test), like ORICOOP_RELAY_EXE.
-        $csExe = $(if ($env:ORICOOP_CSERVER_EXE) { $env:ORICOOP_CSERVER_EXE } else { 'C:\OriCoop\src\CServer\CServer.exe' })
+        $csExe = Get-TestServerExe 'CServer'   # this checkout's source, or ORICOOP_CSERVER_EXE (T-088)
         $relayProc = Start-Process -FilePath $csExe -ArgumentList ('--port ' + $csPort) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'cserver.log')
         $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
         $script:ExtraEnv['ORICOOP_NET_CSERVER'] = '127.0.0.1:' + $csPort
