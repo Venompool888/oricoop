@@ -166,46 +166,78 @@ namespace OriCoop.Ui
     }
 
     // Where each copy goes, in screen fractions (0..1, origin bottom-left), so 1080p and 4K at 16:9 lay out the same.
-    // The game's own HUD stays centred at the bottom. Teammates' copies are smaller and sit in the free space beside
-    // it: P2 (order 0) left of it, P3 (order 1) right of it, P4 (order 2) above P2, never over the native HUD or each
-    // other. The space above each copy holds its "P2" label. Native extents are measured at runtime.
+    // The game's own HUD stays centred at the bottom. The teammates' copies are stacked in the bottom-left corner,
+    // P2 (order 0) on the native HUD's bottom line, P3 above it, P4 above P3, each at up to 70 % of the native size
+    // and with its "P2" label to the left of its cells. A strip's meshes always span 15 cells on each side of the orb,
+    // but only as many cells as the player's maximum are drawn, so what must not collide is the VISIBLE part (orb
+    // and cells), measured from the cell counts. Native extents are measured at runtime.
     public struct SlotRect
     {
+        // The whole copy including its empty trail (may stick out past the screen edge: nothing is drawn there).
         public float CenterX, Bottom, Width, Height, Scale;
+        // The part with cells and orb, and where the label's right edge is.
+        public float VisLeft, VisRight, LabelRight;
         public float Left { get { return CenterX - Width / 2f; } }
         public float Right { get { return CenterX + Width / 2f; } }
         public float Top { get { return Bottom + Height; } }
+        // What a player sees of this copy: label, cells and orb.
+        public float SeenLeft { get { return LabelRight - StatusBarLayout.LabelWidth; } }
     }
 
     public static class StatusBarLayout
     {
-        public const float Gap = 0.012f, Edge = 0.01f, MaxScale = 0.6f, MinScale = 0.2f, LabelSpace = 0.045f;
+        public const float Gap = 0.008f, Edge = 0.012f, RowGap = 0.006f, MaxScale = 0.7f, MinScale = 0.12f;
+        public const float LabelWidth = 0.035f, LabelGap = 0.004f;
+        public const float MaxCells = 15f;
 
-        public static SlotRect Place(int order, int count, float nativeLeft, float nativeRight, float nativeBottom, float nativeHeight)
+        // How far the cells and glow reach from the orb's centre, as a share of the strip's width, for this many
+        // cells (measured at 960x540: 30 px orb and glow, 15.2 px per cell, of a 516 px strip).
+        public static float Reach(float cells)
+        {
+            return Clamp((38f + 15.2f * Clamp(cells, 0f, MaxCells)) / 516f, 0.07f, 0.5f);
+        }
+
+        // The native strip's visible span: energy cells to the left of its centre, health cells to the right.
+        public static void NativeSeen(float nativeLeft, float nativeRight, float energyCells, float healthCells, out float seenLeft, out float seenRight)
+        {
+            float w = Math.Max(0.01f, nativeRight - nativeLeft), c = (nativeLeft + nativeRight) / 2f;
+            seenLeft = c - w * Reach(energyCells); seenRight = c + w * Reach(healthCells);
+        }
+
+        // copyEnergyCells / copyHealthCells: the most cells any copy shows, so all copies share one scale and one column.
+        public static SlotRect Place(int order, float nativeLeft, float nativeRight, float nativeBottom, float nativeHeight,
+            float nativeEnergyCells, float copyEnergyCells, float copyHealthCells)
         {
             float nativeW = Math.Max(0.01f, nativeRight - nativeLeft);
-            float leftFree = Math.Max(0f, nativeLeft - Edge - Gap), rightFree = Math.Max(0f, 1f - Edge - nativeRight - Gap);
-            float scale = Clamp(Math.Min(leftFree, rightFree) / nativeW, MinScale, MaxScale);
+            float seenL, seenR;
+            NativeSeen(nativeLeft, nativeRight, nativeEnergyCells, 4f, out seenL, out seenR);
+            float reachL = Reach(copyEnergyCells), reachR = Reach(copyHealthCells);
+            float free = seenL - Gap - Edge - LabelWidth - LabelGap;
+            float scale = Clamp(free / (nativeW * (reachL + reachR)), MinScale, MaxScale);
             SlotRect r = new SlotRect();
             r.Scale = scale; r.Width = nativeW * scale; r.Height = Math.Max(0f, nativeHeight) * scale;
-            bool right = order % 2 == 1;
-            int row = order / 2;
-            r.CenterX = right ? nativeRight + Gap + r.Width / 2f : nativeLeft - Gap - r.Width / 2f;
-            r.Bottom = nativeBottom + row * (r.Height + LabelSpace + Gap);
+            r.VisLeft = Edge + LabelWidth + LabelGap;
+            r.CenterX = r.VisLeft + r.Width * reachL;
+            r.VisRight = r.CenterX + r.Width * reachR;
+            r.LabelRight = r.VisLeft - LabelGap;
+            r.Bottom = nativeBottom + order * (r.Height + RowGap);
             return r;
         }
 
         public static bool Overlaps(SlotRect a, SlotRect b)
         {
-            // The label above each copy counts as part of it.
-            return a.Left < b.Right && b.Left < a.Right && a.Bottom < b.Top + LabelSpace && b.Bottom < a.Top + LabelSpace;
+            return a.SeenLeft < b.VisRight && b.SeenLeft < a.VisRight && a.Bottom < b.Top && b.Bottom < a.Top;
         }
 
-        public static bool OverlapsNative(SlotRect a, float nativeLeft, float nativeRight, float nativeBottom, float nativeHeight)
+        // nativeHealthCells matters for the right half only: copies sit on the left, so it is not needed here.
+        public static bool OverlapsNative(SlotRect a, float nativeLeft, float nativeRight, float nativeBottom, float nativeHeight, float nativeEnergyCells)
         {
-            return a.Left < nativeRight && nativeLeft < a.Right && a.Bottom < nativeBottom + nativeHeight && nativeBottom < a.Top + LabelSpace;
+            float seenL, seenR;
+            NativeSeen(nativeLeft, nativeRight, nativeEnergyCells, 4f, out seenL, out seenR);
+            return a.VisRight > seenL && a.SeenLeft < seenR && a.Bottom < nativeBottom + nativeHeight && nativeBottom < a.Top;
         }
 
-        static float Clamp(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
+        // NaN-safe: anything that is not a number comes out as the lower bound (a layout must never turn into NaN).
+        static float Clamp(float v, float lo, float hi) { return !(v >= lo) ? lo : v > hi ? hi : v; }
     }
 }

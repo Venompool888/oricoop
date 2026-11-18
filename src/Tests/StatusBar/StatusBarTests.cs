@@ -192,47 +192,73 @@ static class StatusBarTests
             Check(!t.Due(n, 0.2f), "noise");
         });
 
-        // ---- layout (fractions of the screen; native strip measured in the game at 960x540: x 222-738, y 22-77)
-        float nl = 222f / 960f, nr = 738f / 960f, nb = 22f / 540f, nh = 55f / 540f;
-        Run("layout: 1-3 teammates never overlap each other or the native HUD, and stay on screen", delegate {
-            for (int count = 1; count <= 3; count++)
-            {
-                List<SlotRect> rects = new List<SlotRect>();
-                for (int i = 0; i < count; i++) rects.Add(StatusBarLayout.Place(i, count, nl, nr, nb, nh));
-                for (int i = 0; i < count; i++)
-                {
-                    SlotRect r = rects[i];
-                    Check(r.Left >= 0f && r.Right <= 1f && r.Bottom >= 0f && r.Top + StatusBarLayout.LabelSpace <= 1f, "on screen: " + count + "/" + i);
-                    Check(!StatusBarLayout.OverlapsNative(r, nl, nr, nb, nh), "covers native HUD: " + count + "/" + i);
-                    for (int j = 0; j < i; j++) Check(!StatusBarLayout.Overlaps(r, rects[j]), "copies " + i + " and " + j + " overlap at " + count);
-                }
-            }
+        // ---- layout (fractions of the screen; native strip measured in the game at 960x540: x 222-738, y 22-67)
+        float nl = 222f / 960f, nr = 738f / 960f, nb = 22f / 540f, nh = 45f / 540f;
+        Run("layout: reach grows with the cell count and stays inside the strip", delegate {
+            Check(StatusBarLayout.Reach(1f) < StatusBarLayout.Reach(4f) && StatusBarLayout.Reach(4f) < StatusBarLayout.Reach(15f), "monotonic");
+            Check(StatusBarLayout.Reach(15f) <= 0.5f && StatusBarLayout.Reach(0f) > 0f && StatusBarLayout.Reach(99f) <= 0.5f, "bounded");
         });
-        Run("layout: P2 left of the native HUD, P3 right, P4 above P2", delegate {
-            SlotRect p2 = StatusBarLayout.Place(0, 3, nl, nr, nb, nh), p3 = StatusBarLayout.Place(1, 3, nl, nr, nb, nh), p4 = StatusBarLayout.Place(2, 3, nl, nr, nb, nh);
-            Check(p2.Right <= nl, "P2 left"); Check(p3.Left >= nr, "P3 right");
-            Check(Math.Abs(p4.CenterX - p2.CenterX) < 1e-5f && p4.Bottom >= p2.Top + StatusBarLayout.LabelSpace, "P4 above P2");
-            Near(nb, p2.Bottom, "P2 sits on the native HUD's bottom line"); Near(nb, p3.Bottom, "P3 bottom line");
+        Run("layout: NaN or infinite inputs (a scene loading) never give a NaN layout", delegate {
+            float nan = float.NaN, inf = float.PositiveInfinity;
+            Check(!float.IsNaN(StatusBarLayout.Reach(nan)) && !float.IsNaN(StatusBarLayout.Reach(inf)), "reach finite");
+            SlotRect r = StatusBarLayout.Place(1, nl, nr, nb, nh, nan, nan, nan);
+            Check(!float.IsNaN(r.Scale + r.CenterX + r.Bottom + r.Width + r.Height + r.VisLeft + r.VisRight + r.LabelRight), "layout finite with NaN cells");
+            SlotRect r2 = StatusBarLayout.Place(0, nl, nr, nb, nh, inf, inf, inf);
+            Check(!float.IsNaN(r2.Scale + r2.CenterX + r2.VisRight) && !float.IsInfinity(r2.Scale), "layout finite with infinite cells");
         });
-        Run("layout: same fractions at 1080p and 4K (resolution independent), sensible scale", delegate {
+        Run("layout: 1-3 teammates never overlap each other or the native HUD, and stay on screen, for every cell count", delegate {
+            foreach (float nativeEnergy in new[] { 1f, 4f, 15f })
+                foreach (float copyCells in new[] { 1f, 4f, 15f })
+                    for (int count = 1; count <= 3; count++)
+                    {
+                        List<SlotRect> rects = new List<SlotRect>();
+                        for (int i = 0; i < count; i++) rects.Add(StatusBarLayout.Place(i, nl, nr, nb, nh, nativeEnergy, copyCells, copyCells));
+                        for (int i = 0; i < count; i++)
+                        {
+                            SlotRect r = rects[i];
+                            string at = " (native energy " + nativeEnergy + ", copy cells " + copyCells + ", " + count + "/" + i + ")";
+                            Check(r.SeenLeft >= 0f && r.VisRight <= 1f && r.Bottom >= 0f && r.Top <= 1f, "on screen" + at);
+                            Check(!StatusBarLayout.OverlapsNative(r, nl, nr, nb, nh, nativeEnergy), "covers native HUD" + at);
+                            for (int j = 0; j < i; j++) Check(!StatusBarLayout.Overlaps(r, rects[j]), "copies " + i + " and " + j + " overlap" + at);
+                        }
+                    }
+        });
+        Run("layout: stacked in the bottom-left corner, P2 on the native bottom line, P3 above P2, P4 above P3", delegate {
+            SlotRect p2 = StatusBarLayout.Place(0, nl, nr, nb, nh, 1f, 4f, 4f), p3 = StatusBarLayout.Place(1, nl, nr, nb, nh, 1f, 4f, 4f), p4 = StatusBarLayout.Place(2, nl, nr, nb, nh, 1f, 4f, 4f);
+            Near(nb, p2.Bottom, "P2 sits on the native HUD's bottom line");
+            Check(p3.Bottom >= p2.Top && p4.Bottom >= p3.Top, "stacked upwards");
+            Check(Math.Abs(p3.CenterX - p2.CenterX) < 1e-5f && Math.Abs(p4.CenterX - p2.CenterX) < 1e-5f, "one column");
+            Check(p2.VisRight < 0.5f && p4.Top < 0.5f, "stays in the left part, below the middle of the screen");
+        });
+        Run("layout: 70 % of the native size when there is room, 4 hearts and 1 energy cell", delegate {
+            SlotRect p2 = StatusBarLayout.Place(0, nl, nr, nb, nh, 1f, 1f, 4f);
+            Near(StatusBarLayout.MaxScale, p2.Scale, "max scale");
+            Near(nh * StatusBarLayout.MaxScale, p2.Height, "70 % high");
+        });
+        Run("layout: a fully upgraded native strip shrinks the copies instead of overlapping it", delegate {
+            SlotRect small = StatusBarLayout.Place(0, nl, nr, nb, nh, 15f, 15f, 15f);
+            Check(small.Scale < StatusBarLayout.MaxScale && small.Scale >= StatusBarLayout.MinScale, "scale " + small.Scale);
+            Check(!StatusBarLayout.OverlapsNative(small, nl, nr, nb, nh, 15f), "no overlap");
+        });
+        Run("layout: same fractions at 1080p and 4K (resolution independent)", delegate {
             // 4K: the native strip has the same screen fraction (the HUD camera is orthographic and fixed in height).
-            float nl4 = 888f / 3840f, nr4 = 2952f / 3840f, nb4 = 88f / 2160f, nh4 = 220f / 2160f;
-            SlotRect a = StatusBarLayout.Place(0, 3, nl, nr, nb, nh), b = StatusBarLayout.Place(0, 3, nl4, nr4, nb4, nh4);
-            Near(a.CenterX, b.CenterX, "centre x"); Near(a.Scale, b.Scale, "scale");
-            Check(a.Scale >= 0.3f && a.Scale <= StatusBarLayout.MaxScale, "scale " + a.Scale);
+            float nl4 = 888f / 3840f, nr4 = 2952f / 3840f, nb4 = 88f / 2160f, nh4 = 180f / 2160f;
+            SlotRect a = StatusBarLayout.Place(1, nl, nr, nb, nh, 1f, 3f, 4f), b = StatusBarLayout.Place(1, nl4, nr4, nb4, nh4, 1f, 3f, 4f);
+            Near(a.CenterX, b.CenterX, "centre x"); Near(a.Scale, b.Scale, "scale"); Near(a.Bottom, b.Bottom, "bottom");
         });
-        Run("layout: narrow screens (4:3, 5:4) still do not overlap; scale clamps at the minimum", delegate {
+        Run("layout: narrow screens (4:3, 5:4) still do not overlap, even fully upgraded", delegate {
             // On 4:3 the strip is a larger share of the width.
             float nl43 = 0.15f, nr43 = 0.85f;
-            for (int i = 0; i < 3; i++)
-            {
-                SlotRect r = StatusBarLayout.Place(i, 3, nl43, nr43, nb, nh);
-                Check(!StatusBarLayout.OverlapsNative(r, nl43, nr43, nb, nh), "4:3 covers native " + i);
-                Check(r.Scale >= StatusBarLayout.MinScale, "scale >= min");
-            }
+            foreach (float cells in new[] { 1f, 15f })
+                for (int i = 0; i < 3; i++)
+                {
+                    SlotRect r = StatusBarLayout.Place(i, nl43, nr43, nb, nh, cells, cells, cells);
+                    Check(!StatusBarLayout.OverlapsNative(r, nl43, nr43, nb, nh, cells), "4:3 covers native " + i + " at " + cells + " cells");
+                    Check(r.Scale >= StatusBarLayout.MinScale, "scale >= min");
+                }
         });
         Run("layout: ultrawide caps the copies at the maximum scale", delegate {
-            SlotRect r = StatusBarLayout.Place(0, 1, 0.38f, 0.62f, nb, nh);
+            SlotRect r = StatusBarLayout.Place(0, 0.38f, 0.62f, nb, nh, 1f, 1f, 4f);
             Near(StatusBarLayout.MaxScale, r.Scale, "max scale");
         });
 

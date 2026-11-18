@@ -1485,8 +1485,8 @@ namespace OriCoop
             float by = Time.realtimeSinceStartup + 3f;
             while (!P2Hud.Visible && Time.realtimeSinceStartup < by) yield return null;
             h.Check(Roles.Mine == (host ? 1 : 2) && Roles.Partner == (host ? 2 : 1), "net roles: this PC is " + (host ? "P1 (host)" : "P2 (guest)"));
-            h.Check(P2Hud.Visible && P2Hud.Text.StartsWith(want) && P2Hud.Text.IndexOf('●') > 0,
-                "net roles: partner tag reads '" + want + "' with health (got '" + P2Hud.Text.Replace("\n", " / ") + "')");
+            h.Check(P2Hud.Visible && P2Hud.Text.StartsWith(want) && P2Hud.Text.IndexOf('●') < 0 && P2Hud.Text.IndexOf('○') < 0,
+                "net roles: partner tag reads '" + want + "' with no health dots (got '" + P2Hud.Text.Replace("\n", " / ") + "')");
             try
             {
                 string p = Path.Combine(Path.GetDirectoryName(Path.GetFullPath(h.ResultPath)), "net-roles-" + (host ? "host" : "guest") + ".png");

@@ -7,7 +7,7 @@ using UnityEngine;
 
 namespace OriCoop
 {
-    // P2's health pips above P2, drawn by the game's own HUD camera (guiCamera, the one that draws P1's health bar),
+    // The name tag above a teammate (no health dots any more), drawn by the game's own HUD camera (guiCamera, the one that draws P1's health bar),
     // not as a mod screen overlay. (The gameplay camera's post-processing recomposes the frame, so extra world objects
     // never reach the screen.) Visibility and opacity copy the game's own P1 HUD (SeinUI): whenever the game hides or fades
     // P1's HUD (pause/menus, cutscene letterbox, screen fades), P2's follows.
@@ -150,26 +150,25 @@ namespace OriCoop
             sh.layer = hud.Go.layer;
         }
 
-        // Online: one tag for the partner. Line 1 = role (in the role's colour) + "主机/伙伴" + Steam name, line 2 = the
-        // health pips in the role's colour. Local co-op keeps the single "P2 ●●●" line.
-        static string Compose(Hud hud, int role, string pips, float a, bool shadow)
+        // Online: one tag for the partner: role (in the role's colour) + "主机/伙伴" + Steam name. Local co-op: "P2". The
+        // health dots that used to follow it are gone (T-061b): health is on the status bars at the bottom left.
+        static string Compose(Hud hud, int role, float a, bool shadow)
         {
             Color white = new Color(0.945f, 0.988f, 1f);
             Color dark = new Color(0f, 0.02f, 0.06f);
             if (!NetPlay.Enabled)
             {
-                hud.Plain = "P2 " + pips;
+                hud.Plain = "P2";
                 return "<color=" + Roles.HexOf(shadow ? dark : Roles.P2Color, shadow ? a * 0.55f : a) + ">" + hud.Plain + "</color>";
             }
             string name = NetPlay.SteamPartnerName;
             string label = string.IsNullOrEmpty(name) ? L10n.F("roles.label", Roles.Tag(role), Roles.WordZh(role))
                 : L10n.F("roles.named_label", Roles.Tag(role), Roles.WordZh(role), name);
             string rest = label.Substring(Roles.Tag(role).Length);
-            hud.Plain = label + "\n" + pips;
+            hud.Plain = label;
             string roleHex = shadow ? Roles.HexOf(dark, a * 0.55f) : Roles.Hex(role, a);
             string restHex = shadow ? roleHex : Roles.HexOf(white, a);
-            return "<color=" + roleHex + ">" + Roles.Tag(role) + "</color><color=" + restHex + ">" + rest + "</color>\n"
-                + "<size=80><color=" + roleHex + ">" + pips + "</color></size>";
+            return "<color=" + roleHex + ">" + Roles.Tag(role) + "</color><color=" + restHex + ">" + rest + "</color>";
         }
 
         // Called every frame after the camera update.
@@ -213,11 +212,8 @@ namespace OriCoop
             float a = p2.gameObject.activeInHierarchy && !TestHide ? GameHudOpacity() : 0f;
             if (a <= 0.01f) { Hide(hud); return; }
             if (!hud.Go.activeSelf) hud.Go.SetActive(true);
-            var h = p2.Mortality.Health;
-            int cells = Mathf.Max(1, h.MaxHealth / 4), full = Mathf.Clamp(Mathf.CeilToInt(h.Amount / 4f), 0, cells);
-            string pips = new string('●', full) + new string('○', cells - full);
-            hud.Text.text = Compose(hud, puppet.Seat, pips, a, false);
-            hud.Shadow.text = Compose(hud, puppet.Seat, pips, a, true);
+            hud.Text.text = Compose(hud, puppet.Seat, a, false);
+            hud.Shadow.text = Compose(hud, puppet.Seat, a, true);
             hud.Text.color = new Color(1f, 0.85f, 0.4f, a);   // Visible reads this alpha; the colour itself comes from the tags
             Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null, gui = GuiCamera();
             if (game == null || gui == null) { Hide(hud); return; }
@@ -233,7 +229,7 @@ namespace OriCoop
             // Parent space is the HUD camera's orientation: down-right and a hair farther from the camera.
             float off = worldH * 0.05f / Mathf.Max(0.0001f, hud.Go.transform.lossyScale.x);
             hud.Shadow.transform.localPosition = new Vector3(off, -off, 0.01f);
-            // The game's font lacks the health-circle glyphs; TextMesh draws the pips.
+            // Online the tag is drawn in the game's own font (below); the TextMesh stays as the fallback.
             if (!NetPlay.Enabled) { HideGameText(hud); return; }
             try
             {
@@ -257,7 +253,7 @@ namespace OriCoop
                 hud.GameRenderer = null;
                 if (HasGameText(hud))
                 {
-                    hud.GameText.SetText(hud.Plain.Substring(0, hud.Plain.Length - pips.Length - 1));
+                    hud.GameText.SetText(hud.Plain);
                     Color color = Roles.ColorOf(puppet.Seat);
                     color.a = a;
                     hud.Box.TextBox.color = color;
@@ -276,9 +272,8 @@ namespace OriCoop
                     }
                     if (hud.GameRenderer != null && hud.GameText.Place(new Vector3(p2.Position.x, p2.Position.y + 1.3f, p2.Position.z), 0.035f, 1f, 1f))
                     {
-                        hud.GameText.Go.transform.position += gui.transform.up * worldH;
-                        hud.Text.text = "<color=" + Roles.Hex(puppet.Seat, a) + ">" + pips + "</color>";
-                        hud.Shadow.text = "<color=" + Roles.HexOf(new Color(0f, 0.02f, 0.06f), a * 0.55f) + ">" + pips + "</color>";
+                        hud.Text.text = "";
+                        hud.Shadow.text = "";
                         return;
                     }
                 }
