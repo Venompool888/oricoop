@@ -98,8 +98,12 @@ namespace OriCoop
                 KeepAlive();
                 s_found.Clear();
                 // Inactive objects too (the Ginso escape water is switched on by its story): callers activate what they need.
+                // Only objects whose scene has finished starting (its saved state loaded): before that the floor broken in
+                // WO5 or the block collapsed in WO2 still looks whole, so one PC counted it and picked another object
+                // (WO2L / WO5L / WO6L "both PCs picked the same object", host 2 candidates vs guest 1).
                 foreach (T t in Resources.FindObjectsOfTypeAll<T>())
-                    if (t != null && t.gameObject.scene.name == scene && (includeInactive || t.gameObject.activeInHierarchy) && (fresh == null || fresh(t))) s_found.Add(t);
+                    if (t != null && t.gameObject.scene.name == scene && (includeInactive || t.gameObject.activeInHierarchy) && WorldObjSync.SceneStarted(t)
+                        && (fresh == null || fresh(t))) s_found.Add(t);
                 float now = Time.realtimeSinceStartup;
                 if (s_found.Count != lastCount) { lastCount = s_found.Count; steadySince = now; }
                 if (s_found.Count > 0 && now - steadySince >= 1f) break;
