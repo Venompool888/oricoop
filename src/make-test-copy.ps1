@@ -5,8 +5,12 @@
 # real copies: install your own OriCoop.dll there), its own saves (appdata-b, appdata2-b, appdata3-b), test output
 # (test-b), runtime dir (test-runtime-b) and UDP ports (+100 for b, +200 for c, +300 for d, +400 for e; its config has Port = 47011+offset).
 #   -Refresh  re-copy BepInEx (core, config, patchers, plugins) from C:\OriCoop\game; takes the copy's lock first.
+# T-094: every copy gets its own Unity settings key (HKCU\Software\OriCoop-TestCopy<X>\...) instead of the owner's
+# (HKCU\Software\Microsoft Studios\...): oriDE_Data\globalgamemanagers becomes a real, patched file (the old hard link is
+# kept as globalgamemanagers.orig). Run on an existing copy (a..e, also a) it only does that, under the copy's lock;
+# test-launch.ps1 refuses copies without it.
 # Never touches C:\OriCoop\game itself or the owner's D: copy.
-param([Parameter(Mandatory = $true)][ValidateSet('b', 'c', 'd', 'e')][string]$Name, [switch]$Refresh)
+param([Parameter(Mandatory = $true)][ValidateSet('a', 'b', 'c', 'd', 'e')][string]$Name, [switch]$Refresh)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'test-launch.ps1')
 $src = 'C:\OriCoop\game'
@@ -42,13 +46,16 @@ function Copy-BepInEx {
     }
 }
 
-if ((Test-Path -LiteralPath $copy.Exe) -and -not $Refresh) { "copy $Name already exists: $dst (use -Refresh to re-copy BepInEx)"; return }
-
-if ($Refresh) {
-    # Take the copy's lock so no run is using it while its plugins change.
+if ($Name -eq 'a' -and -not (Test-Path -LiteralPath $copy.Exe)) { throw "copy a ($dst) is the base copy; it is not made by this script" }
+if (Test-Path -LiteralPath $copy.Exe) {
+    # Take the copy's lock so no run is using it while its plugins or settings key change.
     if (-not (Enter-CopyLock $copy 'make-test-copy.ps1')) { "copy $Name is locked: " + ((Read-LockInfo $copy.Lock).GetEnumerator() | ForEach-Object { $_.Key + '=' + $_.Value }) -join ' '; exit 2 }
     $script:TL_LockFile = $copy.Lock
-    try { Copy-BepInEx; "copy $Name refreshed from $src" } finally { Exit-CopyLock }
+    try {
+        if ($Refresh -and $Name -ne 'a') { Copy-BepInEx; "copy $Name refreshed from $src" }
+        elseif (-not $Refresh) { "copy $Name already exists: $dst (use -Refresh to re-copy BepInEx)" }
+        Set-CopyUnityCompany $copy
+    } finally { Exit-CopyLock }
     return
 }
 
@@ -76,4 +83,5 @@ for ($i = 0; $i -lt 3; $i++) {
     }
 }
 New-Item -ItemType Directory -Force -Path $copy.TestDir, $copy.LogsDir | Out-Null
+Set-CopyUnityCompany $copy
 "copy $Name ready: $dst (lock $($copy.Lock), ports +$($copy.PortOffset))"
