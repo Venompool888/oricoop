@@ -89,6 +89,18 @@ static class LocalPlayersTests
             LocalEdgeWall.Apply(p, 10, 8); Near(p[0].X, 0); Near(p[1].X, 10);
             p[1] = new EdgePoint(2, true, 11, 0, 12, 0); LocalEdgeWall.Apply(p, 10, 8); Near(p[1].X, 11);
         });
+        Run("offline wall width respects the view and the configured leash", delegate {
+            Near(LocalEdgeWall.OfflineWidth(32, 2.5f, 0), 27);
+            Near(LocalEdgeWall.OfflineWidth(32, 2.5f, -1), 27);
+            Near(LocalEdgeWall.OfflineWidth(32, 2.5f, 2), 2);
+            Near(LocalEdgeWall.OfflineWidth(32, 2.5f, 40), 27);
+            Near(LocalEdgeWall.OfflineWidth(3, 2.5f, 0), 3);
+        });
+        Run("offline horizontal wall leaves a vertical fall for regroup", delegate {
+            EdgePoint[] p = { new EdgePoint(1, true, 0, 0, 0, 0), new EdgePoint(4, true, 8, -12, 5, 0) };
+            LocalEdgeWall.Apply(p, 6, float.PositiveInfinity);
+            Near(p[1].X, 6); Near(p[1].Y, -12);
+        });
         Run("local wall ignores all remote players", delegate {
             EdgePoint[] p = { new EdgePoint(1, true, -3, 0, 0, 0), new EdgePoint(2, true, 12, 0, 9, 0), new EdgePoint(3, false, 200, 70, 190, 60) };
             LocalEdgeWall.Apply(p, 10, 8); Near(p[0].X, -0.5f); Near(p[1].X, 9.5f); Near(p[2].X, 200); Near(p[2].Y, 70);

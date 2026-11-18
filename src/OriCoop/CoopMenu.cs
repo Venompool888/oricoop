@@ -13,7 +13,7 @@ namespace OriCoop
     //   - "Choose controller" for P1 / P2: press any button on the controller you want (for P1, any keyboard key
     //     = keyboard/mouse only). If the other player had that controller, the two swap.
     //   - Story cutscenes: only P1 starts them, or either player.
-    //   - P2 join / remove.
+    //   - Local player join / remove.
     //
     // Pages:
     //   Settings (F8 / hold Back): the panel above.
@@ -66,7 +66,17 @@ namespace OriCoop
         public static int[] TestPadButtons;
 
         const int A = 0x1000, B = 0x2000, BACK = 0x20, START = 0x10, DUP = 1, DDOWN = 2;
-        static int Rows { get { return Page == PageModeSelect ? 2 : Page == PageSetup ? 5 : NetPlay.Enabled ? s_seats.LocalSeats.Length + 2 : s_seats.LocalSeats.Length + 5; } }
+        static bool HasExtraJoinRow(int count) { return count > 1 && count < Players.MaxSeats; }
+        static int Rows
+        {
+            get
+            {
+                if (Page == PageModeSelect) return 2;
+                if (Page == PageSetup) return 5;
+                int count = s_seats.LocalSeats.Length;
+                return NetPlay.Enabled ? count + 2 : count + (HasExtraJoinRow(count) ? 6 : 5);
+            }
+        }
 
         static void PollPads()
         {
@@ -220,7 +230,7 @@ namespace OriCoop
             }
             else Plugin.Instance.AssignPad(player, pad);
             s_waitFor = 0;
-            s_message = pad < 0 ? L10n.T("coop.p1_keyboard")
+            s_message = pad < 0 ? (!NetPlay.Enabled && player > 2 ? L10n.F("coop.seat_keyboard", player) : L10n.T("coop.p1_keyboard"))
                 : L10n.F("coop.assigned", pad + 1, player);
             s_ignoreNavUntil = Time.unscaledTime + 0.35f;
         }
@@ -292,6 +302,7 @@ namespace OriCoop
                 case 2: GoTo(PageModeSelect); break;
                 case 3: OpenLogFolder(); break;
                 case 4: Close(); break;
+                case 5: if (HasExtraJoinRow(seats.Length)) WaitForDevice(-1); break;
             }
             s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
         }
@@ -450,7 +461,7 @@ namespace OriCoop
         {
             bool online = NetPlay.Enabled;
             int[] seats = s_seats.LocalSeats;
-            if (online ? s_waitFor > 0 : s_waitFor == 1)
+            if (online ? s_waitFor > 0 : s_waitFor == 1 || s_waitFor > 2 || s_waitFor < 0 && HasExtraJoinRow(seats.Length))
             {
                 Event e = Event.current;
                 if (e != null && e.type == EventType.KeyDown && e.keyCode != KeyCode.None && e.keyCode != KeyCode.Escape && e.keyCode != KeyCode.F8)
@@ -463,18 +474,27 @@ namespace OriCoop
                 string input = device.Kind == InputDevice.DeviceKind.KeyboardMouse ?
                     L10n.T("coop.keyboard_only") : L10n.F("coop.controller", device.Pad + 1);
                 string label = L10n.F("coop.local_seat", seats[i], input);
-                seatRows[i] = s_waitFor == seats[i] ? L10n.T(seats[i] == 1 ? "coop.choose_p1" : "coop.choose_p2") :
+                string choose = seats[i] == 1 ? L10n.T("coop.choose_p1") : !online && seats[i] > 2
+                    ? L10n.F("coop.choose_extra_device", seats[i]) : L10n.T("coop.choose_p2");
+                seatRows[i] = s_waitFor == seats[i] ? choose :
                     L10n.F("coop.change_device", label);
             }
             string[] actions = online ? new string[] { L10n.T("coop.open_logs"), L10n.T("coop.close") } : new string[] {
                 L10n.F("coop.cutscenes", Plugin.Instance.P2CanTriggerCutscenes ? L10n.T("coop.either") : L10n.T("coop.p1_only")),
-                s_waitFor < 0 ? L10n.T("coop.choose_local_pad") : seats.Length == 1 ? L10n.T("coop.add_local") : L10n.F("coop.remove_local", seats[seats.Length - 1]),
-                L10n.F("coop.mode", PlayMode.Current == PlayMode.Single ? L10n.T("coop.single") : L10n.T("coop.two_players")),
+                seats.Length == 1 ? L10n.T(s_waitFor < 0 ? "coop.choose_local_pad" : "coop.add_local") : L10n.F("coop.remove_local", seats[seats.Length - 1]),
+                L10n.F("coop.mode", PlayMode.Current == PlayMode.Single ? L10n.T("coop.single") :
+                    seats.Length > 2 ? L10n.F("coop.players_count", seats.Length) : L10n.T("coop.two_players")),
                 L10n.T("coop.open_logs"),
                 L10n.T("coop.close") };
+            if (!online && HasExtraJoinRow(seats.Length))
+            {
+                Array.Resize(ref actions, actions.Length + 1);
+                actions[actions.Length - 1] = L10n.T(s_waitFor < 0 ? "coop.choose_extra_join_device" : "coop.add_local");
+            }
             string build = BuildLabel();
             float w = Mathf.Min(Screen.width - 40f, 760f), inner = w - 40f, lineH = s_text.fontSize * 1.9f;
-            float h = 36f + LineH(s_title, L10n.T("coop.settings"), inner);
+            string title = L10n.T(!online && seats.Length > 2 ? "pause.multiplayer_settings" : "coop.settings");
+            float h = 36f + LineH(s_title, title, inner);
             foreach (string label in seatRows) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
             foreach (string label in actions) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
             if (s_message != "") h += LineH(s_text, s_message, inner);
@@ -484,7 +504,7 @@ namespace OriCoop
             Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
             NativeGui.Panel("coop.settings.background", r, new Color(0.05f, 0.07f, 0.12f, 0.92f));
             GUILayout.BeginArea(new Rect(r.x + 20f, r.y + 14f, inner, r.height - 28f));
-            NativeGui.LayoutLabel("coop.settings.title", L10n.T("coop.settings"), s_title);
+            NativeGui.LayoutLabel("coop.settings.title", title, s_title);
             for (int i = 0; i < seatRows.Length; i++)
             {
                 string id = "coop.settings.seat." + seats[i];

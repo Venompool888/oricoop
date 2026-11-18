@@ -1,6 +1,7 @@
 using System;
 using Game;
 using HarmonyLib;
+using OriCoop.Rules;
 using UnityEngine;
 
 namespace OriCoop
@@ -27,12 +28,32 @@ namespace OriCoop
         static float s_offscreenT;
         static float s_regroupT = -1f;
         static Vector3 s_regroupFrom;
+        struct GroupRegroup
+        {
+            public float Offscreen, Elapsed;
+            public bool Gliding;
+            public Vector3 From;
+        }
+        static readonly GroupRegroup[] s_group = new GroupRegroup[Players.MaxSeats + 1];
         public static int EdgeBlocks;            // test counters
         public static int Regroups;
         public static int OffsetUpdates;
         public static float Extra { get { return s_extra; } }
 
-        public static void Reset() { s_extra = 0f; s_extraVel = 0f; s_haveLast = false; s_offscreenT = 0f; s_regroupT = -1f; }
+        public static void Reset()
+        {
+            s_extra = 0f; s_extraVel = 0f; s_haveLast = false; s_offscreenT = 0f; s_regroupT = -1f;
+            Array.Clear(s_group, 0, s_group.Length);
+        }
+
+        internal static void GroupChanged(int seat)
+        {
+            s_group[seat] = new GroupRegroup();
+            if (Players.Remotes.Count <= 1) s_group[2] = new GroupRegroup();
+            OnlineLocalPlayers.PositionChanged();
+        }
+
+        internal static bool GroupRegrouping(int seat) { return s_group[seat].Gliding; }
 
         // Current visible size at the gameplay plane (z = 0), and the size at maximum zoom-out.
         public static bool ViewSize(out Vector2 now, out Vector2 atMax)
@@ -90,6 +111,82 @@ namespace OriCoop
             if (s_offscreenT > RegroupAfter) StartRegroup(p2);
 
             s_last1 = p1.Position; s_last2 = p2.Position; s_haveLast = true;
+        }
+
+        internal static void ApplyGroup(SeinCharacter p1, bool limitsOn, float leash)
+        {
+            s_haveLast = false; s_offscreenT = 0f; s_regroupT = -1f;
+            Vector2 now, atMax;
+            if (!ViewSize(out now, out atMax)) { OnlineLocalPlayers.PositionChanged(); return; }
+
+            GameController gc = GameController.Instance;
+            if (limitsOn && p1.gameObject.activeInHierarchy && gc != null && !gc.GameplaySuspendedForUI && !gc.InputLocked)
+            {
+                if (!Revive.IsDowned(p1)) RecoverGroup(p1, atMax);
+                // As with two players, vertical falls are handled by the glide instead of a wall in midair.
+                OnlineLocalPlayers.ApplyWall(LocalEdgeWall.OfflineWidth(atMax.x, EdgeMargin, leash), float.PositiveInfinity);
+            }
+            else OnlineLocalPlayers.PositionChanged();
+
+            Vector3 centre;
+            Vector2 spread;
+            if (Players.LocalGroupBounds(out centre, out spread)) UpdateZoom(Vector3.zero, (Vector3)spread, now);
+        }
+
+        static void RecoverGroup(SeinCharacter p1, Vector2 atMax)
+        {
+            Vector3 anchor = p1.Position;
+            foreach (Puppet puppet in Players.Remotes)
+            {
+                SeinCharacter ori = puppet.Sein;
+                if (!puppet.IsLocal || ori == null || !ori.gameObject.activeInHierarchy || Revive.IsDowned(ori))
+                { s_group[puppet.Seat] = new GroupRegroup(); continue; }
+                Vector3 delta = ori.Position - anchor;
+                if (Mathf.Abs(delta.x) > 3f * atMax.x || Mathf.Abs(delta.y) > 3f * atMax.y)
+                {
+                    Plugin.Teleport(ori, anchor);
+                    s_group[puppet.Seat] = new GroupRegroup();
+                }
+            }
+
+            Vector3 centre;
+            Vector2 spread;
+            if (!Players.LocalGroupBounds(out centre, out spread)) return;
+            float maxY = Mathf.Max(4f, atMax.y - 2f * EdgeMargin);
+            foreach (Puppet puppet in Players.Remotes)
+            {
+                SeinCharacter ori = puppet.Sein;
+                if (!puppet.IsLocal || ori == null || !ori.gameObject.activeInHierarchy || Revive.IsDowned(ori)) continue;
+                int seat = puppet.Seat;
+                GroupRegroup state = s_group[seat];
+                if (state.Gliding)
+                {
+                    state.Elapsed += Time.unscaledDeltaTime / 0.7f;
+                    ori.Position = RegroupPosition(state.From, anchor, Mathf.Clamp01(state.Elapsed));
+                    ori.Speed = Vector3.zero;
+                    if (state.Elapsed >= 1f)
+                    {
+                        Plugin.Teleport(ori, anchor);
+                        state = new GroupRegroup();
+                    }
+                }
+                else
+                {
+                    // Two extras can fall on opposite sides of P1 and exceed the view together.
+                    float dy = Mathf.Abs(ori.Position.y - anchor.y);
+                    bool outside = dy > maxY || dy > maxY * 0.5f && Mathf.Abs(ori.Position.y - centre.y) > maxY * 0.5f;
+                    state.Offscreen = outside ? state.Offscreen + Time.unscaledDeltaTime : 0f;
+                    if (outside) VisualInvariants.Grace(1f);
+                    if (state.Offscreen > RegroupAfter)
+                    {
+                        state = new GroupRegroup { Gliding = true, From = ori.Position };
+                        Regroups++;
+                        VisualInvariants.Grace(2.5f);
+                        Plugin.Log.LogInfo("P" + seat + " off-screen too long; gliding back to P1");
+                    }
+                }
+                s_group[seat] = state;
+            }
         }
 
         // If this frame's movement pushed the pair further apart than allowed, undo only the outward part of the
@@ -157,12 +254,16 @@ namespace OriCoop
         {
             s_regroupT += Time.unscaledDeltaTime / 0.7f;
             float t = Mathf.Clamp01(s_regroupT);
-            float e = t * t * (3f - 2f * t);
-            Vector3 to = p1.Position + new Vector3(0f, 0.5f, 0f);
-            Vector3 pos = Vector3.Lerp(s_regroupFrom, to, e) + new Vector3(0f, Mathf.Sin(t * Mathf.PI) * 2f, 0f);
-            p2.Position = pos;
+            p2.Position = RegroupPosition(s_regroupFrom, p1.Position, t);
             p2.Speed = Vector3.zero;
             if (t >= 1f) { s_regroupT = -1f; Plugin.Teleport(p2, p1.Position); }
+        }
+
+        static Vector3 RegroupPosition(Vector3 from, Vector3 anchor, float t)
+        {
+            float e = t * t * (3f - 2f * t);
+            Vector3 to = anchor + new Vector3(0f, 0.5f, 0f);
+            return Vector3.Lerp(from, to, e) + new Vector3(0f, Mathf.Sin(t * Mathf.PI) * 2f, 0f);
         }
 
         // Add our extra distance through the game's own offset pipeline (it lerps the result itself).

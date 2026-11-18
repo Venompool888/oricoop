@@ -43,6 +43,7 @@ namespace OriCoop
         ConfigEntry<int> m_pad;
         ConfigEntry<KeyCode> m_spawnKey, m_despawnKey;
         ConfigEntry<float> m_leash;
+        ConfigEntry<float> m_groupLeash;
         ConfigEntry<bool> m_sharedCamera, m_p1Keyboard, m_p2Cutscenes;
         ConfigEntry<int> m_p1Pad;
 
@@ -60,6 +61,7 @@ namespace OriCoop
             if (player == 1)
             {
                 if (pad >= 0 && pad == p2) { m_pad.Value = p1 >= 0 ? p1 : FirstOtherPad(pad); }
+                else if (!NetPlay.Enabled && Players.Remotes.Count > 1) m_pad.Value = p2;
                 m_p1Pad.Value = pad;
             }
             else if (pad >= 0)
@@ -73,7 +75,8 @@ namespace OriCoop
 
         static int FirstOtherPad(int not)
         {
-            for (int i = 0; i < 4; i++) if (i != not && P2Input.IsConnected(i)) return i;
+            for (int i = 0; i < 4; i++) if (i != not && (NetPlay.Enabled || !GameSeatView.ExtraUsesInput(i)) && P2Input.IsConnected(i)) return i;
+            for (int i = 0; i < 4; i++) if (i != not && (NetPlay.Enabled || !GameSeatView.ExtraUsesInput(i))) return i;
             return not == 0 ? 1 : 0;
         }
         int m_activePad = -1;
@@ -81,6 +84,7 @@ namespace OriCoop
         float m_padScanTimer;
 
         internal static float LeashOverride = -1f; // test harness only
+        internal float GroupLeash { get { return m_groupLeash.Value; } set { m_groupLeash.Value = value; } }
         Transform m_camTarget;
         float m_mirrorTimer;
 
@@ -124,6 +128,7 @@ namespace OriCoop
             m_spawnKey = Config.Bind("Player2", "SpawnKey", KeyCode.F9, "Keyboard key that spawns player 2 (P2 can also press Start).");
             m_despawnKey = Config.Bind("Player2", "DespawnKey", KeyCode.F10, "Keyboard key that removes player 2.");
             m_leash = Config.Bind("Player2", "LeashDistance", 120f, "Safety net only: if the Oris are farther apart than this (e.g. P2 fell out of the world), P2 is put next to P1. Normal play is limited by the screen edges instead.");
+            m_groupLeash = Config.Bind("Coop", "LeashDistance", 0f, "Three or four local players: largest horizontal spread in world units (0 = the width of the most zoomed-out view; never wider than that).");
             var zoom = Config.Bind("Camera", "DynamicZoom", true, "Camera zooms out smoothly as the players separate.");
             var maxZoom = Config.Bind("Camera", "MaxZoomOut", 1.6f, "Most the camera zooms out, as a multiple of the game's normal distance. The screen edges stop the players at this zoom.");
             var margin = Config.Bind("Camera", "EdgeMargin", 2.5f, "Distance kept between a player and the screen edge.");
@@ -200,7 +205,7 @@ namespace OriCoop
             m_padScanTimer = 1f;
             for (int i = 0; i < 4; i++)
             {
-                if (i == pad || i == KeyboardOnlyP1.P1Pad || !P2Input.IsConnected(i)) continue;
+                if (i == pad || i == KeyboardOnlyP1.P1Pad || GameSeatView.ExtraUsesInput(i) || !P2Input.IsConnected(i)) continue;
                 m_activePad = i;
                 Log.LogInfo("Player 2 controller: pad " + i);
                 break;
@@ -223,7 +228,11 @@ namespace OriCoop
         }
 
         static void TestThrow() { throw new InvalidOperationException("test subsystem throw"); }
-        void SampleInput() { P2Input.Sample(m_samplePad, P2Context.P2Input); }
+        void SampleInput()
+        {
+            P2Input.Sample(m_samplePad, P2Context.P2Input);
+            if (Players.Remotes.Count > 1) OnlineLocalPlayers.SampleExtras();
+        }
         void TickSharedProgress() { SharedProgress.Sync(m_tickP1, m_tickP2); }
         void TickCamera() { UpdateCamera(m_tickP1, m_tickP2); }
         void MirrorOnlineProgress() { MirrorProgress(m_tickP1, m_tickPuppet.Sein); }
@@ -232,6 +241,8 @@ namespace OriCoop
 
         void TickLifecycle()
         {
+            if (!NetPlay.Enabled && Players.Remotes.Count > 1 && P2Context.P2 == null)
+                DespawnNow("P2 is gone");
             foreach (Puppet puppet in new List<Puppet>(Players.Remotes))
                 if (puppet.Sein == null) DespawnPuppet(puppet);
             if (P2Context.P2 == null && P2Context.P1 != null) { Log.LogInfo("P2 gone"); Cleanup(); }
@@ -271,7 +282,8 @@ namespace OriCoop
                 Log.LogInfo("P2 join requested by " + (keySpawn ? m_spawnKey.Value.ToString() : "controller button"));
                 Spawn();
             }
-            if (P2Context.P2 != null && Input.GetKeyDown(m_despawnKey.Value)) DespawnNow(m_despawnKey.Value + " pressed");
+            if (P2Context.P2 != null && (NetPlay.Enabled || Players.Remotes.Count == 1) && Input.GetKeyDown(m_despawnKey.Value))
+                DespawnNow(m_despawnKey.Value + " pressed");
             if (P2Context.P2 == null) return;
 
             SeinCharacter p1 = P2Context.P1, p2 = P2Context.P2;
@@ -308,8 +320,23 @@ namespace OriCoop
                 SubsystemGuard.Run("Revive.TickOnline", s_reviveOnlineTick);
                 return;
             }
-            if (!p1Available && p2.gameObject.activeSelf) { p2.gameObject.SetActive(false); P2Extras.SetCompanionActive(false); m_parked = true; Log.LogInfo("P2 parked (P1 unavailable)"); }
-            else if (p1Available && m_parked) { m_parked = false; p2.gameObject.SetActive(true); P2Extras.SetCompanionActive(true); Teleport(p2, p1.Position); CoopCamera.Reset(); Log.LogInfo("P2 back next to P1"); }
+            bool offlineGroup = Players.Remotes.Count > 1;
+            if (!p1Available && (p2.gameObject.activeSelf || offlineGroup && !m_parked))
+            {
+                foreach (Puppet puppet in Players.Remotes)
+                { puppet.Sein.gameObject.SetActive(false); P2Extras.SetCompanionActive(puppet, false); }
+                m_parked = true; Log.LogInfo("P2 parked (P1 unavailable)");
+            }
+            else if (p1Available && m_parked)
+            {
+                m_parked = false;
+                foreach (Puppet puppet in Players.Remotes)
+                {
+                    if (offlineGroup && Revive.IsDowned(puppet.Sein)) continue;
+                    puppet.Sein.gameObject.SetActive(true); P2Extras.SetCompanionActive(puppet, true); Teleport(puppet.Sein, p1.Position);
+                }
+                CoopCamera.Reset(); Log.LogInfo("P2 back next to P1");
+            }
             P2Input.HoldStill = !Revive.IsDowned(p1) && (!p1Available || p1.Controller == null || !p1.Controller.CanMove || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
             if (m_parked) return;
 
@@ -317,7 +344,15 @@ namespace OriCoop
             // for things like falling out of the world.
             SubsystemGuard.Run("Revive.Tick", s_reviveTick);   // local co-op downed / revive
             float leash = LeashOverride > 0f ? LeashOverride : m_leash.Value;
-            if (!Revive.AnyDowned && Vector3.Distance(p1.Position, p2.Position) > leash && !CoopCamera.Regrouping) Teleport(p2, p1.Position);
+            bool p1Alive = !Revive.IsDowned(p1);
+            bool limitP2 = offlineGroup ? p1Alive && !Revive.IsDowned(p2) : !Revive.AnyDowned;
+            if (limitP2 && Vector3.Distance(p1.Position, p2.Position) > leash && !CoopCamera.Regrouping && !CoopCamera.GroupRegrouping(2))
+                Teleport(p2, p1.Position);
+            if (offlineGroup && p1Alive)
+                foreach (Puppet puppet in Players.Remotes)
+                    if (puppet.Seat > 2 && puppet.Sein != null && puppet.Sein.gameObject.activeInHierarchy && !Revive.IsDowned(puppet.Sein) &&
+                        !CoopCamera.GroupRegrouping(puppet.Seat) && Vector3.Distance(p1.Position, puppet.Sein.Position) > leash)
+                        Teleport(puppet.Sein, p1.Position);
 
             SubsystemGuard.Run("SharedProgress.Sync", m_sharedProgress);
 
@@ -326,6 +361,8 @@ namespace OriCoop
             {
                 m_mirrorTimer = 0.5f;
                 SubsystemGuard.Run("Plugin.MirrorProgress", m_localMirror);
+                foreach (Puppet puppet in Players.Remotes)
+                    if (puppet.Seat > 2) MirrorProgress(p1, puppet.Sein);
                 SubsystemGuard.Run("P2Context.RefreshIds", s_localRefreshIds);
             }
 
@@ -396,7 +433,8 @@ namespace OriCoop
         void ApplyLocalCamera()
         {
             CoopCamera.FocusOverride = Revive.OnlyAlive;
-            CoopCamera.Apply(P2Context.P1, P2Context.P2, LeashOverride <= 0f && !Revive.AnyDowned);
+            if (Players.Remotes.Count > 1) CoopCamera.ApplyGroup(P2Context.P1, LeashOverride <= 0f && !m_parked, GroupLeash);
+            else CoopCamera.Apply(P2Context.P1, P2Context.P2, LeashOverride <= 0f && !Revive.AnyDowned);
         }
         void CheckLocalVisual() { VisualInvariants.Check(P2Context.P1, P2Context.P2); }
         void UpdateLocalHud() { P2Hud.Update(P2Context.P2); }
@@ -471,12 +509,16 @@ namespace OriCoop
             if (!m_sharedCamera.Value || m_camTarget == null) return;
             SeinCharacter alive = Revive.OnlyAlive;
             m_camTarget.position = alive != null ? alive.Position : (p1.Position + p2.Position) * 0.5f;
+            bool group = Players.Remotes.Count > 1;
+            Vector3 centre;
+            Vector2 size;
+            if (group && Players.LocalGroupBounds(out centre, out size)) m_camTarget.position = centre;
             var cam = UI.Cameras.Current;
             if (cam == null) return;
             // Only take over while the game is following P1; leave cutscene/scripted targets alone.
             // Take over whenever the game is following one of the players (it retargets to "the current character"
             // in several places, which can be P2 inside P2 context); leave cutscene/scripted targets alone.
-            if (cam.Target == p1.Transform || cam.Target == p2.Transform) cam.Target = m_camTarget;
+            if (cam.Target == p1.Transform || cam.Target == p2.Transform || group && IsPuppetTransform(cam.Target)) cam.Target = m_camTarget;
         }
 
         internal void Spawn()
@@ -486,6 +528,8 @@ namespace OriCoop
 
         public Puppet SpawnPuppet(int seat)
         {
+            if (!NetPlay.Enabled && (seat < 2 || seat > Players.MaxSeats || Players.OriOf(seat) != null ||
+                seat > 2 && (Players.OriOf(2) == null || GameSeatView.ExtraInput(seat) == -2))) return null;
             SeinCharacter p1 = Characters.Sein;
             if (p1 == null || !p1.gameObject.activeInHierarchy) { Log.LogInfo("No P1 in game yet; load a save first."); return null; }
             GameController gc = GameController.Instance;
@@ -497,7 +541,8 @@ namespace OriCoop
             ICharacter savedCurrent = Characters.Current;
             GameObject go;
             P2Lifecycle.SpawningP2 = true;
-            try { go = (GameObject)UnityEngine.Object.Instantiate(prefab, p1.Position + new Vector3(1f, 0.5f, 0f), Quaternion.identity); }
+            float offset = !NetPlay.Enabled && seat > 2 ? 0f : 1f;
+            try { go = (GameObject)UnityEngine.Object.Instantiate(prefab, p1.Position + new Vector3(offset, 0.5f, 0f), Quaternion.identity); }
             finally { P2Lifecycle.SpawningP2 = false; }
             go.name = "seinCharacter_P" + seat;
             SeinCharacter p2 = go.GetComponent<SeinCharacter>();
@@ -507,9 +552,9 @@ namespace OriCoop
 
             P2Context.P1 = p1;
             Puppet puppet;
-            if (NetPlay.Enabled)
+            if (NetPlay.Enabled || seat > 2)
             {
-                puppet = new Puppet { Seat = seat, Sein = p2, IsLocal = Players.IsLocal(seat) };
+                puppet = new Puppet { Seat = seat, Sein = p2, IsLocal = !NetPlay.Enabled || Players.IsLocal(seat) };
                 Players.Remotes.Add(puppet);
                 Players.Remotes.Sort((a, b) => a.Seat.CompareTo(b.Seat));
             }
@@ -517,12 +562,13 @@ namespace OriCoop
             P2Context.RefreshIds(puppet);
             P2Context.PatchTypesOn(go, H);
             MirrorProgress(p1, p2, true);
-            if (!NetPlay.Enabled)
+            if (!NetPlay.Enabled && seat == 2)
             {
                 SharedProgress.Reset();
                 SharedProgress.Sync(p1, p2);
                 CoopCamera.Reset();
             }
+            else if (!NetPlay.Enabled) CoopCamera.GroupChanged(seat);
             VisualInvariants.Reset();
             p2.Mortality.Health.RestoreAllHealth();
             P2Extras.SpawnCompanion(puppet);
@@ -576,6 +622,12 @@ namespace OriCoop
             P2Hud.Destroy(puppet);
             P2Context.Reset(puppet);
             Players.Remotes.Remove(puppet);
+            if (!NetPlay.Enabled && puppet.Seat > 2)
+            {
+                GameSeatView.ForgetExtra(puppet.Seat);
+                CoopCamera.GroupChanged(puppet.Seat);
+                Revive.ForgetOfflineExtra(puppet.Seat);
+            }
             puppet.Sein = null;
             if (Players.Remotes.Count == 0) Instance.Cleanup();
         }
@@ -613,6 +665,8 @@ namespace OriCoop
             // The game brings "the" companion along on its own teleports via the global Characters.Ori, which is
             // P1's. When P2 jumps, bring P2's companion along the same way, as P2.
             Puppet puppet = Players.OfSein(who);
+            if (!NetPlay.Enabled && Players.Remotes.Count > 1 && (puppet != null || who == P2Context.P1))
+                OnlineLocalPlayers.ForgetPosition(puppet == null ? 1 : puppet.Seat);
             Ori comp = puppet == null ? null : puppet.Companion;
             if (comp != null && comp.gameObject.activeInHierarchy)
             {

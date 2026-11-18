@@ -44,8 +44,8 @@ $TS_FileSuites = [ordered]@{
     'NetIntroTest'     = @('net', 'net-4p');
     'NetTestHarness'   = @('net', 'net-3p', 'net-4p', 'net-lp2', 'net-lp3'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
-    'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
-    'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('net-lp2', 'net-lp3')
+    'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
+    'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
     'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'RoomsHookTest' = @('rooms');
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
 }

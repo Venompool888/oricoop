@@ -95,11 +95,15 @@ namespace OriCoop
 
         // Keep the game's primary input sampler (and its button edges) intact. Only filter the other device.
         [HarmonyPatch(typeof(KeyCodeButtonInput), "GetButton")]
-        static class OnlinePadOnly
+        static class PadOnly
         {
             static bool Prefix(ref bool __result)
             {
-                if (!NetPlay.Enabled || InMenu() || OnlineLocalPlayers.InputOf(Players.LocalSeat).Kind != InputDevice.DeviceKind.Pad) return true;
+                if (NetPlay.Enabled)
+                {
+                    if (InMenu() || OnlineLocalPlayers.InputOf(Players.LocalSeat).Kind != InputDevice.DeviceKind.Pad) return true;
+                }
+                else if (Players.Remotes.Count <= 1 || P1Pad < 0 || InMenu()) return true;
                 __result = false; return false;
             }
         }
