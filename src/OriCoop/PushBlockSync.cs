@@ -23,6 +23,9 @@ namespace OriCoop
             internal StoneLeaseSimulation Simulation = new StoneLeaseSimulation();
             public int OwnerSeat;
             public float InteractionUntil = -10f, GrabbedAt = -10f;
+            // T-049 two-pusher speed-up: our push direction (-1/0/+1) and the partner's latest report.
+            public int LocalPushDir, RemotePushDir, SentPushDir;
+            public float LocalPushAt = -10f, RemotePushAt = -10f, PushSentAt = -10f, BaseMultiplier = -1f;
             public bool HasRemote;
             public uint StateEpoch, StateVersion;
             public Vector3 RemotePos, RemoteVel;
@@ -82,6 +85,7 @@ namespace OriCoop
             ResetOwnership("connected");
             NetPlay.SessionStarted += delegate { ResetOwnership("connected"); };
             NetPlay.SessionEnded += delegate { ResetOwnership("disconnected"); };
+            NetPlay.On(MsgCoPush, OnCoPush);
             s_layerDefault = LayerMask.NameToLayer("Default");
             s_layerIgnore = LayerMask.NameToLayer("pushPullBlock");
         }
@@ -343,6 +347,7 @@ namespace OriCoop
             float now = Time.realtimeSinceStartup;
             if (what == "grab") st.GrabbedAt = now;
             if (Moving(pm) || now - st.GrabbedAt < 0.5f) st.InteractionUntil = now + 0.15f;
+            NoteOwnPush(st, PushDir(pm), now);
             Simulates(st);
             LeaseStep(b, st);
             Rigidbody rb = s_body(b);
@@ -355,6 +360,51 @@ namespace OriCoop
             Denied++;
             SetIgnore(b, pm, false);
             return false;
+        }
+
+        // T-049: which way our Ori moves the stone: Push goes the way it faces, Pull the other way; 0 = only holding.
+        public const byte MsgCoPush = 89;   // docs/net-msg-ids.md
+        public static int CoPushSent, CoPushReceived, CoPushBoosted;
+        static int PushDir(PlatformMovement pm)
+        {
+            SeinCharacter s = P2Context.P1;
+            if (s == null || s.PlatformBehaviour.PlatformMovement != pm || s.Abilities.GrabBlock == null || !s.Abilities.GrabBlock.IsGrabbing) return 0;
+            SeinGrabBlock.State state = s.Abilities.GrabBlock.CurrentState;
+            int facing = s.FaceLeft ? -1 : 1;
+            return state == SeinGrabBlock.State.Push ? facing : state == SeinGrabBlock.State.Pull ? -facing : 0;
+        }
+
+        static void NoteOwnPush(St st, int dir, float now)
+        {
+            st.LocalPushDir = dir; st.LocalPushAt = now;
+            if (dir == 0 && st.SentPushDir == 0) return;
+            if (dir == st.SentPushDir && now - st.PushSentAt < 0.1f) return;
+            st.SentPushDir = dir; st.PushSentAt = now;
+            int id = st.Id; sbyte d = (sbyte)dir;
+            NetPlay.Send(MsgCoPush, false, w => { w.Write(id); w.Write(d); });
+            CoPushSent++;
+        }
+
+        static void OnCoPush(BinaryReader r)
+        {
+            int id = r.ReadInt32(); int dir = r.ReadSByte();
+            St st; if (!s_byId.TryGetValue(id, out st)) return;
+            st.RemotePushDir = Math.Sign(dir); st.RemotePushAt = Time.realtimeSinceStartup; CoPushReceived++;
+        }
+
+        // Every step on every PC: both pushing the same way -> the game's own push/pull speed ratio x1.5 (Oris and stone).
+        static void ApplyCoPush(PushPullBlock b, St st, bool online)
+        {
+            if (st.BaseMultiplier < 0f) st.BaseMultiplier = b.MoveSpeedMultiplier;
+            float now = Time.realtimeSinceStartup;
+            int local = online && now - st.LocalPushAt < 0.15f ? st.LocalPushDir : 0;
+            float m = online ? CoPushRule.Multiplier(local, st.RemotePushDir, now - st.RemotePushAt) : 1f;
+            float target = st.BaseMultiplier * m;
+            if (b.MoveSpeedMultiplier != target)
+            {
+                if (m > 1f) { CoPushBoosted++; Log("both push " + st.Name + " " + (local > 0 ? "right" : "left") + ": speed x" + m); }
+                b.MoveSpeedMultiplier = target;
+            }
         }
 
         static bool Moving(PlatformMovement pm)
@@ -537,6 +587,7 @@ namespace OriCoop
             Inst i = InstOf(b);
             St st = i.St;
             bool online = Online;
+            ApplyCoPush(b, st, online);
             if (online)
             {
                 EnsureRegistered();
