@@ -11,7 +11,7 @@ if (Test-Path $pristine) { Copy-Item "$pristine\*" $testSaves -Force }
 $dir = 'C:\OriCoop\logs\lobbyprobe'
 New-Item -ItemType Directory -Force $dir | Out-Null
 Remove-Item "$dir\*" -Force -ErrorAction SilentlyContinue
-$relay = Start-Process -FilePath $TL_RelayExe -ArgumentList '47020' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $dir 'relay-server.log')
+$relay = Start-Process -FilePath (Get-TestServerExe 'RelayServer') -ArgumentList '47020' -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $dir 'relay-server.log')
 try {
     $vars = @{ LOCALAPPDATA = $TL_AppData[0]; ORICOOP_LOBBY_PROBE = '1'; ORICOOP_SLOT = '1'
         ORICOOP_TEST_OUT = (Join-Path $dir 'result.txt'); ORICOOP_NET_RELAY = '127.0.0.1:47020' }

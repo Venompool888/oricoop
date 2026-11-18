@@ -35,8 +35,9 @@ $script:TL_AppData = @('C:\OriCoop\appdata', 'C:\OriCoop\appdata2', 'C:\OriCoop\
 $script:TL_RuntimeDir = 'C:\OriCoop\test-runtime'
 $script:TL_LogsDir = 'C:\OriCoop\logs'
 $script:TL_PortOffset = 0
-# Relay server binary for -Relay tests; ORICOOP_RELAY_EXE picks another build (e.g. src\RelayServer\RelayServer-v2.exe).
-$script:TL_RelayExe = $(if ($env:ORICOOP_RELAY_EXE) { $env:ORICOOP_RELAY_EXE } else { 'C:\OriCoop\src\RelayServer\RelayServer.exe' })
+# Relay server binary for -Relay tests: built from this checkout's source (T-088, Get-TestServerExe) on first use;
+# ORICOOP_RELAY_EXE picks another build (e.g. a protocol change under test).
+$script:TL_RelayExe = $env:ORICOOP_RELAY_EXE
 $script:TL_LockFile = $null
 $script:TL_LockStaleMin = 90
 $script:TL_Pids = New-Object 'System.Collections.Generic.List[int]'
@@ -222,6 +223,40 @@ function Get-ProcPath($proc) {
 # owner's. Only paths outside it (the owner's D:\SteamLibrary\...\Ori DE\OriDE.exe) count as the owner's game.
 # (2026-11-18: copies d/e, unknown to older scripts, were taken for the owner's game and stopped other runs.)
 # ORICOOP_FAKE_OWNER_EXE marks one test copy as the stand-in owner for experiments.
+# T-088: test servers come from the checkout that runs the test, never from the shared prebuilt exes in C:\OriCoop\src
+# (those were days old: titlejoin ran against a relay without T-046 digit room codes). Built into
+# test-runtime\servers\<name>-<source hash>.exe, reused while the source is unchanged; temp file + rename, so
+# concurrent runs never see a half-written exe. Env overrides: ORICOOP_RELAY_EXE, ORICOOP_CSERVER_EXE.
+function Get-TestServerSources([string]$name, [string]$src = $PSScriptRoot) {
+    $files = switch ($name) {
+        'RelayServer' { @('RelayServer\RelayServer.cs', 'RelayServer\RelayPlayerLog.cs') }
+        'CServer' { @('CServer\CServer.cs', 'OriCoop\Authority\CsWire.cs', 'OriCoop\Authority\Arbiter.cs', 'OriCoop\Net\NetPeer.cs', 'OriCoop\Net\Transport.cs') }
+        'RoomServer' { @('RoomServer\RoomServer.cs', 'OriCoop\Rooms\RoomWire.cs') }
+        default { throw "Unknown test server $name" }
+    }
+    $files | ForEach-Object { Join-Path $src $_ }
+}
+function Get-TestServerExe([string]$name, [string]$src = $PSScriptRoot) {
+    if ($name -eq 'RelayServer' -and $script:TL_RelayExe) { return $script:TL_RelayExe }
+    if ($name -eq 'CServer' -and $env:ORICOOP_CSERVER_EXE) { return $env:ORICOOP_CSERVER_EXE }
+    $sources = @(Get-TestServerSources $name $src)
+    # .NET SHA256, not Get-FileHash (missing in some powershell.exe children, T-087).
+    $sha = [Security.Cryptography.SHA256]::Create()
+    $bytes = New-Object System.Collections.Generic.List[byte]
+    foreach ($f in $sources) { $bytes.AddRange([Text.Encoding]::UTF8.GetBytes([IO.Path]::GetFileName($f) + "`n")); $bytes.AddRange([IO.File]::ReadAllBytes($f)) }
+    $hash = (-join ($sha.ComputeHash($bytes.ToArray()) | ForEach-Object { $_.ToString('x2') })).Substring(0, 12)
+    $dir = Join-Path $script:TL_Root 'test-runtime\servers'
+    $exe = Join-Path $dir "$name-$hash.exe"
+    if (Test-Path -LiteralPath $exe) { return $exe }
+    New-Item -ItemType Directory -Force -Path $dir | Out-Null
+    $tmp = Join-Path $dir ("$name-$hash." + [Guid]::NewGuid().ToString('N') + '.tmp')
+    $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+    $out = & $csc /nologo /target:exe /optimize+ /langversion:5 "/out:$tmp" @sources 2>&1
+    if ($LASTEXITCODE -ne 0) { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; throw "$name compilation failed: $out" }
+    try { [IO.File]::Move($tmp, $exe) } catch { Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue; if (-not (Test-Path -LiteralPath $exe)) { throw } }
+    return $exe
+}
+
 function Test-IsTestPath([string]$path) {
     if (-not $path) { return $false }
     if ($env:ORICOOP_FAKE_OWNER_EXE -and [string]::Equals($path, $env:ORICOOP_FAKE_OWNER_EXE, [StringComparison]::OrdinalIgnoreCase)) { return $false }
