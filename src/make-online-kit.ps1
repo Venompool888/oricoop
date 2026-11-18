@@ -18,7 +18,11 @@ New-Item -ItemType Directory -Force "$stage\BepInEx\core", "$stage\BepInEx\plugi
 foreach ($f in 'winhttp.dll', 'doorstop_config.ini', '.doorstop_version') { Copy-Item "$game\$f" $stage }
 Copy-Item "$game\BepInEx\core\*" "$stage\BepInEx\core" -Recurse
 Copy-Item "$game\BepInEx\config\BepInEx.cfg" "$stage\BepInEx\config"
-Copy-Item "$game\BepInEx\plugins\OriCoop.dll" "$stage\BepInEx\plugins"
+# T-091: the DLL is a clean build of THIS commit (build-commit.ps1), never the test copy's plugins folder: any test
+# session installs its own branch build there (a kit named 077a18d once carried be474be, an older menu).
+$dll = (& (Join-Path $PSScriptRoot 'build-commit.ps1') $commit | Select-Object -Last 1)
+if (-not (Test-Path -LiteralPath $dll)) { throw "build of $commit failed: no DLL at '$dll'" }
+Copy-Item -LiteralPath $dll "$stage\BepInEx\plugins\OriCoop.dll"
 if ($WithGlyphs -and (Test-Path "$game\BepInEx\plugins\OriPSGlyphs.dll")) { Copy-Item "$game\BepInEx\plugins\OriPSGlyphs.dll" "$stage\BepInEx\plugins" }
 Copy-Item (Join-Path $root 'TWO-PC-TEST.md') "$stage\OriCoop-README-online.md"
 # Relay server manager, opened from the game folder; it edits BepInEx\config\oricoop-relays.txt (RelayList.cs).
@@ -31,4 +35,6 @@ Remove-Item $zip -Force -ErrorAction SilentlyContinue
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
 Remove-Item $stage -Recurse -Force
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'check-kit.ps1') $zip
+if ($LASTEXITCODE -ne 0) { Remove-Item $zip -Force -ErrorAction SilentlyContinue; throw "kit check failed: $zip removed" }
 "KIT OK: $zip (" + [int]((Get-Item $zip).Length / 1KB) + " KB)"
