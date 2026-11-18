@@ -172,6 +172,18 @@ static class EnemyTests
             for (int f = 0; f <= 90; f++) { float t = f / 60f; bool allowed = sim.Allows(1, 1, 2, t, 150f, true); if (t >= 1f) late |= allowed; }
             Check(!late, "a never granted takeover is dropped within 1 s");
         });
+        // T-049: two players pushing the same stone the same way move it faster (x1.5); anything else keeps normal speed.
+        Run("co-push same direction speeds up", delegate {
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, 1, 0.05f) == 1.5f, "both right");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(-1, -1, 0.2f) == 1.5f, "both left");
+        });
+        Run("co-push otherwise normal speed", delegate {
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, -1, 0.05f) == 1f, "opposite directions");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, 0, 0.05f) == 1f, "partner only holds");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(0, 1, 0.05f) == 1f, "only the partner pushes");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, 1, 0.31f) == 1f, "partner's report is stale");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, 1, -1f) == 1f, "no report yet");
+        });
         Run("first snapshot from new owner", delegate { Check(!EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, false) && EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, true), "peer tick clocks"); });
     }
 }

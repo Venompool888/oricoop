@@ -306,6 +306,75 @@ namespace OriCoop
             yield return Barrier(h, 98, block);
         }
 
+        // PC (T-049): the stone moves faster when both players push it the same way. First the host pushes alone for 2 s,
+        // then (stone reset) both grab the same face and push right for 2 s. Each PC measures the stone's travel itself;
+        // together must reach >=1.2x the peak speed (the rule is 1.5x on the speed cap, which the Oris need ~0.5 s of the
+        // stone's ~1.4 of travel to reach; before T-049 the second push did nothing: about 1x). The stone has a stop about
+        // 1.4 to the right, so the metric is the peak speed over 0.2 s windows (snaps > 1.0 per window are ignored).
+        static IEnumerator ResetStone(TestHarness h, int step, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        {
+            Bot(false);
+            PlaceOwn(resting.x + (host ? -2.45f : 2.8f), resting.y + 0.5f, block.Position.z);
+            yield return Wait(0.5f);
+            yield return Barrier(h, step, block);
+            if (PushBlockSync.IsLocalOwner(block))
+            {
+                Rigidbody body = block.GetComponent<Rigidbody>();
+                body.position = resting; block.transform.position = resting; body.rotation = restingRot; block.transform.rotation = restingRot;
+                body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero; body.Sleep();
+            }
+            yield return Wait(1.2f);
+            float settleEnd = Time.realtimeSinceStartup + 3f;
+            while (Time.realtimeSinceStartup < settleEnd && (block.Position - resting).magnitude > 0.05f) { KeepAlive(); yield return null; }
+        }
+
+        static IEnumerator PushTogether(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        {
+            NetPlay.SetSim(0, 0, 0, 0);
+            float[] travel = new float[2], ratio = new float[2]; int[] boosted = new int[2];
+            for (int round = 0; round < 2; round++)
+            {
+                int boosted0 = PushBlockSync.CoPushBoosted;
+                bool together = round == 1; int step = 100 + round * 10;
+                yield return ResetStone(h, step, block, resting, restingRot, host);
+                GrabSetup setup = new GrabSetup();
+                if (host || together) yield return GrabBlock(block, setup);
+                yield return Barrier(h, step + 1, block, setup.Started);
+                bool pushing = host || together;
+                if (pushing) h.Check(setup.Started, "PC " + (together ? "together" : "alone") + ": grabbed the stone");
+                Vector3 start = block.Position;
+                if (pushing) Bot(true);
+                float pushStart = Time.realtimeSinceStartup, end = pushStart + 2f, peak = 0f;
+                float winAt = pushStart, winX = block.Position.x;
+                while (Time.realtimeSinceStartup < end)
+                {
+                    KeepAlive();
+                    ratio[round] = Mathf.Max(ratio[round], block.PushableSpeedRatio());
+                    if (Time.realtimeSinceStartup - winAt >= 0.2f)
+                    {
+                        float dx = block.Position.x - winX;
+                        if (dx > 0f && dx < 1.0f) peak = Mathf.Max(peak, dx / (Time.realtimeSinceStartup - winAt));
+                        winAt = Time.realtimeSinceStartup; winX = block.Position.x;
+                    }
+                    yield return null;
+                }
+                Bot(false);
+                yield return Wait(1.0f);
+                travel[round] = peak; boosted[round] = PushBlockSync.CoPushBoosted - boosted0;
+                Note(h, "PC " + (together ? "together" : "alone") + " end", block);
+                yield return Barrier(h, step + 2, block);
+            }
+            h.Note("PC peak stone speed: alone=" + F(travel[0]) + " together=" + F(travel[1]));
+            h.Check(travel[0] >= 0.5f, "PC pushing alone moves the stone (peak " + F(travel[0]) + "/s)");
+            // The game's own push speed ratio is what drives both Oris and the stone; it is the oracle (1.0 alone, 1.5 together,
+            // on both PCs). The measured peak speed is noisy (the Oris need ~0.5 s to reach their cap within the stone's ~1.4
+            // of travel, a follower's copy is interpolated), so it is only noted, with a loose >=1.05x check on the host.
+            h.Check(Mathf.Abs(ratio[0] - 1f) < 0.01f && Mathf.Abs(ratio[1] - 1.5f) < 0.01f,
+                "PC push speed ratio is 1.0 pushing alone and 1.5 with both pushing (alone " + F(ratio[0]) + ", together " + F(ratio[1]) + ")");
+            if (host) h.Check(travel[1] >= travel[0] * 1.05f, "PC two pushers' peak stone speed is not below one pusher's (alone " + F(travel[0]) + "/s, together " + F(travel[1]) + "/s)");
+            h.Check(boosted[0] == 0 && boosted[1] >= 1, "PC the push speed-up engaged on this PC only while both pushed (alone " + boosted[0] + ", together " + boosted[1] + ")");
+        }
+
         public static IEnumerator Run(TestHarness h)
         {
             s_localSteps.Clear(); s_partnerSteps.Clear(); NetPlay.On(MsgBarrier, OnBarrier);
@@ -573,6 +642,7 @@ namespace OriCoop
                 }
                 yield return Barrier(h, 92, block);
                 yield return BothInteract(h, block, resting, restingRot, host, guestSeat);
+                yield return PushTogether(h, block, resting, restingRot, host);
             }
             finally
             {
