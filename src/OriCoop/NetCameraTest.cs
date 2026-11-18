@@ -27,6 +27,10 @@ namespace OriCoop
             h.Note("--- phase CAM: online influence camera (" + (host ? "host walks across" : "guest stands still") + ")");
             yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 66);
             if (Own == null || Partner == null) { h.Check(false, "CAM needs both Oris"); yield break; }
+            // T-081: a phase before this one can leave an Ori downed; a downed Ori is held at its skull, so the walk and
+            // the camera checks would fail in ways that look like camera bugs. Say what is wrong instead.
+            if (Revive.IsDowned(Own) || Revive.IsDowned(Partner))
+            { h.Check(false, "CAM needs both Oris alive (downed: own=" + Revive.IsDowned(Own) + " partner=" + Revive.IsDowned(Partner) + ", left by an earlier phase)"); yield break; }
             NetTestHarness.BotLX = 0f; NetTestHarness.BotButtons = 0;
             if (host) yield return HostWalk(h);
             else yield return GuestWatch(h);
