@@ -468,12 +468,19 @@ function Install-TestPlugins {
     # holds a different one (T-085: it blocks the owner's real controller; every run must carry the current one).
     $quiet = Join-Path $plugins 'OriCoop.TestQuiet.dll'
     $built = Get-TestQuietBuild
-    if (-not (Test-Path -LiteralPath $quiet) -or (Get-FileHash -LiteralPath $built).Hash -ne (Get-FileHash -LiteralPath $quiet).Hash) {
+    if (-not (Test-Path -LiteralPath $quiet) -or (Get-Sha256 $built) -ne (Get-Sha256 $quiet)) {
         for ($try = 1; ; $try++) {
             try { Copy-Item -LiteralPath $built $quiet -Force -ErrorAction Stop; break }
             catch [System.IO.IOException] { if ($try -ge 30) { throw }; Start-Sleep -Seconds 1 }
         }
     }
+}
+
+# .NET, not Get-FileHash: that cmdlet is missing when Windows PowerShell is started from pwsh (run-affected's suites).
+function Get-Sha256([string]$path) {
+    $sha = [System.Security.Cryptography.SHA256]::Create()
+    $fs = [IO.File]::Open($path, 'Open', 'Read', 'ReadWrite')
+    try { return [BitConverter]::ToString($sha.ComputeHash($fs)) } finally { $fs.Close(); $sha.Dispose() }
 }
 
 function Get-TestQuietBuild {
