@@ -27,6 +27,7 @@ function Last-Utc([string[]]$lines) {
 
 if ($Net) {
     $env:ORICOOP_TRACE_DIR = $traceDir; $env:ORICOOP_TRACE_LEVEL = '2'
+    $runStart = Get-Date
     try { & (Join-Path $PSScriptRoot 'run-nettest.ps1') -TimeoutSec $TimeoutSec | Tee-Object -FilePath (Join-Path $traceDir 'nettest-output.txt') | Select-Object -Last 8 }
     finally { Remove-Item Env:ORICOOP_TRACE_DIR, Env:ORICOOP_TRACE_LEVEL -ErrorAction SilentlyContinue }
     $files = @(Get-ChildItem $traceDir -Filter 'OriCoop-trace-*.log')
@@ -40,7 +41,21 @@ if ($Net) {
     $shared = $false
     foreach ($sid in $sids.Keys) { if (@($files | Where-Object { Select-String -Path $_.FullName -Pattern (' sid=' + $sid + ' ') -Quiet }).Count -ge 2) { $shared = $true } }
     'trace files: ' + $files.Count + '; session ids: ' + (($sids.Keys) -join ',') + '; roles: ' + (($roles.Keys | ForEach-Object { $_.Split('@')[0] } | Sort-Object -Unique) -join ',')
-    if ($ok -and $shared) { 'TRACE NET PASS: both ends traced the same session id' } else { 'TRACE NET FAIL'; exit 1 }
+    # T-067: each end's own BepInEx\LogOutput.log (paths from the net launch log) must stamp every OriCoop line with
+    # UTC, carry the "clock: utc_offset=" header and, once connected, the measured "clock: offset vs Pn" line.
+    $clockOk = $true; $logs = @()
+    $launch = Get-ChildItem 'C:\OriCoop\test*\net-launch.log' -ErrorAction SilentlyContinue | Where-Object { $_.LastWriteTime -gt $runStart } | Sort-Object LastWriteTime | Select-Object -Last 1
+    if ($launch) { foreach ($m in (Select-String -Path $launch.FullName -Pattern ' tag=(\S+) .* bepinex=(\S+)')) { $logs += (Join-Path $m.Matches[0].Groups[2].Value 'LogOutput.log') } }
+    if ($logs.Count -lt 2) { 'clock check: could not find both ends'' LogOutput.log (launch log: ' + $(if ($launch) { $launch.FullName } else { 'none' }) + ')'; $clockOk = $false }
+    foreach ($log in $logs) {
+        $ours = @(Get-Content -LiteralPath $log -ErrorAction SilentlyContinue | Where-Object { $_ -match '^\[\w+\s*:Ori Local Co-op\] ' })
+        $unstamped = @($ours | Where-Object { $_ -notmatch '^\[\w+\s*:Ori Local Co-op\] \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z ' })
+        $header = @($ours | Where-Object { $_ -match ' clock: utc_offset=[+-]\d\d:\d\d local=\S+ utc=\S+Z$' }).Count
+        $offset = @($ours | Where-Object { $_ -match ' clock: offset vs P\d = [+-]\d+\.\d ms \(P\d clock minus ours; rtt \d+\.\d ms, \d+ samples\)$' })
+        'clock check ' + (Split-Path (Split-Path (Split-Path $log -Parent) -Parent) -Leaf) + ': ' + $ours.Count + ' OriCoop lines, ' + $unstamped.Count + ' without UTC, header ' + $header + ', offset lines ' + $offset.Count + $(if ($offset.Count) { ' (' + ($offset[-1] -replace '^.* clock: ', '') + ')' } else { '' })
+        if ($ours.Count -eq 0 -or $unstamped.Count -gt 0 -or $header -ne 1 -or $offset.Count -lt 1) { $clockOk = $false; if ($unstamped.Count) { '  first unstamped: ' + $unstamped[0] } }
+    }
+    if ($ok -and $shared -and $clockOk) { 'TRACE NET PASS: both ends traced the same session id; both LogOutput.log files are UTC stamped with the clock offset' } else { 'TRACE NET FAIL'; exit 1 }
     return
 }
 
