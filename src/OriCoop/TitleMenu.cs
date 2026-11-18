@@ -852,6 +852,8 @@ namespace OriCoop
             TShot("title_items");
             yield return s_tHost.StartCoroutine(TWait(0.5f));
 
+            check(PagesWithHostMode().Length == 0, "menus: no page definition lists the host-mode row (" + PagesWithHostMode() + ")");
+
             // Co-op page and Back.
             int press0 = PressSounds;
             yield return s_tHost.StartCoroutine(PressCoop());

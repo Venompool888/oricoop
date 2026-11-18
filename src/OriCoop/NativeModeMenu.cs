@@ -559,6 +559,18 @@ namespace OriCoop
 
         // ---- diagnostics ------------------------------------------------------------------------------------
 
+        // T-091: every page definition the title orb, the mode menu (single / local / online) and the server page draw
+        // from. None may list the host-mode row any more (T-045); returns the offending page names ("" = none).
+        internal static string PagesWithHostMode()
+        {
+            string bad = "";
+            string[] names = { "MainPage", "OnlinePage", "TitlePage", "ServerModePage" };
+            string[][][] pages = { MainPage, OnlinePage, TitlePage, ServerModePage };
+            for (int i = 0; i < pages.Length; i++)
+                foreach (string[] row in pages[i]) foreach (string key in row) if (key == "server.relay" || key == "server.relay.desc") bad += names[i] + " ";
+            return bad.Trim();
+        }
+
         static string Dump(Transform t)
         {
             var sb = new StringBuilder();
@@ -637,7 +649,9 @@ namespace OriCoop
                 float wait = 0.7f;
                 switch (m_probeStep)
                 {
-                    case 0: Shot("modemenu_main"); break;
+                    case 0:
+                        if (PagesWithHostMode().Length > 0) Plugin.Log.LogError("mode menu probe: host mode is still listed on " + PagesWithHostMode());
+                        Shot("modemenu_main"); break;
                     case 1: s_mgr.SetCurrentItem(2); OnHighlightChanged(); break;
                     case 2: Shot("modemenu_main_online_focus"); break;
                     case 3: s_mgr.PressCurrentItem(); break;                      // -> online page
@@ -649,9 +663,10 @@ namespace OriCoop
                     case 6:
                         if (LastPage != "servermode" || LastLabels.Count != 2 || s_mgr.Index != 0
                             || !HasKey(new List<string> { LastLabels[0] }, "server.cserver")
-                            || !HasKey(new List<string> { LastLabels[1] }, "server.relay"))
-                            Plugin.Log.LogError("mode menu probe: expected equal mode / relay, default focus on equal mode (" + Labels + ")");
-                        s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;   // relay -> role
+                            || !HasKey(new List<string> { LastLabels[1] }, "lobby.rooms") || HasKey(LastLabels, "server.relay"))
+                            Plugin.Log.LogError("mode menu probe: expected server mode / My rooms and no host mode, default focus on server mode (" + Labels + ")");
+                        // T-045: the relay host / join pages are no longer a menu row; the probe opens them directly for the screenshots.
+                        LobbyOpen("relay"); break;   // relay -> role
                     case 7: Shot("lobby_role_relay"); break;
                     case 8: s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;   // join -> room code entry
                     case 9: Shot("lobby_entry"); break;
