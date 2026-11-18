@@ -186,6 +186,7 @@ namespace OriCoop
                     yield return Flip(h, "WO3" + L, b + 200, host);
                     yield return Sin(h, "WO4" + L, b + 300, host); yield return Settle(h, "WO4" + L);
                     yield return Breakable(h, "WO5" + L, b + 400, host); yield return Settle(h, "WO5" + L);
+                    if (!lag) { yield return EarlyEvent(h, "WO5D", b + 450); yield return Settle(h, "WO5D"); }
                     yield return Rope(h, "WO6" + L, b + 500, host); yield return Settle(h, "WO6" + L);
                     yield return Post(h, "WO7" + L, b + 600, host); yield return Settle(h, "WO7" + L);
                     yield return Hazard(h, "WO8" + L, b + 700, host); yield return Settle(h, "WO8" + L);
@@ -359,6 +360,73 @@ namespace OriCoop
                 h.Check(broken, tag + " guest's floor broke within " + s_win + " s of the host's stomp (health=" + (dr == null ? "gone" : F(dr.Health)) + ")");
             }
             yield return Barrier(h, step + 2, 0, 0f, 0f);
+        }
+
+        // WO5D (T-074): a partner's event that reaches this PC while the object's scene is still starting (objects exist,
+        // but SceneRoot.LateStart has not loaded the scene's saved state yet; on a busy PC that is several frames) was
+        // applied and then overwritten by the saved state. Each PC on its own: both leave the floor scene until it unloads,
+        // come back, and right after SceneRoot.EarlyStart (LateStart is queued, the saved state not loaded) hand an intact
+        // floor a partner damage event; once the scene's state has loaded the floor must still be broken.
+        static string s_earlyScene; static int s_earlyBroken; static EntityDamageReciever s_earlyTarget; static bool s_earlyStartedThen; static Vector3 s_earlyStand;
+        [HarmonyLib.HarmonyPatch(typeof(SceneRoot), "EarlyStart")]
+        static class EarlyStartHook
+        {
+            static void Postfix(SceneRoot __instance)
+            {
+                if (s_earlyScene == null || __instance == null || __instance.gameObject.scene.name != s_earlyScene) return;
+                List<StompableFloor> floors = new List<StompableFloor>(__instance.GetComponentsInChildren<StompableFloor>(true));
+                floors.RemoveAll(f => f.DamageReciever == null || WorldObjSync.IdOf(f) == s_earlyBroken);
+                if (floors.Count == 0) return;
+                // The floor farthest from where both Oris stand (the same on both PCs), so nobody falls through it: an Ori
+                // dropping into the grotto left story state behind that broke the later CUT / digest checks.
+                floors.Sort((x, y) => { int c = Vector3.Distance(y.transform.position, s_earlyStand).CompareTo(Vector3.Distance(x.transform.position, s_earlyStand));
+                    return c != 0 ? c : WorldObjSync.IdOf(x).CompareTo(WorldObjSync.IdOf(y)); });
+                s_earlyScene = null; s_earlyTarget = floors[0].DamageReciever; s_earlyStartedThen = WorldObjSync.SceneStarted(floors[0]);
+                WorldObjSync.TestApplyDamage(s_earlyTarget, s_earlyTarget.Health + 1f);   // the id WorldObjSync sends: the damage receiver's
+            }
+        }
+        static IEnumerator EarlyEvent(TestHarness h, string tag, int step)
+        {
+            const string scene = "thornfeltSwampMoonGrottoTransition";
+            int broken = s_pick != null ? WorldObjSync.IdOf(s_pick) : 0;
+            RuntimeSceneMetaData meta = Core.Scenes.Manager.GetSceneInformation(scene), away = Core.Scenes.Manager.GetSceneInformation("sunkenGladesIntroSplitA");
+            if (meta == null || away == null) { h.Check(false, tag + " scenes exist"); yield break; }
+            yield return Barrier(h, step, 0, 0f, 0f);
+            // Both leave (the host keeps scenes loaded around the partner), then each waits until the scene is gone here.
+            Place(away.PlaceholderPosition);
+            yield return Barrier(h, step + 1, 0, 0f, 0f);
+            float start = Time.realtimeSinceStartup, end = start + 30f;
+            while (Time.realtimeSinceStartup < end && SceneActive(scene)) { KeepAlive(); yield return null; }
+            bool unloaded = !SceneActive(scene);
+            h.Note(tag + " floor scene unloaded=" + unloaded + " after " + F(Time.realtimeSinceStartup - start) + " s");
+            yield return Barrier(h, step + 2, 0, 0f, 0f);
+            int deferred0 = WorldObjSync.EventsDeferred;
+            s_earlyTarget = null; s_earlyBroken = broken; s_earlyStand = meta.PlaceholderPosition; s_earlyScene = unloaded ? scene : null;
+            Place(meta.PlaceholderPosition);
+            end = Time.realtimeSinceStartup + 25f;
+            while (Time.realtimeSinceStartup < end && (s_earlyTarget == null || !WorldObjSync.SceneStarted(s_earlyTarget))) { KeepAlive(); yield return null; }
+            s_earlyScene = null;
+            if (!unloaded || s_earlyTarget == null)
+                h.Note("SKIP " + tag + ": the floor scene did not reload here (unloaded=" + unloaded + " hooked=" + (s_earlyTarget != null) + ")");
+            else
+            {
+                yield return Wait(1f);
+                EntityDamageReciever target = s_earlyTarget;
+                h.Note(tag + " event applied before the scene's state loaded (started then=" + s_earlyStartedThen + "), deferred="
+                    + (WorldObjSync.EventsDeferred - deferred0) + " health now=" + (target == null ? "gone" : F(target.Health)));
+                h.Check(!s_earlyStartedThen, tag + " the event really arrived while the scene was still starting");
+                h.Check(target == null || target.Health <= 0f, tag + " a partner event that arrived while the scene was starting still breaks the floor (health="
+                    + (target == null ? "gone" : F(target.Health)) + ")");
+            }
+            // Leave the grotto again so the next phases start from a clean place.
+            Place(away.PlaceholderPosition);
+            yield return Barrier(h, step + 3, 0, 0f, 0f);
+        }
+        static bool SceneActive(string scene)
+        {
+            foreach (SceneManagerScene s in Core.Scenes.Manager.ActiveScenes)
+                if (s != null && s.MetaData != null && s.MetaData.Scene == scene) return true;
+            return false;
         }
 
         // W6 rope: the host cuts a hanging attachment (DetachRopeOnStomp -> BreakAttachment); the guest's must drop too.

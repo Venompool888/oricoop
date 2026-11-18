@@ -38,6 +38,7 @@ $Mutations = @(
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
     @{ Name = 'PHYS_OFF (P)';           Env = @{ ORICOOP_PHYS_OFF = '1' };               Script = @('run-nettest.ps1');                        Expect = '^P\w* ' }
     @{ Name = 'WORLDOBJ_OFF (WO)';      Env = @{ ORICOOP_WORLDOBJ_OFF = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');        Expect = '^WO' }
+    @{ Name = 'WOBJ_NO_DEFER (WO5D)';   Env = @{ ORICOOP_WOBJ_NO_DEFER = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');       Expect = '^WO5D ' }
 )
 if (-not $NoMutations) {
     $mdir = Join-Path $env:TEMP ('oricoop-mutations-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))

@@ -41,10 +41,15 @@ namespace OriCoop
         // Mutation switch for the harness (ORICOOP_WORLDOBJ_OFF=1): the old behaviour, every PC on its own.
         public static bool Enabled = Environment.GetEnvironmentVariable("ORICOOP_WORLDOBJ_OFF") != "1";
         public static int EventsSent, EventsApplied, EventsMissing, PuppetSuppressed, LiveApplies, SinCorrections, WaterFollows, FlipHeartbeatFixes;
+        // T-074: events held back until the object's scene has finished starting (see SceneStarted).
+        public static int EventsDeferred, EventsReplayed;
+        sealed class Deferred { public byte Kind; public int Id; public byte[] Payload; public Component Target; public float Until; }
+        static readonly List<Deferred> s_deferred = new List<Deferred>();
 
         // A scene's saved state is loaded in SceneRoot.LateStart, a frame or more after its objects exist
-        // (ScenesManager.OnSceneStartCompleted sets HasStartBeenCalled at its end). Before that a broken floor or a
-        // collapsed block still looks whole. Not inside any scene (DontDestroyOnLoad) = started.
+        // (ScenesManager.OnSceneStartCompleted sets HasStartBeenCalled at its end). A change made to one of its objects
+        // before that is overwritten by the saved state: a floor broken by the partner's event came back whole on this PC
+        // (WO5L / WO6L, 2026-11-18, heavy load: scenes start late). Not inside any scene (DontDestroyOnLoad) = started.
         public static bool SceneStarted(Component c)
         {
             if (c == null || Core.Scenes.Manager == null) return true;
@@ -98,7 +103,7 @@ namespace OriCoop
 
         static void Reset()
         {
-            s_byId.Clear(); s_triggerReplicable.Clear(); s_firedOnce.Clear(); s_seenSeq.Clear(); s_seenOrder.Clear();
+            s_byId.Clear(); s_triggerReplicable.Clear(); s_firedOnce.Clear(); s_seenSeq.Clear(); s_seenOrder.Clear(); s_deferred.Clear();
             s_waterAt2 = -10f; s_lastFlipActivity = -10f;
         }
 
@@ -151,7 +156,48 @@ namespace OriCoop
             long key = ((long)NetPlay.Sender << 32) | seq;
             if (!s_seenSeq.Add(key)) return;
             s_seenOrder.Enqueue(key); while (s_seenOrder.Count > 4096) s_seenSeq.Remove(s_seenOrder.Dequeue());
-            s_applying = true;
+            byte[] payload = r.ReadBytes((int)(r.BaseStream.Length - r.BaseStream.Position));
+            ApplyEvent(kind, id, payload, false);
+        }
+
+        // Test hook (NetWorldObjTest WO5D): apply a damage event exactly as if the partner had sent it (target = the EntityDamageReciever).
+        public static void TestApplyDamage(Component target, float amount)
+        {
+            MemoryStream m = new MemoryStream(); BinaryWriter w = new BinaryWriter(m);
+            Vector3 p = target.transform.position;
+            w.Write(amount); w.Write((int)DamageType.Stomp); w.Write(0f); w.Write(0f); w.Write(p.x); w.Write(p.y); w.Write(p.z); w.Flush();
+            ApplyEvent(KDamage, IdOf(target), m.ToArray(), false);
+        }
+
+        // Defers the event when its object's scene has not started yet; true = deferred (the caller does nothing now).
+        // Test-only mutation switch: ORICOOP_WOBJ_NO_DEFER=1 applies events at once (pre-T-074), so WO5D must fail.
+        static readonly bool s_mutateNoDefer = Environment.GetEnvironmentVariable("ORICOOP_WOBJ_NO_DEFER") == "1";
+        static bool DeferIfNotStarted(byte kind, int id, byte[] payload, Component target)
+        {
+            if (s_mutateNoDefer || target == null || SceneStarted(target)) return false;
+            s_deferred.Add(new Deferred { Kind = kind, Id = id, Payload = payload, Target = target, Until = Time.realtimeSinceStartup + 30f });
+            EventsDeferred++;
+            Log("defer kind=" + kind + " id=" + id + ": its scene has not finished starting (saved state not loaded yet)");
+            return true;
+        }
+
+        static void ReplayDeferred()
+        {
+            if (s_deferred.Count == 0) return;
+            for (int i = s_deferred.Count - 1; i >= 0; i--)
+            {
+                Deferred d = s_deferred[i];
+                if (d.Target == null || Time.realtimeSinceStartup > d.Until) { s_deferred.RemoveAt(i); EventsMissing++; continue; }
+                if (!SceneStarted(d.Target)) continue;
+                s_deferred.RemoveAt(i); EventsReplayed++;
+                ApplyEvent(d.Kind, d.Id, d.Payload, true);
+            }
+        }
+
+        static void ApplyEvent(byte kind, int id, byte[] payload, bool replay)
+        {
+            BinaryReader r = new BinaryReader(new MemoryStream(payload));
+            s_applying = true; bool deferred = false;
             string what = "?"; bool found = true;
             try
             {
@@ -160,12 +206,14 @@ namespace OriCoop
                     case KStomper:
                     {
                         what = "stomper"; Stomper s = Find<Stomper>(id); found = s != null;
+                        if (DeferIfNotStarted(kind, id, payload, s)) { deferred = true; break; }
                         if (s != null) s.PlayerTouchedTrigger();
                         break;
                     }
                     case KCollapse:
                     {
                         what = "collapse"; CollapsingSolid c = Find<CollapsingSolid>(id); found = c != null;
+                        if (DeferIfNotStarted(kind, id, payload, c)) { deferred = true; break; }
                         if (c != null && !(bool)F_collapseActivated.GetValue(c)) { F_collapseActivated.SetValue(c, true); if (c.Animator != null) c.Animator.AnimatorDriver.Restart(); }
                         break;
                     }
@@ -185,12 +233,14 @@ namespace OriCoop
                         Vector3 pos = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
                         what = "damage " + type + " " + amount;
                         EntityDamageReciever dr = Find<EntityDamageReciever>(id); found = dr != null;
+                        if (DeferIfNotStarted(kind, id, payload, dr)) { deferred = true; break; }
                         if (dr != null && dr.gameObject.activeInHierarchy) dr.OnRecieveDamage(new Damage(amount, force, pos, type, null));
                         break;
                     }
                     case KTrigger:
                     {
                         what = "trigger"; PlayerCollisionTrigger t = Find<PlayerCollisionTrigger>(id); found = t != null;
+                        if (DeferIfNotStarted(kind, id, payload, t)) { deferred = true; break; }
                         if (t != null && !(t.TriggerOnce && s_firedOnce.Contains(id)) && (t.Active || t.TriggerOnce))
                         {
                             // WorldSync may already have written the partner's Active=false (TriggerOnce): run it once anyway.
@@ -203,6 +253,7 @@ namespace OriCoop
                     case KRope:
                     {
                         what = "rope"; AttachToRope a = Find<AttachToRope>(id); found = a != null;
+                        if (DeferIfNotStarted(kind, id, payload, a)) { deferred = true; break; }
                         if (a != null && (bool)M_ropeAttached.Invoke(a, null)) a.BreakAttachment();
                         break;
                     }
@@ -211,8 +262,9 @@ namespace OriCoop
             }
             catch (Exception e) { Plugin.Log.LogWarning("[wobj] apply " + what + " id=" + id + " failed: " + e.Message); }
             finally { s_applying = false; }
+            if (deferred) return;
             if (found) EventsApplied++; else EventsMissing++;
-            Log("recv " + what + " id=" + id + (found ? "" : " (object not loaded here)"));
+            Log((replay ? "replay " : "recv ") + what + " id=" + id + (found ? "" : " (object not loaded here)"));
             CoopTrace.Event("phys", "wobj.apply", "kind", what, "id", id, "found", found);
         }
 
@@ -220,6 +272,7 @@ namespace OriCoop
         static void Tick()
         {
             EnsureRegistered();
+            ReplayDeferred();
             if (!Online || !NetPlay.IsHost) return;
             float now = Time.realtimeSinceStartup;
             if (now >= s_sinAt)
