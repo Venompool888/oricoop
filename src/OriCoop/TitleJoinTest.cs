@@ -101,7 +101,7 @@ namespace OriCoop
                 Check(pause == null || pause.NavigationManager == null || !pause.NavigationManager.MenuItems.Exists(
                     delegate(CleverMenuItem item) { return item != null && item.name == "OriCoop_PauseSettings"; }),
                     "title: pause settings have not mutated the native menu during startup");
-                LocalSeatsAdapter seats = new LocalSeatsAdapter();
+                GameSeatView seats = new GameSeatView();
                 int p1 = Plugin.Instance.P1Pad, p2 = Plugin.Instance.P2Pad, mode = PlayMode.Current;
                 InputDevice pad = new InputDevice(InputDevice.DeviceKind.Pad, (p2 + 1) % 4);
                 bool changed = seats.SetInput(1, pad);

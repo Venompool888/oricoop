@@ -47,7 +47,7 @@ namespace OriCoop
             else if (page == "coop.hint") Close();
         }
 
-        static readonly LocalSeatsAdapter s_seats = new LocalSeatsAdapter();
+        static readonly GameSeatView s_seats = new GameSeatView();
         static int s_focus;
         static int s_waitFor;            // 0 none, positive = local seat, -1 = add local player
         static bool s_fromPause, s_changedTimeScale;

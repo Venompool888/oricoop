@@ -8,7 +8,7 @@ namespace OriCoop
     // A transport-independent room page using the existing NativeGui/IMGUI rendering path.
     internal static class OnlineRoomScreen
     {
-        static readonly LocalSeatsAdapter seats = new LocalSeatsAdapter();
+        static readonly GameSeatView seats = new GameSeatView();
         static Action proceed;
         static readonly List<Action> buttons = new List<Action>();
         static readonly Dictionary<string, Action> drawn = new Dictionary<string, Action>();

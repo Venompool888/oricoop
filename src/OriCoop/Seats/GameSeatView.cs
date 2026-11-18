@@ -1,21 +1,13 @@
 using System;
 using Game;
 using HarmonyLib;
+using OriCoop.Seats;
 
 namespace OriCoop
 {
-    internal struct InputDevice
-    {
-        internal enum DeviceKind { KeyboardMouse, Pad }
-        public DeviceKind Kind;
-        public int Pad;
-
-        public InputDevice(DeviceKind kind, int pad) { Kind = kind; Pad = pad; }
-    }
-
-    // Settings-facing seat view. Online management uses the host's authoritative seat table;
+    // T-056: the game's ISeatView (was LocalSeatsAdapter). Online management uses the host's authoritative seat table;
     // offline P2 retains the existing join/swap path. Remote puppets are never input targets.
-    internal sealed class LocalSeatsAdapter
+    internal sealed class GameSeatView : ISeatView<SeinCharacter>
     {
         static SeinCharacter s_pendingOwner;
         static int s_pendingPad;
@@ -27,6 +19,36 @@ namespace OriCoop
                 if (NetPlay.Enabled) return Players.LocalSeats;
                 return P2Context.P2 == null ? new int[] { 1 } : new int[] { 1, 2 };
             }
+        }
+
+        public int PrimarySeat { get { return Players.LocalSeat; } }
+
+        public int[] RemoteSeats
+        {
+            get
+            {
+                if (!NetPlay.Enabled) return new int[0];
+                System.Collections.Generic.List<int> seats = new System.Collections.Generic.List<int>();
+                foreach (Puppet p in Players.Remotes)
+                    if (!p.IsLocal && p.Seat > 0 && !seats.Contains(p.Seat)) seats.Add(p.Seat);
+                seats.Sort();
+                return seats.ToArray();
+            }
+        }
+
+        public bool IsLocal(int seat) { return Array.IndexOf(LocalSeats, seat) >= 0; }
+
+        // Offline P2 is not a puppet: it is P2Context.P2 on seat 2.
+        public SeinCharacter OriOf(int seat)
+        {
+            if (!NetPlay.Enabled && seat == 2) return P2Context.P2;
+            return Players.OriOf(seat);
+        }
+
+        public int SeatOf(SeinCharacter ori)
+        {
+            if (!NetPlay.Enabled && ori != null && ori == P2Context.P2) return 2;
+            return Players.SeatOf(ori);
         }
 
         public InputDevice InputOf(int seat)
