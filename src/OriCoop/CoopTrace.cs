@@ -67,6 +67,9 @@ namespace OriCoop
             ParseSub(); s_subLevels.SettingChanged += (a, b) => ParseSub();
             string env = Environment.GetEnvironmentVariable("ORICOOP_TRACE_LEVEL");
             int envLevel; if (!string.IsNullOrEmpty(env) && int.TryParse(env, out envLevel)) s_levelOverride = envLevel;
+            StampDiskLog();
+            DateTime started = DateTime.Now;
+            Plugin.Log.LogInfo(ClockSync.Header(started, started.ToUniversalTime()));
             if (Level <= Off) return;
             try
             {
@@ -232,8 +235,9 @@ namespace OriCoop
         public static void Tick()
         {
             s_frame = Time.frameCount; s_gameTime = Time.time; s_real = Time.realtimeSinceStartup;
-            if (s_w == null) return;
             if (s_real >= s_nextFlush) { s_nextFlush = s_real + 0.5f; FlushBepInEx(); }
+            try { CoopClock.Tick(); } catch (Exception e) { if (Every("clock.error", 60f)) Plugin.Log.LogWarning("clock: " + e.Message); }
+            if (s_w == null) return;
             if (s_real >= s_nextPoll) { s_nextPoll = s_real + 0.25f; PollSession(); }
             CoopTraceHooks.Tick();
         }
@@ -246,8 +250,42 @@ namespace OriCoop
                 s_bepLooked = true;
                 foreach (ILogListener l in BepInEx.Logging.Logger.Listeners)
                     if (l is DiskLogListener) s_bepWriter = ((DiskLogListener)l).LogWriter;
+                    else if (l is UtcDiskLog) s_bepWriter = ((UtcDiskLog)l).Inner.LogWriter;
             }
             try { if (s_bepWriter != null) s_bepWriter.Flush(); } catch { }
+        }
+
+        // T-067: every line this mod writes to BepInEx\LogOutput.log starts with its UTC time
+        // ("[Info   :Ori Local Co-op] 2026-11-18T10:44:35.123Z net: ..."). BepInEx's DiskLogListener is swapped for a
+        // wrapper that stamps our source's lines and passes everything else through unchanged.
+        public const string StampedSource = "Ori Local Co-op";
+        static void StampDiskLog()
+        {
+            try
+            {
+                var listeners = BepInEx.Logging.Logger.Listeners;
+                foreach (ILogListener l in new List<ILogListener>(listeners))
+                {
+                    DiskLogListener disk = l as DiskLogListener;
+                    if (disk == null) continue;
+                    listeners.Remove(disk);
+                    listeners.Add(new UtcDiskLog(disk));
+                }
+            }
+            catch (Exception ex) { Plugin.Log.LogWarning("log: could not add UTC stamps to LogOutput.log: " + ex.Message); }
+        }
+
+        sealed class UtcDiskLog : ILogListener
+        {
+            public readonly DiskLogListener Inner;
+            public UtcDiskLog(DiskLogListener inner) { Inner = inner; }
+            public void LogEvent(object sender, LogEventArgs e)
+            {
+                if (e.Source != null && e.Source.SourceName == StampedSource)
+                    e = new LogEventArgs(ClockSync.Stamp(DateTime.UtcNow, e.Data), e.Level, e.Source);
+                Inner.LogEvent(sender, e);
+            }
+            public void Dispose() { Inner.Dispose(); }
         }
 
         static FieldInfo s_sessionField;
