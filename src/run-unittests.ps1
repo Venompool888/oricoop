@@ -9,7 +9,9 @@ $root = Split-Path -Parent $PSScriptRoot
 $game = if ($Game) { $Game } else { Join-Path $root 'game' }
 $m = "$game\oriDE_Data\Managed"
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
-$out = Join-Path $PSScriptRoot 'bin\unittests'
+# One output folder per run: two runs in the same worktree (two run-affected at once) must not overwrite each
+# other's test exes (T-078: the second run failed on a locked exe and reported "unit tests failed").
+$out = Join-Path $PSScriptRoot ('bin\unittests\' + $PID)
 New-Item -ItemType Directory -Force $out | Out-Null
 $failed = @()
 foreach ($dir in Get-ChildItem (Join-Path $PSScriptRoot 'Tests') -Directory) {
@@ -24,5 +26,6 @@ foreach ($dir in Get-ChildItem (Join-Path $PSScriptRoot 'Tests') -Directory) {
     & $exe
     if ($LASTEXITCODE -ne 0) { Write-Host "UNITTEST $($dir.Name): FAIL"; $failed += $dir.Name } else { Write-Host "UNITTEST $($dir.Name): PASS" }
 }
+Remove-Item -LiteralPath $out -Recurse -Force -ErrorAction SilentlyContinue
 if ($failed.Count) { Write-Host ("UNITTESTS FAILED: " + ($failed -join ', ')); exit 1 }
 Write-Host 'UNITTESTS PASS'

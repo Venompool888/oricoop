@@ -379,6 +379,7 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
     if ($candidates.Count -eq 0) { 'NO TEST COPY ' + $Copy + ' (make it with src\make-test-copy.ps1)'; exit 2 }
     $sw = [System.Diagnostics.Stopwatch]::StartNew(); $lastNote = -999
     while ($true) {
+        $capped = -1
         $owner = @(Get-OwnerGames)
         if ($owner.Count -gt 0 -and -not (Enter-Alongside $owner $script)) {
             if (Test-PlayAlongside) {
@@ -399,6 +400,18 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
             # (e.g. two nightly suites, same ORICOOP_SESSION) belongs to that run (2026-11-18: two runs shared copy a/e).
             $mine = Test-LockReusableByName $c.Lock
             if (-not $mine -and -not (Enter-CopyLock $c $script)) { continue }
+            # Concurrency cap (T-078): at most ORICOOP_MAX_RUNS runs (default 3, about 6 games) at once. Measured over 180
+            # full 2-player net runs (2026-11-16..18): median own time 463 s at 2-3 games running, 535 s at 4-5, 633 s
+            # at 6-7, the 660 s timeout beyond that, and the pass rate fell from ~50 % to ~20 %: fewer runs at once pass
+            # more runs per hour. A copy pinned with -Copy / ORICOOP_TEST_COPY is not capped.
+            $maxRuns = $(if ($env:ORICOOP_MAX_RUNS) { [int]$env:ORICOOP_MAX_RUNS } else { 3 })
+            if (-not $mine -and -not $Copy) {
+                $others = @(Get-TestCopies | Where-Object { $_.Name -ne $c.Name -and (Test-Path -LiteralPath $_.Lock) -and -not (Test-LockStale $_.Lock) }).Count
+                if ($others -ge $maxRuns) {
+                    Remove-Item -LiteralPath $c.Lock -Force -ErrorAction SilentlyContinue
+                    $capped = $others; break
+                }
+            }
             $orphans = @(Get-CopyGames $c)
             if ($orphans.Count -gt 0) {
                 # Games of this copy while nobody holds its lock. If the PowerShell that started them is gone, they are
@@ -427,6 +440,7 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
         if ($min -ge $WaitMinutes) { 'ALL TEST COPIES BUSY for ' + $WaitMinutes + ' min: giving up (exit 4).'; exit 4 }
         if ($min -ne $lastNote) {
             $lastNote = $min
+            if ($capped -ge 0) { 'WAITING: ' + $capped + ' test runs already going (cap ORICOOP_MAX_RUNS=' + $maxRuns + ', docs	esting-rules.md)' }
             foreach ($c in $candidates) {
                 $i = Read-LockInfo $c.Lock
                 if ($i.Count -gt 0) { 'WAITING: copy ' + $c.Name + ' held by ' + $i['session'] + ' (' + $i['script'] + ', since ' + $i['time'] + ')' }

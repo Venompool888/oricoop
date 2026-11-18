@@ -1,0 +1,58 @@
+# Which net phases cover which source file (T-078). Read by src\test-selection.ps1 (run-affected, the selfcheck, nightly).
+# Phases (NetTestHarness.AllPhases): INTRO MOVE W E3 E5 R S4 P WO CAM CUT. Start-up and the closing G checks always run.
+# Rules, in order: a file in Full -> every phase; a file in Files -> those phases; its module (docs\modules.md) in
+# Modules -> those phases; any other file under src\OriCoop -> every phase (unknown = full). Changing THIS file -> every
+# phase. src\test-selection-selfcheck.ps1 proves that every mutation switch below is caught by the phases selected for
+# the file it lives in; add a row there whenever a new ORICOOP_MUTATE_* (or *_OFF) switch is added.
+@{
+    # Shared core: session, transport, seats, save handshake, the harness itself, the composition root.
+    Full = @(
+        'Plugin', 'NetPlay', 'NetPeer', 'Transport', 'ClockSync', 'PeerHub', 'RelayHub', 'RelayTransport', 'RelayList', 'SteamTransport',
+        'Players', 'Roles', 'P2Context', 'SaveSync', 'GuestJoin', 'WorldSync', 'Services', 'Seams',
+        'NetRoute', 'INetRouteServer', 'CServerConfig', 'CServerClient', 'CServerLink', 'CsWire',
+        'IAuthority', 'Arbiter', 'HostArbiter', 'AuthorityClient', 'AuthoritySource', 'DynamicLease',
+        'NetTestHarness', 'TestHarness', 'TestClock', 'CoopTrace', 'CoopTraceHooks', 'CoopClock', 'VisualInvariants'
+    )
+    # Module (docs\modules.md) -> phases. M0/M1 are core (Full above lists their files); unknown members fall to full.
+    Modules = @{
+        'M0' = 'FULL'
+        'M1' = 'FULL'
+        'M2' = 'MOVE,CAM'
+        'M3' = 'W,P,WO'
+        'M4' = 'E3,E5'
+        'M5' = 'INTRO,W,S4,CAM,CUT'
+        'M6' = 'R,S4'
+        'M7' = 'FULL'
+        'M8' = ''
+        'M9' = 'FULL'
+    }
+    # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
+    Files = @{
+        'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
+        'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
+        'WorldObjSync' = 'WO'; 'PushBlockSync' = 'P'
+        'OnlineCamera' = 'CAM'; 'CoopCamera' = 'MOVE,CAM'; 'CutsceneGuard' = 'INTRO,S4,CAM,CUT'
+        'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'
+        'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = ''
+    }
+    # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
+    # Suite 'net' means the 2-player net suites (net, net-relay, net-newgame), which take ORICOOP_PHASES.
+    Mutations = @(
+        @{ Switch = 'ORICOOP_MUTATE_NO_LIFECYCLE';   File = 'src\OriCoop\Plugin.cs';         Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_KEEP_NET';       File = 'src\OriCoop\TitleReturn.cs';    Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_NO_PLATFORMFIX'; File = 'src\OriCoop\PlatformFix.cs';    Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_BOTTOMHUD_P1VALUES'; File = 'src\OriCoop\BottomHud.cs'; Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_SIGNPOST';       File = 'src\OriCoop\P2Extras.cs';       Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
+        @{ Switch = 'ORICOOP_TEST_THROW';            File = 'src\OriCoop\Plugin.cs';         Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_P3_OFF';                File = 'src\OriCoop\CutsceneGuard.cs';  Suite = 'net';       Phase = 'CUT' }
+        @{ Switch = 'ORICOOP_S4_NO_HOLD';            File = 'src\OriCoop\NetStoryTest.cs';   Suite = 'net';       Phase = 'S4' }
+        @{ Switch = 'ORICOOP_PHYS_OFF';              File = 'src\OriCoop\NetPhysTest.cs';    Suite = 'net';       Phase = 'P' }
+        @{ Switch = 'ORICOOP_PHYS_OFF';              File = 'src\OriCoop\PushBlockSync.cs';  Suite = 'net';       Phase = 'P'; Mention = 'public static bool Enabled' }
+        @{ Switch = 'ORICOOP_WORLDOBJ_OFF';          File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
+        @{ Switch = 'ORICOOP_WOBJ_NO_DEFER';         File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
+        @{ Switch = 'ORICOOP_MUTATE_CAM_NO_MATES';   File = 'src\OriCoop\OnlineCamera.cs';   Suite = 'net';       Phase = 'CAM' }
+        @{ Switch = 'ORICOOP_MUTATE_CAM_NO_UNPARK';  File = 'src\OriCoop\CutsceneGuard.cs';  Suite = 'net';       Phase = 'CAM' }
+        @{ Switch = 'ORICOOP_NET_NO_FORWARD';        File = 'src\OriCoop\NetPlay.cs';        Suite = 'net-4p';    Phase = '' }
+    )
+}

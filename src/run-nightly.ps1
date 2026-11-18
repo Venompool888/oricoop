@@ -10,8 +10,11 @@ $root = Split-Path -Parent $src
 . (Join-Path $src 'test-launch.ps1')
 $owner = @(Get-OwnerGames)
 if ($owner.Count -gt 0) { 'NIGHTLY skipped: the owner is playing (' + (Format-Games $owner) + ')'; exit 0 }
-$dir = Join-Path $root 'logs\nightly'
+# Logs live in the main checkout (shared by every worktree), like run-affected's history.
+$logs = Join-Path (Split-Path -Parent (git -C $root rev-parse --path-format=absolute --git-common-dir).Trim()) 'logs'
+$dir = Join-Path $logs 'nightly'
 New-Item -ItemType Directory -Force $dir | Out-Null
+$prevNightly = Get-ChildItem $dir -Filter '*.txt' -ErrorAction SilentlyContinue | Sort-Object LastWriteTime | Select-Object -Last 1
 $summary = Join-Path $dir ([DateTime]::Now.ToString('yyyyMMdd-HHmm') + '.txt')
 $sha = (git -C $root rev-parse --short HEAD).Trim()
 $env:ORICOOP_SESSION = 'nightly ' + $sha
@@ -21,6 +24,24 @@ $env:ORICOOP_TEST_COPY = ''
 $env:ORICOOP_TEST_DLL = (& (Join-Path $src 'build-commit.ps1') $sha | Select-Object -Last 1)
 & (Join-Path $src 'run-affected.ps1') -All -Parallel $Parallel -Summary $summary
 $code = $LASTEXITCODE
+# T-078: the selection selfcheck, and what the merge-time runs since the last nightly actually ran (they may have run
+# only some net phases; this full run is the safety net for anything the phase map got wrong).
+$selfcheck = @(& (Join-Path $src 'test-selection-selfcheck.ps1') -Root $root | Select-Object -Last 1)
+if ($LASTEXITCODE -ne 0 -and $code -eq 0) { $code = 1 }
+$since = $(if ($prevNightly) { $prevNightly.LastWriteTime } else { [DateTime]::Now.AddDays(-1) })
+$hist = Join-Path $logs 'affected-history.tsv'
+$runs = @()
+if (Test-Path $hist) {
+    foreach ($l in Get-Content $hist) {
+        $c = $l -split "`t"; $when = [DateTime]::MinValue
+        if ($c.Count -ge 7 -and [DateTime]::TryParse($c[0], [ref]$when) -and $when -gt $since) {
+            $runs += ('  ' + $c[0] + ' ' + $c[1] + ' ' + $c[2] + ': suites ' + $(if ($c[3]) { $c[3] } else { '-' }) + '; net phases ' + $c[4] + '; ' + $c[5] + ' in ' + $c[6] + ' s')
+        }
+    }
+}
+if (Test-Path $summary) {
+    Add-Content -LiteralPath $summary -Value (@($selfcheck) + @('--- merge-time runs since the last nightly (' + $since.ToString('s') + '): ' + $runs.Count + ' (each ran only the suites / net phases listed)') + $runs)
+}
 
 # Mutation checks: every test-only "break the fix" switch must make ITS OWN check fail (Expect: a regex on the failing
 # check's name). Fail-fast is OFF here: with it on, any baseline failure earlier in the suite (e.g. E3) stopped the run
@@ -31,6 +52,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_NO_LIFECYCLE';    Env = @{ ORICOOP_MUTATE_NO_LIFECYCLE = '1' };    Script = @('run-test.ps1', '-Scenarios', 'title');    Expect = '^title: ' }
     @{ Name = 'MUTATE_KEEP_NET';        Env = @{ ORICOOP_MUTATE_KEEP_NET = '1' };        Script = @('run-test.ps1', '-Scenarios', 'title');    Expect = '^title: ' }
     @{ Name = 'MUTATE_NO_PLATFORMFIX';  Env = @{ ORICOOP_MUTATE_NO_PLATFORMFIX = '1' };  Script = @('run-test.ps1', '-Scenarios', 'platform'); Expect = '^platform: ' }
+    @{ Name = 'MUTATE_BOTTOMHUD_P1VALUES'; Env = @{ ORICOOP_MUTATE_BOTTOMHUD_P1VALUES = '1' }; Script = @('run-test.ps1', '-Scenarios', 'bottomhud'); Expect = '^bottomhud: ' }
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
     @{ Name = 'TEST_THROW';             Env = @{ ORICOOP_TEST_THROW = 'mutation' };      Script = @('run-test.ps1', '-Scenarios', 'move');     Expect = '^move: |TestThrow' }

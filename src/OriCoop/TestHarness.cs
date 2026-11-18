@@ -1472,14 +1472,25 @@ namespace OriCoop
             end = Time.unscaledTime + CoopCamera.RegroupAfter + 2f;
             while (Time.unscaledTime < end && CoopCamera.Regroups == regroups0) { P2.Position = high; P2.Speed = Vector3.zero; yield return null; }
             Check(CoopCamera.Regroups > regroups0, "regroup: off-screen P2 starts gliding back");
-            float maxStep = 0f; Vector3 last = P2.Position;
+            // A snap covers the whole path in one frame. Judge each frame's step against what the 0.7 s smoothstep glide
+            // may cover in THAT frame's time (peak speed 1.5x the average, plus the arc): a fixed share of the path failed
+            // whenever one frame took ~0.2 s on a loaded PC (T-078).
+            // The glide steps in LateUpdate with that frame's time and this loop sees the step in the next frame, so the
+            // allowance uses the longer of the two frame times.
+            float maxStep = 0f, worst = 0f, prevDt = Time.unscaledDeltaTime; Vector3 last = P2.Position; float path = Vector3.Distance(P2.Position, P1.Position);
             end = Time.unscaledTime + 3f;
-            while (Time.unscaledTime < end && CoopCamera.Regrouping) { maxStep = Mathf.Max(maxStep, Vector3.Distance(P2.Position, last)); last = P2.Position; yield return null; }
+            while (Time.unscaledTime < end && CoopCamera.Regrouping)
+            {
+                float step = Vector3.Distance(P2.Position, last), dt = Mathf.Max(prevDt, Time.unscaledDeltaTime);
+                maxStep = Mathf.Max(maxStep, step);
+                worst = Mathf.Max(worst, step / (path * 1.6f * dt / 0.7f + 1f));
+                last = P2.Position; prevDt = Time.unscaledDeltaTime; yield return null;
+            }
             yield return StartCoroutine(Wait(0.3f));
             float dist = Vector3.Distance(P1.Position, P2.Position);
-            Note("regroup: largest per-frame step " + F(maxStep) + ", final distance " + F(dist));
+            Note("regroup: largest per-frame step " + F(maxStep) + " of a " + F(path) + " path, worst step / allowed " + F(worst) + ", final distance " + F(dist));
             Check(dist < 3f, "regroup: P2 ends next to P1");
-            Check(maxStep < atMax.y * 0.25f, "regroup: smooth glide, not an instant snap");
+            Check(worst < 1f && maxStep < path * 0.6f, "regroup: smooth glide, not an instant snap (worst step " + F(worst) + " of allowed)");
             Check(m_errors == err0, "camera: no errors");
         }
 

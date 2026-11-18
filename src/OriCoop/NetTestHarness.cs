@@ -1613,6 +1613,28 @@ namespace OriCoop
             }
         }
 
+        // ORICOOP_PHASES=E3,R (T-078): run only these net phases of the 2-player suite; unset = all. Phases:
+        //   INTRO MOVE(A-F) W(shared world) E3 E5 R S4 P WO CAM CUT. Start-up (session, save handshake, start barrier,
+        //   roles) and the closing G checks always run. src\phase-map.psd1 maps source files to phases (run-affected).
+        // The older ORICOOP_NET_ONLY=P3|WO|CAM|S4 still works (P3 = CUT; WO = WO,CAM,CUT; CAM = CAM,CUT; S4 = S4, as before).
+        public static readonly string[] AllPhases = { "INTRO", "MOVE", "W", "E3", "E5", "R", "S4", "P", "WO", "CAM", "CUT" };
+        static HashSet<string> s_phases;
+        internal static bool PhaseOn(string phase)
+        {
+            if (s_phases == null)
+            {
+                string list = Environment.GetEnvironmentVariable("ORICOOP_PHASES") ?? "";
+                string only = Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") ?? "";
+                if (list.Trim().Length == 0)
+                    list = only == "P3" ? "CUT" : only == "WO" ? "WO,CAM,CUT" : only == "CAM" ? "CAM,CUT" : only == "S4" ? "S4" : string.Join(",", AllPhases);
+                s_phases = new HashSet<string>();
+                foreach (string part in list.Split(',')) if (part.Trim().Length > 0) s_phases.Add(part.Trim().ToUpperInvariant());
+                if (Environment.GetEnvironmentVariable("ORICOOP_NET_NO_WO") == "1") s_phases.Remove("WO");
+            }
+            return s_phases.Contains(phase);
+        }
+        static bool PhasesSelected { get { foreach (string p in AllPhases) if (!PhaseOn(p)) return true; return false; } }
+
         static IEnumerator RunCore(TestHarness h)
         {
             bool host = NetPlay.IsHost;
@@ -1621,7 +1643,8 @@ namespace OriCoop
             s_enemyPackets.Clear(); s_ownEnemyReports.Clear(); s_ownEnemyHealth.Clear(); s_enemyOwnerTrace.Clear(); NetPlay.On(49, ReadEnemyTest); NetPlay.On(48, ReadEnemyTrace);
             s_harness = h; BotActive = true; Bot(0, 0);
             h.Note("net role=" + (host ? "host" : "guest"));
-            yield return NetIntroTest.Run(h, ClientCount);
+            if (ClientCount != 2 || PhaseOn("INTRO")) yield return NetIntroTest.Run(h, ClientCount);
+            if (ClientCount == 2) h.Note("net phases: " + string.Join(",", new List<string>(AllPhases).FindAll(PhaseOn).ToArray()));
             if (Environment.GetEnvironmentVariable("ORICOOP_INTRO_ONLY") == "1") yield break;
             if (ClientCount == 4) { yield return FourClients(h); yield break; }
             float deadline = Time.realtimeSinceStartup + (ClientCount == 3 ? 120f : 40f);
@@ -1654,16 +1677,13 @@ namespace OriCoop
                 yield return RoleTag(h, host);
                 yield return BottomBars(h, host);
                 Vector3 phaseAStart = Own.Position;
-                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "P3") goto P3;
-                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "WO") goto WO;   // phase WO only (world-physics)
-                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "CAM") goto CAM;   // phase CAM only (T-058 camera)
-                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4") goto S4;   // phase S4 only (menus / no pause, deaths, story, reconnect)
                 if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4R")   // only the S4 drop + rejoin step (T-030)
                 {
                     yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62);
                     yield return Safely(h, "S4R", NetStoryTest.RunReconnect(h));
                     goto G;
                 }
+                if (!PhaseOn("MOVE")) { s_tracking = false; goto AfterMove; }
                 yield return Movement(h, "A", host);
                 yield return Wait(1.5f);
                 yield return Movement(h, "B", !host);
@@ -1785,24 +1805,36 @@ namespace OriCoop
                 if (!host) h.Check(errorAfter < 0.5f, "E LastError < 0.5 (" + F(errorAfter) + ")");
                 s_tracking = false;
                 h.Check(s_ownWritten > 0 && s_remoteWritten > 0, "F own and puppet track rows recorded");
-                yield return SharedWorld(h);
-                yield return Safely(h, "E3", SharedEnemies(h));
-                yield return Safely(h, "E5", EnemySyncTest.Run(h));   // enemy AI/death/damage/difficulty (EnemySyncTest.cs, enemy-sync)
-                yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 60);
-                yield return Safely(h, "R", NetReviveTest.Run(h));   // online downed/revive (NetReviveTest.cs)
-            S4:
-                yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62);
-                yield return Safely(h, "S4", NetStoryTest.Run(h));
-                if (Environment.GetEnvironmentVariable("ORICOOP_NET_ONLY") == "S4") goto G;
-                yield return Safely(h, "P", NetPhysTest.Run(h));   // pushable stones (NetPhysTest.cs, world-physics)
-            WO:
-                if (Environment.GetEnvironmentVariable("ORICOOP_NET_NO_WO") != "1")   // ORICOOP_NET_NO_WO=1 skips it (~2-3 min)
-                    yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
-            CAM:
-                yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
-            P3:
-                yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64);
-                yield return Safely(h, "P3", NetCutsceneTest.Run(h));
+            AfterMove:
+                if (PhaseOn("W")) yield return SharedWorld(h);
+                if (PhaseOn("E3")) yield return Safely(h, "E3", SharedEnemies(h));
+                if (PhaseOn("E5")) yield return Safely(h, "E5", EnemySyncTest.Run(h));   // enemy AI/death/damage/difficulty (EnemySyncTest.cs, enemy-sync)
+                if (PhaseOn("R")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 60); yield return Safely(h, "R", NetReviveTest.Run(h)); }   // online downed/revive
+                if (PhaseOn("S4")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62); yield return Safely(h, "S4", NetStoryTest.Run(h)); }
+                if (PhaseOn("P")) yield return Safely(h, "P", NetPhysTest.Run(h));   // pushable stones (NetPhysTest.cs, world-physics)
+                if (PhaseOn("WO")) yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
+                if (PhaseOn("CAM")) yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
+                if (PhaseOn("CUT")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64); yield return Safely(h, "P3", NetCutsceneTest.Run(h)); }
+                // With selected phases the last one is followed by G at once: the end that finished first left the
+                // session while the other still waited for that phase's last barrier (E5 alone: "E5L barrier 44").
+                // Meet once more before G (T-078). A full run keeps its old ending.
+                if (PhasesSelected)
+                {
+                    PublishWorldBarrier(h, 9900, false);
+                    float endAt = Time.realtimeSinceStartup + 60f;
+                    while (Connected && !s_worldPackets.ContainsKey(9900) && Time.realtimeSinceStartup < endAt) yield return null;
+                    h.Check(s_worldPackets.ContainsKey(9900), "net both ends finished the selected phases");
+                    // The guest leaves first in G. Seeing the host's 9900 did not mean the host had the guest's (big,
+                    // reliable) 9900 yet: on a lossy link the guest left with it still unsent and the host failed the
+                    // check above (3 of 4 WO-only runs, T-078). The host confirms with 9901; the guest waits for it.
+                    if (host && s_worldPackets.ContainsKey(9900)) PublishWorldBarrier(h, 9901, false);
+                    else if (!host && s_worldPackets.ContainsKey(9900))
+                    {
+                        endAt = Time.realtimeSinceStartup + 60f;
+                        while (Connected && !s_worldPackets.ContainsKey(9901) && Time.realtimeSinceStartup < endAt) yield return null;
+                        h.Check(s_worldPackets.ContainsKey(9901), "net the host confirmed both ends finished");
+                    }
+                }
             G:
                 if (host)
                 {
