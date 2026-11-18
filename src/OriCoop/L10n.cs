@@ -390,6 +390,8 @@ namespace OriCoop
             "lobby.room.code", "房间码", "Room code",
             "lobby.ip", "IP 地址", "IP address",
             "lobby.relay.address", "中继服务器地址", "Relay server address",
+            "lobby.room.legacy", "旧版字母房间码：直接按字母键", "Older letter room code: just press the letter keys",
+            "lobby.dial.help","↑↓ 转动 · ←→ 换一位 · 数字键直接输入\nA / Enter 完成 · B / Esc 取消", "Up/Down: turn - Left/Right: next digit - digit keys type\nA / Enter: done - B / Esc: cancel",
             "lobby.edit.chars", "上下换字 · 左右移动 · X 删除\nY 粘贴 · A 完成", "Up/Down: change - Left/Right: move - X: delete - Y: paste - A: done",
             "lobby.entry.desc", "{0}：按 A 输入，也可以直接用键盘打字", "{0}: press A to edit, or just type.",
             "lobby.server.save.desc", "保存中继服务器地址", "Save the relay server address.",

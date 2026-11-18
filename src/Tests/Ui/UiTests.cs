@@ -27,6 +27,20 @@ static class UiTests
             throw new Exception("expected '" + expected + "', got '" + actual + "'");
     }
 
+    // Render with the wheels from..to (inclusive) bracketed as one span, for readable expectations.
+    static string Mark(DigitDial d, int from, int to)
+    {
+        string plain = d.Render(false, null); int digit = -1; System.Text.StringBuilder sb = new System.Text.StringBuilder();
+        foreach (char c in plain)
+        {
+            bool isDigit = c >= '0' && c <= '9'; if (isDigit) digit++;
+            if (isDigit && digit == from) sb.Append('<');
+            sb.Append(c);
+            if (isDigit && digit == to) sb.Append('>');
+        }
+        return sb.ToString();
+    }
+
     static HashSet<int> Slots(string text)
     {
         HashSet<int> slots = new HashSet<int>();
@@ -218,6 +232,54 @@ static class UiTests
                 if (line.StartsWith("fec334bd25f727f9\t")) sein = true;
             }
             Check(rows >= 50 && sein, rows + " rows, Sein line " + sein);
+        });
+
+        // T-046: digit dials for IP / port / room code.
+        Run("dial: up and down wrap around 9 and 0", delegate {
+            DigitDial d = DigitDial.Port();
+            d.Down(); Equal(9, d.Digit(0));
+            d.Up(); Equal(0, d.Digit(0));
+            d.Up(); d.Up(); Equal(2, d.Digit(0));
+        });
+        Run("dial: left and right stop at the ends", delegate {
+            DigitDial d = DigitDial.Room();
+            d.Left(); Equal(0, d.Focus);
+            for (int i = 0; i < 10; i++) d.Right();
+            Equal(5, d.Focus);
+        });
+        Run("dial: digit keys fill and advance, backspace zeroes and steps back", delegate {
+            DigitDial d = DigitDial.Room();
+            foreach (int k in new[] { 4, 7, 0, 1, 2, 9 }) d.Type(k);
+            Equal("470129", d.Digits); Equal(5, d.Focus);
+            d.Type(3); Equal("470123", d.Digits);                  // last wheel: overwrite, stay
+            d.Back(); Equal("470120", d.Digits); Equal(4, d.Focus);
+            d.Type(-1); d.Type(10); Equal("470120", d.Digits);     // not digits: ignored
+        });
+        Run("dial: IP loads right-aligned per octet and gives numbers back", delegate {
+            DigitDial d = DigitDial.Ip();
+            string addr = string.Join(".", new[] { "192", "168", "1", "23" });
+            d.Load(addr);
+            Equal("192168001023", d.Digits); Equal(addr, d.Numbers(".")); Equal(0, d.Focus);
+            Equal(string.Join(".", new[] { "192", "168", "001", "<023>" }), Mark(d, 9, 11));
+            Check(DigitDial.ValidIp(d), "valid ip rejected");
+            d.Load(string.Join(".", new[] { "256", "1", "1", "1" })); Check(!DigitDial.ValidIp(d), "octet 256 accepted");
+            d.Load(""); Check(!DigitDial.ValidIp(d), "all-zero address accepted");
+            d.Load(string.Join(".", new[] { "1", "2" })); Equal(string.Join(".", new[] { "001", "002", "000", "000" }), d.Render(false, null));
+        });
+        Run("dial: port range and room code digits", delegate {
+            DigitDial p = DigitDial.Port();
+            p.Load("47011"); Equal("47011", p.Numbers("")); Check(DigitDial.ValidPort(p), "47011 rejected");
+            p.Load("0"); Check(!DigitDial.ValidPort(p), "port 0 accepted");
+            p.Load("65536"); Check(!DigitDial.ValidPort(p), "port 65536 accepted");
+            p.Load("99999999"); Equal("99999", p.Digits);           // too many digits: the last five
+            DigitDial r = DigitDial.Room();
+            r.Load("123 456"); Equal("123456", r.Digits); Equal("123 456", r.Render(false, null));
+            r.Load("AB12"); Equal("120000", r.Digits);              // a legacy letter code keeps only its digits
+        });
+        Run("dial: render marks only the focused wheel", delegate {
+            DigitDial r = DigitDial.Room(); r.Load("123456"); r.Right(); r.Right(); r.Right();
+            Equal("123 [4]56", r.Render(true, delegate(string c) { return "[" + c + "]"; }));
+            Equal("123 456", r.Render(false, delegate(string c) { return "[" + c + "]"; }));
         });
 
         return s_failed == 0 ? 0 : 1;
