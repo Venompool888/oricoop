@@ -41,6 +41,7 @@ $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-4p');
     'NetTestHarness'   = @('net', 'net-3p', 'net-4p'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
+    'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'RoomsHookTest' = @('rooms');
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
 }
 

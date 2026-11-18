@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace OriCoop
@@ -117,6 +117,8 @@ namespace OriCoop
             "rooms.steam_required", "需要 Steam 才能使用房间", "Steam is required to use rooms",
             "rooms.service", "房间服务器", "Room service",
             "rooms.connecting", "连接中…", "Connecting...",
+            "rooms.empty", "当前房间为空", "No rooms yet",
+            "rooms.empty.desc", "创建一个房间，或用房间码加入朋友的房间", "Create a room, or join a friend's with a room code",
             "rooms.open", "打开", "Open",
             "rooms.create", "新建房间", "Create room",
             "rooms.join_code", "用房间码加入", "Join by code",
@@ -157,21 +159,24 @@ namespace OriCoop
             "rooms.err.failed", "操作失败，请稍后重试", "Operation failed. Try again later",
             "rooms.offline", "连不上房间服务器，不能进入房间；可以把本机备份复制到单人存档", "Room service unavailable. You can copy local backups to single player.",
             "rooms.title", "我的房间 — {0}", "My rooms - {0}",
-            "rooms.save_count", "{0} — {1} 个存档", "{0} - {1} saves",
+            "rooms.save_count", "{0} ({1} 个存档)", "{0} ({1} saves)",
             "rooms.member", "P{0}: {1}", "P{0}: {1}",
             "rooms.last_played", "最后游玩：{0}", "Last played: {0}",
             "rooms.playing", "{0} 正在玩", "{0} is playing",
             "rooms.copy_named", "复制到单人存档：{0}", "Copy to single player: {0}",
             "rooms.default_name", "{0} 的房间", "{0}'s room",
+            "rooms.auto_name", "{0} 的房间 #{1}", "{0}'s room #{1}",
+            "rooms.auto_name.desc", "房间名自动生成", "The room name is generated automatically.",
+            "rooms.password_dial", "4-8 位数字密码\n上下转动 · 左右移动 · 数字键输入 · X 删除 · Y 粘贴\nA / Enter 完成 · B / Esc 取消", "4-8 digit password\nUp/Down: turn - Left/Right: move - digits: type - X: delete - Y: paste\nA / Enter: done - B / Esc: cancel",
             "rooms.share", "{0} — 把房间码和密码发给伙伴", "{0} - Send the code and password to your partner",
             "rooms.save_version", "{0} 版本 {1}", "{0} v{1}",
             "rooms.seat_seconds", "P{0} 时长：{1}", "P{0} seconds: {1}",
             "rooms.saved", "一起：{0}  最后保存：{1} {2}", "Together: {0}  Saved: {1} {2}",
             "rooms.edit_hint", "上下换字 · 左右移动 · X 删除 · Y 粘贴 · A 完成（{0}）", "Up/Down: character; Left/Right: cursor; X: delete; Y: paste; A: done ({0})",
-            "rooms.create_slot", "创建 — {0} {1}", "Create - {0} {1}",
+            "rooms.create_slot", "用存档 {0} 创建{1}", "Create with save {0}{1}",
             "rooms.slot_name", "存档 {0}", "Save {0}",
             "rooms.slot_summary", "{0} {1}", "{0} {1}",
-            "rooms.overwrite", "覆盖并备份 {0}", "Back up and overwrite {0}",
+            "rooms.overwrite", "覆盖存档 {0}？", "Overwrite save {0}?",
             "rooms.conflict", "房间存档已被别处更新，本次进度只保存在本机", "The room save was updated elsewhere. This session's progress is saved on this PC only.",
             "coop.cancelled", "已取消", "Cancelled",
             "coop.p1_keyboard", "P1 现在只用键盘鼠标", "P1 now uses keyboard/mouse only",

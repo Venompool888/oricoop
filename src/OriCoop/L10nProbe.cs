@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
@@ -161,9 +161,11 @@ namespace OriCoop
             Where("F8 settings"); CoopMenu.Open(); yield return host.StartCoroutine(Wait(0.8f)); CoopMenu.Close();
             Where("toast"); NetHud.Toast(L10n.T("server.title.desc", true), L10n.T("server.title.desc", false)); yield return host.StartCoroutine(Wait(0.8f));
             Where("my rooms");
-            try { OriCoop.Rooms.RoomsPanel.Open(); } catch (Exception e) { note("l10n probe: rooms panel: " + e.Message); }
+            bool roomsShown = false;
+            try { roomsShown = NativeModeMenu.L10nRoomsOpen(); } catch (Exception e) { note("l10n probe: native rooms: " + e.Message); }
             yield return host.StartCoroutine(Wait(1.2f));
-            try { if (OriCoop.Rooms.RoomsPanel.Instance != null) Traverse.Create(OriCoop.Rooms.RoomsPanel.Instance).Field("visible").SetValue(false); } catch (Exception) { }
+            ScanBoxes();
+            try { if (roomsShown) NativeModeMenu.L10nRoomsClose(); } catch (Exception) { }
             Where("");
             ScanBoxes();
 

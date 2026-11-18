@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -147,15 +147,6 @@ namespace OriCoop
             return 2;
         }
 
-        internal static void RoomPanelVisible(bool visible)
-        {
-            if (s_mgr == null) return;
-            s_mgr.SetVisible(!visible);
-            s_mgr.IsActive = !visible;
-            s_mgr.IsLocked = visible;
-            if (s_tooltip != null) s_tooltip.gameObject.SetActive(!visible);
-        }
-
         // Rooms already selected and wrote the slot; use the same host page and load action.
         internal static void RoomHostSlot(int slot, string relay)
         {
@@ -181,7 +172,6 @@ namespace OriCoop
                 TitleScreenManager.SetScreen(TitleScreenManager.Screen.MainMenu);
                 OpenTitleOrb();
             }
-            RoomPanelVisible(false);
             s_transport = "relay";
             s_joinTarget = target;
             GoPage(PageJoin, 1);
@@ -222,7 +212,7 @@ namespace OriCoop
             if (s_page == PageServerMode)
             {
                 if (index == 0) LobbyOpen("cserver");
-                else { s_transport = "relay"; Rooms.RoomsPanel.Open(); }   // 「我的房间」: the rooms panel on the relay + rooms services
+                else OpenRooms();
                 return true;
             }
             if (s_onTitle && s_page == PageRole && index == 0)

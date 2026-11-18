@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Text;
 
 namespace OriCoop.Ui
@@ -16,7 +16,9 @@ namespace OriCoop.Ui
         readonly string m_separator;
         readonly int[] m_digits;
         public int Focus { get; private set; }
-        public int Count { get { return m_digits.Length; } }
+        int m_length;
+        bool m_password;
+        public int Count { get { return m_password ? m_length : m_digits.Length; } }
 
         public DigitDial(int[] groups, string separator)
         {
@@ -30,18 +32,32 @@ namespace OriCoop.Ui
         public static DigitDial Port() { return new DigitDial(new[] { 5 }, ""); }
         public static DigitDial Room() { return new DigitDial(new[] { 3, 3 }, " "); }
 
+        public static DigitDial Password()
+        {
+            DigitDial d = new DigitDial(new[] { 8 }, "");
+            d.m_password = true; d.m_length = 4;
+            return d;
+        }
+
         public int Digit(int i) { return m_digits[i]; }
 
-        public void Up() { m_digits[Focus] = (m_digits[Focus] + 1) % 10; }
-        public void Down() { m_digits[Focus] = (m_digits[Focus] + 9) % 10; }
+        public void Up() { Extend(); m_digits[Focus] = (m_digits[Focus] + 1) % 10; }
+        public void Down() { Extend(); m_digits[Focus] = (m_digits[Focus] + 9) % 10; }
+        void Extend() { if (m_password && Focus >= m_length) m_length = Focus + 1; }
         public void Left() { if (Focus > 0) Focus--; }
-        public void Right() { if (Focus < m_digits.Length - 1) Focus++; }
+        public void Right() { if (Focus < (m_password ? Math.Min(m_length, 7) : m_digits.Length - 1)) Focus++; }
         public void Type(int digit)
         {
             if (digit < 0 || digit > 9) return;
-            m_digits[Focus] = digit; Right();
+            Extend(); m_digits[Focus] = digit; Right();
         }
-        public void Back() { m_digits[Focus] = 0; Left(); }
+        public void Back()
+        {
+            if (m_password && Focus >= m_length) Left();
+            m_digits[Focus] = 0;
+            if (m_password && Focus == m_length - 1 && m_length > 4) m_length--;
+            Left();
+        }
         public void Home() { Focus = 0; }
 
         // Group g as a string of its digits ("007").
@@ -57,7 +73,7 @@ namespace OriCoop.Ui
         // All digits, no separators ("192168001023").
         public string Digits
         {
-            get { StringBuilder sb = new StringBuilder(); foreach (int d in m_digits) sb.Append((char)('0' + d)); return sb.ToString(); }
+            get { StringBuilder sb = new StringBuilder(); for (int i = 0; i < Count; i++) sb.Append((char)('0' + m_digits[i])); return sb.ToString(); }
         }
 
         // Each group's number without leading zeros (an address a.b.c.d, a port, the room code keeps all six digits).
@@ -78,6 +94,13 @@ namespace OriCoop.Ui
         public void Load(string text)
         {
             Array.Clear(m_digits, 0, m_digits.Length); Focus = 0;
+            if (m_password)
+            {
+                string digits = OnlyDigits(text);
+                m_length = Math.Max(4, Math.Min(8, digits.Length));
+                for (int i = 0; i < Math.Min(8, digits.Length); i++) m_digits[i] = digits[i] - '0';
+                return;
+            }
             if (string.IsNullOrEmpty(text)) return;
             string[] parts;
             if (m_groups.Length == 1) parts = new[] { OnlyDigits(text) };
@@ -116,6 +139,16 @@ namespace OriCoop.Ui
         public string Render(bool focused, Func<string, string> mark)
         {
             StringBuilder sb = new StringBuilder(); int i = 0;
+            if (m_password)
+            {
+                for (int p = 0; p < m_length; p++)
+                {
+                    string digit = m_digits[p].ToString();
+                    sb.Append(focused && p == Focus && mark != null ? mark(digit) : digit);
+                }
+                if (focused && m_length < 8) sb.Append(Focus == m_length && mark != null ? mark("_") : "_");
+                return sb.ToString();
+            }
             for (int g = 0; g < m_groups.Length; g++)
             {
                 if (g > 0) sb.Append(m_separator);

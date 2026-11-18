@@ -55,6 +55,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_BOTTOMHUD_P1VALUES'; Env = @{ ORICOOP_MUTATE_BOTTOMHUD_P1VALUES = '1' }; Script = @('run-test.ps1', '-Scenarios', 'bottomhud'); Expect = '^bottomhud: ' }
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
+    @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^native rooms page has rows$' }
     @{ Name = 'TEST_THROW';             Env = @{ ORICOOP_TEST_THROW = 'mutation' };      Script = @('run-test.ps1', '-Scenarios', 'move');     Expect = '^move: |TestThrow' }
     @{ Name = 'P3_OFF (CUT)';           Env = @{ ORICOOP_P3_OFF = '1'; ORICOOP_NET_ONLY = 'P3' }; Script = @('run-nettest.ps1');               Expect = '^CUT ' }
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
@@ -85,9 +86,10 @@ if (-not $NoMutations) {
             $text = $(if (Test-Path $r.Log) { Get-Content $r.Log -Raw } else { '' })
             $err = $(if (Test-Path ($r.Log + '.err')) { (Get-Content ($r.Log + '.err') -Raw) } else { '' })
             $fails = @([regex]::Matches($text, '(?m)(?:\]|log:) FAIL (.*)$') | ForEach-Object { $_.Groups[1].Value.Trim() } | Select-Object -Unique)
+            $fails += @([regex]::Matches($text, '(?m)ROOMS FAIL \d+ (.*)$') | ForEach-Object { $_.Groups[1].Value.Trim() } | Select-Object -Unique)
             $hit = @($fails | Where-Object { $_ -match $r.M.Expect })
             $other = @($fails | Where-Object { $_ -notmatch $r.M.Expect })
-            $complete = $text -match '(?m)(\] RESULT |NETTEST (PASS|FAIL)|TITLEJOIN \w+ (PASS|FAIL))'
+            $complete = $text -match '(?m)(\] RESULT |NETTEST (PASS|FAIL)|TITLEJOIN \w+ (PASS|FAIL)|ROOMS RESULT (PASS|FAIL))'
             $status = $(if ($text -cmatch 'OWNER IS PLAYING') { 'STOPPED (owner playing)' } elseif ($hit.Count -gt 0) { 'caught' }
                 elseif ($err -match '\S' -and -not $complete) { 'ERROR' } elseif (-not $complete -or $text -match 'no result file') { 'BLOCKED' } else { 'MISSED' })
             $detail = $(if ($hit.Count -gt 0) { $hit[0] } elseif ($status -eq 'ERROR') { ($err -split "`n")[0].Trim() } elseif ($other.Count -gt 0) { 'other failures: ' + (($other | Select-Object -First 2) -join ' | ') } else { '' })

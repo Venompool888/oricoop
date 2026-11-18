@@ -18,7 +18,8 @@ namespace OriCoop
     {
         const int PageRole = 2, PageEntry = 3, PageHost = 4, PageJoin = 5, PageCoop = 6, PageServerMode = 7;
         const int PageServerList = 8, PageServerAdd = 9, PageServerRemove = 10;
-        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove" };
+        const int PageRooms = 11, PageRoomView = 12, PageRoomCreate = 13, PageRoomJoin = 14, PageRoomPassword = 15, PageRoomSlots = 16;
+        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots" };
         const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // legacy letter codes (text entry); new codes are digits 2-9 typed on the dial (T-046)
         const string IpAlphabet = "0123456789.:";
         const string ServerAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-:";
@@ -27,7 +28,7 @@ namespace OriCoop
 
         static BepInEx.Configuration.ConfigEntry<bool> s_nativeLobby;
         static string s_transport = "relay";
-        static int s_entryKind;             // 0 room code, 1 IP, 2 relay server, 3 C-server host, 4 C-server port
+        static int s_entryKind;             // 0 room code, 1 IP, 2 relay server, 3 C-server host, 4 C-server port, 5 room password
         static string s_entry = "";
         static string s_cserverHost = "", s_cserverPort = "";
         static int s_cursor;
@@ -56,7 +57,7 @@ namespace OriCoop
         static OriCoop.Ui.DigitDial s_dial;
         static string s_dialBefore = "";
         static bool s_legacyCode;   // the room code being typed is an older letter code: plain text entry instead of the dial
-        static bool DialMode { get { return IpMode || (s_entryKind == 0 && !s_legacyCode); } }
+        static bool DialMode { get { return IpMode || s_entryKind == 5 || (s_entryKind == 0 && !s_legacyCode); } }
         static bool HasLegacyLetter(string s) { foreach (char c in s ?? "") if (char.ToUpperInvariant(c) >= 'A' && char.ToUpperInvariant(c) <= 'Z') return true; return false; }
         static int s_editField;             // direct join: 0 = IP row, 1 = port row
         static bool IpMode { get { return s_entryKind == 1; } }
@@ -113,6 +114,7 @@ namespace OriCoop
 
         static string[][] LobbyRows(bool zh)
         {
+            if (IsRoomsPage) return RoomRows(zh);
             bool relay = UsesRoomCode, direct = s_transport == "direct";
             var r = new List<string[]>();
             if (s_page == PageServerList || s_page == PageServerRemove)
@@ -363,6 +365,7 @@ namespace OriCoop
 
         static void LobbyPressed(int index)
         {
+            if (IsRoomsPage) { RoomPressed(index); return; }
             bool relay = UsesRoomCode;
             if (s_page == PageServerList)
             {
@@ -429,7 +432,7 @@ namespace OriCoop
                 }
                 else if (s_transport == "relay" && index == 2)
                 {
-                    Rooms.RoomsPanel.Open();
+                    OpenRooms();
                 }
                 else if (s_transport == "relay")
                 {
@@ -518,6 +521,7 @@ namespace OriCoop
 
         static void LobbyBack()
         {
+            if (IsRoomsPage) { RoomBack(); return; }
             if (s_page == PageServerList) { GoPage(PageServerMode, 0); return; }
             if (s_page == PageServerAdd || s_page == PageServerRemove) { GoPage(PageServerList, s_page == PageServerAdd ? 0 : 1); return; }
             if (s_page == PageRole)
@@ -546,6 +550,7 @@ namespace OriCoop
         static void LobbyTick()
         {
             if (!IsOpen || !IsLobbyPage) return;
+            if (IsRoomsPage) { RoomTick(); return; }
             if (s_editing) EditTick();
             else if (s_page == PageEntry && !s_mgr.IsLocked && s_entryKind == 0 && !s_legacyCode && s_mgr.Index == 0 && HasLegacyLetter(Input.inputString))
             {
@@ -589,6 +594,7 @@ namespace OriCoop
 
         static void StopEdit()
         {
+            if (IsRoomsPage) { StopRoomEdit(); return; }
             s_editing = false;
             s_mgr.IsLocked = true;
             s_unlockAt = Time.realtimeSinceStartup + 0.25f;
@@ -761,7 +767,7 @@ namespace OriCoop
             }
             else
             {
-                s_dial = OriCoop.Ui.DigitDial.Room();
+                s_dial = s_entryKind == 5 ? OriCoop.Ui.DigitDial.Password() : OriCoop.Ui.DigitDial.Room();
                 s_dial.Load(s_entry);
                 s_dialBefore = s_entry;
             }
@@ -1062,7 +1068,7 @@ namespace OriCoop
         static void LayoutServerRows(int count)
         {
             if (s_mgr == null || s_items.Count < 2) return;
-            bool list = s_page == PageServerList || s_page == PageServerRemove;
+            bool list = s_page == PageServerList || s_page == PageServerRemove || IsRoomsPage;
             s_mgr.ItemDirection = list ? CleverMenuItemSelectionManager.Direction.TopToBottom : s_itemDirection;
             int focus = Mathf.Clamp(s_mgr.Index, 0, Math.Max(0, count - 1));
             if (focus < s_listTop) s_listTop = focus;
