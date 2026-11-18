@@ -351,6 +351,7 @@ static class RulesTests
             Check(l.Prune(delegate(string o) { return o == "gone"; }) == 1 && l.OpenCount == 1, "prune");
             Check(l.Close("gone"), "pruned owner still swallowed its resume");
         });
+        SpectateTests.Run(Run);
         Console.WriteLine("RULES" + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
         return failed == 0 ? 0 : 1;
     }

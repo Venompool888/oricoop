@@ -21,6 +21,13 @@ namespace OriCoop
     {
         public const byte MsgDowned = 60, MsgRevive = 61, MsgRevived = 62, MsgBothDown = 63, MsgProgress = 64;
         static bool s_netRegistered;
+        static SpectateState s_spectate = new SpectateState();
+        internal static bool SpectateActive { get { return s_spectate.Active; } }
+        internal static int SpectateTarget { get { return s_spectate.Target; } }
+        internal static SeinCharacter SpectateSein { get { return SpectateActive ? Host.SeinAt(SpectateTarget) : null; } }
+        internal static void SpectateNext() { s_spectate.Next(); }
+        internal static void SpectatePrevious() { s_spectate.Prev(); }
+        internal static void ResetSpectate() { if (SpectateActive) s_spectate = new SpectateState(); }
         public static int NetDownedSent, NetDownedReceived, NetRevivesSent, NetRevivesApplied, NetBothDown;
 
         public static bool Online
@@ -84,7 +91,12 @@ namespace OriCoop
         public static void TickOnline()
         {
             if (Services.Net.Enabled) PartnerFx.EnsureRegistered(); // partner hurt visuals also when revive is off
-            if (!Online) { if (AnyDowned && Services.Net.Enabled && !Services.Net.Connected) ClearAll("partner disconnected", Host.P1 != null); return; }
+            if (!Online)
+            {
+                ResetSpectate();
+                if (AnyDowned && Services.Net.Enabled && !Services.Net.Connected) ClearAll("partner disconnected", Host.P1 != null);
+                return;
+            }
             RegisterNet(); Subscribe();
             TrackSafeGround();
             Downed own = s_down[Host.LocalSeat];
@@ -114,6 +126,20 @@ namespace OriCoop
                     if (s_down[seat] == d) SendProgress(d);
                 }
             }
+            if (s_down[Host.LocalSeat] != null || SpectateActive)
+            {
+                s_spectate.Tick(new[] { Host.LocalSeat }, PresentSeats, DownedSeats());
+                if (SpectateActive)
+                {
+                    if (Input.GetKeyDown(KeyCode.A) || Core.Input.MenuLeft.OnPressed) SpectatePrevious();
+                    if (Input.GetKeyDown(KeyCode.D) || Core.Input.MenuRight.OnPressed) SpectateNext();
+                }
+            }
+        }
+
+        static System.Collections.Generic.IEnumerable<int> DownedSeats()
+        {
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++) if (s_down[seat] != null) yield return seat;
         }
 
         // Watchdog that does not depend on Plugin's per-frame paths (those stop once the partner's Ori is gone):

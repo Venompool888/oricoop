@@ -434,6 +434,20 @@ namespace OriCoop
             h.Check((Three(411, 1).DownMask & 4) != 0 && (Three(411, 4).DownMask & 4) != 0
                 && (Three(411, 1).Skulls & 4) != 0 && (Three(411, 4).Skulls & 4) != 0,
                 "4P host and P4 see P2 skull");
+            if (Players.LocalSeat == 2)
+            {
+                yield return FourAwait(h, delegate { return Revive.SpectateActive && Revive.SpectateTarget == 3; }, 5f, "P2 spectates P3");
+                h.Check(Revive.SpectateActive && Revive.SpectateTarget == 3, "4P P2 starts spectating P3");
+                Revive.SpectatePrevious();
+                yield return null;
+                h.Check(Revive.SpectateTarget == 1 && UI.Cameras.Current != null && PuppetAt(1) != null
+                    && UI.Cameras.Current.Target == PuppetAt(1).Sein.Transform, "4P P2 switches spectate camera to P1");
+                Revive.SpectateNext();
+                yield return null;
+                h.Check(Revive.SpectateTarget == 3 && UI.Cameras.Current != null && PuppetAt(3) != null
+                    && UI.Cameras.Current.Target == PuppetAt(3).Sein.Transform, "4P spectate Next switches P1 to P3 camera");
+            }
+            yield return ThreeRound(h, 413, 4);
             if (Players.LocalSeat == 3) Bot(0, P2Input.BTN_X);
             yield return FourAwait(h, delegate { return Revive.DownedAtSeat(2) == null && s_fourGlows > Three(410, Players.LocalSeat).Glows; },
                 8f, "P3 completes P2 revive");
