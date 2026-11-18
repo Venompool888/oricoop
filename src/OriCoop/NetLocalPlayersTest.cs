@@ -55,7 +55,7 @@ namespace OriCoop
             h.Check(Players.Remotes.Count == ClientCount - 1 && SaveSync.Ready, "locals: devices ready before add");
             yield return StartBarrier(h);
             Vector3 reviveStart = Own.Position;
-            LocalSeatsAdapter view = new LocalSeatsAdapter();
+            GameSeatView view = new GameSeatView();
             OnlineRoomScreen.Show(delegate { });
             yield return LocalWait(0.7f);
             if (Players.LocalSeat == 2)
@@ -64,6 +64,9 @@ namespace OriCoop
             while (Players.Remotes.Count != ClientCount && Time.realtimeSinceStartup < deadline) yield return null;
             h.Check(Players.Remotes.Count == ClientCount, "locals: everyone sees all Oris after add");
             if (Players.Remotes.Count != ClientCount) yield break;
+            // T-056: the live seat view holds the ISeatView invariants on every device with extra local players.
+            List<string> seatProblems = Seats.SeatViewChecks.Problems(view, true);
+            h.Check(seatProblems.Count == 0, "seats: live seat view consistent (" + string.Join("; ", seatProblems.ToArray()) + ")");
             int expectedMask = (1 << (ClientCount + 2)) - 2;
             yield return ThreeRound(h, 590, ClientCount);
             for (int device = 1; device <= ClientCount; device++)
