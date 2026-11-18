@@ -11,6 +11,7 @@ Fan-made co-op mod for *Ori and the Blind Forest: Definitive Edition* (BepInEx 5
 | Online, 4 players / 四人联机 | **In progress.** 开发中 |
 | C-server (authority server) / 权威服务器 | **In progress**, not used by the game yet. 开发中，游戏还没有接入 |
 | Servers / 服务端 | [oricoop-relay](https://github.com/Venompool888/oricoop-relay) (tunnel relay, used today) · [oricoop-server](https://github.com/Venompool888/oricoop-server) (C-server prototype) |
+| Chinese patch only / 只要中文补丁 | [ori-de-zh-patch](https://github.com/Venompool888/ori-de-zh-patch): standalone Simplified Chinese patch, no co-op, Definitive Edition only. 独立的简体中文补丁，不含联机，仅适用于终极版 |
 
 Not affiliated with or endorsed by Moon Studios, iam8bit or Microsoft. This repository contains **no game files, no
 game art, no game audio and no decompiled game code**. You need your own copy of the game.
