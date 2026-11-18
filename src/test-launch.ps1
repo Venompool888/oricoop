@@ -228,6 +228,37 @@ function Test-IsTestPath([string]$path) {
     return [IO.Path]::GetFullPath($path).StartsWith($root, [StringComparison]::OrdinalIgnoreCase)
 }
 
+# T-075: a test server (relay / C-server / rooms) started by a run of the copy with port offset $offset: its exe is
+# RelayServer*.exe, CServer*.exe or RoomServer*.exe and one argument is 47020, 47021 or 47022 + offset. Pure, so the
+# self-test can check it.
+function Test-IsCopyServer([string]$cmdLine, [int]$offset) {
+    if ([string]::IsNullOrEmpty($cmdLine)) { return $false }
+    $m = [regex]::Match($cmdLine, '^\s*"?([^"]*?)"?(\s|$)')
+    $exe = [IO.Path]::GetFileName($m.Groups[1].Value)
+    if ($exe -notmatch '^(RelayServer|CServer|RoomServer)[^\\/]*\.exe$') { return $false }
+    $ports = @((47020 + $offset), (47021 + $offset), (47022 + $offset)) | ForEach-Object { [string]$_ }
+    foreach ($tok in ($cmdLine.Substring($m.Length) -split '[\s=:]+')) { if ($ports -contains $tok.Trim('"')) { return $true } }
+    return $false
+}
+
+# T-075: a run killed from outside (fail-fast, the owner watchdog, a closed shell) never reaches its finally block, so
+# the relay / C-server it started keeps running and keeps its log open: every later run of that copy failed at
+# "Remove-Item titlejoin-relay.log ... used by another process". When a run takes a copy, servers on that copy's ports
+# whose launching PowerShell is gone are stopped (servers only, never a game; a parent that cannot be read counts as
+# alive: never kill on doubt).
+function Stop-OrphanTestServers([int]$offset, [string]$copyName) {
+    $procs = @()
+    try { $procs = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -match '^(RelayServer|CServer|RoomServer)' }) } catch { return }
+    foreach ($p in $procs) {
+        if (-not (Test-IsCopyServer $p.CommandLine $offset)) { continue }
+        $parentAlive = $true
+        try { $parentAlive = [bool](Get-Process -Id $p.ParentProcessId -ErrorAction SilentlyContinue) } catch { $parentAlive = $true }
+        if ($parentAlive) { continue }
+        'ORPHAN test server in copy ' + $copyName + ' (its run is gone): ' + $p.ProcessId + ' ' + $p.CommandLine + ': stopped.'
+        try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; [void](Get-Process -Id $p.ProcessId -ErrorAction SilentlyContinue | Wait-Process -Timeout 10 -ErrorAction SilentlyContinue) } catch { }
+    }
+}
+
 function Test-IsTestGame($proc) {
     return (Test-IsTestPath (Get-ProcPath $proc))
 }
@@ -384,6 +415,7 @@ function Start-TestRun([switch]$Force, [string]$Copy = '', [int]$WaitMinutes = -
                     continue
                 }
             }
+            Stop-OrphanTestServers $c.PortOffset $c.Name
             Use-Copy $c
             'TEST COPY ' + $c.Name + ': ' + $c.GameDir + ' (lock ' + $c.Lock + ', port offset ' + $c.PortOffset + ')'
             if ($Force) { 'NOTE: -Force no longer closes running games.' }
