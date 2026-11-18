@@ -37,25 +37,49 @@ namespace OriCoop
         public static int BotButtons;
         public static float BotLX, BotLY;
         public const int BTN_A = A, BTN_B = B, BTN_X = X, BTN_Y = Y, BTN_START = START;
+        internal struct PadBot
+        {
+            public bool Active;
+            public float LX;
+            public int Buttons;
+        }
+        internal static readonly PadBot[] BotPads = new PadBot[4];
 
         static XInputState s_probe = new XInputState();
         public static bool IsConnected(int padIndex) { return XInput.XInputGetState(padIndex, ref s_probe) == 0; }
 
         public static void Sample(int padIndex, InputState s)
         {
+            SamplePad(padIndex, s, true);
+        }
+
+        internal static void SampleExtra(int padIndex, InputState s)
+        {
+            SamplePad(padIndex, s, false);
+        }
+
+        static void SamplePad(int padIndex, InputState s, bool trackJoin)
+        {
             bool wasStart = s.Start.IsPressed;
-            Connected = XInput.XInputGetState(padIndex, ref s_state) == 0;
+            bool connected = XInput.XInputGetState(padIndex, ref s_state) == 0;
+            if (trackJoin) Connected = connected;
             XInputGamepad g = s_state.Gamepad;
-            int b = Connected ? g.wButtons : 0;
-            float lx = Connected ? g.sThumbLX / 32768f : 0f, ly = Connected ? g.sThumbLY / 32768f : 0f;
-            float rx = Connected ? g.sThumbRX / 32768f : 0f, ry = Connected ? g.sThumbRY / 32768f : 0f;
-            bool lt = Connected && g.bLeftTrigger > 20, rt = Connected && g.bRightTrigger > 20;
-            if (BotActive) { b = BotButtons; lx = BotLX; ly = BotLY; rx = 0f; ry = 0f; lt = false; rt = BotRT; }
+            int b = connected ? g.wButtons : 0;
+            float lx = connected ? g.sThumbLX / 32768f : 0f, ly = connected ? g.sThumbLY / 32768f : 0f;
+            float rx = connected ? g.sThumbRX / 32768f : 0f, ry = connected ? g.sThumbRY / 32768f : 0f;
+            bool lt = connected && g.bLeftTrigger > 20, rt = connected && g.bRightTrigger > 20;
+            if (padIndex >= 0 && padIndex < BotPads.Length && BotPads[padIndex].Active)
+            {
+                b = BotPads[padIndex].Buttons; lx = BotPads[padIndex].LX;
+                ly = rx = ry = 0f; lt = rt = false;
+            }
+            else if (BotActive) { b = BotButtons; lx = BotLX; ly = BotLY; rx = 0f; ry = 0f; lt = false; rt = BotRT; }
             int rawButtons = b; bool rawLt = lt, rawRt = rt;
             if (HoldStill) { b = 0; lx = ly = rx = ry = 0f; lt = rt = false; }
 
             Fill(s, b, lx, ly, rx, ry, lt, rt, true);
 
+            if (!trackJoin) return;
             StartPressedThisStep = s.Start.IsPressed && !wasStart;
             // Several FixedUpdates can run in one frame; latch the press until Update consumes it.
             if (StartPressedThisStep) StartLatched = true;

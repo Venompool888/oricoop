@@ -37,6 +37,16 @@ namespace OriCoop.Seats
         void RemoveLocalPlayer(int seat);
     }
 
+    internal static class OfflineSeats
+    {
+        public static int NextExtra(int[] localSeats)
+        {
+            for (int seat = 2; seat <= SeatViewChecks.MaxSeats; seat++)
+                if (Array.IndexOf(localSeats, seat) < 0) return seat;
+            return 0;
+        }
+    }
+
     // The invariants every ISeatView must hold; used by the unit tests and by the game tests on the live view.
     internal static class SeatViewChecks
     {

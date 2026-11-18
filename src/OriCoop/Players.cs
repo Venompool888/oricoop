@@ -21,7 +21,19 @@ namespace OriCoop
         public static int AssignedSeat;
         public static int LocalSeat { get { return Roles.Mine; } }
         public static int RemoteCount { get { return NetPlay.RemoteCount; } }
-        public static int[] LocalSeats { get { return NetPlay.Enabled ? NetPlay.LocalSeats : P2Context.P2 == null ? new int[] { 1 } : new int[] { 1, 2 }; } }
+        public static int[] LocalSeats
+        {
+            get
+            {
+                if (NetPlay.Enabled) return NetPlay.LocalSeats;
+                if (First == null || First.Seat != 2 || First.Sein == null) return new int[] { 1 };
+                if (Remotes.Count == 1) return new int[] { 1, 2 };
+                List<int> seats = new List<int> { 1, 2 };
+                foreach (Puppet p in Remotes)
+                    if (p.Seat > 2 && p.IsLocal && p.Sein != null) seats.Add(p.Seat);
+                return seats.ToArray();
+            }
+        }
         public static bool IsLocal(int seat) { return System.Array.IndexOf(LocalSeats, seat) >= 0; }
         public static SeinCharacter OriOf(int seat)
         {

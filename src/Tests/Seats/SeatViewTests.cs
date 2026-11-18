@@ -81,6 +81,15 @@ static class SeatViewTests
         Run("an offline single player view has no problems", delegate {
             FakeView v = new FakeView(); v.Local.Add(1); v.Primary = 1; v.Oris[1] = new FakeOri("p1"); Clean(v, true);
         });
+        Run("offline adds P2 first, then seats 3 and 4", delegate {
+            Check(OfflineSeats.NextExtra(new int[] { 1 }) == 2, "P2 first");
+            Check(OfflineSeats.NextExtra(new int[] { 1, 2 }) == 3, "P3 next");
+            Check(OfflineSeats.NextExtra(new int[] { 1, 2, 3 }) == 4, "P4 last");
+        });
+        Run("offline reuses seat 3 and refuses another player when full", delegate {
+            Check(OfflineSeats.NextExtra(new int[] { 1, 2, 4 }) == 3, "lowest hole reused");
+            Check(OfflineSeats.NextExtra(new int[] { 1, 2, 3, 4 }) == 0, "full");
+        });
         Run("add takes the lowest free seat and keeps the invariants", delegate {
             FakeView v = FakeView.Guest(); v.Local.Remove(3); v.Oris.Remove(3); v.Inputs.Remove(3);
             Check(v.AddLocalPlayer(new InputDevice(InputDevice.DeviceKind.Pad, 1)) && v.LocalSeats.Length == 2 && v.LocalSeats[1] == 3, "seat 3 added");

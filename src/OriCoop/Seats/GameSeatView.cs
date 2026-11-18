@@ -6,20 +6,14 @@ using OriCoop.Seats;
 namespace OriCoop
 {
     // T-056: the game's ISeatView (was LocalSeatsAdapter). Online management uses the host's authoritative seat table;
-    // offline P2 retains the existing join/swap path. Remote puppets are never input targets.
+    // offline P2 retains the existing join/swap path and seats 3/4 have their own input assignments.
     internal sealed class GameSeatView : ISeatView<SeinCharacter>
     {
         static SeinCharacter s_pendingOwner;
-        static int s_pendingPad;
+        static InputDevice s_pendingDevice;
+        static readonly SeatInputs s_extraInputs = new SeatInputs();
 
-        public int[] LocalSeats
-        {
-            get
-            {
-                if (NetPlay.Enabled) return Players.LocalSeats;
-                return P2Context.P2 == null ? new int[] { 1 } : new int[] { 1, 2 };
-            }
-        }
+        public int[] LocalSeats { get { return Players.LocalSeats; } }
 
         public int PrimarySeat { get { return Players.LocalSeat; } }
 
@@ -38,67 +32,87 @@ namespace OriCoop
 
         public bool IsLocal(int seat) { return Array.IndexOf(LocalSeats, seat) >= 0; }
 
-        // Offline P2 is not a puppet: it is P2Context.P2 on seat 2.
-        public SeinCharacter OriOf(int seat)
-        {
-            if (!NetPlay.Enabled && seat == 2) return P2Context.P2;
-            return Players.OriOf(seat);
-        }
-
-        public int SeatOf(SeinCharacter ori)
-        {
-            if (!NetPlay.Enabled && ori != null && ori == P2Context.P2) return 2;
-            return Players.SeatOf(ori);
-        }
+        public SeinCharacter OriOf(int seat) { return Players.OriOf(seat); }
+        public int SeatOf(SeinCharacter ori) { return Players.SeatOf(ori); }
 
         public InputDevice InputOf(int seat)
         {
             if (Array.IndexOf(LocalSeats, seat) < 0) throw new ArgumentException("Not a local seat", "seat");
             if (NetPlay.Enabled) return OnlineLocalPlayers.InputOf(seat);
-            int pad = seat == 1 ? KeyboardOnlyP1.P1Pad : Plugin.Instance.P2PadInUse;
-            return new InputDevice(pad < 0 ? InputDevice.DeviceKind.KeyboardMouse : InputDevice.DeviceKind.Pad, pad);
+            int input = seat == 1 ? Math.Max(-1, KeyboardOnlyP1.P1Pad) : seat == 2 ? Plugin.Instance.P2PadInUse : ExtraInput(seat);
+            return new InputDevice(input == -1 ? InputDevice.DeviceKind.KeyboardMouse : InputDevice.DeviceKind.Pad, input);
+        }
+
+        internal static int ExtraInput(int seat) { return s_extraInputs.Get(seat); }
+        internal static bool ExtraUsesInput(int input) { return s_extraInputs.Used(input); }
+        internal static void ForgetExtra(int seat) { s_extraInputs.Remove(seat); }
+
+        static bool TryInputCode(InputDevice device, out int input)
+        {
+            input = device.Kind == InputDevice.DeviceKind.KeyboardMouse ? -1 : device.Pad;
+            return device.Kind == InputDevice.DeviceKind.KeyboardMouse ||
+                device.Kind == InputDevice.DeviceKind.Pad && input >= 0 && input <= 3;
+        }
+
+        bool InputTaken(int input, int seat)
+        {
+            if (seat != 1 && Math.Max(-1, KeyboardOnlyP1.P1Pad) == input) return true;
+            if (seat != 2 && Players.OriOf(2) != null && Plugin.Instance.P2PadInUse == input) return true;
+            return ExtraUsesInput(input) && ExtraInput(seat) != input;
         }
 
         public bool SetInput(int seat, InputDevice device)
         {
             if (NetPlay.Enabled) return OnlineLocalPlayers.SetInput(seat, device);
-            if (!NetPlay.LocalInGameplay() || Plugin.Instance == null || Array.IndexOf(LocalSeats, seat) < 0) return false;
-            if (device.Kind == InputDevice.DeviceKind.KeyboardMouse)
-            {
-                if (seat != 1) return false; // Keyboard P2 needs the future per-seat sampler.
-                Plugin.Instance.AssignPad(seat, -1);
-                return true;
-            }
-            if (device.Kind != InputDevice.DeviceKind.Pad || device.Pad < 0 || device.Pad > 3) return false;
-            Plugin.Instance.AssignPad(seat, device.Pad); // Preserves the existing swap behaviour.
+            int input;
+            if (!NetPlay.LocalInGameplay() || Plugin.Instance == null || !IsLocal(seat) || !TryInputCode(device, out input)) return false;
+            if (seat > 2) return !InputTaken(input, seat) && s_extraInputs.Set(seat, input);
+            if (seat == 2 && input < 0 || ExtraUsesInput(input)) return false;
+            Plugin.Instance.AssignPad(seat, input); // Preserves the existing P1/P2 swap behaviour.
             return true;
         }
 
         public bool AddLocalPlayer(InputDevice device)
         {
             if (NetPlay.Enabled) return OnlineLocalPlayers.Add(device);
-            if (!NetPlay.LocalInGameplay() || Plugin.Instance == null || P2Context.P2 != null ||
-                device.Kind != InputDevice.DeviceKind.Pad || device.Pad < 0 || device.Pad > 3) return false;
-            Plugin.Instance.AssignPad(2, device.Pad);
-            PlayMode.SetMode(PlayMode.Coop);
+            int input;
+            if (!NetPlay.LocalInGameplay() || Plugin.Instance == null || s_pendingOwner == Characters.Sein ||
+                !TryInputCode(device, out input) || InputTaken(input, 0)) return false;
+            int seat = OfflineSeats.NextExtra(LocalSeats);
+            if (seat == 0 || seat == 2 && input < 0) return false;
+            if (seat == 2)
+            {
+                Plugin.Instance.AssignPad(2, input);
+                PlayMode.SetMode(PlayMode.Coop);
+            }
             // The existing spawn guard rejects joins during native pause. Honour it: the new local
             // player joins when Continue actually resumes gameplay, not by releasing/reopening the pause.
             if (UI.MainMenuVisible && Characters.Sein != null)
             {
                 s_pendingOwner = Characters.Sein;
-                s_pendingPad = device.Pad;
+                s_pendingDevice = device;
                 return true;
             }
-            Plugin.Instance.Spawn();
-            return P2Context.P2 != null;
+            if (seat == 2) return Plugin.Instance.SpawnPuppet(seat) != null;
+            if (!s_extraInputs.Add(seat, input)) return false;
+            try { return Plugin.Instance.SpawnPuppet(seat) != null; }
+            finally { if (OriOf(seat) == null) ForgetExtra(seat); }
         }
 
         public void RemoveLocalPlayer(int seat)
         {
             if (NetPlay.Enabled) { NetPlay.ReleaseLocalSeat(seat); return; }
-            if (!NetPlay.LocalInGameplay() || seat != 2) return;
-            s_pendingOwner = null;
-            if (P2Context.P2 != null) Plugin.DespawnNow("removed from the co-op menu");
+            if (!NetPlay.LocalInGameplay()) return;
+            if (seat == 2 && LocalSeats.Length <= 2)
+            {
+                s_pendingOwner = null;
+                if (P2Context.P2 != null) Plugin.DespawnNow("removed from the co-op menu");
+            }
+            else if (seat > 2)
+            {
+                Puppet puppet = Players.OfSein(OriOf(seat));
+                if (puppet != null && puppet.IsLocal) Plugin.DespawnPuppet(puppet);
+            }
         }
 
         [HarmonyPatch(typeof(MenuScreenManager), "HideMenuScreen")]
@@ -111,10 +125,8 @@ namespace OriCoop
                 if (UI.MainMenuVisible) return;
                 SeinCharacter owner = s_pendingOwner;
                 s_pendingOwner = null;
-                if (owner != Characters.Sein || NetPlay.Enabled ||
-                    PlayMode.Current != PlayMode.Coop || P2Context.P2 != null || Plugin.Instance == null) return;
-                Plugin.Instance.AssignPad(2, s_pendingPad);
-                Plugin.Instance.Spawn();
+                if (owner != Characters.Sein || NetPlay.Enabled || PlayMode.Current != PlayMode.Coop) return;
+                new GameSeatView().AddLocalPlayer(s_pendingDevice);
             }
         }
     }

@@ -85,9 +85,18 @@ namespace OriCoop
         }
         static void Sample(int seat, InputState state)
         {
-            InputDevice d = InputOf(seat);
-            if (d.Kind == InputDevice.DeviceKind.Pad) P2Input.Sample(d.Pad, state);
-            else SampleKeyboard(state);
+            if (NetPlay.Enabled)
+            {
+                InputDevice d = InputOf(seat);
+                if (d.Kind == InputDevice.DeviceKind.Pad) P2Input.Sample(d.Pad, state);
+                else SampleKeyboard(state);
+            }
+            else
+            {
+                int input = GameSeatView.ExtraInput(seat);
+                if (input >= 0) P2Input.SampleExtra(input, state);
+                else if (input == -1) SampleKeyboard(state);
+            }
             GameController gc = GameController.Instance;
             if (P2Input.HoldStill || gc == null || gc.InputLocked || gc.GameplaySuspended || gc.GameplaySuspendedForUI
                 || StorySync.IntroHeld(seat) || Revive.IsDowned(Players.OriOf(seat)))
@@ -95,7 +104,8 @@ namespace OriCoop
         }
         public static void SampleExtras()
         {
-            foreach (Puppet p in Players.Remotes) if (p.IsLocal && p.Sein != null) Sample(p.Seat, p.Input);
+            foreach (Puppet p in Players.Remotes)
+                if (p.IsLocal && p.Sein != null && (NetPlay.Enabled || p.Seat > 2)) Sample(p.Seat, p.Input);
         }
         static void SampleKeyboard(InputState s)
         {
@@ -116,6 +126,7 @@ namespace OriCoop
             {
                 SeinCharacter ori = Players.OriOf(seat);
                 if (ori == null || !ori.gameObject.activeInHierarchy || Revive.IsDowned(ori)) continue;
+                if (!NetPlay.Enabled && ori.Mortality.Health.Amount <= 0f) continue;
                 Vector3 pos = ori.Position, old;
                 if (!previous || !last.TryGetValue(seat, out old)) old = pos;
                 points.Add(new EdgePoint(seat, true, pos.x, pos.y, old.x, old.y));
@@ -132,6 +143,7 @@ namespace OriCoop
             return found;
         }
         public static void PositionChanged() { last.Clear(); }
+        internal static void ForgetPosition(int seat) { last.Remove(seat); }
         public static void ApplyWall()
         {
             GameController gc = GameController.Instance;
@@ -139,11 +151,16 @@ namespace OriCoop
             { last.Clear(); return; }
             Vector2 now, max;
             if (!CoopCamera.ViewSize(out now, out max)) { last.Clear(); return; }
+            ApplyWall(Mathf.Max(4, max.x - 2 * CoopCamera.EdgeMargin), Mathf.Max(4, max.y - 2 * CoopCamera.EdgeMargin));
+        }
+        internal static void ApplyWall(float width, float height)
+        {
             EdgePoint[] points = Points(true);
-            LocalEdgeWall.Apply(points, Mathf.Max(4, max.x - 2 * CoopCamera.EdgeMargin), Mathf.Max(4, max.y - 2 * CoopCamera.EdgeMargin));
+            LocalEdgeWall.Apply(points, width, height);
             foreach (EdgePoint p in points)
             {
                 SeinCharacter ori = Players.OriOf(p.Seat); Vector3 pos = ori.Position, speed = ori.Speed;
+                if (!NetPlay.Enabled && pos.x == p.X && pos.y == p.Y) { last[p.Seat] = pos; continue; }
                 if (Mathf.Abs(pos.x - p.X) > 0.0001f) { if ((pos.x - p.X) * speed.x > 0) speed.x = 0; EdgeBlocks++; }
                 if (Mathf.Abs(pos.y - p.Y) > 0.0001f) { if ((pos.y - p.Y) * speed.y > 0) speed.y = 0; EdgeBlocks++; }
                 ori.Position = new Vector3(p.X, p.Y, pos.z); ori.Speed = speed; last[p.Seat] = ori.Position;

@@ -13,6 +13,12 @@ namespace OriCoop.Rules
     // Undo only movement that expands this device's local group, never drag a stationary Ori.
     public static class LocalEdgeWall
     {
+        public static float OfflineWidth(float maxViewWidth, float edgeMargin, float leash)
+        {
+            float width = Math.Min(maxViewWidth, Math.Max(4f, maxViewWidth - 2f * edgeMargin));
+            return leash > 0f ? Math.Min(width, leash) : width;
+        }
+
         public static void Apply(EdgePoint[] points, float width, float height)
         {
             if (width <= 0 || height <= 0) return;

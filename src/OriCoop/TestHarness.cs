@@ -35,7 +35,7 @@ namespace OriCoop
         void Awake()
         {
             m_out = Environment.GetEnvironmentVariable("ORICOOP_TEST_OUT") ?? "oricoop_test.txt";
-            m_scenarios = Environment.GetEnvironmentVariable("ORICOOP_SCENARIOS") ?? "lifecycle,interact,menu,visual,bottomhud,companion,move,camera,platform,pause,p2death,revive,teleport,pool,enemy,pickup,p1death,bothdown,title";
+            m_scenarios = Environment.GetEnvironmentVariable("ORICOOP_SCENARIOS") ?? "lifecycle,interact,menu,visual,bottomhud,companion,move,camera,fourplayer,platform,pause,p2death,revive,teleport,pool,enemy,pickup,p1death,bothdown,title";
             int s; if (int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_SLOT"), out s)) m_slot = s;
             Application.logMessageReceived += OnLog;
             P2Input.BotActive = true;
@@ -228,6 +228,7 @@ namespace OriCoop
             if (Want("companion")) yield return StartCoroutine(CompanionStates());
             if (Want("move")) yield return StartCoroutine(Move());
             if (Want("camera")) yield return StartCoroutine(CameraAndEdges());
+            if (Want("fourplayer")) yield return StartCoroutine(FourPlayer());
             if (Want("platform")) yield return StartCoroutine(Platforms());
             if (Want("pause")) yield return StartCoroutine(Pause());
             // p2death / p1death cover the classic rules ([Death] ReviveMode = false); "revive" covers the default.
@@ -1349,13 +1350,13 @@ namespace OriCoop
 
         // Drop-through platforms are per Ori: one Ori's "pass through" state must not make the other fall through.
         // Uses the game's own GoThroughPlatform on platforms built in open air near the start.
-        GameObject MakePlatform(Vector3 center)
+        GameObject MakePlatform(Vector3 center, float width = 3f)
         {
             GameObject g = new GameObject("oricoop_test_platform");
             g.SetActive(false); // GoThroughPlatform.Awake needs Colliders set before it runs
             g.transform.position = center;
             BoxCollider box = g.AddComponent<BoxCollider>();
-            box.size = new Vector3(3f, 0.4f, 4f);
+            box.size = new Vector3(width, 0.4f, 4f);
             GoThroughPlatform gp = g.AddComponent<GoThroughPlatform>();
             gp.Colliders = new Collider[] { box };
             gp.Transforms = new Transform[] { g.transform };
@@ -1528,6 +1529,143 @@ namespace OriCoop
             Check(dist < 3f, "regroup: P2 ends next to P1");
             Check(worst < 1f && maxStep < path * 0.6f, "regroup: smooth glide, not an instant snap (worst step " + F(worst) + " of allowed)");
             Check(m_errors == err0, "camera: no errors");
+        }
+
+        IEnumerator FourPlayer()
+        {
+            Note("--- scenario: fourplayer (offline local seats and shared camera)");
+            int err0 = m_errors;
+            Plugin plugin = Plugin.Instance;
+            int p1Pad = plugin.P1Pad, p2Pad = plugin.P2Pad;
+            float savedLeash = plugin.GroupLeash, savedMargin = CoopCamera.EdgeMargin;
+            Vector3 p1Start = P1.Position, p2Start = P2.Position;
+            GameSeatView seats = new GameSeatView();
+            InputDevice pad1 = new InputDevice(InputDevice.DeviceKind.Pad, 1);
+            InputDevice pad2 = new InputDevice(InputDevice.DeviceKind.Pad, 2);
+            InputDevice keyboard = new InputDevice(InputDevice.DeviceKind.KeyboardMouse, -1);
+            GameObject platform = null;
+            try
+            {
+                Bot(0f, 0);
+                plugin.AssignPad(1, 0);
+                plugin.AssignPad(2, 3);
+                P2Input.BotPads[1] = P2Input.BotPads[2] = new P2Input.PadBot { Active = true, Buttons = 0 };
+                bool added3 = seats.AddLocalPlayer(pad1);
+                Check(added3, "fourplayer: P3 joins on pad 1");
+                Check(!seats.AddLocalPlayer(pad1), "fourplayer: a second seat cannot use pad 1");
+                bool added4 = seats.AddLocalPlayer(pad2);
+                Check(added4, "fourplayer: P4 joins on pad 2");
+                SeinCharacter p3 = seats.OriOf(3), p4 = seats.OriOf(4), originalP2 = P2;
+                Check(p3 != null && p4 != null && seats.LocalSeats.Length == 4, "fourplayer: all four seats have Oris");
+                if (!added3 || !added4 || p3 == null || p4 == null) yield break;
+                Check(!seats.AddLocalPlayer(keyboard), "fourplayer: a fifth local player is refused");
+                seats.RemoveLocalPlayer(2);
+                Check(P2 == originalP2 && seats.LocalSeats.Length == 4, "fourplayer: P2 stays while extras are present");
+                Check(seats.SetInput(3, keyboard) && !seats.SetInput(4, keyboard) && seats.SetInput(3, pad1),
+                    "fourplayer: keyboard assignment is exclusive and P3 can return to pad 1");
+                List<string> problems = OriCoop.Seats.SeatViewChecks.Problems(seats, true);
+                Check(problems.Count == 0, "fourplayer: seat view invariants (" + string.Join(", ", problems.ToArray()) + ")");
+
+                // Give the wall oracle enough flat ground beyond the configured edge.
+                Vector3 ground = Vector3.zero;
+                for (float y = 4f; y <= 16f && platform == null; y += 2f)
+                    for (float x = -6f; x <= 6f && platform == null; x += 6f)
+                    {
+                        ground = p1Start + new Vector3(x, y, 0f);
+                        if (!Physics.CheckBox(ground + Vector3.up * 1.5f, new Vector3(9f, 2.5f, 1f)))
+                            platform = MakePlatform(ground, 18f);
+                    }
+                Check(platform != null, "fourplayer: open ground fixture available");
+                if (platform == null) yield break;
+                ground += Vector3.up * 1.2f;
+                Plugin.Teleport(P1, ground - Vector3.right * 2f);
+                Plugin.Teleport(P2, ground - Vector3.right * 0.8f);
+                Plugin.Teleport(p3, ground - Vector3.right * 3.5f);
+                Plugin.Teleport(p4, ground);
+                plugin.GroupLeash = 6f;
+                OnlineLocalPlayers.PositionChanged();
+                yield return TestClock.WaitGame(1.5f);
+
+                Vector2 now, max;
+                GameplayCamera cam = UI.Cameras.Current;
+                Check(CoopCamera.ViewSize(out now, out max), "fourplayer: camera view size is available");
+                foreach (int seat in seats.LocalSeats)
+                {
+                    SeinCharacter ori = seats.OriOf(seat);
+                    Check(FourPlayerVisible(ori, cam, now), "fourplayer: P" + seat + " exists, is active and visible inside the camera view");
+                }
+
+                float allowed = Rules.LocalEdgeWall.OfflineWidth(max.x, CoopCamera.EdgeMargin, plugin.GroupLeash);
+                float x1 = P1.Position.x, x2 = P2.Position.x, x3 = p3.Position.x, x4 = p4.Position.x;
+                int blocks = OnlineLocalPlayers.EdgeBlocks;
+                P2Input.BotPads[2].LX = 1f;
+                yield return TestClock.WaitGame(3f);
+                Vector3 centre;
+                Vector2 spread;
+                bool bounds = Players.LocalGroupBounds(out centre, out spread);
+                Check(bounds && allowed > 0f && spread.x <= allowed + 0.3f && spread.x >= allowed - 0.7f &&
+                    p4.Position.x > x4 + 1f && OnlineLocalPlayers.EdgeBlocks > blocks,
+                    "fourplayer: P4 runs to the wall and is stopped (spread " + F(spread.x) + ", width " + F(allowed) +
+                    ", blocks " + (OnlineLocalPlayers.EdgeBlocks - blocks) + ")");
+                Check(Mathf.Abs(P1.Position.x - x1) < 0.5f && Mathf.Abs(P2.Position.x - x2) < 0.5f && Mathf.Abs(p3.Position.x - x3) < 0.5f,
+                    "fourplayer: P4's input leaves the other three Oris in place");
+                Check(bounds && cam != null && cam.Target != null && Mathf.Abs(cam.Target.position.x - centre.x) < 0.25f &&
+                    Mathf.Abs(cam.Target.position.y - centre.y) < 0.25f, "fourplayer: camera targets the four-Ori bounds centre at the wall");
+                bool framed = CoopCamera.ViewSize(out now, out max);
+                foreach (int seat in seats.LocalSeats) framed &= FourPlayerVisible(seats.OriOf(seat), cam, now);
+                Check(framed, "fourplayer: all four remain visible at the wall");
+
+                P2Input.BotPads[1].LX = 1f;
+                yield return TestClock.WaitGame(0.45f);
+                P2Input.BotPads[1].LX = P2Input.BotPads[2].LX = 0f;
+                Check(p3.Position.x > x3 + 0.6f, "fourplayer: P3 can walk inward while P4 pushes outward");
+
+                seats.RemoveLocalPlayer(3);
+                seats.RemoveLocalPlayer(4);
+                Check(seats.LocalSeats.Length == 2 && P2 == originalP2 && seats.OriOf(3) == null && seats.OriOf(4) == null,
+                    "fourplayer: removing P3 and P4 restores the original two seats");
+                Plugin.Teleport(P2, P1.Position + Vector3.right);
+                yield return TestClock.WaitGame(0.6f);
+                CoopCamera.ViewSize(out now, out max);
+                CoopCamera.EdgeMargin = Mathf.Max(savedMargin, (max.x - 6f) * 0.5f);
+                int pairBlocks = CoopCamera.EdgeBlocks, groupBlocks = OnlineLocalPlayers.EdgeBlocks;
+                Bot(1f, 0);
+                yield return TestClock.WaitGame(2.5f);
+                Bot(0f, 0);
+                Check(CoopCamera.EdgeBlocks > pairBlocks && OnlineLocalPlayers.EdgeBlocks == groupBlocks,
+                    "fourplayer: P2 uses the original two-player wall after the extras leave");
+                Check(cam != null && cam.Target != null && Vector3.Distance(cam.Target.position, (P1.Position + P2.Position) * 0.5f) < 0.25f,
+                    "fourplayer: the two-player camera follows the midpoint again");
+                Check(m_errors == err0, "fourplayer: no Unity errors");
+            }
+            finally
+            {
+                Bot(0f, 0);
+                P2Input.BotPads[1] = P2Input.BotPads[2] = new P2Input.PadBot();
+                seats.RemoveLocalPlayer(4);
+                seats.RemoveLocalPlayer(3);
+                plugin.AssignPad(2, p2Pad);
+                plugin.AssignPad(1, p1Pad);
+                plugin.GroupLeash = savedLeash;
+                CoopCamera.EdgeMargin = savedMargin;
+                if (platform != null)
+                {
+                    if (P1 != null) Plugin.Teleport(P1, p1Start - Vector3.up * 0.5f);
+                    if (P2 != null) Plugin.Teleport(P2, p2Start - Vector3.up * 0.5f);
+                    UnityEngine.Object.Destroy(platform);
+                }
+            }
+        }
+
+        static bool FourPlayerVisible(SeinCharacter ori, GameplayCamera cam, Vector2 view)
+        {
+            if (ori == null || !ori.gameObject.activeInHierarchy || cam == null || cam.Camera == null) return false;
+            Vector3 delta = ori.Position - cam.Camera.transform.position;
+            if (view.x <= 0f || view.y <= 0f || Mathf.Abs(delta.x) > view.x * 0.5f || Mathf.Abs(delta.y) > view.y * 0.5f) return false;
+            Vector3 screen = cam.Camera.WorldToViewportPoint(ori.Position);
+            if (screen.z <= 0f || screen.x < 0f || screen.x > 1f || screen.y < 0f || screen.y > 1f) return false;
+            foreach (Renderer r in ori.GetComponentsInChildren<Renderer>(false)) if (r.enabled && r.isVisible) return true;
+            return false;
         }
 
         // Quit to the title screen with P2 in the game, then use the title menus again and rejoin P2.

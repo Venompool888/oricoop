@@ -382,6 +382,12 @@ namespace OriCoop
             Services.Log.Info("checkpoint reload: both Oris back");
         }
 
+        internal static void ForgetOfflineExtra(int seat)
+        {
+            s_roster.Take(seat);
+            s_haveSafe[seat] = false;
+        }
+
         // P2 leaves (F10, title screen...) or online mode starts while someone is down.
         public static void ClearAll(string why, bool killDownedP1 = true)
         {
