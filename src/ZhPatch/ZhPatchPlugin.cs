@@ -20,7 +20,7 @@ namespace OriCoop
 
 namespace OriZhPatch
 {
-    [BepInPlugin("oricoop.zhpatch", "Ori DE 简体中文补丁 / Simplified Chinese patch", "1.0.0")]
+    [BepInPlugin("oricoop.zhpatch", "Ori DE 简体中文补丁 / Simplified Chinese patch", "1.0.1")]
     [BepInIncompatibility("local.oricoop")]
     public sealed class ZhPatchPlugin : BaseUnityPlugin
     {
@@ -43,7 +43,7 @@ namespace OriZhPatch
             if (Environment.GetEnvironmentVariable("ORICOOP_ZHPATCH_PROBE") == "1")
                 runner.AddComponent<ZhPatchProbe>();
             // Bind now: the game later destroys BepInEx's manager, but the config entries must survive it.
-            Logger.LogInfo("Ori DE Simplified Chinese patch 1.0.0 loaded (no co-op features); unlocked=" + OriCoop.LanguageUnlock.Unlocked);
+            Logger.LogInfo("Ori DE Simplified Chinese patch 1.0.1 loaded (no co-op features); unlocked=" + OriCoop.LanguageUnlock.Unlocked);
         }
 
         public sealed class GlyphRunner : MonoBehaviour

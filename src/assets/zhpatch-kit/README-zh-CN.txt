@@ -1,4 +1,4 @@
-Ori DE 简体中文补丁 1.0.0 / Simplified Chinese patch
+Ori DE 简体中文补丁 1.0.1 / Simplified Chinese patch
 ================================================
 
 中文

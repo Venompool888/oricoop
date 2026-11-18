@@ -7,7 +7,7 @@ $game = if ($Game) { $Game } else { Join-Path $root 'game' }
 $commit = (& git -C $root rev-parse --short=7 HEAD).Trim()
 if ($LASTEXITCODE -ne 0) { throw 'Cannot determine kit commit' }
 $dist = Join-Path $root 'dist'
-$zip = Join-Path $dist ('OriZhPatch-v1.0.0-' + (Get-Date -Format 'yyyyMMdd') + '-' + $commit + '.zip')
+$zip = Join-Path $dist ('OriZhPatch-v1.0.1-' + (Get-Date -Format 'yyyyMMdd') + '-' + $commit + '.zip')
 $stage = Join-Path $dist ('stage-zhpatch-' + [Guid]::NewGuid().ToString('N'))
 try {
     New-Item -ItemType Directory -Force "$stage\BepInEx\core", "$stage\BepInEx\plugins", "$stage\BepInEx\config" | Out-Null
