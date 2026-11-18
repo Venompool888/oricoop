@@ -209,6 +209,43 @@ static class UiTests
             }
             Equal("打开日志文件夹", L10n.T("coop.open_logs", true));
         });
+        Run("controls guide names the default keys in each language", delegate {
+            Equal("Move: left stick or A / D      Jump: A button or Space", ControlsGuide.Text(false, "A", "D", "Space"));
+            Equal("移动：左摇杆 或 A / D      跳跃：A 键 或 空格键", ControlsGuide.Text(true, "A", "D", "Space"));
+            Equal("Left / Right arrows", ControlsGuide.MoveKeys(false, "LeftArrow", "RightArrow"));
+            Equal("左右方向键", ControlsGuide.MoveKeys(true, "LeftArrow", "RightArrow"));
+            Equal("Q / D", ControlsGuide.MoveKeys(false, "Q", "D"));
+            Equal("1", ControlsGuide.KeyName(false, "Alpha1"));
+            Equal("Shift", ControlsGuide.KeyName(true, "LeftShift"));
+            Equal("?", ControlsGuide.KeyName(false, "None"));
+        });
+        Run("controls guide waits for steady gameplay, shows once, then stays gone", delegate {
+            ControlsGuide g = new ControlsGuide(false);
+            Equal(0f, g.Update(false, 0f));
+            Equal(0f, g.Update(true, 1f));                       // gameplay starts
+            Equal(0f, g.Update(true, 1f + ControlsGuide.Delay - 0.1f));
+            Equal(0f, g.Update(true, 1f + ControlsGuide.Delay)); // appears now, fading in
+            float shownAt = 1f + ControlsGuide.Delay;
+            Equal(1f, g.Update(true, shownAt + ControlsGuide.Fade + 1f));
+            Check(g.Showing, "showing in the middle");
+            Equal(0f, g.Update(false, shownAt + 3f));             // a menu hides it without restarting it
+            Equal(1f, g.Update(true, shownAt + 4f));
+            Equal(0f, g.Update(true, shownAt + ControlsGuide.Duration + 2f * ControlsGuide.Fade));
+            Check(g.Done, "done after its time");
+            Equal(0f, g.Update(true, shownAt + 100f));
+        });
+        Run("controls guide stays hidden once seen", delegate {
+            ControlsGuide g = new ControlsGuide(true);
+            Check(g.Done, "seen means done");
+            Equal(0f, g.Update(true, 10f));
+        });
+        Run("controls guide restarts its wait when gameplay drops before it shows", delegate {
+            ControlsGuide g = new ControlsGuide(false);
+            g.Update(true, 0f); g.Update(false, 1f);
+            Equal(0f, g.Update(true, 1.2f));
+            Equal(0f, g.Update(true, 1.2f + ControlsGuide.Delay - 0.1f));
+            Check(!g.Showing, "not yet");
+        });
         Run("zh text keys are short SHA-1 hashes of the English line", delegate {
             Equal("3159fe421b322138", ZhTextKey.Of("Empty"));
             Equal("fec334bd25f727f9", ZhTextKey.Of("I am #Sein#, the light and eyes of the #Spirit Tree#."));

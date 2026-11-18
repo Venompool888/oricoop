@@ -86,6 +86,14 @@ namespace OriCoop
         {
             "common.back", "返回", "Back",
             "p2.join_hint", "P2：按手柄任意键（或 {0}）加入  [{1}]    F8：双人设置", "Player 2: press any button on the controller (or {0}) to join  [{1}]    F8: co-op settings",
+            "guide.controls", "移动：左摇杆 或 {0}      跳跃：A 键 或 {1}", "Move: left stick or {0}      Jump: A button or {1}",
+            "guide.key.arrows", "左右方向键", "Left / Right arrows",
+            "guide.key.space", "空格键", "Space",
+            "guide.key.left", "左方向键", "Left arrow",
+            "guide.key.right", "右方向键", "Right arrow",
+            "guide.key.up", "上方向键", "Up arrow",
+            "guide.key.down", "下方向键", "Down arrow",
+            "guide.key.mouse", "鼠标", "Mouse",
             "p2.pad_found", "已找到手柄", "controller found",
             "p2.pad_missing", "未找到手柄", "no controller found",
             // Server choice sub-page (final names).

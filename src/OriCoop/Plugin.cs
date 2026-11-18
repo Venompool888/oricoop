@@ -27,7 +27,7 @@ namespace OriCoop
         static readonly Action s_reviveTick = Revive.Tick, s_reviveOnlineTick = Revive.TickOnline;
         static readonly Action s_nativeGuiLate = NativeGui.LateUpdate, s_reviveHud = ReviveHud.Update, s_bottomHud = BottomHud.Update;
         static readonly Action s_menuDraw = CoopMenu.Draw, s_netDraw = NetPlay.DrawGUI;
-        static readonly Action s_netHudDraw = NetHud.Draw, s_sessionDraw = SessionScreens.Draw;
+        static readonly Action s_netHudDraw = NetHud.Draw, s_sessionDraw = SessionScreens.Draw, s_controlsGuideDraw = ControlsGuideHud.Draw;
         static readonly Action s_localRefreshIds = P2Context.RefreshIds;
         static readonly Action s_testThrow = TestThrow;
 
@@ -430,6 +430,7 @@ namespace OriCoop
             SubsystemGuard.Run("NetHud.Draw", s_netHudDraw);
             SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
             if ((L10nProbe.On && TestJoinHint) || (P2Context.P2 == null && !TestHarness.Enabled && PlayMode.Current == PlayMode.Coop)) SubsystemGuard.Run("Plugin.DrawJoinHint", m_joinHint);
+            SubsystemGuard.Run("ControlsGuideHud.Draw", s_controlsGuideDraw);
         }
         GUIStyle m_hintStyle;
         internal static bool TestJoinHint;

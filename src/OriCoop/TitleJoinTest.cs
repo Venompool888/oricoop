@@ -371,6 +371,15 @@ namespace OriCoop
                 Check(NetPlay.HaveRemotePos && Vector3.Distance(NetPlay.LatestRemotePos, me) < 4f,
                     "guest: still beside the host (distance " + (NetPlay.HaveRemotePos ? Vector3.Distance(NetPlay.LatestRemotePos, me).ToString("F2") : "?") + ")");
                 Check(CoopSaves.GuestSlot == (full ? 2 : CoopSaves.GuestSlot) && CoopSaves.GuestSlot >= 0 && SaveFiles() >= 1, "guest: co-op copy kept in slot " + CoopSaves.GuestSlot + " (" + SaveFiles() + " save file(s))");
+                // T-053: the one-time controls guide is on screen in the game's language, and the game keeps running.
+                float guideEnd = Time.realtimeSinceStartup + 6f;
+                while (Time.realtimeSinceStartup < guideEnd && ControlsGuideHud.FramesDrawn == 0) yield return null;
+                string jumpWord = L10n.T("guide.key.space");
+                Check(ControlsGuideHud.FramesDrawn > 0 && ControlsGuideHud.LastText.Contains(jumpWord),
+                    "guest: controls guide on screen (" + ControlsGuideHud.FramesDrawn + " frames: " + ControlsGuideHud.LastText + ")");
+                // Paused = timeScale 0; the game's own slow-motion moments (0.5) still count as running.
+                Check(ControlsGuideHud.LastTimeScale > 0.01f && Time.timeScale > 0.01f && NetPlay.LocalInGameplay(),
+                    "guest: guide does not pause the game (timeScale " + ControlsGuideHud.LastTimeScale.ToString("F2") + ")");
                 Shot("in_game");
             }
 
