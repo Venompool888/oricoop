@@ -205,6 +205,22 @@ static partial class StoryTests
             Equal(true, p4.Ledger.Remote.ContainsKey(key)); Equal(3, p4.Ledger.Remote[key].Sender);
             p3.Skip(key); Equal(true, p4.Ledger.Remote[key].Skipped); p3.End(key); Equal(0, p4.Ledger.Remote.Count);
         });
+        // T-066: a story the other PC started that this PC cannot find is retried every 0.1 s for 2 s; each failed try
+        // used to load the scenes around it again (20 loads). The scene load is the expensive part: few, spread out.
+        Check("story unresolved retries load the scenes a few times with backoff", delegate {
+            Run r = new Run { Key = "a", Began = 0f }; int loads = 0; float first = -1f, last = -1f;
+            for (int f = 0; f <= 130; f++)
+            {
+                float t = f / 60f;
+                if (StoryLedger<Run>.Resolution(r, t, false) != StoryResolution.Retry) break;
+                if (!StoryLedger<Run>.ResolveDue(r, t, 0f)) continue;
+                StoryLedger<Run>.ScheduleResolve(r, t);
+                if (StoryLedger<Run>.SceneLoadDue(r, t)) { loads++; if (first < 0f) first = t; last = t; }
+            }
+            Equal(true, first >= 0f && first < 0.05f);   // the first failed try still loads at once
+            Equal(true, loads >= 2 && loads <= 3);       // was 20
+            Equal(true, last >= 1f);                     // spread over the 2 s window, not bunched up
+        });
         Check("story duplicate key suppressed for three seconds", delegate {
             StoryLedger<Run> l = new StoryLedger<Run>(); Clock c = new Clock();
             Run first = new Run { Key = "a" }; Equal(true, l.PrepareLocal(first, 1, true, c.RealTime)); l.TrackLocal(first, true);
