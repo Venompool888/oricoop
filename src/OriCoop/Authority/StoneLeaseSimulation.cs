@@ -23,7 +23,8 @@ namespace OriCoop.Authority
                 if (nextOwner != predictedOwner || nextEpoch != predictedEpoch || now >= predictUntil)
                 {
                     predictedOwner = nextOwner; predictedEpoch = nextEpoch;
-                    predictUntil = now + Math.Max(0.02f, Math.Max(0f, rttMs) * 0.001f);
+                    // T-023: the grant needs the request's trip plus the grant's (one RTT) and server/send delays.
+                    predictUntil = now + Math.Max(0.02f, Math.Max(0f, rttMs) * 0.002f + 0.1f);
                 }
                 pending = true;
             }

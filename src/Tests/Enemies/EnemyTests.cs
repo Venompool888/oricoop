@@ -154,6 +154,24 @@ static class EnemyTests
         Run("transfer header bytes unchanged", delegate { byte[] authority = Bytes(delegate(BinaryWriter w) { EnemyWire.WriteAuthority(w, 1, 0x12345678, 3); }); byte[] handoff = Bytes(delegate(BinaryWriter w) { EnemyWire.WriteHandoff(w, 0x12345678, 3); }); Check(Equal(authority, new byte[] { 1, 0x78, 0x56, 0x34, 0x12, 3 }) && Equal(handoff, new byte[] { 0x78, 0x56, 0x34, 0x12, 3 }), "transfer layout"); });
         Run("shot bytes and round trip", delegate { EnemyShot s = new EnemyShot(); s.Epoch = 2; s.Id = 42; s.Prefab = "shot"; s.Position = new EnemyVector(1, 2, 3); s.Velocity = new EnemyVector(4, 5, 6); s.Gravity = 7; s.Lifetime = 8; s.Damage = 9; s.Type = 10; byte[] actual = Bytes(delegate(BinaryWriter w) { EnemyWire.WriteShot(w, s); }); byte[] expected = Bytes(delegate(BinaryWriter w) { w.Write((uint)2); w.Write((ulong)42); w.Write("shot"); for (int i = 1; i <= 9; i++) w.Write((float)i); w.Write(10); }); EnemyShot v = EnemyWire.ReadShot(Reader(actual)); Check(Equal(actual, expected) && v.Prefab == "shot" && v.Velocity.Y == 5 && v.Type == 10, "shot layout"); });
         Run("negative damage rejected", delegate { byte[] b = Bytes(delegate(BinaryWriter w) { w.Write(-1f); w.Write(0); for (int i = 0; i < 5; i++) w.Write(0f); }); bool rejected = false; try { EnemyWire.ReadDamage(Reader(b)); } catch (InvalidDataException) { rejected = true; } Check(rejected, "negative damage"); });
+        // T-023: a player who starts pushing a stone another player only holds keeps simulating it until the arbiter's
+        // grant comes back (request + grant = one RTT plus server and send delays), then owns it without a gap.
+        Run("stone takeover survives the grant round trip", delegate {
+            OriCoop.Authority.StoneLeaseSimulation sim = new OriCoop.Authority.StoneLeaseSimulation();
+            const float rtt = 150f, grantAt = 0.25f;
+            Check(!sim.Allows(1, 1, 2, -0.1f, rtt, false), "not pushing: the holder's stone is followed");
+            for (int f = 0; f <= 30; f++)
+            {
+                float t = f / 60f; bool granted = t >= grantAt;
+                Check(sim.Allows(granted ? 2 : 1, granted ? 2u : 1u, 2, t, rtt, true), "pushing stone simulated without a gap at t=" + t.ToString("F3"));
+            }
+        });
+        Run("stone takeover denied stops predicting", delegate {
+            OriCoop.Authority.StoneLeaseSimulation sim = new OriCoop.Authority.StoneLeaseSimulation();
+            bool late = false;
+            for (int f = 0; f <= 90; f++) { float t = f / 60f; bool allowed = sim.Allows(1, 1, 2, t, 150f, true); if (t >= 1f) late |= allowed; }
+            Check(!late, "a never granted takeover is dropped within 1 s");
+        });
         Run("first snapshot from new owner", delegate { Check(!EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, false) && EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, true), "peer tick clocks"); });
     }
 }

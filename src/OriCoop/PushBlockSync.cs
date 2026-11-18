@@ -22,7 +22,7 @@ namespace OriCoop
             internal DynamicLease Lease;
             internal StoneLeaseSimulation Simulation = new StoneLeaseSimulation();
             public int OwnerSeat;
-            public float InteractionUntil = -10f;
+            public float InteractionUntil = -10f, GrabbedAt = -10f;
             public bool HasRemote;
             public uint StateEpoch, StateVersion;
             public Vector3 RemotePos, RemoteVel;
@@ -337,7 +337,12 @@ namespace OriCoop
             }
             if (pm != LocalPm) return true;
             St st = i.St;
-            st.InteractionUntil = Time.realtimeSinceStartup + 0.15f;
+            // T-023: the game calls this every frame while an Ori grabs, also when it only holds the stone. The grab itself
+            // (its first 0.5 s) and real pushing / pulling count as interaction (keep the lease and ask for it); a holder
+            // standing still longer no longer locks the stone, so the other player can take it over and push.
+            float now = Time.realtimeSinceStartup;
+            if (what == "grab") st.GrabbedAt = now;
+            if (Moving(pm) || now - st.GrabbedAt < 0.5f) st.InteractionUntil = now + 0.15f;
             Simulates(st);
             LeaseStep(b, st);
             Rigidbody rb = s_body(b);
@@ -350,6 +355,14 @@ namespace OriCoop
             Denied++;
             SetIgnore(b, pm, false);
             return false;
+        }
+
+        static bool Moving(PlatformMovement pm)
+        {
+            SeinCharacter s = P2Context.P1;
+            if (s == null || s.PlatformBehaviour.PlatformMovement != pm || s.Abilities.GrabBlock == null) return true;
+            SeinGrabBlock grab = s.Abilities.GrabBlock;
+            return grab.IsGrabbing && (grab.CurrentState == SeinGrabBlock.State.Push || grab.CurrentState == SeinGrabBlock.State.Pull);
         }
 
         static readonly Dictionary<string, float> s_every = new Dictionary<string, float>();
