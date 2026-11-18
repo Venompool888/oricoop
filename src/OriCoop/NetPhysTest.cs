@@ -260,6 +260,52 @@ namespace OriCoop
                 + " Snaps=" + PushBlockSync.Snaps + " locked=" + SessionRules.LocalLocked + " watching=" + StorySync.Watching + " respawning=" + SessionRules.Respawning);
         }
 
+        // PB (T-023): both players use the same stone. The host grabs it and only holds it (standing still); then the guest
+        // grabs the same face and pushes right. Holding must not lock the stone: the guest takes the lease and the stone
+        // moves on both PCs. (Before: the holder's lease stayed "active" every frame, so the guest's push did nothing.)
+        static IEnumerator BothInteract(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host, int guestSeat)
+        {
+            NetPlay.SetSim(0, 0, 0, 0);
+            Bot(false);
+            PlaceOwn(resting.x + (host ? -2.45f : 2.8f), resting.y + 0.5f, block.Position.z);
+            yield return Wait(0.5f);
+            yield return Barrier(h, 95, block);
+            if (PushBlockSync.IsLocalOwner(block))
+            {
+                Rigidbody body = block.GetComponent<Rigidbody>();
+                body.position = resting; block.transform.position = resting; body.rotation = restingRot; block.transform.rotation = restingRot;
+                body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero; body.Sleep();
+            }
+            yield return Wait(1.2f);
+            float settleEnd = Time.realtimeSinceStartup + 3f;
+            while (Time.realtimeSinceStartup < settleEnd && (block.Position - resting).magnitude > 0.05f) { KeepAlive(); yield return null; }
+            GrabSetup holdSetup = new GrabSetup();
+            if (host) yield return GrabBlock(block, holdSetup);   // the host keeps BotRT pressed and LX at 0: holding only
+            yield return Barrier(h, 96, block, holdSetup.Started);
+            if (host) h.Check(holdSetup.Started, "PB host grabbed the stone and holds it");
+            Vector3 start = block.Position;
+            GrabSetup pushSetup = new GrabSetup();
+            if (!host) yield return GrabBlock(block, pushSetup);
+            yield return Barrier(h, 97, block, pushSetup.Started);
+            if (!host) h.Check(pushSetup.Started, "PB guest grabbed the same stone while the host holds it");
+            if (!host) Bot(true);
+            float pushEnd = Time.realtimeSinceStartup + 2.5f; bool guestOwned = false;
+            while (Time.realtimeSinceStartup < pushEnd)
+            {
+                KeepAlive();
+                if (host) { NetTestHarness.BotLX = 0f; P2Input.BotRT = true; }
+                if (AuthoritySource.Current.OwnerOf(PushBlockSync.StateOf(block).Key) == guestSeat) guestOwned = true;
+                yield return null;
+            }
+            Bot(false);
+            yield return Wait(1.0f);
+            float dx = block.Position.x - start.x;
+            Note(h, "PB end", block);
+            h.Check(guestOwned, "PB the pushing guest took the stone's lease from the holding host");
+            h.Check(dx >= 0.5f, "PB the guest's push moved the held stone >=0.5 right on this PC (dx=" + F(dx) + ")");
+            yield return Barrier(h, 98, block);
+        }
+
         public static IEnumerator Run(TestHarness h)
         {
             s_localSteps.Clear(); s_partnerSteps.Clear(); NetPlay.On(MsgBarrier, OnBarrier);
@@ -526,6 +572,7 @@ namespace OriCoop
                         + V(Own.Position) + " block=" + V(block.Position) + ")");
                 }
                 yield return Barrier(h, 92, block);
+                yield return BothInteract(h, block, resting, restingRot, host, guestSeat);
             }
             finally
             {
