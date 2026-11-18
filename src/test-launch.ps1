@@ -26,6 +26,7 @@
 
 $ErrorActionPreference = 'Stop'
 $script:TL_Root = 'C:\OriCoop'
+$script:TL_SrcDir = $PSScriptRoot   # this checkout's src (a worktree's own, for its TestQuiet build)
 $script:TL_Copy = $null
 $script:TL_GameDir = 'C:\OriCoop\game'
 $script:TL_TestExe = 'C:\OriCoop\game\oriDE.exe'
@@ -463,11 +464,33 @@ function Install-TestPlugins {
         }
         'installed ' + $env:ORICOOP_TEST_DLL + ' into copy ' + $script:TL_Copy
     }
+    # TestQuiet of THIS launcher's checkout (worktree), rebuilt when its sources are newer, installed whenever the copy
+    # holds a different one (T-085: it blocks the owner's real controller; every run must carry the current one).
     $quiet = Join-Path $plugins 'OriCoop.TestQuiet.dll'
-    $built = Join-Path $script:TL_Root 'src\bin\OriCoop.TestQuiet.dll'
-    if ((Test-Path -LiteralPath $built) -and (-not (Test-Path -LiteralPath $quiet) -or (Get-Item -LiteralPath $built).LastWriteTimeUtc -gt (Get-Item -LiteralPath $quiet).LastWriteTimeUtc)) {
-        Copy-Item -LiteralPath $built $quiet -Force
+    $built = Get-TestQuietBuild
+    if (-not (Test-Path -LiteralPath $quiet) -or (Get-FileHash -LiteralPath $built).Hash -ne (Get-FileHash -LiteralPath $quiet).Hash) {
+        for ($try = 1; ; $try++) {
+            try { Copy-Item -LiteralPath $built $quiet -Force -ErrorAction Stop; break }
+            catch [System.IO.IOException] { if ($try -ge 30) { throw }; Start-Sleep -Seconds 1 }
+        }
     }
+}
+
+function Get-TestQuietBuild {
+    $dir = Join-Path $script:TL_SrcDir 'TestQuiet'
+    $dll = Join-Path $script:TL_SrcDir 'bin\OriCoop.TestQuiet.dll'
+    $newest = (Get-ChildItem -LiteralPath $dir -Filter '*.cs' | Sort-Object LastWriteTimeUtc | Select-Object -Last 1).LastWriteTimeUtc
+    if ((Test-Path -LiteralPath $dll) -and (Get-Item -LiteralPath $dll).LastWriteTimeUtc -ge $newest) { return $dll }
+    $m = New-Object System.Threading.Mutex($false, 'OriCoopTestQuietBuild')
+    [void]$m.WaitOne()
+    try {
+        if (-not (Test-Path -LiteralPath $dll) -or (Get-Item -LiteralPath $dll).LastWriteTimeUtc -lt $newest) {
+            $out = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $dir 'build-testquiet.ps1') -NoInstall 2>&1
+            if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $dll)) { throw ('TestQuiet build failed: ' + ($out -join ' ')) }
+            Write-Host ('built TestQuiet: ' + $dll)
+        }
+    } finally { $m.ReleaseMutex() }
+    return $dll
 }
 
 # Unity's screen prefs (HKCU, shared by every test copy and the owner's game). Each test game writes its own small
@@ -577,6 +600,9 @@ function Start-TestGame([string]$Arguments, [hashtable]$Vars = @{}, [string]$Tag
     $null = $p.Handle   # keep a handle so HasExited / ExitCode work after it exits
     $script:TL_Pids.Add($procId)
     $script:TL_Procs.Add($p)
+    # T-085: its BepInEx log must say TestQuiet blocked the real devices (checked by Invoke-TestWatch).
+    $bepLog = $(if ($Arguments -match '--doorstop-target-assembly "([^"]+)\\core\\BepInEx\.Preloader\.dll"') { Join-Path $Matches[1] 'LogOutput.log' } else { Join-Path $script:TL_GameDir 'BepInEx\LogOutput.log' })
+    $script:TL_InputChecks += [pscustomobject]@{ Tag = $Tag; Proc = $p; Log = $bepLog; Started = [DateTime]::UtcNow; ReadyAt = $null; Ok = $false }
     if ($script:TL_Alongside) { Set-AlongsideLimits $p }
     Write-Host ('TESTGAME ' + $Tag + ' pid=' + $procId + ' quiet (no focus, ' + $(if ($env:ORICOOP_TEST_PRIORITY -eq 'BelowNormal') { 'BelowNormal' } else { 'Normal priority' }) + ', muted' + $(if ($NeedsSteam) { ', Steam ON' } else { ', no Steam' }) + ')')
     Invoke-TestWatch -Force
@@ -742,8 +768,38 @@ function Enter-Alongside($owner, [string]$script) {
 }
 
 # Call from every wait loop (cheap). Keeps windows quiet; every 2 s checks for the owner's game.
+$script:TL_InputChecks = @()
+# T-085: a test game whose TestQuiet did not log "physical input blocked, vibration blocked" could vibrate or read the
+# owner's controller: stop this run's games and refuse the run (exit 5). Checked once BepInEx finished loading.
+function Test-InputBlocked {
+    foreach ($c in $script:TL_InputChecks) {
+        if ($c.Ok -or $c.Proc.HasExited) { continue }
+        $text = ''
+        try {
+            if ((Test-Path -LiteralPath $c.Log) -and (Get-Item -LiteralPath $c.Log).LastWriteTimeUtc -ge $c.Started.AddSeconds(-2)) {
+                $fs = [IO.File]::Open($c.Log, 'Open', 'Read', 'ReadWrite'); $rd = New-Object IO.StreamReader($fs); $text = $rd.ReadToEnd(); $rd.Close()
+            }
+        } catch { }
+        if ($text -match 'TestQuiet: physical input blocked, vibration blocked') { $c.Ok = $true; continue }
+        $why = $null
+        if ($text -match 'TestQuiet: INPUT BLOCK FAILED: ([^\r\n]*)') { $why = $Matches[1] }
+        elseif ($text -match 'Chainloader startup complete') {
+            if (-not $c.ReadyAt) { $c.ReadyAt = [DateTime]::UtcNow }
+            elseif (([DateTime]::UtcNow - $c.ReadyAt).TotalSeconds -gt 30) { $why = 'no "physical input blocked, vibration blocked" line 30 s after BepInEx started (TestQuiet missing or old?)' }
+        }
+        if ($why) {
+            Stop-TestGames
+            Write-Host ('INPUT NOT BLOCKED in test game ' + $c.Tag + ' (' + $c.Log + '): ' + $why + '. The run was stopped so it cannot vibrate or read the owner''s controller (T-085).')
+            Restore-OriDisplayPrefs | Write-Host
+            Exit-CopyLock
+            exit 5
+        }
+    }
+}
+
 function Invoke-TestWatch([switch]$Force) {
     try { Set-TestWindowsQuiet } catch { }
+    Test-InputBlocked
     $now = [DateTime]::UtcNow
     if (-not $Force -and ($now - $script:TL_LastOwnerCheck).TotalSeconds -lt 2) { return }
     $script:TL_LastOwnerCheck = $now
