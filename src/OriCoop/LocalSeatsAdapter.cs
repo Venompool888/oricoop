@@ -13,8 +13,8 @@ namespace OriCoop
         public InputDevice(DeviceKind kind, int pad) { Kind = kind; Pad = pad; }
     }
 
-    // Temporary settings-facing seat view. No remote puppet may become a local input target.
-    // Today's local P2 sampler only supports a pad; online input is shared by this PC's single seat.
+    // Settings-facing seat view. Online management uses the host's authoritative seat table;
+    // offline P2 retains the existing join/swap path. Remote puppets are never input targets.
     internal sealed class LocalSeatsAdapter
     {
         static SeinCharacter s_pendingOwner;
@@ -24,7 +24,7 @@ namespace OriCoop
         {
             get
             {
-                if (NetPlay.Enabled) return new int[] { Players.LocalSeat };
+                if (NetPlay.Enabled) return Players.LocalSeats;
                 return P2Context.P2 == null ? new int[] { 1 } : new int[] { 1, 2 };
             }
         }
@@ -32,13 +32,15 @@ namespace OriCoop
         public InputDevice InputOf(int seat)
         {
             if (Array.IndexOf(LocalSeats, seat) < 0) throw new ArgumentException("Not a local seat", "seat");
-            int pad = NetPlay.Enabled ? -1 : seat == 1 ? KeyboardOnlyP1.P1Pad : Plugin.Instance.P2PadInUse;
+            if (NetPlay.Enabled) return OnlineLocalPlayers.InputOf(seat);
+            int pad = seat == 1 ? KeyboardOnlyP1.P1Pad : Plugin.Instance.P2PadInUse;
             return new InputDevice(pad < 0 ? InputDevice.DeviceKind.KeyboardMouse : InputDevice.DeviceKind.Pad, pad);
         }
 
         public bool SetInput(int seat, InputDevice device)
         {
-            if (!NetPlay.LocalInGameplay() || NetPlay.Enabled || Plugin.Instance == null || Array.IndexOf(LocalSeats, seat) < 0) return false;
+            if (NetPlay.Enabled) return OnlineLocalPlayers.SetInput(seat, device);
+            if (!NetPlay.LocalInGameplay() || Plugin.Instance == null || Array.IndexOf(LocalSeats, seat) < 0) return false;
             if (device.Kind == InputDevice.DeviceKind.KeyboardMouse)
             {
                 if (seat != 1) return false; // Keyboard P2 needs the future per-seat sampler.
@@ -52,7 +54,8 @@ namespace OriCoop
 
         public bool AddLocalPlayer(InputDevice device)
         {
-            if (!NetPlay.LocalInGameplay() || NetPlay.Enabled || Plugin.Instance == null || P2Context.P2 != null ||
+            if (NetPlay.Enabled) return OnlineLocalPlayers.Add(device);
+            if (!NetPlay.LocalInGameplay() || Plugin.Instance == null || P2Context.P2 != null ||
                 device.Kind != InputDevice.DeviceKind.Pad || device.Pad < 0 || device.Pad > 3) return false;
             Plugin.Instance.AssignPad(2, device.Pad);
             PlayMode.SetMode(PlayMode.Coop);
@@ -70,7 +73,8 @@ namespace OriCoop
 
         public void RemoveLocalPlayer(int seat)
         {
-            if (!NetPlay.LocalInGameplay() || NetPlay.Enabled || seat != 2) return;
+            if (NetPlay.Enabled) { NetPlay.ReleaseLocalSeat(seat); return; }
+            if (!NetPlay.LocalInGameplay() || seat != 2) return;
             s_pendingOwner = null;
             if (P2Context.P2 != null) Plugin.DespawnNow("removed from the co-op menu");
         }

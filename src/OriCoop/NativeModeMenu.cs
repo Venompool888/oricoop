@@ -418,9 +418,29 @@ namespace OriCoop
         static int s_lobbyIndex;
         // Called by OnlineLobby: online play is running (host ready / guest connected): load the chosen save.
         // A guest's save is replaced by the host's once the session starts (SaveSync), so any slot works.
+        internal static bool CanSelectRoomSave
+        {
+            get
+            {
+                Rooms.RoomsPanel panel = Rooms.RoomsPanel.Instance;
+                bool linked = panel != null && panel.Session != null && panel.Session.Active;
+                return Saves.RoomSaveSelection.CanSelect(NetPlay.IsHost, NetPlay.LocalInGameplay(), NetPlay.Connected, linked);
+            }
+        }
+        internal static void SelectRoomSave(int slot)
+        {
+            if (!CanSelectRoomSave || slot < 0 || slot >= SaveSlotsManager.SaveSlotCount || SaveSlotsUI.Instance == null
+                || !System.IO.File.Exists(Rooms.RoomGame.PathFor(slot))) return;
+            SaveSlotsUI.Instance.CurrentSlotIndex = slot;
+            SaveSlotsManager.CurrentSlotIndex = slot;
+            SaveSlotsManager.BackupIndex = -1;
+            s_fromNewGame = false;
+        }
+
         public static void OnlineProceed()
         {
             if (s_root == null) return;
+            if (OnlineRoomScreen.BeforeProceed(OnlineProceed)) return;
             if (s_onTitle) { TitleGuestProceed(); return; }   // a guest joined from the title: no save slot
             Choose(PlayMode.Single);   // locally one Ori; the partner's Ori comes from the network
         }

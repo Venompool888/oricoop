@@ -299,25 +299,25 @@ namespace OriCoop
         [HarmonyPatch(typeof(SeinSoulFlame), "UpdateCharacterState")]
         static class PuppetSoulLink
         {
-            static bool Prefix(SeinSoulFlame __instance) { return !NetPlay.Enabled || !BelongsToP2(__instance); }
+            static bool Prefix(SeinSoulFlame __instance) { return !NetPlay.Enabled || !Players.IsRemote(__instance); }
         }
 
         [HarmonyPatch(typeof(SeinLever), "UpdateCharacterState")]
         static class PuppetLever
         {
-            static bool Prefix(SeinLever __instance) { return !NetPlay.Enabled || !BelongsToP2(__instance); }
+            static bool Prefix(SeinLever __instance) { return !NetPlay.Enabled || !Players.IsRemote(__instance); }
         }
 
         [HarmonyPatch(typeof(SeinDoorHandler), "OnDoorOverlap")]
         static class PuppetDoorOverlap
         {
-            static bool Prefix(SeinDoorHandler __instance) { return !NetPlay.Enabled || !BelongsToP2(__instance); }
+            static bool Prefix(SeinDoorHandler __instance) { return !NetPlay.Enabled || !Players.IsRemote(__instance); }
         }
 
         [HarmonyPatch(typeof(SeinDoorHandler), "EnterIntoDoor")]
         static class PuppetDoorEnter
         {
-            static bool Prefix(SeinDoorHandler __instance) { return !NetPlay.Enabled || !BelongsToP2(__instance); }
+            static bool Prefix(SeinDoorHandler __instance) { return !NetPlay.Enabled || !Players.IsRemote(__instance); }
         }
 
         public static void Reset()

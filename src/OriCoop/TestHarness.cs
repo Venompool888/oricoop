@@ -1500,7 +1500,11 @@ namespace OriCoop
             // 3) Off-screen vertically for too long -> glides back, no single-frame snap.
             int regroups0 = CoopCamera.Regroups;
             CoopCamera.ViewSize(out now, out atMax);
-            Vector3 high = P1.Position + new Vector3(0f, atMax.y + 6f, 0f);
+            // This is fixture placement, not a gameplay move: carry the companion with the Ori just as a normal
+            // teleport does. A raw Position jump left it 40+ units behind and tripped the visual self-check.
+            // Teleport ONCE, not in the hold loop: do not keep refreshing the visual grace period.
+            Plugin.Teleport(P2, P1.Position + new Vector3(0f, atMax.y + 6f, 0f));
+            Vector3 high = P2.Position;
             end = Time.unscaledTime + CoopCamera.RegroupAfter + 2f;
             while (Time.unscaledTime < end && CoopCamera.Regroups == regroups0) { P2.Position = high; P2.Speed = Vector3.zero; yield return null; }
             Check(CoopCamera.Regroups > regroups0, "regroup: off-screen P2 starts gliding back");

@@ -56,6 +56,7 @@ namespace OriCoop.Rules
     public static class ReviveLogic
     {
         public const int MaxSeats = 4;
+        public static bool CanSimulateHold(bool online, bool saverLocal) { return !online || saverLocal; }
         public static DeathOutcome DecideLocalDeath(bool allDown, bool partnerAlive, bool menuOpen)
         {
             return !allDown && partnerAlive && !menuOpen ? DeathOutcome.Downed : DeathOutcome.Checkpoint;

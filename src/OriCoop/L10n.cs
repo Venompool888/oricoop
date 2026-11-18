@@ -84,6 +84,17 @@ namespace OriCoop
         // BEGIN STRINGS
         static readonly string[] S =
         {
+            "room.title", "联机房间", "Online room",
+            "room.invite", "邀请好友", "Invite a friend",
+            "room.saves", "存档", "Saves",
+            "room.members", "房间成员", "Members",
+            "room.member", "P{0} · 设备 {1} · {2}", "P{0} / Device {1} / {2}",
+            "room.local", "本机", "Local",
+            "room.remote", "远端", "Remote",
+            "room.add_local", "增加本机额外玩家", "Add an extra local player",
+            "room.host_save", "使用主机选择的存档", "Use the host's selected save",
+            "room.pad", "手柄 {0}", "Controller {0}",
+            "room.server_pending", "此服务器暂不可增加本机额外玩家", "Extra local players are not supported by this server yet",
             "common.back", "返回", "Back",
             "p2.join_hint", "P2：按手柄任意键（或 {0}）加入  [{1}]    F8：双人设置", "Player 2: press any button on the controller (or {0}) to join  [{1}]    F8: co-op settings",
             "guide.controls", "移动：左摇杆 或 {0}      跳跃：A 键 或 {1}", "Move: left stick or {0}      Jump: A button or {1}",

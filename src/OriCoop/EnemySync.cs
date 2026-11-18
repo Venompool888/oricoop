@@ -66,7 +66,7 @@ namespace OriCoop
         static readonly HashSet<MethodBase> s_patched = new HashSet<MethodBase>();
         static readonly List<PendingShot> s_shots = new List<PendingShot>();
         static readonly List<PendingHit> s_pendingHits = new List<PendingHit>();
-        static readonly HashSet<ulong> s_victimHits = new HashSet<ulong>();
+        static readonly VictimHits s_victimHits = new VictimHits();
         static readonly List<ProjectileIdentity> s_copies = new List<ProjectileIdentity>();
         static readonly Dictionary<SceneManagerScene, bool> s_pins = new Dictionary<SceneManagerScene, bool>();
         static IEnemyHost s_host;
@@ -1178,7 +1178,7 @@ namespace OriCoop
                     if (!tag.Cosmetic) Send(OriHit, true, delegate(BinaryWriter w) { w.Write((byte)victim); w.Write(tag.Id); WriteDamage(w, damage); }, Services.Net.IsHost ? victim : 0);
                     return false; // NetPlay's existing invulnerability stays in place.
                 }
-                return s_victimHits.Add(tag.Id);
+                return s_victimHits.Add(s_host.VictimSeat(__instance), tag.Id);
             }
         }
         [HarmonyPatch(typeof(DamageDealer), "DealDamage")]
@@ -1195,13 +1195,14 @@ namespace OriCoop
         static void ReadOriHit(BinaryReader r)
         {
             int victim = r.ReadByte(); ulong id = r.ReadUInt64(); Damage d = ReadDamage(r);
-            if (victim != s_host.LocalSeat)
+            SeinCharacter localVictim = s_host.LocalAt(victim);
+            if (localVictim == null)
             {
                 if (Services.Net.IsHost) Send(OriHit, true, w => { w.Write((byte)victim); w.Write(id); WriteDamage(w, d); }, victim);
                 return;
             }
-            if (Local == null || !s_victimHits.Add(id)) return;
-            s_applying = true; try { Local.Mortality.DamageReciever.OnRecieveDamage(d); } finally { s_applying = false; }
+            if (!s_victimHits.Add(victim, id)) return;
+            s_applying = true; try { localVictim.Mortality.DamageReciever.OnRecieveDamage(d); } finally { s_applying = false; }
         }
 
         static void Scan()

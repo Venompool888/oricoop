@@ -31,7 +31,13 @@ namespace OriCoop
         public static void Refresh()
         {
             string was = State;
-            if (P1Pad >= 0) Set(P1Pad, false, "P1 pad " + P1Pad);
+            if (NetPlay.Enabled && !InMenu())
+            {
+                InputDevice device = OnlineLocalPlayers.InputOf(Players.LocalSeat);
+                int pad = device.Kind == InputDevice.DeviceKind.Pad ? device.Pad : -1;
+                Set(pad, false, "online primary input " + pad);
+            }
+            else if (P1Pad >= 0) Set(P1Pad, false, "P1 pad " + P1Pad);
             else if (CoopMenu.IsOpen) Set(-1, false, "co-op menu open");
             else
             {
@@ -85,6 +91,17 @@ namespace OriCoop
             if (gc != null && (gc.GameplaySuspendedForUI || gc.IsLoadingGame)) return true;
             if (GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen()) return true;
             return false;
+        }
+
+        // Keep the game's primary input sampler (and its button edges) intact. Only filter the other device.
+        [HarmonyPatch(typeof(KeyCodeButtonInput), "GetButton")]
+        static class OnlinePadOnly
+        {
+            static bool Prefix(ref bool __result)
+            {
+                if (!NetPlay.Enabled || InMenu() || OnlineLocalPlayers.InputOf(Players.LocalSeat).Kind != InputDevice.DeviceKind.Pad) return true;
+                __result = false; return false;
+            }
         }
 
         [HarmonyPatch(typeof(XboxControllerInput), "GetAxis")]

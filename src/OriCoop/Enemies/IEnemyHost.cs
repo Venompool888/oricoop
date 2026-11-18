@@ -14,6 +14,8 @@ namespace OriCoop.Enemies
         IEnumerable<KeyValuePair<int, Vector3>> RemotePositions { get; }
         bool RemotePos(int seat, out Vector3 position);
         SeinCharacter Local { get; }
+        SeinCharacter LocalAt(int seat);
+        int VictimSeat(Component component);
         bool Inside { get; }
         bool P2IsNearer(Vector3 position);
         object NearestPuppet(Vector3 position);

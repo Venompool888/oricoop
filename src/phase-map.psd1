@@ -34,6 +34,7 @@
         'OnlineCamera' = 'CAM'; 'CoopCamera' = 'MOVE,CAM'; 'CutsceneGuard' = 'INTRO,S4,CAM,CUT'
         'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'
         'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = ''
+        'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
     }
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
     # Suite 'net' means the 2-player net suites (net, net-relay, net-newgame), which take ORICOOP_PHASES.

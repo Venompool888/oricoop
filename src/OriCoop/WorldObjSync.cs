@@ -83,7 +83,7 @@ namespace OriCoop
 
         public static bool Online { get { return Enabled && NetPlay.Enabled && NetPlay.Connected && P2Context.P1 != null; } }
         // A puppet's own update / touch runs inside P2Context (Characters.Sein swapped to it).
-        static bool PuppetCause { get { return P2Context.Inside && !s_applying; } }
+        static bool PuppetCause { get { return Players.RemoteContext && !s_applying; } }
 
         static void Log(string msg)
         {
@@ -377,7 +377,7 @@ namespace OriCoop
                 || t == DamageType.Bash || t == DamageType.Stomp || t == DamageType.StompBlast || t == DamageType.Grenade || t == DamageType.LevelUp;
         }
         // EnemySync's own rule (damage stamp: puppet context, puppet attack depth, puppet-owned senders / projectiles).
-        static bool PuppetDamage(Damage d) { return P2Context.Inside || EnemySync.IsPuppetDamage(d); }
+        static bool PuppetDamage(Damage d) { return Players.RemoteContext || EnemySync.IsPuppetDamage(d); }
         // Hazard triggers that are safe to run on the partner's PC: no scene load, checkpoint, world event, character /
         // camera / input / story action (StorySync owns story sequences).
         static readonly HashSet<string> DeniedActions = new HashSet<string> {
@@ -453,7 +453,7 @@ namespace OriCoop
             }
             static void Postfix(CollapsingSolid __instance, bool __state)
             {
-                if (!Online || s_applying || P2Context.Inside || __state || !(bool)F_collapseActivated.GetValue(__instance)) return;
+                if (!Online || s_applying || Players.RemoteContext || __state || !(bool)F_collapseActivated.GetValue(__instance)) return;
                 SendEvent(KCollapse, IdOf(__instance), null, "collapse " + __instance.name);
             }
         }
@@ -560,7 +560,7 @@ namespace OriCoop
             static void Prefix(AttachToRope __instance, out bool __state) { __state = (bool)M_ropeAttached.Invoke(__instance, null); }
             static void Postfix(AttachToRope __instance, bool __state)
             {
-                if (!Online || s_applying || WorldSync.Applying || P2Context.Inside || !__state) return;
+                if (!Online || s_applying || WorldSync.Applying || Players.RemoteContext || !__state) return;
                 SendEvent(KRope, IdOf(__instance), null, "rope " + __instance.name);
             }
         }

@@ -7,6 +7,7 @@ namespace OriCoop
     public sealed class Puppet
     {
         public int Seat;
+        public bool IsLocal;
         public SeinCharacter Sein;
         public readonly InputState Input = new InputState();
         public readonly HashSet<int> Ids = new HashSet<int>();
@@ -20,8 +21,23 @@ namespace OriCoop
         public static int AssignedSeat;
         public static int LocalSeat { get { return Roles.Mine; } }
         public static int RemoteCount { get { return NetPlay.RemoteCount; } }
+        public static int[] LocalSeats { get { return NetPlay.Enabled ? NetPlay.LocalSeats : P2Context.P2 == null ? new int[] { 1 } : new int[] { 1, 2 }; } }
+        public static bool IsLocal(int seat) { return System.Array.IndexOf(LocalSeats, seat) >= 0; }
+        public static SeinCharacter OriOf(int seat)
+        {
+            if (seat == LocalSeat) return P2Context.P1 != null ? P2Context.P1 : Characters.Sein;
+            foreach (Puppet puppet in Remotes) if (puppet.Seat == seat) return puppet.Sein;
+            return null;
+        }
         public static readonly List<Puppet> Remotes = new List<Puppet>();
         public static Puppet First { get { return Remotes.Count == 0 ? null : Remotes[0]; } }
+
+        // Local-only box for the T-058 camera adapter; remote positions never participate in the wall.
+        public static bool LocalGroupBounds(out Vector3 centre, out Vector2 size)
+        { return OnlineLocalPlayers.LocalGroupBounds(out centre, out size); }
+
+        public static bool IsRemote(Component component) { Puppet p = Of(component); return p != null && !p.IsLocal; }
+        public static bool RemoteContext { get { return P2Context.Current != null && !P2Context.Current.IsLocal; } }
 
         public static Puppet OfInstance(int instanceId)
         {
