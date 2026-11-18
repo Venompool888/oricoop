@@ -1215,6 +1215,9 @@ namespace OriCoop
             }
             Unmirrored = count;
         }
+        // T-022: a cutscene removed the local Ori; partner scenes must not be held through it (the game only gives
+        // Ori back when the scene it returns to is loaded again).
+        public static void ReleasePartnerPins() { ReleasePins(); }
         static void ReleasePins()
         {
             if (Scenes.Manager != null && s_pinPositions.Count > 0)
@@ -1268,7 +1271,7 @@ namespace OriCoop
         {
             static void Postfix(List<Vector3> ___m_cameraPositions)
             {
-                if (Active && Services.Net.IsHost)
+                if (Active && Services.Net.IsHost && (Local != null || CutsceneRespawn.Off))   // no local Ori (cutscene): stream like single player
                     foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) ___m_cameraPositions.Add(remote.Value);
             }
         }
@@ -1286,6 +1289,7 @@ namespace OriCoop
             if (!Active) return;
             if (DifficultyController.Instance != null && s_difficulty != DifficultyController.Instance.Difficulty)
             { s_difficulty = DifficultyController.Instance.Difficulty; Services.Log.Info("E3T difficulty=" + s_difficulty); }
+            if (Local == null && s_pins.Count > 0 && !CutsceneRespawn.Off) ReleasePins();
             if (!Services.Session.Ready || Local == null) return;
             if (Now >= s_streamAt) { s_streamAt = Now + 0.5f; StreamPartner(); }
             if (Now >= s_scanAt)

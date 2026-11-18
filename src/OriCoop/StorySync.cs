@@ -599,12 +599,14 @@ namespace OriCoop
         }
         static readonly Action s_cutsceneTick = CutsceneGuard.Tick;
         static readonly Action s_gateTick = ForcedSync.Tick;
+        static readonly Action s_respawnTick = CutsceneRespawn.Tick;
 
         public static void Tick()
         {
             TickIntro();
             SubsystemGuard.Run("CutsceneGuard.Tick", s_cutsceneTick);
             SubsystemGuard.Run("ForcedSync.Tick", s_gateTick);
+            SubsystemGuard.Run("CutsceneRespawn.Tick", s_respawnTick);
             if (Time.realtimeSinceStartup >= s_statsAt)
             {
                 s_statsAt = Time.realtimeSinceStartup + 30f;

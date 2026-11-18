@@ -551,7 +551,7 @@ namespace OriCoop
         [HarmonyPatch(typeof(GameController), "RemoveGameplayObjects")]
         static class RemoveGameplayObjectsPatch
         {
-            static void Prefix() { DespawnNow("game removed gameplay objects"); PlayMode.Reset(); }
+            static void Prefix() { DespawnNow("game removed gameplay objects"); PlayMode.Reset(); CutsceneRespawn.NoteRemoved(); }
         }
 
         void Cleanup()
