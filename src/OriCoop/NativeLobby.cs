@@ -18,8 +18,9 @@ namespace OriCoop
     {
         const int PageRole = 2, PageEntry = 3, PageHost = 4, PageJoin = 5, PageCoop = 6, PageServerMode = 7;
         const int PageServerList = 8, PageServerAdd = 9, PageServerRemove = 10;
+        const int PageRoomsMenu = 17, PageServerManage = 18;   // T-095: 我的房间 submenu, 服务器管理
         const int PageRooms = 11, PageRoomView = 12, PageRoomCreate = 13, PageRoomJoin = 14, PageRoomPassword = 15, PageRoomSlots = 16;
-        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots" };
+        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots", "roomsmenu", "servermanage" };
         const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // legacy letter codes (text entry); new codes are digits 2-9 typed on the dial (T-046)
         const string IpAlphabet = "0123456789.:";
         const string ServerAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-:";
@@ -119,19 +120,21 @@ namespace OriCoop
             var r = new List<string[]>();
             if (s_page == PageServerList || s_page == PageServerRemove)
             {
-                if (s_page == PageServerList)
-                {
-                    r.Add(new[] { L10n.T("server.add", zh), L10n.T("server.add.desc", zh) });
-                    r.Add(new[] { L10n.T("server.remove", zh), L10n.T("server.remove.desc", zh) });
-                }
                 foreach (string server in OriCoop.Authority.CServerConfig.Servers)
                     r.Add(new[] { server, L10n.T(s_page == PageServerRemove ? "server.remove.pick" : "server.pick", zh) });
-                if (r.Count == 0) r.Add(new[] { L10n.T("common.back", zh), L10n.T("common.back.desc", zh) });
+                if (r.Count == 0) r.Add(new[] { L10n.T("server.none", zh), L10n.T("common.back.desc", zh) });
+            }
+            else if (s_page == PageServerManage)
+            {
+                r.Add(new[] { L10n.T("server.add", zh), L10n.T("server.add.desc", zh) });
+                r.Add(new[] { L10n.T("server.remove", zh), L10n.T("server.remove.desc", zh) });
+                r.Add(new[] { L10n.T("server.list", zh), L10n.T("server.list.desc", zh) });
             }
             else if (s_page == PageServerAdd)
             {
                 r.AddRange(CServerRoleRows(zh));
-                r.Add(new[] { L10n.T("common.save", zh), L10n.T("server.add.desc", zh) });
+                r.Add(new[] { L10n.T("server.test", zh), TestStatus(zh) });
+                r.Add(new[] { L10n.T("common.ok", zh), L10n.T("server.add.desc", zh) });
             }
             else if (s_page == PageRole)
             {
@@ -307,6 +310,39 @@ namespace OriCoop
 
         // ---- navigation -----------------------------------------------------------------------------------
 
+        // ---- T-095: add-server page: blank port = the default port; 连接测试 asks the server's room service (HTTP hello) ----
+        static int s_testState;   // 0 idle, 1 running, 2 reachable, 3 not reachable
+        static string NewServerAddress()
+        {
+            return s_cserverHost + ":" + (s_cserverPort.Length == 0 ? OriCoop.Authority.CServerConfig.DefaultPort.ToString() : s_cserverPort);
+        }
+
+        static string TestStatus(bool zh)
+        {
+            return L10n.T(s_testState == 1 ? "server.test.running" : s_testState == 2 ? "server.test.ok" : s_testState == 3 ? "server.test.fail" : "server.test.desc", zh);
+        }
+
+        static void StartServerTest()
+        {
+            if (s_testState == 1) return;
+            string address = NewServerAddress();
+            if (!OriCoop.Authority.CServerConfig.IsValidAddress(address)) { ToastKey("cserver.addr.invalid"); return; }
+            s_testState = 1;
+            string host = s_cserverHost;
+            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            {
+                bool ok = false;
+                try
+                {
+                    OriCoop.Rooms.RoomClient client = new OriCoop.Rooms.RoomClient("http://" + host + ":47021/");
+                    client.TimeoutMs = 4000;
+                    ok = client.Hello().Ok;
+                }
+                catch (Exception e) { Plugin.Log.LogInfo("server test: " + e.Message); }
+                s_testState = ok ? 2 : 3;
+            });
+        }
+
         // Online page -> a transport was pressed.
         static void LobbyOpen(string transport)
         {
@@ -367,23 +403,26 @@ namespace OriCoop
         {
             if (IsRoomsPage) { RoomPressed(index); return; }
             bool relay = UsesRoomCode;
-            if (s_page == PageServerList)
+            if (s_page == PageServerManage)
             {
-                if (index == 0) { LoadCServer(); GoPage(PageServerAdd, 0); }
+                if (index == 0) { s_cserverHost = ""; s_cserverPort = ""; s_testState = 0; GoPage(PageServerAdd, 0); }
                 else if (index == 1) GoPage(PageServerRemove, 0);
-                else
-                {
-                    List<string> servers = OriCoop.Authority.CServerConfig.Servers;
-                    if (index - 2 < servers.Count && OriCoop.Authority.CServerConfig.SetAddress(servers[index - 2]))
-                    { LoadCServer(); GoPage(PageRole, 0); }
-                    else ToastKey("cserver.addr.save_failed");
-                }
+                else { LoadCServer(); GoPage(PageServerList, 0); }
+            }
+            else if (s_page == PageServerList)
+            {
+                List<string> servers = OriCoop.Authority.CServerConfig.Servers;
+                if (servers.Count == 0) { LobbyBack(); return; }
+                if (index < servers.Count && OriCoop.Authority.CServerConfig.SetAddress(servers[index]))
+                { LoadCServer(); GoPage(PageRole, 0); }
+                else ToastKey("cserver.addr.save_failed");
             }
             else if (s_page == PageServerRemove)
             {
                 if (OriCoop.Authority.CServerConfig.Servers.Count == 0) { LobbyBack(); return; }
-                if (OriCoop.Authority.CServerConfig.RemoveServer(index)) GoPage(PageServerList, 1);
-                else ToastKey("cserver.addr.save_failed");
+                if (!OriCoop.Authority.CServerConfig.RemoveServer(index)) ToastKey("cserver.addr.save_failed");
+                else if (OriCoop.Authority.CServerConfig.Servers.Count == 0) GoPage(PageServerManage, 1);
+                else GoPage(PageServerRemove, Math.Min(index, OriCoop.Authority.CServerConfig.Servers.Count - 1));
             }
             else if (s_page == PageServerAdd)
             {
@@ -394,12 +433,13 @@ namespace OriCoop
                     s_cursor = Math.Min(s_entry.Length, EntryMax - 1);
                     GoPage(PageEntry, 0);
                 }
+                else if (index == 2) StartServerTest();
                 else
                 {
-                    string address = s_cserverHost + ":" + s_cserverPort;
+                    string address = NewServerAddress();
                     if (!OriCoop.Authority.CServerConfig.IsValidAddress(address)) { ToastKey("cserver.addr.invalid"); return; }
                     if (!OriCoop.Authority.CServerConfig.AddServer(address)) { ToastKey("cserver.addr.save_failed"); return; }
-                    GoPage(PageServerList, OriCoop.Authority.CServerConfig.Servers.Count + 1);
+                    GoPage(PageServerList, OriCoop.Authority.CServerConfig.Servers.Count - 1);
                 }
             }
             else if (s_page == PageRole)
@@ -522,12 +562,13 @@ namespace OriCoop
         static void LobbyBack()
         {
             if (IsRoomsPage) { RoomBack(); return; }
-            if (s_page == PageServerList) { GoPage(PageServerMode, 0); return; }
-            if (s_page == PageServerAdd || s_page == PageServerRemove) { GoPage(PageServerList, s_page == PageServerAdd ? 0 : 1); return; }
+            if (s_page == PageServerManage) { GoPage(PageServerMode, ServerModeRoomsRow + 1); return; }
+            if (s_page == PageServerList || s_page == PageServerAdd || s_page == PageServerRemove)
+            { GoPage(PageServerManage, s_page == PageServerAdd ? 0 : s_page == PageServerRemove ? 1 : 2); return; }
             if (s_page == PageRole)
             {
                 if (s_transport == "cserver") { GoPage(PageServerList, 0); return; }
-                if (UsesRoomCode) { GoPage(PageServerMode, 1); return; }
+                if (UsesRoomCode) { GoPage(PageServerMode, ServerModeRoomsRow); return; }
                 s_page = 1;
                 Relabel(s_transport == "direct" ? 1 : 2);
                 OnHighlightChanged();
@@ -1071,7 +1112,7 @@ namespace OriCoop
         static void LayoutServerRows(int count)
         {
             if (s_mgr == null || s_items.Count < 2) return;
-            bool list = s_page == PageServerList || s_page == PageServerRemove || IsRoomsPage;
+            bool list = s_page == PageServerList || s_page == PageServerRemove || (IsRoomsPage && s_page != PageRoomsMenu);
             s_mgr.ItemDirection = list ? CleverMenuItemSelectionManager.Direction.TopToBottom : s_itemDirection;
             int focus = Mathf.Clamp(s_mgr.Index, 0, Math.Max(0, count - 1));
             if (focus < s_listTop) s_listTop = focus;

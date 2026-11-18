@@ -116,10 +116,14 @@ namespace OriCoop
                 yield return StartCoroutine(Row(row, 1f));
                 if (m_tr == "relay" || m_tr == "cserver")
                 {
-                    Check(TitleOrbOpen && LastPage == "servermode" && LastLabels.Count == 2 && s_mgr.Index == 0
-                        && HasKey(LastLabels, "server.cserver") && HasKey(LastLabels, "lobby.rooms") && !HasKey(LastLabels, "server.relay"),
-                        m_tr + ": 自建服务器 page lists server mode and My rooms (" + Labels + ")");
-                    if (m_tr == "cserver") yield return StartCoroutine(Row(0, 1f));
+                    Check(TitleOrbOpen && ServerModeLabelsMatch() && s_mgr.Index == 0,
+                        m_tr + ": 自建服务器 page lists My rooms and Server management (" + Labels + ")");
+                    if (m_tr == "cserver")
+                    {
+                        yield return StartCoroutine(Row(ServerModeRoomsRow + 1, 0.5f));
+                        Check(ServerManageLabelsMatch(), m_tr + ": 服务器管理 lists Add / Remove / Server list (" + Labels + ")");
+                        yield return StartCoroutine(Row(2, 0.5f));
+                    }
                     else { LobbyOpen("relay"); yield return StartCoroutine(TWait(1f)); }   // the relay host / join pages are no longer in the menu (T-045): tests open them directly
                 }
                 if (m_tr == "cserver") yield return StartCoroutine(CheckCServerEditor());
@@ -135,28 +139,34 @@ namespace OriCoop
 
             IEnumerator CheckCServerEditor()
             {
-                Check(CServerListLabelsMatch(), "cserver: list always shows Add / Remove and every saved address (" + Labels + ")");
+                Check(CServerListLabelsMatch(), "cserver: list shows every saved address (" + Labels + ")");
                 int before = OriCoop.Authority.CServerConfig.Servers.Count;
+                yield return StartCoroutine(Back(0.5f));
                 yield return StartCoroutine(Row(0, 0.5f));
                 Check(LastPage == "serveradd", "cserver: Add opens the address / port editor");
+                Check(LastLabels.Count == 4 && s_cserverHost.Length == 0 && s_cserverPort.Length == 0, "cserver: Add starts with an empty address and port (" + Labels + ")");
                 string prefilled = OriCoop.Authority.CServerConfig.Address;
                 string supplied = (Environment.GetEnvironmentVariable("ORICOOP_NET_CSERVER") ?? "").Trim();
                 if (supplied.Length == 0) supplied = OriCoop.Authority.CServerConfig.Configured;
                 Check(OriCoop.Authority.CServerConfig.IsValidAddress(supplied) && prefilled == supplied,
                     "cserver: runner supplied a valid endpoint (" + supplied + ")");
+                // Add starts blank (T-095): fill in the endpoint the runner supplied, as typing it would.
+                int suppliedColon = supplied.LastIndexOf(':');
+                s_cserverHost = supplied.Substring(0, suppliedColon); s_cserverPort = supplied.Substring(suppliedColon + 1);
+                RefreshTexts(true);
                 string host = s_cserverHost, port = s_cserverPort;
                 m_cserverAddress = supplied;
-                Check(LastLabels.Count == 3 && LastLabels[0].Contains(host) && LastLabels[1].Contains(port) && host + ":" + port == supplied,
-                    "cserver: address and port rows prefilled from " + prefilled);
+                Check(LastLabels.Count == 4 && LastLabels[0].Contains(host) && LastLabels[1].Contains(port) && host + ":" + port == supplied,
+                    "cserver: address and port rows show the entered endpoint " + supplied);
                 foreach (bool zh in new[] { true, false })
                 {
                     string[][] rows = LobbyRows(zh);
-                    Check(rows.Length == 3 && rows[0][0] == L10n.T("cserver.addr", zh) + ": [" + host + "]" &&
-                        rows[1][0] == L10n.T("cserver.port", zh) + ": " + port && rows[2][0] == L10n.T("common.save", zh),
+                    Check(rows.Length == 4 && rows[0][0] == L10n.T("cserver.addr", zh) + ": [" + host + "]" &&
+                        rows[1][0] == L10n.T("cserver.port", zh) + ": " + port && rows[2][0] == L10n.T("server.test", zh) && rows[3][0] == L10n.T("common.ok", zh),
                         "cserver: localized add rows " + (zh ? "zh" : "en"));
                 }
                 s_cserverHost = "";
-                yield return StartCoroutine(Row(2, 0.4f));
+                yield return StartCoroutine(Row(3, 0.4f));
                 Check(LastPage == "serveradd" && s_toastKey == "cserver.addr.invalid" && !NetPlay.Enabled &&
                     OriCoop.Authority.CServerConfig.Servers.Count == before, "cserver: invalid address cannot be added");
                 s_cserverHost = host;
@@ -203,11 +213,11 @@ namespace OriCoop
                     yield return StartCoroutine(TWait(0.5f));
                 }
                 else Check(false, "cserver: port row opens its editor");
-                yield return StartCoroutine(Row(2, 0.5f));
+                yield return StartCoroutine(Row(3, 0.5f));
                 List<string> saved = OriCoop.Authority.CServerConfig.Servers;
                 Check(CServerListLabelsMatch() && saved.Count == before + 1 && saved[saved.Count - 1] == m_cserverAddress &&
                     CServerSavedOnDisk(m_cserverAddress), "cserver: Save appends to the persisted list");
-                yield return StartCoroutine(Row(saved.Count + 1, 0.5f));
+                yield return StartCoroutine(Row(saved.Count - 1, 0.5f));
                 Check(LastPage == "role" && LastLabels.Count == 2 && OriCoop.Authority.CServerConfig.Address == m_cserverAddress &&
                     OriCoop.Authority.CServerConfig.Configured == m_cserverAddress,
                     "cserver: picking the saved row selects its address and opens Host / Join");

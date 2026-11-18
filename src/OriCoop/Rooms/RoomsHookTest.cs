@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -244,22 +244,37 @@ namespace OriCoop.Rooms
                 yield break;
             // Dispatch the actual My rooms row, not an independent panel initialization.
             typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
-                .Invoke(null, new object[] { 1 });   // the 自建服务器 page's My rooms row (T-045)
+                .Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });   // the 自建服务器 page's My rooms row (T-045, T-095)
             panel = RoomsPanel.Instance;
             if (!Check(panel != null, "My rooms opens controller")) yield break;
-            if (!Check(NativeModeMenu.LastPage == "rooms" && NativeModeMenu.TestRoomRows().Length >= 2,
+            if (!Check(NativeModeMenu.LastPage == "roomsmenu" && NativeModeMenu.TestRoomRows().Length >= 2,
                 "native rooms page has rows")) yield break;
             yield return Wait(() => Idle, 25);
+            yield return Wait(() => NativeModeMenu.TestRoomRows().Length >= 4, 5);
+            string[] menuRows = NativeModeMenu.TestRoomRows();
+            if (!Check(NativeModeMenu.LastPage == "roomsmenu" && menuRows.Length >= 4
+                && Array.Exists(menuRows, x => x.IndexOf(L10n.T("rooms.create"), StringComparison.OrdinalIgnoreCase) >= 0)
+                && Array.Exists(menuRows, x => x.IndexOf(L10n.T("rooms.list"), StringComparison.OrdinalIgnoreCase) >= 0)
+                && Array.Exists(menuRows, x => x.IndexOf(L10n.T("rooms.join_room"), StringComparison.OrdinalIgnoreCase) >= 0),
+                "My rooms submenu lists Create / Room list / Join / Back (" + string.Join(" | ", menuRows) + ")")) yield break;
             if (!Check(Idle && (bool)Get(panel, "online"), "room service hello")) yield break;
             bool backed = false;
             yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
             if (!Check(backed && NativeModeMenu.LastPage == "servermode", "native rooms Back/Esc returns to server mode")) yield break;
             typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
-                .Invoke(null, new object[] { 1 });
+                .Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });
             yield return Wait(() => Idle, 25);
+            // T-095: 房间列表 is its own page; a fresh room folder shows the empty-list row, Back returns to the submenu.
+            yield return Press("roomsmenu", "rooms.list");
+            if (done) yield break;
+            if (!Check(NativeModeMenu.LastPage == "rooms" && NativeModeMenu.TestRoomRows().Length == 2
+                && NativeModeMenu.TestRoomRows()[0] == L10n.T("rooms.empty"), "room list page shows the empty-list row (" + NativeModeMenu.TestRoomState() + ")")) yield break;
+            backed = false;
+            yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
+            if (!Check(backed && NativeModeMenu.LastPage == "roomsmenu", "room list Back returns to the My rooms submenu")) yield break;
             if (role == "host")
             {
-                yield return Press("rooms", "rooms.create");
+                yield return Press("roomsmenu", "rooms.create");
                 if (done) yield break;
                 string name = panel.AutoName;
                 string prefix = L10n.F("rooms.default_name", Environment.GetEnvironmentVariable("ORICOOP_TEST_NICK")) + " #";
@@ -275,7 +290,7 @@ namespace OriCoop.Rooms
             {
                 yield return Wait(() => Shared().GetString("live").Length > 0, 150);
                 if (!Check(Shared().GetString("live").Length > 0, "host published shared live code")) yield break;
-                yield return Press("rooms", "rooms.join_code");
+                yield return Press("roomsmenu", "rooms.join_room");
                 if (done) yield break;
                 yield return Dial("roomjoin", "rooms.code", Shared().GetString("code"));
                 yield return Dial("roomjoin", "rooms.password", "1234");
@@ -316,6 +331,7 @@ namespace OriCoop.Rooms
             if (!Check(NetPlay.LocalInGameplay() && SaveSlotsManager.CurrentSlotIndex == panel.Game.Slot,
                 "room slot loaded and gameplay running")) yield break;
             if (!Check(roomScreenSeen, "room screen shown before the game starts")) yield break;
+            if (!Check(RoomsPanel.LastPlayedRoom() == room, "Enter records the room as last played (上次游玩)")) yield break;
             // live() is queued independently of game loading; allow the job to finish before asserting.
             float liveEnd = Time.realtimeSinceStartup + 20;
             do

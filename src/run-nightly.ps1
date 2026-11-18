@@ -56,6 +56,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
     @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^native rooms page has rows$' }
+    @{ Name = 'MUTATE_REMOVE_GLOW';     Env = @{ ORICOOP_MUTATE_REMOVE_GLOW = '1' };     Script = @('run-test.ps1'); Expect = '^title menu: remove page glow is red' }
     @{ Name = 'TEST_THROW';             Env = @{ ORICOOP_TEST_THROW = 'mutation' };      Script = @('run-test.ps1', '-Scenarios', 'move');     Expect = '^move: |TestThrow' }
     @{ Name = 'P3_OFF (CUT)';           Env = @{ ORICOOP_P3_OFF = '1'; ORICOOP_NET_ONLY = 'P3' }; Script = @('run-nettest.ps1');               Expect = '^CUT ' }
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
