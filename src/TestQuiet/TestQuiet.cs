@@ -1,7 +1,8 @@
 // Test-only plugin: installed ONLY into the test copy (C:\OriCoop\game\BepInEx\plugins\OriCoop.TestQuiet.dll) by
 // src\TestQuiet\build-testquiet.ps1. Never shipped in a kit and never copied to the owner's D: game.
 // It does nothing unless the test launcher (src\test-launch.ps1) sets the environment variables:
-//   ORICOOP_QUIET=1     the game makes no sound (AudioListener.volume = 0 every frame).
+//   ORICOOP_QUIET=1     the game makes no sound (AudioListener.volume = 0 every frame), never reads a real gamepad,
+//                       keyboard or mouse and never vibrates a controller (InputBlock.cs, T-085).
 //   ORICOOP_NO_STEAM=1  Ori's Steamworks.Awake is skipped, exactly like the vanilla "Steam not available" path
 //                       (SteamInterface stays null, the component is destroyed). Without this, the test copy calls
 //                       SteamAPI_Init with steam_appid.txt (387290) and Steam tracks the test process as
@@ -37,6 +38,16 @@ namespace OriCoop.TestQuiet
             {
                 new Harmony("local.oricoop.testquiet").PatchAll(typeof(SteamSkip));
             }
+            // T-085: a launcher-started test game (ORICOOP_QUIET=1) never reads or vibrates a real device. Patched here
+            // for what is loaded, again in Start for plugin assemblies loaded after this one (the mod), then verified.
+            // Test-only mutation switch ORICOOP_MUTATE_NO_INPUT_BLOCK=1: no blocking and no line, so the launcher must refuse.
+            if (m_quiet && !Flag("ORICOOP_MUTATE_NO_INPUT_BLOCK"))
+            {
+                m_harmony = new Harmony("local.oricoop.testquiet.input");
+                try { InputBlock.Apply(m_harmony, Logger); } catch (Exception e) { m_blockError = e.GetType().Name + ": " + e.Message; }
+                Harmony h = m_harmony; BepInEx.Logging.ManualLogSource log = Logger;
+                AppDomain.CurrentDomain.AssemblyLoad += (sender, args) => { try { InputBlock.Apply(h, log); } catch (Exception e) { log.LogError("TestQuiet: input block on a late assembly: " + e.Message); } };
+            }
             float sc;
             if (float.TryParse(Environment.GetEnvironmentVariable("ORICOOP_TIMESCALE") ?? "", System.Globalization.NumberStyles.Float,
                 System.Globalization.CultureInfo.InvariantCulture, out sc) && sc >= 1f && sc <= 8f) m_scale = sc;
@@ -56,6 +67,21 @@ namespace OriCoop.TestQuiet
         int m_targetFps;
         void ApplyFps() { if (m_targetFps > 0 && (Application.targetFrameRate != m_targetFps || QualitySettings.vSyncCount != 0)) { QualitySettings.vSyncCount = 0; Application.targetFrameRate = m_targetFps; } }
         void Update() { ApplyFps(); ApplyScale(); SampleFrame(); }
+
+        Harmony m_harmony;
+        string m_blockError;
+        // The launcher refuses to run a test whose games do not log "physical input blocked, vibration blocked".
+        void Start()
+        {
+            if (m_harmony == null) return;
+            if (m_blockError == null)
+            {
+                try { InputBlock.Apply(m_harmony, Logger); m_blockError = InputBlock.Verify(); }
+                catch (Exception e) { m_blockError = e.GetType().Name + ": " + e.Message; }
+            }
+            if (m_blockError == null) Logger.LogInfo("TestQuiet: physical input blocked, vibration blocked (" + InputBlock.Sites + " call sites)");
+            else Logger.LogError("TestQuiet: INPUT BLOCK FAILED: " + m_blockError);
+        }
 
         // ORICOOP_FPS_LOG=1: every 10 s log the frame time (avg / p95 / max ms, unscaled) as "TestQuiet: frames ...".
         // Used to measure what parallel test games cost a game the owner plays (a stand-in copy).
