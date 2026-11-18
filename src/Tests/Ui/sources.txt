@@ -3,3 +3,4 @@ OriCoop\Ui\NativeGuiState.cs
 OriCoop\Ui\BuildInfo.cs
 OriCoop\Ui\DigitDial.cs
 OriCoop\Ui\ZhTextKey.cs
+OriCoop\Ui\ControlsGuide.cs
