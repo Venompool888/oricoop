@@ -65,11 +65,11 @@ namespace OriCoop
                 if (NetPlay.Connected && Now >= resend) { Send(Local[step]); resend = Now + 1f; }
                 yield return null;
             }
-            string label = step >= 400 ? "GATE " : "CUT ";
+            string label = step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
             h.Check(Remote.ContainsKey(step), label + "barrier " + step + " received");
             h.Check(Acknowledged.Contains(step), label + "barrier " + step + " acknowledged");
             if (Remote.ContainsKey(step)) h.Check(!Remote[step].Failed, label + "partner step " + step + " completed");
-            if (step >= 400 && (!Remote.ContainsKey(step) || !Acknowledged.Contains(step) || Remote[step].Failed))
+            if (step >= 400 && step < 600 && (!Remote.ContainsKey(step) || !Acknowledged.Contains(step) || Remote[step].Failed))
                 h.Note("GATE barrier " + step + ": " + GateDiag());
             if (NetPlay.Connected) NetPlay.Peer.Flush();
             yield return Wait(0.25f);
@@ -77,7 +77,7 @@ namespace OriCoop
         internal static IEnumerator Step(TestHarness h, int step, IEnumerator routine)
         {
             int failures = Failures(h); bool failed = false;
-            string label = step >= 400 ? "GATE " : "CUT ";
+            string label = step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
             Stack<IEnumerator> stack = new Stack<IEnumerator>(); stack.Push(routine);
             try
             {
@@ -107,7 +107,7 @@ namespace OriCoop
                 finally
                 {
                     Bot();
-                    if (step >= 400 && (failed || Failures(h) > failures)) h.Note("GATE step " + step + ": " + GateDiag());
+                    if (step >= 400 && step < 600 && (failed || Failures(h) > failures)) h.Note("GATE step " + step + ": " + GateDiag());
                     Publish(step, failed || Failures(h) > failures);
                 }
             }
@@ -645,10 +645,66 @@ namespace OriCoop
             }
             finally { Bot(); NetPlay.SetSim(0, 0, 0, 0); }
         }
+        static bool LookPlaying(SeinCharacter sein, TextureAnimationWithTransitions anim)
+        {
+            return sein != null && sein.Controller.IsPlayingAnimation
+                && sein.PlatformBehaviour.Visuals.Animation.Animator.CurrentTextureAnimationTransitions == anim;
+        }
+        static IEnumerator LookCase(TestHarness h)
+        {
+            int failures = Failures(h);
+            yield return Settle();
+            Publish(601, false);
+            yield return Barrier(h, 601);
+            TextureAnimationWithTransitions anim = Characters.Sein.Abilities.LookUp.LookUpAnimation;
+            GameObject go = null;
+            PerformingAction action = null;
+            try
+            {
+                if (NetPlay.IsHost)
+                {
+                    go = new GameObject("OriCoop P3 look fixture");
+                    Type type = AccessTools.TypeByName("PlayCharacterAnimation");
+                    action = (PerformingAction)go.AddComponent(type);
+                    AccessTools.Field(type, "Animation").SetValue(action, anim);
+                    action.Perform(null);
+                }
+                SeinCharacter host = NetPlay.IsHost ? Own : Players.First.Sein;
+                SeinCharacter guest = NetPlay.IsHost ? Players.First.Sein : Own;
+                float end = Now + 2f;
+                while (Now < end && (!LookPlaying(host, anim) || !LookPlaying(guest, anim))) yield return null;
+                h.Check(LookPlaying(host, anim), "LOOK host's Ori plays it");
+                h.Check(LookPlaying(guest, anim), "LOOK guest's Ori plays it");
+                Publish(602, Failures(h) > failures);
+                yield return Barrier(h, 602);
+                if (NetPlay.IsHost) action.Stop();
+                end = Now + 2f;
+                while (Now < end)
+                {
+                    bool stopped = Own != null && !Own.Controller.IsPlayingAnimation;
+                    foreach (Puppet puppet in Players.Remotes)
+                        stopped &= puppet.Sein != null && !puppet.Sein.Controller.IsPlayingAnimation;
+                    if (stopped) break;
+                    yield return null;
+                }
+                h.Check(Own != null && !Own.Controller.IsPlayingAnimation, "LOOK own Ori stopped");
+                foreach (Puppet puppet in Players.Remotes)
+                    h.Check(puppet.Sein != null && !puppet.Sein.Controller.IsPlayingAnimation, "LOOK puppet seat " + puppet.Seat + " stopped");
+                Publish(603, Failures(h) > failures);
+                yield return Barrier(h, 603);
+            }
+            finally { UnityEngine.Object.Destroy(go); }
+        }
+        static IEnumerator LookRun(TestHarness h)
+        {
+            Local.Clear(); Bot();
+            yield return Step(h, 600, LookCase(h));
+        }
         public static IEnumerator Run(TestHarness h)
         {
             if (!s_registered) { NetPlay.On(BarrierMessage, Receive); s_registered = true; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_GATE") == "1") { yield return GateRun(h); yield break; }
+            if (Environment.GetEnvironmentVariable("ORICOOP_P3_LOOK") == "1") { yield return LookRun(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_KURO") == "1") { yield return NetKuroTest.Run(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_SCAN") == "1") { yield return NetStoryScan.Run(h); yield break; }
             // Keep Remote/Acknowledged: the partner's first barrier can arrive before this end reaches P3 (one run per

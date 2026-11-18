@@ -4,4 +4,5 @@ OriCoop\Story\StoryCore.cs
 OriCoop\Story\ProgressCore.cs
 OriCoop\Story\ObjectCore.cs
 OriCoop\Story\GateCore.cs
+OriCoop\Story\AnimCore.cs
 OriCoop\Story\SkillSplit.cs

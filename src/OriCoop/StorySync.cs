@@ -246,6 +246,7 @@ namespace OriCoop
             GameStoryHost.InitIntroNetwork();
             CutsceneGuard.Init();
             ForcedSync.Init();
+            CutsceneAnimSync.Init();
             Services.Net.On(StartMessage, ReceiveStart);
             Services.Net.On(EndMessage, ReceiveEnd);
             Services.Net.On(SkipMessage, ReceiveSkip);
@@ -606,6 +607,7 @@ namespace OriCoop
             TickIntro();
             SubsystemGuard.Run("CutsceneGuard.Tick", s_cutsceneTick);
             SubsystemGuard.Run("ForcedSync.Tick", s_gateTick);
+            SubsystemGuard.Run("CutsceneAnimSync.Tick", CutsceneAnimSync.Tick);
             SubsystemGuard.Run("CutsceneRespawn.Tick", s_respawnTick);
             if (Time.realtimeSinceStartup >= s_statsAt)
             {
