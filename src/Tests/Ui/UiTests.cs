@@ -101,6 +101,27 @@ static class UiTests
                 catch (FormatException e) { throw new Exception(key + ": " + e.Message); }
             }
         });
+        // T-096: moved from the net game test's phase D (lag test 7). Both sides of every threshold.
+        Run("signal bars: disconnected or silent show 0", delegate {
+            Equal(0, SignalLevels.Bars(false, false, 10f, 0f)); Equal(0, SignalLevels.Bars(true, true, 10f, 0f));
+        });
+        Run("signal bars: rtt thresholds 80 / 150 / 300 ms", delegate {
+            Equal(4, SignalLevels.Bars(true, false, 79.9f, 0f)); Equal(3, SignalLevels.Bars(true, false, 80f, 0f));
+            Equal(3, SignalLevels.Bars(true, false, 149.9f, 0f)); Equal(2, SignalLevels.Bars(true, false, 150f, 0f));
+            Equal(2, SignalLevels.Bars(true, false, 299.9f, 0f)); Equal(1, SignalLevels.Bars(true, false, 300f, 0f));
+        });
+        Run("signal bars: loss thresholds 2 / 5 / 10 %", delegate {
+            Equal(4, SignalLevels.Bars(true, false, 50f, 1.9f)); Equal(3, SignalLevels.Bars(true, false, 50f, 2f));
+            Equal(2, SignalLevels.Bars(true, false, 50f, 5f)); Equal(1, SignalLevels.Bars(true, false, 50f, 10f));
+        });
+        Run("signal colour: cyan < 250, amber 250-500, red >= 500 ms or silent", delegate {
+            Equal(0, SignalLevels.ColorTier(false, 249.9f)); Equal(1, SignalLevels.ColorTier(false, 250f));
+            Equal(1, SignalLevels.ColorTier(false, 499.9f)); Equal(2, SignalLevels.ColorTier(false, 500f)); Equal(2, SignalLevels.ColorTier(true, 10f));
+        });
+        Run("signal: 200 / 400 / 800 ms look different (lag test 7)", delegate {
+            Check(SignalLevels.Bars(true, false, 200f, 1f) > SignalLevels.Bars(true, false, 400f, 1f), "200 ms has more bars than 400 ms");
+            Check(SignalLevels.ColorTier(false, 400f) != SignalLevels.ColorTier(false, 800f), "400 and 800 ms differ in colour");
+        });
         Run("english lookup", delegate { s_language = "en"; Equal("Back", L10n.T("common.back")); });
         Run("chinese lookup", delegate { s_language = "zh"; Equal("返回", L10n.T("common.back")); });
         Run("unknown language defaults to english", delegate { s_language = "unknown"; Equal("Back", L10n.T("common.back")); });
