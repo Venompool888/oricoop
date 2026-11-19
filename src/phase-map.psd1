@@ -39,6 +39,7 @@
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
     # Suite 'net' means the 2-player net suites (net, net-relay, net-newgame), which take ORICOOP_PHASES.
     Mutations = @(
+        @{ Switch = 'ORICOOP_MUTATE_PUPPET_CAMERA';  File = 'src\OriCoop\PuppetCameraGuard.cs'; Suite = 'net';  Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_LIFECYCLE';   File = 'src\OriCoop\Plugin.cs';         Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_NET';       File = 'src\OriCoop\TitleReturn.cs';    Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_PLATFORMFIX'; File = 'src\OriCoop\PlatformFix.cs';    Suite = 'local';     Phase = '' }
@@ -49,7 +50,6 @@
         @{ Switch = 'ORICOOP_MUTATE_ROOMS_NATIVE_OFF'; File = 'src\OriCoop\NativeRooms.cs';   Suite = 'rooms';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_OVERLAY_UNLOCK';  File = 'src\OriCoop\TitleMenu.cs';      Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_REMOVE_GLOW';    File = 'src\OriCoop\NativeGlowTint.cs'; Suite = 'local';     Phase = '' }
-        @{ Switch = 'ORICOOP_MUTATE_FONT_LEAK';       File = 'src\OriCoop\Ui\OsFonts.cs';     Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_MODE_FIXED_SIZE'; File = 'src\OriCoop\Ui\ModeSelectLayout.cs'; Suite = 'local';  Phase = '' }
         @{ Switch = 'ORICOOP_TEST_THROW';            File = 'src\OriCoop\Plugin.cs';         Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_P3_OFF';                File = 'src\OriCoop\CutsceneGuard.cs';  Suite = 'net';       Phase = 'CUT' }

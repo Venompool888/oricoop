@@ -1667,6 +1667,7 @@ namespace OriCoop
             h.Check(SaveSync.Ready, "net save handshake completes before movement phases");
             if (Players.Remotes.Count != ClientCount - 1 || !SaveSync.Ready) yield break;
             h.Check(Own != null && Own != P2Context.P2, "net own Ori and puppet are separate");
+            h.Check(PuppetCameraGuard.Steals == 0, "net puppet spawn kept the local camera target (T-101, steals=" + PuppetCameraGuard.Steals + ")");
             if (Own == null || Own == P2Context.P2) yield break;
             yield return StartBarrier(h);
             if (s_goAt == 0) yield break;
@@ -1862,6 +1863,8 @@ namespace OriCoop
                 h.Note("digest resyncs=" + WorldSync.DigestResyncs + " deferred=" + WorldSync.DigestResyncsDeferred);
                 // Phase WO teleports through nine scenes on purpose; its scene-load resyncs are not counted (NetWorldObjTest.Resyncs).
                 if (!host) h.Check(WorldSync.DigestResyncs - NetWorldObjTest.Resyncs <= 1, "digest-mismatch full resyncs <= 1 per run (" + WorldSync.DigestResyncs + ", " + NetWorldObjTest.Resyncs + " during phase WO)");
+                // Every respawn of the puppet in this run (rejoins, checkpoint reloads) kept the local camera target.
+                h.Check(PuppetCameraGuard.Steals == 0, "net puppet respawns kept the local camera target (T-101, steals=" + PuppetCameraGuard.Steals + ")");
                 h.Check(h.ErrorCount == 0, "net no Unity errors/exceptions (" + h.ErrorCount + ")");
             }
             finally { Stop(); }
