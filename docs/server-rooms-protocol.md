@@ -89,9 +89,14 @@ to 4 members now, while the default behaves exactly like the approved 2-player d
 - Members list: up to 4 entries `{ seat (1–4), steam, nick, token hashes (≤4) }`. Seat 1 = creator ("P1"). A joiner
   takes the lowest free seat number. In fields: `m.count`, `m.N.seat`, `m.N.steam`, `m.N.nick`.
 - `role` in replies is the seat number as text (`"1"`…`"4"`); the client maps 1 → P1, 2 → P2, etc.
-- Join code exists while members < seats, is cleared when the room is full, and is regenerated (new, never reused)
-  whenever a member leaves or is kicked and the room was full; while the room is not full the existing code stays.
-- `kick` takes `seat`: seat 1 may kick any other seat; others get `forbidden`. `quit`: any seat except 1.
+- Join code exists while members < seats, is cleared when the room is full, and is regenerated (a new random code)
+  whenever a member leaves or is kicked and the room was full; while the room is not full the existing
+  code stays. A cleared code (room full or deleted) goes back to the pool and may later be given to another room, as
+  after a restart (T-124). When no free code is found after a bounded number of tries, `create` and `copy` fail with
+  `limit`; a room that reopens without a free code stays codeless until its next membership change.
+- `kick` takes `seat`: seat 1 may kick any other seat; others get `forbidden`. `quit`: any seat except 1. When the last
+  member quits (a `copy` placed in seat 2-4 can leave a room with one non-seat-1 member) the room is deleted (moved to
+  trash), never stored without members (T-122).
 - "Rooms per Steam id" counts rooms where the Steam id has any seat.
 - Lease: one holder per save; every other member entering gets `mode=join` with the holder's `live` code. With
   `solo`=0, "nobody else present" means no other member has waited on this save in the last 15 s.
@@ -180,6 +185,18 @@ Let `me` = caller, `other` = the other member.
 Every write goes to `<file>.tmp` then replaces the target (`File.Replace` when the target exists, else `File.Move`). The
 server loads all room records at startup (codes, counts) and keeps them in memory, so a restart keeps everything
 (tests restart the server on the same data dir). Leases and nonces are memory-only (lost on restart, which is fine).
+
+Startup skips a room record it cannot read (torn write, invalid members) with a `skip_room <dir> <error>` log line and
+serves every other room; the files stay for a manual look (T-122).
+
+### Concurrency, timeouts and limits (T-123, T-124)
+
+Every request runs on its own worker; only the room logic (state and room files) runs under one lock, so a slow or
+half-open connection never holds up other clients. Reading a request body or writing a reply may pause at most
+`ReadTimeoutSeconds` (15) at a time and take at most `RequestTimeoutSeconds` (120, the client's transfer timeout) in
+total; then the connection is dropped (result `timeout` in the log). At most `MaximumConcurrentRequests` (64) requests
+run at once; more are dropped (`server_busy`). A body with more than `RoomWire.MaximumFields` (65,536) fields is
+refused as `bad_request` while decoding (the largest real record has about 5,100); field lookup is O(1).
 
 Logging: one console line per request: time, op, room id, result. Never log passwords, verifiers, proofs or tokens.
 
