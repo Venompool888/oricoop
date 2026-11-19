@@ -202,6 +202,10 @@ namespace OriCoop.Rooms
             [HarmonyPriority(Priority.First)]
             static void Prefix()
             {
+                // T-130: the room holder adopting the partner's progress restarts the game to load it; that is not a
+                // return to the title, so the room session (and its later uploads) goes on, as TitleReturn keeps
+                // the online session for the same restart.
+                if (SaveSync.RestartingForLoad) return;
                 RoomsPanel panel = RoomsPanel.Instance;
                 if (panel != null && panel.Session != null && panel.Session.Holder)
                     panel.Session.ReturnToTitle();

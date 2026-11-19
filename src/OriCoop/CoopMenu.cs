@@ -312,13 +312,23 @@ namespace OriCoop
         static GUIStyle s_title, s_text, s_row, s_rowFocus, s_small;
 
         static int s_stylesH;   // the screen height the styles were made for (T-093: a window that grows must not keep small fonts)
+        static int s_fontSize;
+        static readonly string[] FontNames = { "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial" };
+
+        // T-153: a new font only when the size really changes, and the old one is destroyed (it leaked on every resize).
+        internal static void EnsureFont(int size)
+        {
+            if (s_font != null && s_fontSize == size && !OriCoop.Ui.OsFonts.LeakMutated) return;
+            s_font = OriCoop.Ui.OsFonts.Replace(s_font, FontNames, size); s_fontSize = size;
+            s_stylesH = 0;   // the styles still point at the old (destroyed) font: rebuild them at the next draw
+        }
 
         static void Styles()
         {
             if (s_title != null && s_stylesH == Screen.height) return;
-            s_stylesH = Screen.height; s_modeH = 0;
             int size = Mathf.Max(14, Screen.height / 42);
-            try { s_font = Font.CreateDynamicFontFromOSFont(new string[] { "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial" }, size); } catch (Exception) { s_font = null; }
+            EnsureFont(size);
+            s_stylesH = Screen.height; s_modeH = 0;
             s_text = new GUIStyle(GUI.skin.label); s_text.fontSize = size; s_text.wordWrap = true; s_text.richText = true;
             if (s_font != null) s_text.font = s_font;
             s_text.normal.textColor = new Color(0.92f, 0.94f, 1f);

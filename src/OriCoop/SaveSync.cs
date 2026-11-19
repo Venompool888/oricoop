@@ -227,6 +227,9 @@ namespace OriCoop
         // Host only: load the partner's progress (chosen at a co-op save divergence) through the same native
         // teardown + LoadFromBytes + RestoreCheckpoint path the guest uses; the checkpoint is sent afterwards.
         public static bool HostAdopting { get { return s_hostAdopt; } }
+        // True while SaveSync itself restarts the game to load a checkpoint (guest transfer, host adopting the
+        // partner's progress): RestartGame then is not a return to the title (TitleReturn, RoomGame, T-130).
+        public static bool RestartingForLoad { get { return s_loading; } }
 
         public static void HostAdopt(byte[] bytes)
         {

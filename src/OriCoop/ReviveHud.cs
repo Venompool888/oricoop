@@ -16,7 +16,7 @@ namespace OriCoop
                 Object.DontDestroyOnLoad(Go);
                 Text = Go.AddComponent<TextMesh>();
                 Font font = null;
-                try { font = Font.CreateDynamicFontFromOSFont(new string[] { "Segoe UI Symbol", "Microsoft YaHei", "Arial" }, size); } catch (System.Exception) { }
+                font = OriCoop.Ui.OsFonts.Shared(new string[] { "Segoe UI Symbol", "Microsoft YaHei", "Arial" }, size);   // T-153: shared, not one per text
                 if (font == null) font = Resources.GetBuiltinResource<Font>("Arial.ttf");
                 Text.font = font; Text.fontSize = size; Text.anchor = TextAnchor.MiddleCenter; Text.alignment = TextAlignment.Center;
                 Text.fontStyle = FontStyle.Bold; Text.color = color;
