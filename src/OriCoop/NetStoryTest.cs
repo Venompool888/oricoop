@@ -233,6 +233,22 @@ namespace OriCoop
                 // Test-only mutation switch: ORICOOP_S4_NO_HOLD=1 skips this hold (with ORICOOP_S4_SKEW=0.3 the host's
                 // pause checks then fail every time, which proves the hold is what makes them pass).
                 if (Environment.GetEnvironmentVariable("ORICOOP_S4_NO_HOLD") != "1") { Publish(h, 12, false); yield return Barrier(h, 12); }
+                // T-112: a teleport while the menu is still open (gate pull, revive, pedestal all go through
+                // Plugin.Teleport) must stick: the menu hold re-anchors at the new spot instead of pulling the Ori back.
+                if (guest)
+                {
+                    Vector3 target = Own.Position + Vector3.left * 3f;
+                    Plugin.Teleport(Own, target);
+                    yield return Wait(1.5f);
+                    float dx = Mathf.Abs(Own.Position.x - target.x), dy = Own.Position.y - target.y;
+                    bool ground = Own.PlatformBehaviour.PlatformMovement.IsOnGround;
+                    h.Note("S4 menu teleport dx=" + F(dx) + " dy=" + F(dy) + " ground=" + ground + " locked=" + SessionRules.LocalLocked);
+                    h.Check(dx < 0.3f && Mathf.Abs(dy) < 2.5f, "S4 a teleport while the menu is open sticks (T-112)");
+                    h.Check(ground, "S4 after the teleport the held Ori stands on the ground, not in mid-air");
+                    h.Check(SessionRules.LocalLocked, "S4 own Ori still held after the teleport");
+                }
+                // (13 is the fence before the menu opens; reusing it let the host run ahead of the guest.)
+                Publish(h, 14, false); yield return Barrier(h, 14);
             }
             finally { Bot(0); if (guest && UI.Menu != null) UI.Menu.HideMenuScreen(true); }
             yield return Wait(0.5f);

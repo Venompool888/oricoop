@@ -40,6 +40,7 @@ namespace OriCoop
         public static int RemotePauses;
         static SeinCharacter s_held, s_dead;
         static Vector3 s_anchor;
+        static float s_settleFrom = -10f, s_settleUntil;
         static float s_respawnAt;
         static readonly MenuPresence s_menuSeats = new MenuPresence();
         public static bool PartnerInMenu
@@ -264,10 +265,21 @@ namespace OriCoop
         {
             SeinCharacter own = Own;
             if (!LocalLocked || own == null || Respawning) { s_hold = false; s_held = null; return; }
-            if (!s_hold || s_held != own) { s_anchor = own.Position; s_hold = true; s_held = own; }
+            if (!s_hold || s_held != own)
+            {
+                // After a teleport (gate pull, revive, pedestal) let the Ori land first (input stays locked), then
+                // anchor where it landed instead of in mid-air.
+                // (IsOnGround still says the old spot right after the teleport: give physics 0.2 s first.)
+                float now = Time.realtimeSinceStartup;
+                if (now < s_settleUntil && (now < s_settleFrom + 0.2f || !own.PlatformBehaviour.PlatformMovement.IsOnGround)) return;
+                s_anchor = own.Position; s_hold = true; s_held = own;
+            }
             own.Position = s_anchor; own.Speed = Vector3.zero;
         }
-        internal static void PositionChanged() { s_hold = false; s_held = null; }
+        // T-112: every teleport of the own Ori (Plugin.Teleport) lands here, so the menu hold re-anchors at the new
+        // spot. Before, only the story path called it and gate / revive / pedestal teleports were pulled back.
+        internal static void PositionChanged()
+        { s_hold = false; s_held = null; s_settleFrom = Time.realtimeSinceStartup; s_settleUntil = s_settleFrom + 1f; }
         public static bool HandleOwnDeathOnline(SeinDamageReciever receiver)
         {
             SeinCharacter own = Own;

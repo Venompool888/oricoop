@@ -662,6 +662,8 @@ namespace OriCoop
             who.Position = pos + new Vector3(0f, 0.5f, 0f);
             VisualInvariants.Grace(1.5f);
             who.Speed = Vector3.zero;
+            // T-112: the own Ori was moved on purpose; an online menu hold (SessionRules.HoldLocal) must not pull it back.
+            if (Players.OfSein(who) == null) SessionRules.PositionChanged();
             // The game brings "the" companion along on its own teleports via the global Characters.Ori, which is
             // P1's. When P2 jumps, bring P2's companion along the same way, as P2.
             Puppet puppet = Players.OfSein(who);
