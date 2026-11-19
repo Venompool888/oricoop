@@ -845,7 +845,7 @@ namespace OriCoop
         static IEnumerator CheckCServerList(Action<bool, string> check)
         {
             yield return s_tHost.StartCoroutine(Row(ServerModeRoomsRow + 1, 0.5f));
-            check(ServerManageLabelsMatch(), "title menu: 服务器管理 lists Add / Remove / Server list (" + Labels + ")");
+            check(ServerManageLabelsMatch(), "title menu: server management page lists Add / Remove / Server list (" + Labels + ")");
             yield return s_tHost.StartCoroutine(Row(2, 0.5f));
             check(CServerListLabelsMatch(), "title menu: C-server list shows only the saved servers (" + Labels + ")");
             int before = OriCoop.Authority.CServerConfig.Servers.Count;
