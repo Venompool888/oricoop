@@ -205,7 +205,10 @@ namespace OriCoop.Enemies
             uint incomingEpoch, uint epoch, bool host)
         {
             if (incomingGeneration != generation || applied) return 0;
-            if (frozen || (!mine && incomingEpoch < epoch)) return 1;
+            // T-151: a hit aimed in the previous epoch is queued on every end, the new owner included (the host taking
+            // over used to drop it): FlushHits then applies it once on the owner (Applied set dedups it against the
+            // old owner's last state) or forwards it with the current epoch.
+            if (frozen || incomingEpoch < epoch) return 1;
             if (mine && incomingEpoch == epoch) return 2;
             if (host && incomingEpoch == epoch) return 3;
             return 0;
