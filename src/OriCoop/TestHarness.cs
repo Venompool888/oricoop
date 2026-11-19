@@ -2085,9 +2085,11 @@ namespace OriCoop
             foreach (KeyValuePair<string, int> count in SubsystemGuard.Counts)
                 if (count.Value > 5) throwing.Add(count.Key + "=" + count.Value);
             Check(throwing.Count == 0, "subsystem throws <= 5" + (throwing.Count > 0 ? ": " + string.Join(", ", throwing.ToArray()) : ""));
-            if (NetPlay.Enabled)
+            // T-152: a net test that leaves online play before the end (NetPlay.End) still reports its counts.
+            bool netRun = NetPlay.Enabled || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ORICOOP_NET_CLIENTS"));
+            if (netRun)
             {
-                NetTestHarness.Stop();
+                if (NetPlay.Enabled) NetTestHarness.Stop();
                 Note(m_fails.Count == 0 ? "RESULT PASS " + m_checks + "/" + m_checks : "RESULT FAIL " + m_fails.Count + "/" + m_checks);
             }
             else Note((m_fails.Count == 0 ? "RESULT PASS" : "RESULT FAIL (" + m_fails.Count + ")") + (m_skips.Count > 0 ? " with " + m_skips.Count + " skipped" : ""));

@@ -710,6 +710,18 @@ namespace OriCoop
                 }
                 ForcedSync.TestForget("t111-gate");
                 h.Check(Connected, "3P server: remaining players stay connected after the host left");
+                // T-152: a session that drops and then leaves online play frees its socket (the parked stale client).
+                if (Players.LocalSeat == 3 && CServerLink.Client != null)
+                {
+                    // A real drop: the peer times out inside NetPlay's poll, so the link parks the client and NetPlay retries
+                    // 1 s later (a local Disconnect is replaced by an immediate reconnect before its event runs). Leave first.
+                    CServerLink.Client.Peer.TimeoutMs = 1;
+                    float dropBy = Time.realtimeSinceStartup + 1f;
+                    while (!CServerLink.HasStale && Time.realtimeSinceStartup < dropBy) yield return null;
+                    bool parked = CServerLink.HasStale;
+                    NetPlay.End("T-152 test leave");
+                    h.Check(parked && !CServerLink.HasStale, "3P server: a dropped session that leaves online play frees its socket (T-152, parked " + parked + ")");
+                }
                 yield break;
             }
             if (NetPlay.IsHost) NetPlay.SendTestSignal("leave");
