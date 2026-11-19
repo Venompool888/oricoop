@@ -80,6 +80,9 @@ namespace OriCoop
             if (s_init) return;
             s_init = true;
             NetPlay.On(MsgBlobs, Receive);
+            // T-115: the stone co-push handler and its P2P relay at load, not when this PC first runs a stone (a host
+            // without that scene loaded never relayed a guest's push).
+            PushBlockSync.EnsureRegistered();
             NetPlay.On(MsgResync, delegate(BinaryReader r) {
                 string why = r.ReadString();
                 if (!NetPlay.IsHost || !SaveSync.Ready) return;

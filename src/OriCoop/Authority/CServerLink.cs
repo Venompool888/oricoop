@@ -94,6 +94,9 @@ namespace OriCoop.Authority
             {
                 LastFailure = key;
                 Plugin.Log.LogWarning("cserver: join failed: " + key + " (" + L10n.T(key) + ")");
+                // T-148: the saved seat or the room is gone: forget the token, so the next attempt (NetPlay retries after
+                // the client ends the refused connection) joins fresh instead of reusing the dead token forever.
+                if (c.PrimarySeat == 0 && (key == "server.err.token" || key == "server.err.noroom")) { s_lastToken = null; s_lastCode = ""; }
             };
             // Not SessionEnded: that fires when the last partner leaves, but in server mode the room stays open.
             c.Peer.Disconnected += delegate(string why)

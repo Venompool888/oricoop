@@ -222,6 +222,14 @@ static class EnemyTests
             Check(OriCoop.Authority.CoPushRule.Multiplier(1, 1, 0.31f) == 1f, "partner's report is stale");
             Check(OriCoop.Authority.CoPushRule.Multiplier(1, 1, -1f) == 1f, "no report yet");
         });
+        Run("co-push with several remote pushers (T-115)", delegate {
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { 1, -1 }, new[] { 0.05f, 0.05f }) == 1.5f, "a third pushing the other way keeps the boost");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { -1, 1 }, new[] { 0.05f, 0.05f }) == 1.5f, "order of reports does not matter");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { -1, 0 }, new[] { 0.05f, 0.05f }) == 1f, "nobody pushes our way");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { 1 }, new[] { 0.5f }) == 1f, "the only same-way report is stale");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(0, new[] { 1, 1 }, new[] { 0.05f, 0.05f }) == 1f, "we do not push");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(-1, new int[0], new float[0]) == 1f, "no remote reports");
+        });
         Run("first snapshot from new owner", delegate { Check(!EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, false) && EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, true), "peer tick clocks"); });
     }
 }

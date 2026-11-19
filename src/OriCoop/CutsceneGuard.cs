@@ -67,7 +67,13 @@ namespace OriCoop
                 || spectated != null && target == spectated.Transform
                 || target != null && StoryHost.Current.IsPluginCameraTarget(target);
         }
-        public static void Init() { Services.Net.On(PedestalMessage, ReceivePedestal); Services.Net.On(LeverMessage, ReceiveLever); }
+        public static void Init()
+        {
+            Services.Net.On(PedestalMessage, ReceivePedestal); Services.Net.On(LeverMessage, ReceiveLever);
+            // T-115: the P2P host relays a guest's pedestal / lever to the other guests before handling it; it used to
+            // re-send only after playing it, so a host without that scene loaded (or loading) never passed it on.
+            Services.Net.Forward(PedestalMessage, LeverMessage);
+        }
 
         // ---- Levers (playtest 19:07, Spirit Cavern B): the lever's Direction is host-authoritative world state, so a
         // guest's push was silently undone by the host's blob while its camera story ran locally and was "mirrored" on
@@ -95,7 +101,6 @@ namespace OriCoop
                 }
                 finally { s_applyingLever = false; }
             }
-            if (Services.Net.IsHost) Services.Net.Send(LeverMessage, true, delegate(BinaryWriter w) { ObjectWire.WriteLever(w, id.ToByteArray(), (byte)direction); });
         }
         [HarmonyPatch]
         static class LeverScope
@@ -153,8 +158,6 @@ namespace OriCoop
             ReplayingPedestal = true;
             try { pedestal.ActivatePedestal(); PedestalPlaysPlayed++; Log("pedestal play played " + id); }
             finally { ReplayingPedestal = false; }
-            // Guests only talk to the host: forward so every other guest plays it too (the sender ignores the echo).
-            if (Services.Net.IsHost) Services.Net.Send(PedestalMessage, true, delegate(BinaryWriter w) { ObjectWire.WritePedestal(w, id.ToByteArray()); });
         }
         static void Trace(string key, string value)
         {

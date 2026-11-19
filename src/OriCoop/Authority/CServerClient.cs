@@ -47,6 +47,7 @@ namespace OriCoop.Authority
         readonly CsMessage m_request;
         // T-113: a token rejoin (mode 2) that the server no longer knows (result 4) retries as a fresh join (mode 1).
         public bool RejoinFallsBackToJoin { get; set; }
+        public string RefusedWith { get; private set; }   // T-148: server.err.* of a refused join (null until then)
         public bool UsedFallback { get; private set; }
 
         // T-113: join mode for a connection attempt. A guest joining the room it last sat in (menu re-entry with the
@@ -92,11 +93,15 @@ namespace OriCoop.Authority
                         m_request.Mode = 1; m_request.Token = new byte[16];
                         Send(CsWire.Encode(m_request), true);
                     }
-                    else if (JoinFailed != null)
+                    else
                     {
                         // L10n keys (the Unity glue shows L10n.T(key)); this file stays free of Unity code.
                         string[] reasons = { "", "server.err.noroom", "server.err.full", "server.err.version", "server.err.token" };
-                        JoinFailed(reasons[message.Result]);
+                        string key = message.Result < reasons.Length ? reasons[message.Result] : "server.err.version";
+                        if (JoinFailed != null) JoinFailed(key);
+                        // T-148: a refused join left a connected, seatless peer: NetPlay stayed "connecting" (never retried,
+                        // no reason shown). End it now with the reason as the disconnect text; NetPlay shows it and retries.
+                        if (PrimarySeat == 0) { RefusedWith = key; Peer.Disconnect(key); }
                     }
                     break;
                 case CsWire.CsRoster:
