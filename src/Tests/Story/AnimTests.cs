@@ -15,6 +15,27 @@ static partial class StoryTests
     }
     static void AnimCases()
     {
+        // T-121: real loaded animations (2026-11-19 P3 LOOK run) had keys of up to 73 chars with the old format.
+        Check("anim key fits the wire for long names and four 11-char guid ints", delegate {
+            string guid = "-2147483648 -2147483647 -2147483646 -2147483645";
+            foreach (string name in new string[] { "swimIdleTransitonAnticlock", "swimUpsideDownToMiddleFlip", "grenadeThrowFallVertical", new string('n', 300), "" })
+            {
+                string key = AnimKey.Make(name, guid, 1234);
+                if (key.Length > AnimWire.MaxAnim) throw new Exception("key too long: " + key.Length + " " + key);
+                AnimWire.Write(new BinaryWriter(new MemoryStream()), 1, 0, 1, key.Length == 0 ? "x" : key);
+            }
+        });
+        Check("anim key is deterministic and tells guids and frame counts apart", delegate {
+            string a = AnimKey.Make("swimIdleTransitonAnticlock", "1 2 3 4", 12);
+            if (a != AnimKey.Make("swimIdleTransitonAnticlock", "1 2 3 4", 12)) throw new Exception("not deterministic");
+            if (a == AnimKey.Make("swimIdleTransitonAnticlock", "1 2 3 5", 12)) throw new Exception("guid ignored");
+            if (a == AnimKey.Make("swimIdleTransitonAnticlock", "1 2 3 4", 13)) throw new Exception("frame count ignored");
+            if (!a.StartsWith("swimIdleTransitonAnticlock|", StringComparison.Ordinal)) throw new Exception("name lost: " + a);
+        });
+        Check("anim key without frames is the (cut) name", delegate {
+            if (AnimKey.Make("idleListen", null, 0) != "idleListen") throw new Exception("short name changed");
+            if (AnimKey.Make(new string('n', 100), null, 0).Length != AnimKey.MaxName) throw new Exception("long name not cut");
+        });
         Check("anim wire round trip and 64 character boundary", delegate {
             foreach (byte operation in new byte[] { 0, 1 })
                 foreach (string name in new string[] { "抬头", new string('a', 64) })

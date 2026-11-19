@@ -26,8 +26,8 @@ namespace OriCoop
         public static void Init() { Services.Net.On(Message, Receive); }
         static string AnimationKey(TextureAnimationWithTransitions anim)
         {
-            if (anim.Animation == null || anim.Animation.FrameGuids.Count == 0) return anim.name;
-            return anim.name + "|" + anim.Animation.FrameGuids[0].ToString() + "|" + anim.Animation.FrameGuids.Count;
+            if (anim.Animation == null || anim.Animation.FrameGuids.Count == 0) return AnimKey.Make(anim.name, null, 0);
+            return AnimKey.Make(anim.name, anim.Animation.FrameGuids[0].ToString(), anim.Animation.FrameGuids.Count);
         }
         static TextureAnimationWithTransitions Animation(string name)
         {
@@ -57,6 +57,13 @@ namespace OriCoop
             }
             finally { P2Context.Exit(); }
         }
+        // T-121: these run inside the game's own story actions (Harmony postfixes): never let an error escape into them.
+        static void Guarded(string what, Action action)
+        {
+            try { action(); }
+            catch (Exception e) { Errors++; Services.Log.Warn("cutscene animation " + what + " failed: " + e.Message); }
+        }
+        public static int Errors;
         static void PlayLocal(object instance)
         {
             if (!Online || s_applying || Characters.Sein == null || !Characters.Sein.Controller.IsPlayingAnimation) return;
@@ -112,19 +119,19 @@ namespace OriCoop
         static class Play
         {
             static MethodBase TargetMethod() { return AccessTools.Method(AccessTools.TypeByName("PlayCharacterAnimation"), "Perform"); }
-            static void Postfix(object __instance) { PlayLocal(__instance); }
+            static void Postfix(object __instance) { Guarded("play", delegate { PlayLocal(__instance); }); }
         }
         [HarmonyPatch]
         static class Stop
         {
             static MethodBase TargetMethod() { return AccessTools.Method(AccessTools.TypeByName("PlayCharacterAnimation"), "Stop"); }
-            static void Postfix() { StopLocal(); }
+            static void Postfix() { Guarded("stop", StopLocal); }
         }
         [HarmonyPatch]
         static class StopAction
         {
             static MethodBase TargetMethod() { return AccessTools.Method(AccessTools.TypeByName("StopCharacterAnimation"), "Perform"); }
-            static void Postfix() { StopLocal(); }
+            static void Postfix() { Guarded("stop", StopLocal); }
         }
     }
 }
