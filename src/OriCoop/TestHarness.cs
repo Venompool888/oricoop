@@ -1558,6 +1558,7 @@ namespace OriCoop
             int p1Pad = plugin.P1Pad, p2Pad = plugin.P2Pad;
             float savedLeash = plugin.GroupLeash, savedMargin = CoopCamera.EdgeMargin;
             Vector3 p1Start = P1.Position, p2Start = P2.Position;
+            float p1Health = P1.Mortality.Health.Amount, p2Health = P2.Mortality.Health.Amount;
             GameSeatView seats = new GameSeatView();
             InputDevice pad1 = new InputDevice(InputDevice.DeviceKind.Pad, 1);
             InputDevice pad2 = new InputDevice(InputDevice.DeviceKind.Pad, 2);
@@ -1639,12 +1640,22 @@ namespace OriCoop
                 P2Input.BotPads[1].LX = P2Input.BotPads[2].LX = 0f;
                 Check(p3.Position.x > x3 + 0.6f, "fourplayer: P3 can walk inward while P4 pushes outward");
 
+                yield return StartCoroutine(FourPlayerRevives(ground, new[] { null, P1, P2, p3, p4 }));
+
                 seats.RemoveLocalPlayer(3);
                 seats.RemoveLocalPlayer(4);
                 Check(seats.LocalSeats.Length == 2 && P2 == originalP2 && seats.OriOf(3) == null && seats.OriOf(4) == null,
                     "fourplayer: removing P3 and P4 restores the original two seats");
                 Plugin.Teleport(P2, P1.Position + Vector3.right);
                 yield return TestClock.WaitGame(0.6f);
+                float h, nativeHealth, mh, e, me;
+                bool p2Bar = BottomHud.TryShown(2, out h, out mh, out e, out me);
+                bool nativeBar = BottomHud.TryNativeShown(out nativeHealth, out mh, out e, out me);
+                Check(BottomHud.Count == 1 && BottomHud.Visible(2) && !BottomHud.Visible(3) && !BottomHud.Visible(4) &&
+                    p2Bar && Mathf.Abs(h - P2.Mortality.Health.Amount) < 0.05f &&
+                    nativeBar && Mathf.Abs(nativeHealth - P1.Mortality.Health.VisualMinAmount) < 0.05f,
+                    "fourplayer: bottom HUD returns to native P1 and one teammate bar (copies=" + BottomHud.Count +
+                    ", P1=" + F(nativeHealth) + ", P2=" + F(h) + "/" + F(P2.Mortality.Health.Amount) + ")");
                 CoopCamera.ViewSize(out now, out max);
                 CoopCamera.EdgeMargin = Mathf.Max(savedMargin, (max.x - 6f) * 0.5f);
                 int pairBlocks = CoopCamera.EdgeBlocks, groupBlocks = OnlineLocalPlayers.EdgeBlocks;
@@ -1669,11 +1680,220 @@ namespace OriCoop
                 CoopCamera.EdgeMargin = savedMargin;
                 if (platform != null)
                 {
-                    if (P1 != null) Plugin.Teleport(P1, p1Start - Vector3.up * 0.5f);
-                    if (P2 != null) Plugin.Teleport(P2, p2Start - Vector3.up * 0.5f);
+                    if (P1 != null)
+                    {
+                        P1.Mortality.Health.SetAmount(p1Health);
+                        Plugin.Teleport(P1, p1Start - Vector3.up * 0.5f);
+                    }
+                    if (P2 != null)
+                    {
+                        P2.Mortality.Health.SetAmount(p2Health);
+                        Plugin.Teleport(P2, p2Start - Vector3.up * 0.5f);
+                    }
                     UnityEngine.Object.Destroy(platform);
                 }
             }
+        }
+
+        IEnumerator FourPlayerRevives(Vector3 ground, SeinCharacter[] oris)
+        {
+            Note("fourplayer: real-seat damage, revive and bottom HUD");
+            bool savedRevive = Revive.Enabled;
+            float savedRegroup = CoopCamera.RegroupAfter;
+            int restores = RestoreCheckpointCalls;
+            try
+            {
+                Revive.Enabled = true;
+                CoopCamera.RegroupAfter = 2f;
+                PlaceFourPlayerTeam(ground, oris);
+                P1.Mortality.Health.RestoreAllHealth();
+                P2.Mortality.Health.SetAmount(P2.Mortality.Health.MaxHealth * 0.75f);
+                oris[3].Mortality.Health.RestoreAllHealth();
+                oris[4].Mortality.Health.SetAmount(oris[4].Mortality.Health.MaxHealth * 0.5f);
+                yield return TestClock.WaitGame(1.3f);
+                // The native P1 HUD animates up to a refill (VisualMinAmount); let it settle so the "steady" checks
+                // below compare settled bars, not one caught mid-animation (13.2 -> 16.0 on 2026-11-19).
+                float settle = Time.realtimeSinceStartup + 6f;
+                while (Mathf.Abs(P1.Mortality.Health.VisualMinAmount - P1.Mortality.Health.Amount) > 0.01f && Time.realtimeSinceStartup < settle)
+                    yield return null;
+
+                Check(BottomHud.Count == 3 && BottomHud.Visible(2) && BottomHud.Visible(3) && BottomHud.Visible(4),
+                    "fourplayer: bottom HUD shows three teammate bars (copies=" + BottomHud.Count +
+                    ", P2/P3/P4 opacity=" + F(BottomHud.Opacity(2)) + "/" + F(BottomHud.Opacity(3)) + "/" + F(BottomHud.Opacity(4)) + ")");
+                float[] before = CheckFourPlayerHudHealth(oris, "before damage");
+                Hurt(oris[3], 3f);
+                yield return TestClock.WaitGame(2.4f);
+                float[] after = CheckFourPlayerHudHealth(oris, "after P3 damage");
+                Check(after[3] > 0f && before[3] - after[3] > 0.05f && oris[3].Mortality.Health.Amount > 0f,
+                    "fourplayer: nonlethal P3 damage lowers its bar (" + F(before[3]) + " -> " + F(after[3]) + ")");
+                foreach (int seat in new[] { 1, 2, 4 })
+                    Check(after[seat] >= 0f && Mathf.Abs(after[seat] - before[seat]) < 0.05f,
+                        "fourplayer: P" + seat + " HUD health stays steady after P3 damage (" + F(before[seat]) + " -> " + F(after[seat]) + ")");
+
+                // Cycle P2 as well so all three copies have to dim for their own downed seat.
+                yield return StartCoroutine(FourPlayerDownAndRevive(3, 1, ground, oris));
+                yield return StartCoroutine(FourPlayerDownAndRevive(4, 2, ground, oris));
+                yield return StartCoroutine(FourPlayerDownAndRevive(2, -1, ground, oris));
+                Check(RestoreCheckpointCalls == restores, "fourplayer: no checkpoint reload during revives (reloads=" +
+                    (RestoreCheckpointCalls - restores) + ")");
+            }
+            finally
+            {
+                P1HoldSpiritFlame = false;
+                P2Input.BotPads[1].LX = P2Input.BotPads[2].LX = 0f;
+                if (Revive.IsDowned(oris[2])) Revive.ClearAll("fourplayer test cleanup", false);
+                CoopCamera.RegroupAfter = savedRegroup;
+                Revive.Enabled = savedRevive;
+            }
+        }
+
+        static void PlaceFourPlayerTeam(Vector3 ground, SeinCharacter[] oris)
+        {
+            float[] offsets = { 0f, -1.5f, -0.5f, -3.5f, 0.5f };
+            for (int seat = 1; seat <= 4; seat++)
+                if (oris[seat] != null && !Revive.IsDowned(oris[seat]))
+                    Plugin.Teleport(oris[seat], ground + Vector3.right * offsets[seat]);
+        }
+
+        float[] CheckFourPlayerHudHealth(SeinCharacter[] oris, string phase)
+        {
+            float[] health = new float[oris.Length];
+            for (int seat = 1; seat <= 4; seat++)
+            {
+                float shown, max, energy, maxEnergy;
+                bool have = seat == 1 ? BottomHud.TryNativeShown(out shown, out max, out energy, out maxEnergy)
+                    : BottomHud.TryShown(seat, out shown, out max, out energy, out maxEnergy);
+                SeinHealthController hp = oris[seat].Mortality.Health;
+                float expected = seat == 1 ? hp.VisualMinAmount : hp.Amount;
+                health[seat] = shown;
+                Check(have && Mathf.Abs(shown - expected) < 0.05f && Mathf.Abs(max - hp.MaxHealth) < 0.05f,
+                    "fourplayer: " + phase + " P" + seat + " HUD tracks its own Ori (shown=" + F(shown) + "/" + F(max) +
+                    ", expected=" + F(expected) + "/" + F(hp.MaxHealth) + ")");
+            }
+            return health;
+        }
+
+        void CheckFourPlayerHudOpacity(int downedSeat, string phase)
+        {
+            float hud = P2Hud.GameHudOpacity();
+            for (int seat = 2; seat <= 4; seat++)
+            {
+                float opacity = BottomHud.Opacity(seat);
+                float expected = hud * (seat == downedSeat ? 0.35f : 1f);
+                Check(BottomHud.Visible(seat) && Mathf.Abs(opacity - expected) < 0.03f,
+                    "fourplayer: " + phase + " P" + seat + " bar " + (seat == downedSeat ? "is dimmed" : "has full HUD opacity") +
+                    " (opacity=" + F(opacity) + ", expected=" + F(expected) + ")");
+            }
+        }
+
+        IEnumerator FourPlayerDownAndRevive(int seat, int pad, Vector3 ground, SeinCharacter[] oris)
+        {
+            string who = "fourplayer: P" + seat;
+            SeinCharacter ori = oris[seat];
+            PlaceFourPlayerTeam(ground, oris);
+            // Bound the donation so the HUD's low edge can finish animating even on a max-health save.
+            P1.Mortality.Health.SetAmount(Mathf.Min(6f, P1.Mortality.Health.MaxHealth));
+            yield return TestClock.WaitGame(0.8f);
+            Vector3 before = ori.Position;
+            int revives = Revive.Revives;
+            Hurt(ori, 1000f);
+            Vector3 downAt = ori.Position;
+            yield return TestClock.WaitGame(0.65f);
+
+            Revive.Downed down = Revive.DownedAtSeat(seat);
+            Check(down != null && down.Sein == ori && Revive.IsDowned(ori) && !ori.gameObject.activeSelf &&
+                ori.Mortality.Health.Amount <= 0f,
+                who + " goes down from lethal damage (record seat=" + (down == null ? 0 : down.Player) +
+                ", active=" + ori.gameObject.activeSelf + ", health=" + F(ori.Mortality.Health.Amount) + ")");
+            bool skull = ReviveHud.SkullShownAtSeat(seat);
+            float markerDistance = down == null ? -1f : Vector3.Distance(down.Marker, before);
+            Check(skull && markerDistance >= 0f && markerDistance < 2f,
+                who + " shows a skull near its last ground (shown=" + skull + ", distance=" + F(markerDistance) + ")");
+            CheckFourPlayerHudOpacity(seat, "P" + seat + " downed");
+            CheckFourPlayerHudHealth(oris, "P" + seat + " downed");
+            if (down == null || down.Sein != ori) yield break;
+
+            if (seat == 3) yield return StartCoroutine(FourPlayerDownedMotion(ground, downAt, oris));
+
+            Plugin.Teleport(P1, down.Marker + Vector3.right * 0.8f);
+            yield return TestClock.WaitGame(0.6f);
+            float saverHealth = P1.Mortality.Health.Amount;
+            Note(who + " revive setup: P1=" + P1.Position + ", marker=" + down.Marker +
+                ", near=" + Revive.SaverNear(P1, down) + ", saver health=" + F(saverHealth));
+            P1HoldSpiritFlame = true;
+            yield return TestClock.WaitGame(Revive.HoldSeconds + 0.3f);
+            P1HoldSpiritFlame = false;
+            yield return TestClock.WaitGame(PartnerFx.GlowSeconds + PartnerFx.FadeSeconds + 0.2f);
+
+            float health = ori.Mortality.Health.Amount;
+            float given = saverHealth - P1.Mortality.Health.Amount;
+            Check(ori.gameObject.activeInHierarchy && health >= 1f && Mathf.Abs(health - Mathf.Max(1f, given)) < 0.05f &&
+                down.Rescuer == 1 && Revive.Revives == revives + 1,
+                who + " revives from P1's Spirit Flame hold (rescuer=" + down.Rescuer + ", progress=" + F(down.Progress) +
+                ", health=" + F(health) + ", donated=" + F(given) + ", revives=" + (Revive.Revives - revives) + ")");
+            skull = ReviveHud.SkullShownAtSeat(seat);
+            Check(Revive.DownedAtSeat(seat) == null && !Revive.IsDowned(ori) && !skull,
+                who + " clears its downed state and skull after revive (downed=" + Revive.IsDowned(ori) + ", skull=" + skull + ")");
+            CheckFourPlayerHudOpacity(0, "P" + seat + " revived");
+            CheckFourPlayerHudHealth(oris, "P" + seat + " revived");
+
+            if (pad < 0) yield break;
+            float start = ori.Position.x, saverStart = P1.Position.x;
+            // Walk toward the rest of the team so the screen wall cannot block a valid pad input.
+            float direction = seat == 3 ? 1f : -1f;
+            P2Input.BotPads[pad].LX = direction;
+            yield return TestClock.WaitGame(0.45f);
+            P2Input.BotPads[pad].LX = 0f;
+            float dx = ori.Position.x - start, saverDx = P1.Position.x - saverStart;
+            Check(dx * direction > 0.6f && Mathf.Abs(saverDx) < 0.5f,
+                who + " walks with its own bot pad after revive (dx=" + F(dx) + ", P1 dx=" + F(saverDx) + ")");
+        }
+
+        IEnumerator FourPlayerDownedMotion(Vector3 ground, Vector3 downAt, SeinCharacter[] oris)
+        {
+            SeinCharacter p3 = oris[3], p4 = oris[4];
+            Vector2 now, max;
+            bool haveView = CoopCamera.ViewSize(out now, out max);
+            float width = Rules.LocalEdgeWall.OfflineWidth(max.x, CoopCamera.EdgeMargin, Plugin.Instance.GroupLeash);
+            int blocks = OnlineLocalPlayers.EdgeBlocks;
+            P2Input.BotPads[2].LX = 1f;
+            yield return TestClock.WaitGame(2.5f);
+            P2Input.BotPads[2].LX = 0f;
+
+            float livingWidth = p4.Position.x - P1.Position.x;
+            float downedWidth = p4.Position.x - p3.Position.x;
+            float moved = Vector3.Distance(p3.Position, downAt);
+            Check(haveView && width > 0f && livingWidth >= width - 0.7f && livingWidth <= width + 0.3f &&
+                downedWidth > width + 1f && moved < 0.05f && OnlineLocalPlayers.EdgeBlocks > blocks,
+                "fourplayer: screen wall stops P4 at the living group's limit and leaves downed P3 in place (living width=" +
+                F(livingWidth) + ", width to P3=" + F(downedWidth) + ", limit=" + F(width) + ", P3 moved=" + F(moved) +
+                ", blocks=" + (OnlineLocalPlayers.EdgeBlocks - blocks) + ")");
+
+            // Derive the expected centre from the three living Oris, independently of the camera's bounds helper.
+            Vector3 min = Vector3.Min(P1.Position, Vector3.Min(P2.Position, p4.Position));
+            Vector3 maxLiving = Vector3.Max(P1.Position, Vector3.Max(P2.Position, p4.Position));
+            Vector3 centre = (min + maxLiving) * 0.5f;
+            GameplayCamera cam = UI.Cameras.Current;
+            float offCentre = cam != null && cam.Target != null ? Vector2.Distance(cam.Target.position, centre) : float.PositiveInfinity;
+            bool haveGlideView = CoopCamera.ViewSize(out now, out max);
+            bool framed = haveGlideView && FourPlayerVisible(P1, cam, now) &&
+                FourPlayerVisible(P2, cam, now) && FourPlayerVisible(p4, cam, now);
+            Check(framed && offCentre < 0.25f,
+                "fourplayer: camera frames P1, P2 and P4 while P3 is down (all visible=" + framed + ", target error=" + F(offCentre) + ")");
+
+            // Put the inactive Ori below the glide threshold while leaving its revive marker on the platform.
+            float glideHeight = Mathf.Max(4f, max.y - 2f * CoopCamera.EdgeMargin);
+            p3.Position = downAt - Vector3.up * (glideHeight + 1f);
+            Vector3 offscreen = p3.Position;
+            float separation = Mathf.Abs(P1.Position.y - offscreen.y);
+            int regroups = CoopCamera.Regroups;
+            yield return TestClock.WaitGame(CoopCamera.RegroupAfter + 1f);
+            moved = Vector3.Distance(p3.Position, offscreen);
+            Check(haveGlideView && separation > glideHeight && separation < max.y * 3f && moved < 0.05f &&
+                !CoopCamera.GroupRegrouping(3) && CoopCamera.Regroups == regroups,
+                "fourplayer: glide-back leaves offscreen downed P3 in place (height=" + F(separation) + ", threshold=" +
+                F(glideHeight) + ", P3 moved=" + F(moved) + ", regroups=" + (CoopCamera.Regroups - regroups) + ")");
+            Plugin.Teleport(p4, ground + Vector3.right * 0.5f);
         }
 
         static bool FourPlayerVisible(SeinCharacter ori, GameplayCamera cam, Vector2 view)

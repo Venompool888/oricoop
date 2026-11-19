@@ -50,9 +50,10 @@ namespace OriCoop
         static readonly GameText[] s_gameHint = new GameText[Players.MaxSeats + 1], s_gameTag = new GameText[Players.MaxSeats + 1];
         public static string LastPercentText = "", LastHintText = "";
         // TODO(4p): phase 1 removes slot-based query; existing callers use local/puppet slots.
-        public static bool IconShown(int player) { int seat = Roles.OfSlot(player); return s_icon[seat] != null && s_icon[seat].Go != null && s_icon[seat].Go.activeSelf; }
-        // TODO(4p): phase 1 removes slot-based query; existing callers use local/puppet slots.
-        public static bool SkullShown(int player) { int seat = Roles.OfSlot(player); return IconShown(player) || (s_skull[seat] != null && s_skull[seat].Go != null && s_skull[seat].Go.activeSelf); }
+        public static bool IconShown(int player) { return IconShownAtSeat(Roles.OfSlot(player)); }
+        public static bool SkullShown(int player) { return SkullShownAtSeat(Roles.OfSlot(player)); }
+        static bool IconShownAtSeat(int seat) { return s_icon[seat] != null && s_icon[seat].Go != null && s_icon[seat].Go.activeSelf; }
+        internal static bool SkullShownAtSeat(int seat) { return IconShownAtSeat(seat) || (s_skull[seat] != null && s_skull[seat].Go != null && s_skull[seat].Go.activeSelf); }
 
         public static void Update()
         {
