@@ -21,6 +21,8 @@ namespace OriCoop.Story
         int[] IntroSeats { get; }
         bool CanPlaceIntroSeat(int seat);
         IntroState RemoteIntro { get; }
+        // A guest has a session with the host right now (not disconnected / waiting to reconnect). (T-106)
+        bool IntroHostSession { get; }
         bool TryIntroGround(StoryPoint candidate, out StoryPoint spot);
         // Held means neutral input, frozen position, and hidden Ori/companion (not just a movement lock).
         void SetIntroHeld(int seat, bool held);
@@ -128,8 +130,9 @@ namespace OriCoop.Story
             }
             else
             {
-                // Guests skip their own new-game movie; only a host snapshot can release them.
-                IntroState remote = host.RemoteIntro ?? new IntroState { Active = true };
+                // Guests skip their own new-game movie; only a host snapshot can release them. That wait needs a host:
+                // without a session (host gone, reconnecting) the guest is not held (T-106; its seat even falls back to 2).
+                IntroState remote = host.RemoteIntro ?? (host.IntroHostSession ? new IntroState { Active = true } : new IntroState());
                 // Reliable snapshots may arrive late: an old hold must not rewind an observed wake.
                 if (remote.Generation > state.Generation || remote.Generation == state.Generation && !(state.Woke && !remote.Woke))
                 {

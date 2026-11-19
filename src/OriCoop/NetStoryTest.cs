@@ -528,11 +528,24 @@ namespace OriCoop
         {
             yield return Barrier(h, 51); int disconnects = SessionRules.Disconnects, sessions = SessionRules.Sessions;
             float start = Now;
+            // T-106: while the guest is cut off from the host (session ended, retrying), its own Ori stays visible and free.
+            int cutFrames = 0, heldFrames = 0;
             try
             {
                 if (NetPlay.IsHost) NetPlay.SetSim(0, 0, 100, 0);
                 // Longer than NetPeer.TimeoutMs (10 s since lag test ②) so the link really times out.
-                yield return Wait(12f);
+                float dropEnd = Now + 12f;
+                while (Now < dropEnd)
+                {
+                    if (!NetPlay.IsHost && SessionRules.Disconnects > disconnects && !NetPlay.Connected && Own != null)
+                    {
+                        cutFrames++;
+                        bool shown = false;
+                        foreach (Renderer r in Own.GetComponentsInChildren<Renderer>(true)) if (r.enabled && r.gameObject.activeInHierarchy) { shown = true; break; }
+                        if (StorySync.IntroHeld(Players.LocalSeat) || !shown) heldFrames++;
+                    }
+                    yield return null;
+                }
             }
             finally { if (NetPlay.IsHost) NetPlay.SetSim(0, 0, 0, 0); }
             float clearAt = Now;
@@ -565,6 +578,12 @@ namespace OriCoop
                 "S4 rejoined within 5 s after the link is back (" + F(Now - clearAt) + " s)");
             h.Check(puppets == 1 && P2Context.P2 != null, "S4 exactly one puppet");
             if (!NetPlay.IsHost) h.Check(SaveSync.JoinedHost && distance <= 3f, "S4 guest re-placed beside host");
+            if (!NetPlay.IsHost)
+            {
+                if (cutFrames == 0) h.Note("S4 guest never saw a disconnected frame during the drop: T-106 visibility not judged");
+                else h.Check(heldFrames == 0, "S4 guest's own Ori visible and not intro-held while cut off from the host ("
+                    + heldFrames + " of " + cutFrames + " disconnected frames held)");
+            }
             h.Check(!SessionRules.PartnerInMenu && !StorySync.Watching, "S4 no stale remote menu or watching lock");
             yield return Digests(h, 52);
         }

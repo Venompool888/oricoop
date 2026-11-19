@@ -12,6 +12,7 @@ static partial class StoryTests
         public int[] Seats = new[] { 1, 2, 3, 4 };
         public StoryPoint Origin = new StoryPoint(20, 5, 0);
         public IntroState Remote;
+        public bool HostSession = true;
         public readonly Dictionary<int, bool> Held = new Dictionary<int, bool>();
         public readonly Dictionary<int, StoryPoint> Placed = new Dictionary<int, StoryPoint>();
         public int Placements, GroundChecks;
@@ -22,6 +23,7 @@ static partial class StoryTests
         public StoryPoint IntroP1Position { get { return Origin; } }
         public int[] IntroSeats { get { return Seats; } }
         public IntroState RemoteIntro { get { return Remote; } }
+        public bool IntroHostSession { get { return HostSession; } }
         public bool TryIntroGround(StoryPoint candidate, out StoryPoint spot)
         { GroundChecks++; spot = new StoryPoint(candidate.X, 4, candidate.Z); return Ground; }
         public bool CanPlaceIntroSeat(int seat) { return PlacementReady; }
@@ -148,6 +150,17 @@ static partial class StoryTests
             rule.SeatLeft(3); h.Seats = new[] { 1, 2 }; h.PlacementReady = true; rule.Tick(h); Equal(1, h.Placements);
             rule.SeatJoined(3); h.Seats = new[] { 1, 2, 3 }; rule.Tick(h);
             Equal(false, h.Held[3]); Equal(false, h.Placed.ContainsKey(3));
+        });
+        // T-106: the host dropped out. The guest's session ended (its intro state and the host snapshot were reset) and it
+        // keeps retrying; its seat number fell back to 2. With no host to wait for it must stay visible and playable.
+        Check("intro guest without a host session is not held", delegate {
+            IntroFake h = new IntroFake(); h.Authority = false; h.Playing = false; h.Free = true; h.Seats = new[] { 2 };
+            h.HostSession = false; h.Remote = null;
+            IntroRule rule = new IntroRule(); rule.Tick(h); Equal(false, h.Held[2]); Equal(0, h.Placements);
+            rule.Tick(h); Equal(false, h.Held[2]);
+            h.HostSession = true; rule.Reset(h); rule.Tick(h); Equal(true, h.Held[2]);   // back in a session: wait for the host
+            h.Remote = new IntroState { Generation = 3 }; rule.Tick(h); Equal(false, h.Held[2]);
+            h.HostSession = false; h.Remote = null; rule.Reset(h); rule.Tick(h); Equal(false, h.Held[2]);
         });
         Check("intro empty and invalid seats never place P1 or phantom players", delegate {
             IntroFake h = new IntroFake(); h.Seats = new int[0];
