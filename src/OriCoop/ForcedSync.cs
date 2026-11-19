@@ -80,6 +80,12 @@ namespace OriCoop
             Gates.Clear(); Pending.Clear(); s_table = new GateTable();
             Select(null); Hide(); PillarsShown = false;
         }
+        // T-111 net test: the host sends a count for a gate that is not in the scene, through the real message, and
+        // a guest reads back what its receiver applied.
+        internal static void TestSendCount(string key, int n, int total)
+        { Services.Net.Send(CountMessage, true, delegate(BinaryWriter w) { GateWire.WriteCount(w, key, (byte)n, (byte)total); }); }
+        internal static int TestCount(string key) { Gate gate; return Gates.TryGetValue(key, out gate) ? gate.Count : -1; }
+        internal static void TestForget(string key) { Gates.Remove(key); }
         static Gate Get(string key)
         {
             Gate gate;
@@ -156,7 +162,7 @@ namespace OriCoop
         static void ReceiveCount(BinaryReader r)
         {
             byte n, total; string key = GateWire.ReadCount(r, out n, out total);
-            if (!Online || Services.Net.IsHost || Services.Net.Sender != 1 || s_table.RecentlyFired(key, Now)) return;
+            if (!Online || Services.Net.IsHost || Services.Net.Sender != Services.Net.HostSeat || s_table.RecentlyFired(key, Now)) return;
             Gate gate = Get(key); gate.Count = n; gate.Total = total;
             if (LocalGateKey == key) { LastCount = n; LastTotal = total; }
             Log("count", key, Services.Net.Sender, n, total);
@@ -181,7 +187,7 @@ namespace OriCoop
         static void ReceiveFire(BinaryReader r)
         {
             float x, y, z; string key = GateWire.ReadFire(r, out x, out y, out z);
-            if (!Online || Services.Net.IsHost || Services.Net.Sender != 1 || s_table.RecentlyFired(key, Now)) return;
+            if (!Online || Services.Net.IsHost || Services.Net.Sender != Services.Net.HostSeat || s_table.RecentlyFired(key, Now)) return;
             s_table.MarkFired(key, Now); Apply(Get(key), new Vector3(x, y, z));
         }
         static void Apply(Gate gate, Vector3 position)

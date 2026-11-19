@@ -79,6 +79,7 @@ sealed class FakeBus : INetBus
     public bool Connected { get { return true; } }
     public bool IsHost { get { return m_seat == 1; } }
     public int Sender { get; private set; }
+    public int HostSeat { get { return m_hostSeat; } set { m_hostSeat = value; } } int m_hostSeat = 1;
     public void On(byte type, Action<BinaryReader> handler) { m_handlers[type] = handler; }
     byte[] Body(bool reliable, Action<BinaryWriter> body)
     {
