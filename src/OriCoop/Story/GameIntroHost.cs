@@ -12,6 +12,7 @@ namespace OriCoop.Story
     {
         const byte IntroMessage = 54;
         static IntroState remoteIntro;
+        static bool hostSession;
         static float publishAt;
         static IntroState lastPublished;
         sealed class HeldOri
@@ -66,6 +67,7 @@ namespace OriCoop.Story
                 && (!Services.Net.Enabled || Services.Session.Ready);
         }
         public IntroState RemoteIntro { get { return remoteIntro; } }
+        public bool IntroHostSession { get { return hostSession; } }
         static StoryPoint Point(Vector3 p) { return new StoryPoint(p.x, p.y, p.z); }
         static Vector3 Vector(StoryPoint p) { return new Vector3(p.X, p.Y, p.Z); }
         static SeinCharacter OriAt(int seat)
@@ -145,11 +147,11 @@ namespace OriCoop.Story
             Services.Net.PlayerJoined += delegate(int seat) { publishAt = 0; if (Services.Net.IsHost) StorySync.IntroSeatJoined(seat); };
             Services.Net.PlayerLeft += delegate(int seat) { if (Services.Net.IsHost) StorySync.IntroSeatLeft(seat); };
             Services.Net.SessionStarted += delegate {
-                remoteIntro = null; publishAt = 0; lastPublished = null;
+                remoteIntro = null; publishAt = 0; lastPublished = null; hostSession = true;
                 if (!Services.Net.IsHost) StorySync.ResetIntro();
             };
             Services.Net.SessionEnded += delegate {
-                remoteIntro = null; publishAt = 0; lastPublished = null; StorySync.ResetIntro();
+                remoteIntro = null; publishAt = 0; lastPublished = null; hostSession = false; StorySync.ResetIntro();
             };
         }
         [HarmonyPatch(typeof(PlayerInput), "FixedUpdate")]
