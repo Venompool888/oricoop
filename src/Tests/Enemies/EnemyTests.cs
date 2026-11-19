@@ -64,7 +64,38 @@ static class EnemyTests
     static void AuthorityTests()
     {
         Run("presence join and leave", delegate { EnemyAuthority a = new EnemyAuthority(); a.Presence(2, true); a.Presence(3, true); a.Presence(2, false); Check(!a.LoadedSeats.Contains(2) && a.LoadedSeats.Contains(3), "presence"); a.SeatLeft(3, false, delegate { return 0; }); Check(a.LoadedSeats.Count == 0, "leave"); });
-        Run("presence refresh clock", delegate { FakeClock clock = new FakeClock(); EnemyAuthority a = new EnemyAuthority(); Func<float> now = delegate { return clock.RealTime; }; Check(a.PresenceDue(now), "first presence"); a.PresenceSent(now); clock.RealTime = 1.99f; Check(!a.PresenceDue(now), "early refresh"); clock.RealTime = 2; Check(a.PresenceDue(now), "timed refresh"); a.PresenceSent(now); a.Loaded = true; Check(a.PresenceDue(now), "load change"); });
+        // T-147 (replaces "presence refresh clock", which expected unloaded enemies to be re-announced every 2 s):
+        // a PC reports an enemy when it loads or unloads it, and refreshes only enemies it has loaded. Enemies it merely
+        // heard of (every enemy anyone ever saw) cost nothing, however long the session runs.
+        Run("presence refresh only while loaded", delegate {
+            FakeClock clock = new FakeClock(); EnemyAuthority a = new EnemyAuthority(); Func<float> now = delegate { return clock.RealTime; };
+            Check(!a.PresenceDue(now), "never loaded: nothing to report");
+            clock.RealTime = 50; Check(!a.PresenceDue(now), "never loaded: no refresh either");
+            a.Loaded = true; Check(a.PresenceDue(now), "load reported"); a.PresenceSent(now);
+            clock.RealTime = 51.99f; Check(!a.PresenceDue(now), "early refresh");
+            clock.RealTime = 52; Check(a.PresenceDue(now), "loaded enemy refreshed"); a.PresenceSent(now);
+            a.Loaded = false; Check(a.PresenceDue(now), "unload reported"); a.PresenceSent(now);
+            clock.RealTime = 500; Check(!a.PresenceDue(now), "unloaded enemy not refreshed");
+        });
+        // T-147: the host used to answer every presence report (one per known enemy every 2 s from each guest) with a
+        // full Scan and a full-state grant to every guest, even when nothing changed.
+        Run("presence with an unchanged owner sends nothing or one direct grant", delegate {
+            EnemyAuthority a = new EnemyAuthority(); a.Known = true; a.OwnerSeat = 1;
+            Func<int> host = delegate { return 1; };
+            Check(a.OnPresence(2, true, host) == 1, "guest just loaded it: owner and state to that guest only");
+            Check(a.OnPresence(2, true, host) == 0, "refresh with the same owner: nothing");
+            Check(a.OnPresence(3, false, host) == 0, "a guest without it loaded: nothing");
+            Check(a.OnPresence(2, false, host) == 0, "unload with the same owner: nothing");
+            Check(a.LoadedSeats.Count == 0, "loaded seats still tracked");
+        });
+        Run("presence that moves the owner runs the decision", delegate {
+            EnemyAuthority a = new EnemyAuthority(); a.Known = true; a.OwnerSeat = 1;
+            Check(a.OnPresence(2, true, delegate { return 2; }) == 2, "owner should change");
+            EnemyAuthority unknown = new EnemyAuthority();
+            Check(unknown.OnPresence(2, true, delegate { return 1; }) == 2, "no owner yet");
+            EnemyAuthority pending = new EnemyAuthority(); pending.Known = true; pending.PendingTakeover = true;
+            Check(pending.OnPresence(2, true, delegate { return 1; }) == 2, "handover in progress: decision path (it waits)");
+        });
         Run("two seat host loaded", delegate { EnemyAuthority a = new EnemyAuthority(); a.Loaded = true; a.Presence(2, true); Check(Desired(a, 1, 9, 20, 20, 2, 1) == 1, "host loaded"); });
         Run("two seat guest loaded", delegate { EnemyAuthority a = new EnemyAuthority(); a.Presence(2, true); Check(Desired(a, 1, 9, 20, 20, 2, 1) == 2, "guest loaded"); });
         Run("two seat none loaded", delegate { Check(Desired(new EnemyAuthority(), 1, 9, 20, 20) == 1, "fallback"); });
