@@ -24,6 +24,16 @@ $TS_AllSuites = @($TS_Suites.Keys)
 # The 2-player net suites: they run NetTestHarness's phase list and take ORICOOP_PHASES.
 $TS_PhasedSuites = @('net', 'net-relay', 'net-newgame')
 $TS_AllPhases = @('INTRO', 'MOVE', 'W', 'E3', 'E5', 'R', 'S4', 'P', 'WO', 'CAM', 'CUT')
+# Before a merge (not -All / nightly), these 2-player suites run only the phases of their own risk, whatever the change
+# selected (T-096): they repeat the direct 'net' suite over another transport (relay) or another join path (guest new
+# game). Relay is a plain packet forwarder, so the session start, the movement stream (A..E: loss, blackout, snaps) and
+# the bulk world/save transfer (W) cover it; the guest new-game join is decided during the start and W. Everything else in
+# those suites tested the same code as 'net' again (measured: 578 / 573 s median, pass rate 31 % / 21 %, the same
+# CUT/CAM/R failures as 'net'). The 'net' suite keeps every selected phase; the nightly runs all phases everywhere.
+$TS_SuitePhases = [ordered]@{
+    'net-relay'   = @('INTRO', 'MOVE', 'W')
+    'net-newgame' = @('INTRO', 'MOVE', 'W')
+}
 
 # --- module -> suites (see docs\modules.md for what each module contains)
 $TS_ModuleSuites = @{
@@ -131,6 +141,62 @@ function Get-Selection([string[]]$files) {
     $ordered = @($TS_Suites.Keys | Where-Object { $suites.Contains($_) })
     $list = $(if ($full) { 'FULL' } else { @($TS_AllPhases | Where-Object { $phases.ContainsKey($_) }) })
     @{ Suites = $ordered; Phases = $list; Why = $why; PhaseWhy = $phaseWhy }
+}
+
+# The ORICOOP_PHASES value for one suite of a merge-time run: a capped suite runs its own phases (T-096); -All = every phase.
+function Get-SuitePhaseEnv([string]$suite, $selection, [switch]$All) {
+    if ($TS_PhasedSuites -notcontains $suite) { return '' }
+    if ($All) { return '' }
+    if ($TS_SuitePhases.Contains($suite)) { return (@($TS_SuitePhases[$suite]) -join ',') }
+    return (Get-PhaseEnv $selection)
+}
+
+# Rerun planning (T-096). The 2-player net harness writes "=== phase X" when phase X starts and "=== phase END" before
+# its closing checks; "net role=" starts each client's section. A failing check belongs to the phase above it. Fail-fast
+# stops the games before the result files exist, so its summary ("  <tag>.log: FAIL <check>") has no markers: those
+# checks are placed by their name's first word (Get-CheckPhase).
+# Returns @{ Checks = failing check lines; Phases = phases of those checks; Unplaced = $true if any failing check is
+# outside a phase (start-up, closing, an unknown name): then the whole suite is rerun }.
+function Get-CheckPhase([string]$check) {
+    $w = ($check.Trim() -split '\s+')[0]
+    if ($w -match '^(INTRO|CAM|CUT|WO|E3|E5|S4)') { return $Matches[1] }
+    if ($w -eq 'W' -or $w -match '^W\d') { return 'W' }
+    if ($w -match '^R\d*$') { return 'R' }
+    if ($w -match '^(Kuro|KURO)$') { return 'CUT' }
+    if ($w -eq 'P3' -or $w -eq 'P4') { return $null }      # used by both P (push rounds) and CUT / W: ambiguous
+    if ($w -match '^P([BCD]|\d+L\w*|[12])$') { return 'P' }   # push rounds P1, P2L, P3L200oneway, PB/PC/PD
+    if ($w -match '^[A-E]$') { return 'MOVE' }
+    return $null
+}
+function Get-FailedPhases([string]$text) {
+    $phase = $null; $checks = New-Object 'System.Collections.Generic.List[string]'; $phases = [ordered]@{}; $unplaced = $false
+    foreach ($line in ($text -split "`r?`n")) {
+        if ($line -match '^\[[\s\d.]+\] net role=') { $phase = $null; continue }
+        if ($line -match '^\[[\s\d.]+\] === phase (\w+)') { $phase = $(if ($Matches[1] -eq 'END') { $null } else { $Matches[1] }); continue }
+        $c = $null; $p = $null
+        if ($line -match '^\[[\s\d.]+\] (TEST )?FAIL (.*)$') { $c = $Matches[2].Trim(); $p = $phase }
+        elseif ($line -match '^\s+\S+\.log: (TEST )?FAIL (.*)$') { $c = $Matches[2].Trim() }
+        if (-not $c) { continue }
+        if ($checks -notcontains $c) { $checks.Add($c) }
+        if (-not $p) { $p = Get-CheckPhase $c }
+        if ($p -and $TS_AllPhases -contains $p) { $phases[$p] = $true } else { $unplaced = $true }
+    }
+    @{ Checks = @($checks); Phases = @($TS_AllPhases | Where-Object { $phases.Contains($_) }); Unplaced = $unplaced }
+}
+
+# What to rerun after a failed suite: $null = nothing (owner stopped it, a safety stop, or no rerun left); '' = the whole
+# suite with the same phases; else the ORICOOP_PHASES list of only the failed phases.
+# Safety stops are never flaky and never rerun (exit codes 5/6/7 too, see run-affected.ps1): a test that changed the
+# owner's settings (T-094) could pass the second time only because the first run had already changed them; a test game
+# that could read or rumble the owner's controller (T-085) or a copy on the owner's settings key must stop the run.
+$TS_SafetyStop = 'OWNER SETTINGS CHANGED BY A TEST|changed the owner''s game settings|INPUT NOT BLOCKED|REFUSED copy|NO TEST COPY with its own Unity registry key'
+function Get-RerunPhases([string]$suite, [string]$text, [string]$firstPhases) {
+    if ($text -cmatch 'OWNER IS PLAYING') { return $null }
+    if ($text -cmatch $TS_SafetyStop) { return $null }
+    if ($TS_PhasedSuites -notcontains $suite) { return '' }
+    $f = Get-FailedPhases $text
+    if ($f.Unplaced -or $f.Phases.Count -eq 0) { return $firstPhases }
+    return ($f.Phases -join ',')
 }
 
 # The ORICOOP_PHASES value for a selection ('' = every phase).

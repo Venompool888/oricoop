@@ -55,5 +55,35 @@ foreach ($f in Get-ChildItem (Join-Path $TS_Root 'src\OriCoop') -Filter 'Net*Tes
     Ok ($map.Files.ContainsKey($leaf) -or $map.Full -contains $leaf) ($leaf + ' has a phase in phase-map.psd1')
 }
 
+# T-096: per-suite phase caps never take a phase away from the direct 'net' suite (every mutation row with Suite 'net'
+# is caught there), and the caps name real phases.
+Ok (-not $TS_SuitePhases.Contains('net')) "the direct 'net' suite is never capped"
+foreach ($m in @($map.Mutations | Where-Object { $_.Suite -eq 'net' -and $_.Phase })) {
+    $pe = Get-SuitePhaseEnv 'net' (Get-Selection @($m.File))
+    Ok ((-not $pe) -or (@($pe -split ',') -contains $m.Phase)) ($m.Switch + ": suite 'net' still runs phase " + $m.Phase + ' (' + $(if ($pe) { $pe } else { 'ALL' }) + ')')
+}
+foreach ($k in $TS_SuitePhases.Keys) { foreach ($x in $TS_SuitePhases[$k]) { Ok ($TS_AllPhases -contains $x) ("capped suite $k phase $x exists") } }
+# Rerun planning reads the harness's phase markers.
+$t = "[ 0.1] net role=host`n[ 0.2] === phase W`n[ 1.0] FAIL W digests`n[ 2.0] === phase CAM`n[ 3.0] PASS CAM x`n[ 4.0] === phase END`n[ 5.0] PASS G ok`n[ 0.1] net role=guest`n[ 0.2] === phase CUT`n[ 1.0] FAIL CUT step 3"
+$f = Get-FailedPhases $t
+Ok ((($f.Phases) -join ',') -eq 'W,CUT' -and -not $f.Unplaced) ('failed checks map to their phases (W,CUT; got ' + ($f.Phases -join ',') + ')')
+Ok ((Get-RerunPhases 'net' $t 'W,CAM,CUT') -eq 'W,CUT') 'rerun only the failed phases'
+Ok ((Get-RerunPhases 'net' ($t + "`n[ 6.0] === phase END`n[ 7.0] FAIL net no Unity errors") 'W,CAM,CUT') -eq 'W,CAM,CUT') 'a failure outside a phase reruns the same phases'
+Ok ((Get-RerunPhases 'local' '[ 1.0] FAIL x' '') -eq '') 'other suites rerun whole'
+Ok ($null -eq (Get-RerunPhases 'net' ('OWNER IS PLAYING' + "`n" + $t) '')) 'a run stopped for the owner is not rerun'
+Ok ($null -eq (Get-RerunPhases 'rooms' ("ROOMS RESULT PASS`nOWNER SETTINGS CHANGED BY A TEST (T-094): HKCU\x: before a; after b") '')) 'a run that changed the owner''s settings is never rerun (a rerun could pass because the key is already changed)'
+Ok ($null -eq (Get-RerunPhases 'local' "INPUT NOT BLOCKED in test game host: no line" '')) 'a run whose test game could read the owner''s controller is never rerun'
+Ok ($null -eq (Get-RerunPhases 'net' "REFUSED copy e: it still uses the owner's Unity registry key" '')) 'a refused copy is never rerun'
+$ff = "FAIL-FAST: stopping after the first failure`n  b-guest-1.log: FAIL E5Lc kill 1 puppet death effect exactly once`n  host.log: FAIL WO9L guest water height`nno result file: fail-fast stopped the run"
+Ok ((Get-RerunPhases 'net' $ff '') -eq 'E5,WO') ('fail-fast summary checks are placed by name (E5,WO; got ' + (Get-RerunPhases 'net' $ff '') + ')')
+foreach ($pair in @(@('INTRO P2 alone retains input', 'INTRO'), @('C RTT 30..260', 'MOVE'), @('W both world digests match', 'W'), @('E3 guest sees enemy', 'E3'),
+                    @('E5Lc kill', 'E5'), @('R2 host: revive glow played once', 'R'), @('S4 partner step 3 completed', 'S4'), @('PB two pushers', 'P'), @('P3L200oneway stone', 'P'), @('P1L push', 'P'),
+                    @('WO9L guest water', 'WO'), @('CAM guest: pull', 'CAM'), @('CUT reset: WallJump', 'CUT'), @('Kuro gate', 'CUT'))) {
+    Ok ((Get-CheckPhase $pair[0]) -eq $pair[1]) ('check "' + $pair[0] + '" is in phase ' + $pair[1])
+}
+foreach ($c in @('P3 lever found', 'P4 native story and End', 'net no Unity errors/exceptions', 'G puppet removed within 7 s', 'L guest slot list shows the kept copy', 'digest-mismatch full resyncs')) { Ok ($null -eq (Get-CheckPhase $c)) ('check "' + $c + '" is in no phase (whole rerun)') }
+$harnessText = Get-Content (Join-Path $TS_Root 'src\OriCoop\NetTestHarness.cs') -Raw
+foreach ($ph in $TS_AllPhases) { Ok ($harnessText -match ('Mark\(h, "' + $ph + '"\)')) ("the harness marks phase $ph for reruns") }
+
 'SELECTION SELFCHECK ' + $(if ($fails) { 'FAIL' } else { 'PASS' }) + ' (' + ($n - $fails) + '/' + $n + ')'
 if ($fails) { exit 1 }

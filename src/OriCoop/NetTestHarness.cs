@@ -1642,6 +1642,9 @@ namespace OriCoop
             foreach (string p in s_phases) if (Array.IndexOf(AllPhases, p) < 0) bad.Add(p);
             return string.Join(",", bad.ToArray());
         }
+        // "=== phase X" lines mark where each phase starts in the result file: run-affected reruns only the phases of the
+        // checks that failed (T-096). Checks after "=== phase END" (closing barrier, G, errors) belong to no phase.
+        static bool Mark(TestHarness h, string phase) { h.Note("=== phase " + phase); return true; }
         static bool PhasesSelected { get { foreach (string p in AllPhases) if (!PhaseOn(p)) return true; return false; } }
 
         static IEnumerator RunCore(TestHarness h)
@@ -1654,7 +1657,7 @@ namespace OriCoop
             h.Note("net role=" + (host ? "host" : "guest"));
             if (Environment.GetEnvironmentVariable("ORICOOP_NET_LOCAL_PLAYERS") == "1")
             { yield return LocalPlayersChecks(h); yield break; }
-            if (ClientCount != 2 || PhaseOn("INTRO")) yield return NetIntroTest.Run(h, ClientCount);
+            if (ClientCount != 2 || (PhaseOn("INTRO") && Mark(h, "INTRO"))) yield return NetIntroTest.Run(h, ClientCount);
             if (ClientCount == 2) h.Note("net phases: " + string.Join(",", new List<string>(AllPhases).FindAll(PhaseOn).ToArray()));
             if (Environment.GetEnvironmentVariable("ORICOOP_INTRO_ONLY") == "1") yield break;
             if (ClientCount == 4) { yield return FourClients(h); yield break; }
@@ -1697,6 +1700,7 @@ namespace OriCoop
                     goto G;
                 }
                 if (!PhaseOn("MOVE")) { s_tracking = false; goto AfterMove; }
+                Mark(h, "MOVE");
                 yield return Movement(h, "A", host);
                 yield return Wait(1.5f);
                 yield return Movement(h, "B", !host);
@@ -1782,11 +1786,7 @@ namespace OriCoop
                     h.Check(recovered && converged, "D LastError < 0.6 within 2 s (" + F(recoveryError) + ")");
                     // Lag test ②: a 2 s blackout shows the "信号中断" hint (bars 0, "-- ms") and clears after recovery.
                     h.Check(sawHint && !NetPlay.SignalLost, "D HUD signal-lost hint shown during blackout, cleared after");
-                    // Lag test ⑦: 200 / 400 / 800 ms RTT no longer look the same (bar count or colour differs).
-                    int b200 = NetHud.SignalBars(true, false, 200f, 1f), b400 = NetHud.SignalBars(true, false, 400f, 1f), b800 = NetHud.SignalBars(true, false, 800f, 1f);
-                    Color c400 = NetHud.SignalColor(false, 400f, 1f), c800 = NetHud.SignalColor(false, 800f, 1f);
-                    h.Note("D signal bars 200/400/800 ms = " + b200 + "/" + b400 + "/" + b800);
-                    h.Check(b200 > b400 && c400 != c800 && NetHud.SignalBars(true, false, 50f, 0f) == 4, "D signal bars distinguish 200/400/800 ms");
+                    // Lag test 7 (200 / 400 / 800 ms look different) is pure logic: unit tests "signal ..." in src\Tests\Ui (T-096).
                 }
                 yield return Wait(1.5f);
 
@@ -1819,15 +1819,16 @@ namespace OriCoop
                 s_tracking = false;
                 h.Check(s_ownWritten > 0 && s_remoteWritten > 0, "F own and puppet track rows recorded");
             AfterMove:
-                if (PhaseOn("W")) yield return SharedWorld(h);
-                if (PhaseOn("E3")) yield return Safely(h, "E3", SharedEnemies(h));
-                if (PhaseOn("E5")) yield return Safely(h, "E5", EnemySyncTest.Run(h));   // enemy AI/death/damage/difficulty (EnemySyncTest.cs, enemy-sync)
-                if (PhaseOn("R")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 60); yield return Safely(h, "R", NetReviveTest.Run(h)); }   // online downed/revive
-                if (PhaseOn("S4")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62); yield return Safely(h, "S4", NetStoryTest.Run(h)); }
-                if (PhaseOn("P")) yield return Safely(h, "P", NetPhysTest.Run(h));   // pushable stones (NetPhysTest.cs, world-physics)
-                if (PhaseOn("WO")) yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
-                if (PhaseOn("CAM")) yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
-                if (PhaseOn("CUT")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64); yield return Safely(h, "P3", NetCutsceneTest.Run(h)); }
+                if (PhaseOn("W") && Mark(h, "W")) yield return SharedWorld(h);
+                if (PhaseOn("E3") && Mark(h, "E3")) yield return Safely(h, "E3", SharedEnemies(h));
+                if (PhaseOn("E5") && Mark(h, "E5")) yield return Safely(h, "E5", EnemySyncTest.Run(h));   // enemy AI/death/damage/difficulty (EnemySyncTest.cs, enemy-sync)
+                if (PhaseOn("R") && Mark(h, "R")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 60); yield return Safely(h, "R", NetReviveTest.Run(h)); }   // online downed/revive
+                if (PhaseOn("S4") && Mark(h, "S4")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62); yield return Safely(h, "S4", NetStoryTest.Run(h)); }
+                if (PhaseOn("P") && Mark(h, "P")) yield return Safely(h, "P", NetPhysTest.Run(h));   // pushable stones (NetPhysTest.cs, world-physics)
+                if (PhaseOn("WO") && Mark(h, "WO")) yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
+                if (PhaseOn("CAM") && Mark(h, "CAM")) yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
+                if (PhaseOn("CUT") && Mark(h, "CUT")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64); yield return Safely(h, "P3", NetCutsceneTest.Run(h)); }
+                h.Note("=== phase END");
                 // With selected phases the last one is followed by G at once: the end that finished first left the
                 // session while the other still waited for that phase's last barrier (E5 alone: "E5L barrier 44").
                 // Meet once more before G (T-078). A full run keeps its old ending.

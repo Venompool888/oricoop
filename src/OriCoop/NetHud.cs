@@ -461,20 +461,14 @@ namespace OriCoop
 
         // Lit bars (lag test ⑦: old scale was flat above 250 ms): <80 ms & <2% loss = 4, <150 & <5% = 3,
         // <300 & <10% = 2, else 1; 0 when disconnected or silent past NetPlay.SilenceHintMs.
-        public static int SignalBars(bool connected, bool lost, float rtt, float loss)
-        {
-            if (!connected || lost) return 0;
-            if (rtt < 80f && loss < 2f) return 4;
-            if (rtt < 150f && loss < 5f) return 3;
-            if (rtt < 300f && loss < 10f) return 2;
-            return 1;
-        }
+        public static int SignalBars(bool connected, bool lost, float rtt, float loss) { return Ui.SignalLevels.Bars(connected, lost, rtt, loss); }
 
         // Bar colour also separates high latencies: cyan < 250 ms, amber 250-500 ms, red >= 500 ms or silent.
         public static Color SignalColor(bool lost, float rtt, float alpha)
         {
-            if (lost || rtt >= 500f) return new Color(0.95f, 0.36f, 0.32f, alpha);
-            if (rtt >= 250f) return new Color(0.98f, 0.78f, 0.30f, alpha);
+            int tier = Ui.SignalLevels.ColorTier(lost, rtt);
+            if (tier == 2) return new Color(0.95f, 0.36f, 0.32f, alpha);
+            if (tier == 1) return new Color(0.98f, 0.78f, 0.30f, alpha);
             return new Color(0.39f, 0.87f, 0.91f, alpha);
         }
 
