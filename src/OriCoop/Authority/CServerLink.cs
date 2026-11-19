@@ -109,8 +109,14 @@ namespace OriCoop.Authority
             return c.Peer;
         }
 
+        public static bool HasStale { get { return s_stale != null; } }   // T-152 test hook
+        static readonly bool s_mutateKeepStale = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_KEEP_STALE") == "1";
+
         static void Teardown()
         {
+            // T-152: a dropped session's client is parked in s_stale (NetPlay may still poll it until the next Create).
+            // Leaving online play (NetPlay.End -> Stopped, after Close) must free its UDP socket too.
+            if (s_stale != null && !s_mutateKeepStale) { try { s_stale.Leave(); } catch { } s_stale = null; }
             if (s_client == null) return;
             CServerClient c = s_client;
             s_client = null;
