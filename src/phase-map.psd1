@@ -7,7 +7,7 @@
 @{
     # Shared core: session, transport, seats, save handshake, the harness itself, the composition root.
     Full = @(
-        'Plugin', 'NetPlay', 'NetPeer', 'Transport', 'ClockSync', 'PeerHub', 'RelayHub', 'RelayTransport', 'RelayList', 'SteamTransport',
+        'Plugin', 'NetPlay', 'ProtocolVersion', 'NetPeer', 'Transport', 'ClockSync', 'PeerHub', 'RelayHub', 'RelayTransport', 'RelayList', 'SteamTransport',
         'Players', 'Roles', 'P2Context', 'SaveSync', 'GuestJoin', 'WorldSync', 'Services', 'Seams',
         'NetRoute', 'INetRouteServer', 'CServerConfig', 'CServerClient', 'CServerLink', 'CsWire',
         'IAuthority', 'Arbiter', 'HostArbiter', 'AuthorityClient', 'AuthoritySource', 'DynamicLease',

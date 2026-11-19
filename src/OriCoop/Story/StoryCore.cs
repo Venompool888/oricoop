@@ -19,6 +19,9 @@ namespace OriCoop.Story
         bool IntroAtTitle { get; }
         StoryPoint IntroP1Position { get; }
         int[] IntroSeats { get; }
+        // Seats taken in the online session's seat table right now, every device's extra local players included; null when
+        // unknown (offline, no table yet, C-server). Unlike IntroSeats it does not wait for an Ori to exist. (T-139)
+        int[] IntroSessionSeats { get; }
         bool CanPlaceIntroSeat(int seat);
         IntroState RemoteIntro { get; }
         // A guest has a session with the host right now (not disconnected / waiting to reconnect). (T-106)
@@ -75,11 +78,39 @@ namespace OriCoop.Story
         IntroState state = new IntroState();
         readonly HashSet<int> placed = new HashSet<int>();
         bool playing;
+        // T-139: seats this PC itself saw join or leave the seat table after the wake (kept for this wake only). A guest
+        // sees its own new extra player in the table before the host's snapshot with the late bit arrives; this bridges
+        // that gap and survives an older snapshot.
+        byte seenLate;
+        readonly bool[] inSession = new bool[5];
+        bool sessionKnown;
+        uint lateGeneration;
         public bool Active { get { return state.Active; } }
         public bool HoldsSeat(int seat)
         { return seat >= 2 && seat <= 4 && (state.Active || state.Woke && !placed.Contains(seat) && !IsLate(seat)); }
         static byte Bit(int seat) { return (byte)(1 << (seat - 1)); }
-        bool IsLate(int seat) { return (state.Late & Bit(seat)) != 0; }
+        bool IsLate(int seat) { return ((state.Late | seenLate) & Bit(seat)) != 0; }
+        // T-139: PlayerJoined / PlayerLeft fire only for a device's primary seat. An extra local player added (F8) or
+        // removed after the wake changes only the seat table, so compare it with the last tick's. The first look at a
+        // table (session start) marks nothing; seats that appear during the intro (Active) are part of it.
+        void WatchSessionSeats(IIntroHost host)
+        {
+            if (state.Generation != lateGeneration || !state.Woke || state.Active) { seenLate = 0; lateGeneration = state.Generation; }
+            int[] seats = host.IntroSessionSeats;
+            if (seats == null) { sessionKnown = false; return; }
+            bool[] now = new bool[5];
+            foreach (int seat in seats) if (seat >= 1 && seat <= 4) now[seat] = true;
+            for (int seat = 2; seat <= 4; seat++)
+            {
+                if (sessionKnown && now[seat] != inSession[seat] && state.Woke && !state.Active)
+                {
+                    if (host.IntroAuthority) MarkLate(seat);   // first: MarkLate skips seats that are already late
+                    seenLate |= Bit(seat);
+                }
+                inSession[seat] = now[seat];
+            }
+            sessionKnown = true;
+        }
         static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
         // Host: a seat connected (or reconnected) or left after the wake. (T-105) The host stays "woke" with the spots
         // until it returns to the title, so without this a player joining an hour later was held, hidden and moved to
@@ -97,6 +128,7 @@ namespace OriCoop.Story
         {
             for (int seat = 1; seat <= 4; seat++) host.SetIntroHeld(seat, false);
             state = new IntroState(); placed.Clear(); playing = false;
+            seenLate = 0; sessionKnown = false;
         }
         public void Tick(IIntroHost host)
         {
@@ -140,6 +172,7 @@ namespace OriCoop.Story
                     state = remote;
                 }
             }
+            WatchSessionSeats(host);
             if (state.Woke && !state.Active)
                 foreach (int seat in host.IntroSeats)
                     if (seat >= 2 && seat <= 4 && !placed.Contains(seat) && !IsLate(seat) && host.CanPlaceIntroSeat(seat))
