@@ -25,6 +25,13 @@ namespace OriCoop.Authority
             IAuthority touch = AuthoritySource.Current;  // registers the 0xB0-0xBA handlers now (needed before CsWelcome)
             NetPlay.TransportFactory = Create;
             NetPlay.Stopped = delegate { Teardown(); };   // leaving the room: free the socket, routing and arbiter role (T-031)
+            // T-113: before NetPlay.End says goodbye, free our seats on the server so a rejoin (or anyone) gets them now.
+            NetPlay.Leaving = delegate
+            {
+                if (s_client == null) return;
+                try { s_client.ReleaseAll(); Plugin.Log.LogInfo("cserver: leaving, released seat P" + s_client.PrimarySeat); }
+                catch (Exception e) { Plugin.Log.LogWarning("cserver: release on leave: " + e.Message); }
+            };
             NetPlay.SendToOverride = delegate(int seat, byte type, bool reliable, Action<BinaryWriter> body)
             {
                 if (s_client == null) return false;
@@ -58,11 +65,15 @@ namespace OriCoop.Authority
             LastFailure = "";
             // Reconnect (NetPlay reopening the same session after a drop): NetPlay.End clears RoomCodeOverride,
             // Teardown does not, so a surviving override equal to our last room means "rejoin my seat with the token".
-            bool rejoin = s_lastToken != null && !string.IsNullOrEmpty(NetPlay.RoomCodeOverride) && NetPlay.RoomCodeOverride == s_lastCode;
+            // T-113: a guest entering the code of the room it just left also rejoins with the token (its seat may still
+            // be held); if the server no longer knows the token, the client joins fresh on the same connection.
+            bool rejoin;
+            byte mode = CServerClient.PlanJoin(isHost, code, s_lastCode, s_lastToken, NetPlay.RoomCodeOverride, out rejoin);
             if (rejoin) code = s_lastCode;
             // TODO(four-player): pass all local players' identities/count and map their assigned seats here.
-            CServerClient c = new CServerClient(ep, (byte)(rejoin ? 2 : isHost ? 0 : 1), code,
+            CServerClient c = new CServerClient(ep, mode, code,
                 rejoin ? s_lastToken : null, 1, new CsIdentity[] { new CsIdentity { Steam = 0, Nick = "" } });
+            c.RejoinFallsBackToJoin = rejoin;
             c.SeatAssigned += delegate(int seat)
             {
                 NetPlay.RoomCodeOverride = c.Code;
@@ -83,6 +94,9 @@ namespace OriCoop.Authority
             {
                 LastFailure = key;
                 Plugin.Log.LogWarning("cserver: join failed: " + key + " (" + L10n.T(key) + ")");
+                // T-148: the saved seat or the room is gone: forget the token, so the next attempt (NetPlay retries after
+                // the client ends the refused connection) joins fresh instead of reusing the dead token forever.
+                if (c.PrimarySeat == 0 && (key == "server.err.token" || key == "server.err.noroom")) { s_lastToken = null; s_lastCode = ""; }
             };
             // Not SessionEnded: that fires when the last partner leaves, but in server mode the room stays open.
             c.Peer.Disconnected += delegate(string why)

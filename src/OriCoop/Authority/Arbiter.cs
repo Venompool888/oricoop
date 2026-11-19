@@ -222,6 +222,20 @@ namespace OriCoop.Authority
                 seats[free] = new SeatInfo { Token = seats[primary].Token, Online = true,
                     Steam = request.Steam, Nick = request.Nick };
             }
+            else if (request.Target == 0)
+            {
+                // T-113: Target 0 = this device leaves the room on purpose: free all its seats now instead of holding them
+                // SeatHoldMs for a reconnect (a 4-player room said "full" to the player rejoining at once). Older servers
+                // answer CsError (unowned seat) and keep the hold; older clients never send Target 0.
+                output.AddRange(Offline(primary, nowMs));
+                foreach (int s in owned)
+                {
+                    seats[s] = null;
+                    foreach (LeaseInfo lease in leases.Values) lease.Interest.Remove(s);
+                }
+                Roster(output, nowMs);
+                return output;
+            }
             else
             {
                 if (!owned.Contains(request.Target) || request.Target == primary)
