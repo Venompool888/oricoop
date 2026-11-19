@@ -508,14 +508,15 @@ namespace OriCoop
             h.Check(ok, "GATE " + label);
             if (!ok) h.Note("GATE " + label + ": " + GateDiag());
         }
-        static void GateMove(bool inside)
+        static Vector3 GatePos(bool inside, float dx)
         {
-            float x = inside ? s_gateRect.center.x : s_gateRect.xMin - 10f;
+            float x = (inside ? s_gateRect.center.x : s_gateRect.xMin - 10f) + dx;
             float z = s_gateTrigger.transform.position.z; RaycastHit hit;
             float y = Physics.Raycast(new Vector3(x, s_gateRect.yMax + 0.5f, z), Vector3.down, out hit, s_gateRect.height + 30f, -1, QueryTriggerInteraction.Ignore)
                 ? hit.point.y + 0.5f : s_gateRect.yMin + 0.5f;
-            Plugin.Teleport(Own, new Vector3(x, y, z));
+            return new Vector3(x, y, z);
         }
+        static void GateMove(bool inside) { Plugin.Teleport(Own, GatePos(inside, 0f)); }
         static IEnumerator GateSetup(TestHarness h)
         {
             foreach (RuntimeSceneMetaData scene in Core.Scenes.Manager.AllScenes)
@@ -630,6 +631,95 @@ namespace OriCoop
             yield return GateStarted(h, label, starts, fires, true);
             yield return Settle();
         }
+        // T-110: an extra local player on one PC. The gate waits for every player, and each PC reports each of its seats.
+        static int s_extraSeat;
+        static IEnumerator GateAddExtra(TestHarness h, bool mine, string label, int step)
+        {
+            yield return Barrier(h, step);
+            HashSet<int> before = new HashSet<int>();
+            foreach (Puppet p in Players.Remotes) before.Add(p.Seat);
+            if (mine) GateCheck(h, NetPlay.AddLocalSeat(), label + " extra local player added");
+            s_extraSeat = 0; float end = Now + 20f;
+            while (s_extraSeat == 0 && Now < end)
+            {
+                foreach (Puppet p in Players.Remotes) if (!before.Contains(p.Seat) && p.Sein != null) s_extraSeat = p.Seat;
+                yield return null;
+            }
+            GateCheck(h, s_extraSeat != 0, label + " the extra player's Ori appears here");
+            yield return Barrier(h, step + 1);
+        }
+        static IEnumerator GateDropExtra(TestHarness h, bool mine, int step)
+        {
+            yield return Barrier(h, step);
+            int seat = s_extraSeat;
+            if (mine && seat != 0) NetPlay.ReleaseLocalSeat(seat);
+            float end = Now + 15f;
+            while (Players.OriOf(seat) != null && Now < end) yield return null;
+            GateCheck(h, seat == 0 || Players.OriOf(seat) == null, "extra player " + seat + " released");
+            s_extraSeat = 0;
+            yield return Barrier(h, step + 1);
+        }
+        static float GateDx { get { return Mathf.Min(1f, s_gateRect.width * 0.25f); } }
+        // G5: the guest has an extra local player; all three walk in: the gate fires by itself (was stuck at 2/3).
+        static IEnumerator GateGuestExtra(TestHarness h)
+        {
+            yield return GateAddExtra(h, !NetPlay.IsHost, "G5", 451);
+            if (s_extraSeat == 0) yield break;
+            yield return GateReset(h, 453);
+            bool mine = Players.IsLocal(s_extraSeat);
+            if (mine) Plugin.Teleport(Players.OriOf(s_extraSeat), GatePos(false, 1.5f));
+            int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored, fires = ForcedSync.Fires, forces = ForcedSync.Forces;
+            yield return Barrier(h, 454);
+            GateMove(true);
+            if (mine) Plugin.Teleport(Players.OriOf(s_extraSeat), GatePos(true, GateDx));
+            int total = 0; float end = Now + 8f;
+            while (ForcedSync.Fires == fires && Now < end) { total = Mathf.Max(total, ForcedSync.LastTotal); yield return null; }
+            h.Note("GATE5 total=" + total + " fires=" + (ForcedSync.Fires - fires) + " forces=" + (ForcedSync.Forces - forces) + " " + GateDiag());
+            GateCheck(h, total == 3 || ForcedSync.Fires > fires && total == 0, "G5 the gate counts three players (host, guest, guest's extra)");
+            yield return GateStarted(h, "G5", starts, fires, false);
+            GateCheck(h, ForcedSync.Forces == forces, "G5 fired without anyone forcing it");
+            yield return Settle();
+            yield return GateDropExtra(h, !NetPlay.IsHost, 456);
+        }
+        // G6: the host has an extra local player that stays outside: the gate waits (was firing at 2/2); the host forces
+        // and its extra player is pulled into the area.
+        static IEnumerator GateHostExtra(TestHarness h)
+        {
+            yield return GateAddExtra(h, NetPlay.IsHost, "G6", 461);
+            if (s_extraSeat == 0) yield break;
+            yield return GateReset(h, 463);
+            bool mine = Players.IsLocal(s_extraSeat);
+            if (mine) Plugin.Teleport(Players.OriOf(s_extraSeat), GatePos(false, -1.5f));
+            int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored, fires = ForcedSync.Fires, forces = ForcedSync.Forces;
+            yield return Barrier(h, 464);
+            GateMove(true);
+            float end = Now + 3f; int total = 0;
+            while (Now < end) { total = Mathf.Max(total, ForcedSync.LastTotal); yield return null; }
+            h.Note("GATE6 wait total=" + total + " count=" + ForcedSync.LastCount + " fires=" + (ForcedSync.Fires - fires) + " " + GateDiag());
+            GateCheck(h, ForcedSync.Fires == fires, "G6 no fire while the host's extra player is outside");
+            GateCheck(h, total == 3 && ForcedSync.LastCount == 2, "G6 the gate shows 2/3");
+            yield return Barrier(h, 465);
+            end = Now + 4f;
+            try
+            {
+                while (Now < end && ForcedSync.Fires == fires)
+                {
+                    if (NetPlay.IsHost) NetTestHarness.BotButtons = P2Input.BTN_Y;
+                    yield return null;
+                }
+            }
+            finally { Bot(); }
+            yield return GateStarted(h, "G6", starts, fires, false);
+            if (mine)
+            {
+                SeinCharacter extra = Players.OriOf(s_extraSeat);
+                float distance = extra == null ? -1f : Vector3.Distance(extra.Position, s_gateTrigger.transform.position);
+                h.Note("GATE6 extra distance=" + distance);
+                GateCheck(h, extra != null && distance < 4f, "G6 the host's extra player was pulled into the area");
+            }
+            yield return Settle();
+            yield return GateDropExtra(h, NetPlay.IsHost, 466);
+        }
         static IEnumerator GateRun(TestHarness h)
         {
             Local.Clear(); Bot(); NetPlay.SetSim(0, 0, 0, 0);
@@ -642,6 +732,9 @@ namespace OriCoop
                 yield return Step(h, 430, GateHold(h, "G3", 431));
                 NetPlay.SetSim(100, 0, 0, 0);
                 yield return Step(h, 440, GateHold(h, "G4 lag", 441));
+                NetPlay.SetSim(0, 0, 0, 0);
+                yield return Step(h, 450, GateGuestExtra(h));
+                yield return Step(h, 460, GateHostExtra(h));
             }
             finally { Bot(); NetPlay.SetSim(0, 0, 0, 0); }
         }

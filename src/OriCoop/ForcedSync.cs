@@ -20,8 +20,11 @@ namespace OriCoop
             public string Key;
             public Component Object;
             public Rect Rect;
-            public bool Local, Inside, SentInside;
-            public float RefreshAt, LeftAt = -1f, CountAt;
+            public bool Local, Inside;   // Inside: any of this PC's seats is in the area
+            // T-110: presence per seat (the primary and each extra local player of this PC).
+            public readonly bool[] SeatIn = new bool[GateSeats.MaxSeat + 1], SeatSent = new bool[GateSeats.MaxSeat + 1];
+            public readonly float[] SeatRefresh = new float[GateSeats.MaxSeat + 1];
+            public float LeftAt = -1f, CountAt;
             public int Count, Total, SentCount = -1, SentTotal = -1;
             public GatePillars Pillars;
         }
@@ -54,7 +57,10 @@ namespace OriCoop
         static float Now { get { return Time.realtimeSinceStartup; } }
         static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
         static bool Online { get { return !Off && Services.Net.Enabled && Services.Net.Connected && SaveSync.Ready && !P2Context.Inside; } }
-        static int Total { get { return 1 + Players.RemoteCount; } }
+        // Every player in the session: this PC's seats (primary + extra local players) and every remote seat that
+        // said Hello (a guest's extra seats carry its device's Hello). T-110: was 1 + RemoteCount, which counted a
+        // guest's extra seat but not the host's own, while presence was only ever reported for each PC's primary.
+        static int Total { get { return GateSeats.Total(Players.LocalSeats.Length, Players.RemoteCount); } }
         static void Log(string action, string key, int seat, int n, int total)
         {
             Plugin.Log.LogInfo("gate " + action + " key=" + key + " seat=" + seat + " n=" + n + " N=" + total);
@@ -105,26 +111,44 @@ namespace OriCoop
             string key = StorySync.ComponentKey(component);
             if (s_table.RecentlyFired(key, Now)) return;
             Gate gate = Get(key); Attach(gate, component); gate.Local = true;
-            if (!gate.Inside)
-            {
-                gate.Inside = true; gate.LeftAt = -1f;
-                Log("enter", key, Players.LocalSeat, gate.Count, Total);
-            }
-            Presence(gate, true);
+            // The native trigger only sees this PC's primary Ori (Characters.Current): it is inside.
+            LocalPresence(gate, true);
             Select(key);
         }
-        static void Presence(Gate gate, bool inside)
+        // Reports each of this PC's seats; returns whether any of them is inside.
+        static bool LocalPresence(Gate gate, bool primaryInside)
         {
-            if (inside == gate.SentInside && (!inside || Now < gate.RefreshAt)) return;
-            gate.SentInside = inside; gate.RefreshAt = Now + 0.5f;
-            if (Services.Net.IsHost) s_table.SetInside(gate.Key, Players.LocalSeat, inside, Now);
-            else Services.Net.Send(StateMessage, true, delegate(BinaryWriter w) { GateWire.WriteState(w, gate.Key, inside); });
+            bool any = false;
+            int[] seats = Players.LocalSeats;
+            foreach (int seat in seats)
+            {
+                if (seat < 1 || seat > GateSeats.MaxSeat) continue;
+                SeinCharacter ori = Players.OriOf(seat);
+                bool inside = ori != null && (seat == Players.LocalSeat && primaryInside || Inside(gate, ori.Position));
+                if (gate.SeatIn[seat] != inside) { gate.SeatIn[seat] = inside; Log(inside ? "enter" : "leave", gate.Key, seat, gate.Count, Total); }
+                Presence(gate, seat, inside);
+                any |= inside;
+            }
+            // A seat this PC no longer has (released extra player): forget it here; the host's entry times out.
+            for (int seat = 1; seat <= GateSeats.MaxSeat; seat++)
+                if (Array.IndexOf(seats, seat) < 0) gate.SeatIn[seat] = gate.SeatSent[seat] = false;
+            if (gate.Inside != any) { gate.Inside = any; gate.LeftAt = any ? -1f : Now; }
+            return any;
         }
+        static void Presence(Gate gate, int seat, bool inside)
+        {
+            if (inside == gate.SeatSent[seat] && (!inside || Now < gate.SeatRefresh[seat])) return;
+            gate.SeatSent[seat] = inside; gate.SeatRefresh[seat] = Now + 0.5f;
+            if (Services.Net.IsHost) s_table.SetInside(gate.Key, seat, inside, Now);
+            else Services.Net.Send(StateMessage, true, delegate(BinaryWriter w) { GateWire.WriteState(w, gate.Key, seat, inside); });
+        }
+        static IEnumerable<int> SeatsOf(int device)
+        { for (int seat = 1; seat <= GateSeats.MaxSeat; seat++) if (NetPlay.DeviceSeat(seat) == device) yield return seat; }
         static void ReceiveState(BinaryReader r)
         {
-            bool inside; string key = GateWire.ReadState(r, out inside);
+            bool inside; int seat; string key = GateWire.ReadState(r, out seat, out inside);
             if (!Online || !Services.Net.IsHost || s_table.RecentlyFired(key, Now)) return;
-            int seat = Services.Net.Sender;
+            if (!GateSeats.MayReport(Services.Net.Sender, seat, NetPlay.DeviceSeat(seat))) return;
             bool before = s_table.IsInside(key, seat, Now);
             s_table.SetInside(key, seat, inside, Now); Get(key);
             if (before != inside) Log(inside ? "enter" : "leave", key, seat, s_table.Count(key, Now), Total);
@@ -142,10 +166,11 @@ namespace OriCoop
             string key = GateWire.ReadForce(r);
             if (Online && Services.Net.IsHost) Force(key, Services.Net.Sender);
         }
-        static void Force(string key, int seat)
+        // device: the forcing PC's primary seat. Its force counts when any of that PC's seats is inside.
+        static void Force(string key, int device)
         {
-            if (s_table.RecentlyFired(key, Now) || seat != Players.LocalSeat && !s_table.IsInside(key, seat, Now)) return;
-            Log("force", key, seat, s_table.Count(key, Now), Total); Fire(key);
+            if (s_table.RecentlyFired(key, Now) || device != Players.LocalSeat && !s_table.AnyInside(key, SeatsOf(device), Now)) return;
+            Log("force", key, device, s_table.Count(key, Now), Total); Fire(key);
         }
         static void Fire(string key)
         {
@@ -162,13 +187,17 @@ namespace OriCoop
         static void Apply(Gate gate, Vector3 position)
         {
             Resolve(gate);
-            if (Own != null && !Inside(gate, Own.Position))
+            // Every player of this PC that is not in the area joins the trigger (the extra local players too).
+            foreach (int seat in Players.LocalSeats)
             {
-                Plugin.Teleport(Own, position + new Vector3((Players.LocalSeat - 1) * 0.7f - 1f, 0.5f, 0));
-                CutsceneGuard.SnapSpirit("gate");
+                SeinCharacter ori = Players.OriOf(seat);
+                if (ori == null || Inside(gate, ori.Position)) continue;
+                Plugin.Teleport(ori, position + new Vector3((seat - 1) * 0.7f - 1f, 0.5f, 0));
+                if (seat == Players.LocalSeat) CutsceneGuard.SnapSpirit("gate");
             }
             Fires++; Log("fire", gate.Key, Players.LocalSeat, gate.Count, gate.Total);
-            gate.Local = gate.Inside = gate.SentInside = false; gate.Count = 0;
+            gate.Local = gate.Inside = false; gate.Count = 0;
+            Array.Clear(gate.SeatIn, 0, gate.SeatIn.Length); Array.Clear(gate.SeatSent, 0, gate.SeatSent.Length);
             if (gate.Pillars != null) { gate.Pillars.Destroy(); gate.Pillars = null; }
             if (LocalGateKey == gate.Key) { Select(null); Hide(); }
         }
@@ -226,13 +255,7 @@ namespace OriCoop
             {
                 if (gate.Local)
                 {
-                    bool inside = Own != null && Inside(gate, Own.Position);
-                    if (gate.Inside != inside)
-                    {
-                        gate.Inside = inside; gate.LeftAt = inside ? -1f : Now;
-                        Log(inside ? "enter" : "leave", gate.Key, Players.LocalSeat, gate.Count, Total);
-                    }
-                    Presence(gate, inside);
+                    bool inside = LocalPresence(gate, false);
                     if (inside && (selected == null || gate.Key == LocalGateKey)) selected = gate.Key;
                     if (!inside && gate.LeftAt < 0f) gate.LeftAt = Now;
                     if (!inside && Now - gate.LeftAt >= 2f) gate.Local = false;

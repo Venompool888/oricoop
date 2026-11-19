@@ -89,10 +89,47 @@ static partial class StoryTests
             Equal(true, m.Update(true, 0.1f)); Equal(1f, m.Progress);
         });
         Check("gate wire state round trip", delegate {
-            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteState(w, "洞穴", true); }))
-            { bool inside; Equal("洞穴", GateWire.ReadState(r, out inside)); Equal(true, inside); }
-            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteState(w, "a", false); }))
-            { bool inside; Equal("a", GateWire.ReadState(r, out inside)); Equal(false, inside); }
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteState(w, "洞穴", 1, true); }))
+            { bool inside; int seat; Equal("洞穴", GateWire.ReadState(r, out seat, out inside)); Equal(1, seat); Equal(true, inside); }
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteState(w, "a", 4, false); }))
+            { bool inside; int seat; Equal("a", GateWire.ReadState(r, out seat, out inside)); Equal(4, seat); Equal(false, inside); }
+        });
+        // T-110: a guest with an extra local seat reports seat 3 as well as its own seat 2.
+        Check("gate wire state carries the reported seat", delegate {
+            using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteState(w, "a", 3, true); }))
+            { bool inside; int seat; GateWire.ReadState(r, out seat, out inside); Equal(3, seat); }
+        });
+        Check("gate wire rejects seat 0 and 5", delegate {
+            foreach (byte seat in new byte[] { 0, 5 })
+                GateInvalid(delegate(BinaryWriter w) { w.Write("a"); w.Write(seat); w.Write(true); },
+                    delegate(BinaryReader r) { bool inside; int s; GateWire.ReadState(r, out s, out inside); });
+        });
+        Check("gate total counts every seat of every PC", delegate {
+            Equal(2, GateSeats.Total(1, 1));   // host + guest
+            Equal(3, GateSeats.Total(1, 2));   // host + guest + the guest's extra local player
+            Equal(3, GateSeats.Total(2, 1));   // host + its extra local player + guest
+            Equal(4, GateSeats.Total(2, 2));
+            Equal(1, GateSeats.Total(0, 0));
+        });
+        Check("gate a PC reports only its own seats", delegate {
+            Equal(true, GateSeats.MayReport(2, 2, 2));    // guest's primary
+            Equal(true, GateSeats.MayReport(2, 3, 2));    // guest's extra local seat
+            Equal(false, GateSeats.MayReport(2, 1, 1));   // not the host's seat
+            Equal(false, GateSeats.MayReport(2, 4, 3));   // not another guest's seat
+            Equal(false, GateSeats.MayReport(2, 0, 2)); Equal(false, GateSeats.MayReport(2, 5, 2));
+        });
+        Check("gate fills when every seat of two PCs is inside", delegate {
+            GateTable t = new GateTable(); int total = GateSeats.Total(1, 2);
+            t.SetInside("g", 1, true, 0); t.SetInside("g", 2, true, 0);
+            Equal(false, t.AllHere("g", total, 0));   // the guest's extra player is still outside: 2/3
+            t.SetInside("g", 3, true, 0);
+            Equal(true, t.AllHere("g", total, 0));
+        });
+        Check("gate force: any seat of the forcing PC inside", delegate {
+            GateTable t = new GateTable(); t.SetInside("g", 3, true, 0);
+            Equal(true, t.AnyInside("g", new int[] { 2, 3 }, 0));
+            Equal(false, t.AnyInside("g", new int[] { 2 }, 0));
+            Equal(false, t.AnyInside("g", new int[] { 2, 3 }, 1.6f));
         });
         Check("gate wire count round trip", delegate {
             using (BinaryReader r = GatePacket(delegate(BinaryWriter w) { GateWire.WriteCount(w, "a", 2, 4); }))
@@ -121,8 +158,8 @@ static partial class StoryTests
                         delegate(BinaryReader r) { float x, y, z; GateWire.ReadFire(r, out x, out y, out z); });
         });
         Check("gate wire rejects long keys in every message", delegate {
-            GateInvalid(delegate(BinaryWriter w) { GateWire.WriteState(w, new string('a', 1025), true); },
-                delegate(BinaryReader r) { bool inside; GateWire.ReadState(r, out inside); });
+            GateInvalid(delegate(BinaryWriter w) { GateWire.WriteState(w, new string('a', 1025), 1, true); },
+                delegate(BinaryReader r) { bool inside; int seat; GateWire.ReadState(r, out seat, out inside); });
             GateInvalid(delegate(BinaryWriter w) { GateWire.WriteCount(w, new string('a', 1025), 1, 2); },
                 delegate(BinaryReader r) { byte n, total; GateWire.ReadCount(r, out n, out total); });
             GateInvalid(delegate(BinaryWriter w) { GateWire.WriteForce(w, new string('a', 1025)); },
