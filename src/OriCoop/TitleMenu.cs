@@ -871,9 +871,25 @@ namespace OriCoop
                 "title menu: picking a saved server selects it and opens Host / Join");
         }
 
+        // T-093: the how-to-play chooser (CoopMenu) is laid out from the screen size: readable and proportional at 720p..4K.
+        static string ModeSelectScaling()
+        {
+            foreach (int[] s in new[] { new[] { 1280, 720 }, new[] { 1920, 1080 }, new[] { 2560, 1440 }, new[] { 3840, 2160 } })
+            {
+                OriCoop.Ui.ModeSelectLayout l = OriCoop.Ui.ModeSelectLayout.Compute(s[0], s[1]);
+                if (l.FontPx < s[1] / 45f) return s[0] + "x" + s[1] + ": font " + l.FontPx + " px too small";
+                if (l.PanelW / s[0] < 0.3f || l.PanelW > s[0] || l.PanelH > s[1]) return s[0] + "x" + s[1] + ": panel " + l.PanelW + "x" + l.PanelH + " not proportional";
+            }
+            OriCoop.Ui.ModeSelectLayout hd = OriCoop.Ui.ModeSelectLayout.Compute(1920, 1080), uhd = OriCoop.Ui.ModeSelectLayout.Compute(3840, 2160);
+            if (Mathf.Abs(uhd.FontPx - 2 * hd.FontPx) > 2 || Mathf.Abs(uhd.PanelW - 2 * hd.PanelW) > 4) return "4K is not twice 1080p (font " + hd.FontPx + " -> " + uhd.FontPx + ", panel " + hd.PanelW + " -> " + uhd.PanelW + ")";
+            return "";
+        }
+
         public static IEnumerator TitleChecks(MonoBehaviour host, Action<bool, string> check, Action<string> note, int slot)
         {
             s_tHost = host;
+            string scaling = ModeSelectScaling();
+            check(scaling.Length == 0, "title menu: how-to-play chooser scales with the resolution (720p to 4K) " + scaling);
             note("--- title menu: Single Player / Co-op");
             yield return s_tHost.StartCoroutine(WaitFor(() => TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu && TitleItemsReady, 15f));
             check(TitleItemsReady && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu,

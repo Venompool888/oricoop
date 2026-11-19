@@ -53,6 +53,29 @@ static class UiTests
     {
         L10n.LanguageCode = delegate { return s_language; };
 
+        // T-093: the how-to-play chooser must stay readable and proportional from 720p to 4K and on other aspect ratios.
+        Run("mode select: text and panel scale with the screen height", delegate {
+            int[][] screens = { new[] { 1280, 720 }, new[] { 1920, 1080 }, new[] { 2560, 1440 }, new[] { 3840, 2160 } };
+            foreach (int[] s in screens)
+            {
+                ModeSelectLayout l = ModeSelectLayout.Compute(s[0], s[1]);
+                Check(l.FontPx >= s[1] / 45f, s[0] + "x" + s[1] + ": body font " + l.FontPx + " px is too small (need >= " + (s[1] / 45f) + ")");
+                Check(l.TitlePx > l.FontPx && l.SmallPx < l.FontPx, s[0] + "x" + s[1] + ": title / body / small order");
+                Check(l.PanelW / s[0] >= 0.3f && l.PanelW <= s[0] && l.PanelH <= s[1], s[0] + "x" + s[1] + ": panel " + l.PanelW + "x" + l.PanelH + " not proportional to the screen");
+                Check(l.RowH >= l.FontPx * 2f, s[0] + "x" + s[1] + ": row height " + l.RowH + " cannot hold two lines of " + l.FontPx + " px");
+            }
+            ModeSelectLayout hd = ModeSelectLayout.Compute(1920, 1080), uhd = ModeSelectLayout.Compute(3840, 2160);
+            Check(Math.Abs(uhd.FontPx - 2 * hd.FontPx) <= 2 && Math.Abs(uhd.PanelW - 2 * hd.PanelW) <= 4 && Math.Abs(uhd.PanelH - 2 * hd.PanelH) <= 4,
+                "4K is not twice 1080p: font " + hd.FontPx + " -> " + uhd.FontPx + ", panel " + hd.PanelW + " -> " + uhd.PanelW);
+        });
+        Run("mode select: ultra-wide and 4:3 screens keep the panel inside", delegate {
+            foreach (int[] s in new[] { new[] { 2560, 1080 }, new[] { 1440, 1080 }, new[] { 640, 360 } })
+            {
+                ModeSelectLayout l = ModeSelectLayout.Compute(s[0], s[1]);
+                Check(l.PanelW <= s[0] - 20 && l.PanelH <= s[1] && l.FontPx >= 14, s[0] + "x" + s[1] + ": panel " + l.PanelW + "x" + l.PanelH + ", font " + l.FontPx);
+            }
+        });
+
         Run("all keys resolve in both languages", delegate {
             int count = 0;
             foreach (string key in L10n.Keys)

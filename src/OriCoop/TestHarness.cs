@@ -225,6 +225,7 @@ namespace OriCoop
             if (Want("menu")) yield return StartCoroutine(Menu());
             if (Want("visual")) yield return StartCoroutine(Visual());
             if (Want("bottomhud")) yield return StartCoroutine(BottomHudScenario());
+            if (Want("modeselect")) yield return StartCoroutine(ModeSelectScenario());
             if (Want("companion")) yield return StartCoroutine(CompanionStates());
             if (Want("move")) yield return StartCoroutine(Move());
             if (Want("camera")) yield return StartCoroutine(CameraAndEdges());
@@ -1089,6 +1090,24 @@ namespace OriCoop
         // Oracles from the ticket: P2's bar equals P2 within 1 s after damage / energy use; the game's own HUD keeps
         // showing P1; downed = dimmed, gone = hidden; 3 bars do not overlap each other or the native HUD; every bar is
         // really drawn (pixels).
+        // T-093: the how-to-play chooser is drawn at the window's own size: font and panel proportional (run-test -Width/-Height).
+        IEnumerator ModeSelectScenario()
+        {
+            Note("--- scenario: modeselect (T-093: the how-to-play chooser at " + Screen.width + "x" + Screen.height + ")");
+            CoopMenu.LastModeScreenH = 0;
+            CoopMenu.OpenModeSelect();
+            yield return StartCoroutine(Wait(1.5f));
+            OriCoop.Ui.ModeSelectLayout l = CoopMenu.LastModeLayout;
+            string size = Screen.width + "x" + Screen.height;
+            Check(CoopMenu.IsOpen && CoopMenu.LastModeScreenH == Screen.height, "modeselect: the chooser was drawn for this window (" + size + ")");
+            Check(l.FontPx >= Screen.height / 45f, "modeselect: " + size + " text is readable (" + l.FontPx + " px, needs " + (Screen.height / 45f) + ")");
+            Check(l.PanelW / Screen.width >= 0.3f && l.PanelW <= Screen.width && l.PanelH <= Screen.height,
+                "modeselect: " + size + " panel is proportional to the window (" + l.PanelW + "x" + l.PanelH + ")");
+            Shot("modeselect_" + size);
+            yield return StartCoroutine(Wait(0.6f));   // the screenshot is taken at the end of the frame
+            CoopMenu.Close();
+        }
+
         IEnumerator BottomHudScenario()
         {
             Note("--- scenario: bottomhud (T-061: a status bar per teammate at the bottom)");
