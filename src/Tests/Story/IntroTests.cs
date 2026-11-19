@@ -120,6 +120,35 @@ static partial class StoryTests
             bool rejected = false; try { IntroWire.Read(new BinaryReader(stream)); } catch (InvalidDataException) { rejected = true; }
             Equal(true, rejected);
         });
+        // T-105: the host stays "woke" with the spots until it returns to the title. A player who joins (or rejoins) long
+        // after the wake was not part of it and must stay where its save puts it, on its own PC and on the host.
+        Check("intro late joiner after the wake is neither held nor placed on the host", delegate {
+            IntroFake h = new IntroFake(); h.Seats = new[] { 1, 2 };
+            IntroRule rule = new IntroRule(); rule.Tick(h); h.Playing = false; h.Free = true; rule.Tick(h);
+            Equal(1, h.Placements);
+            rule.SeatJoined(3); h.Seats = new[] { 1, 2, 3 }; rule.Tick(h);
+            Equal(false, h.Held[3]); Equal(false, h.Placed.ContainsKey(3)); Equal(1, h.Placements);
+            rule.SeatLeft(2); rule.SeatJoined(2); rule.Tick(h); Equal(false, h.Held[2]); Equal(1, h.Placements);
+        });
+        Check("intro late joiner adopts the host's wake without being held or placed", delegate {
+            IntroFake host = new IntroFake(); host.Seats = new[] { 1, 2 };
+            IntroRule hostRule = new IntroRule(); hostRule.Tick(host); host.Playing = false; host.Free = true; hostRule.Tick(host);
+            hostRule.SeatJoined(3); hostRule.Tick(host);
+            MemoryStream stream = new MemoryStream(); IntroWire.Write(new BinaryWriter(stream), host.Remote); stream.Position = 0;
+            IntroFake guest = new IntroFake(); guest.Authority = false; guest.Playing = false; guest.Free = true; guest.Seats = new[] { 3, 1, 2 };
+            guest.Remote = IntroWire.Read(new BinaryReader(stream));
+            IntroRule guestRule = new IntroRule(); guestRule.Tick(guest);
+            Equal(false, guest.Held[3]); Equal(false, guest.Placed.ContainsKey(3));
+            guestRule.Tick(guest); Equal(false, guest.Held[3]);
+        });
+        Check("intro participant leaving and rejoining after the wake is not placed again", delegate {
+            IntroFake h = new IntroFake(); h.Seats = new[] { 1, 2, 3 }; h.PlacementReady = false;
+            IntroRule rule = new IntroRule(); rule.Tick(h); h.Playing = false; h.Free = true; rule.Tick(h);
+            Equal(0, h.Placements); Equal(true, h.Held[3]);   // seat 3 still restoring the save
+            rule.SeatLeft(3); h.Seats = new[] { 1, 2 }; h.PlacementReady = true; rule.Tick(h); Equal(1, h.Placements);
+            rule.SeatJoined(3); h.Seats = new[] { 1, 2, 3 }; rule.Tick(h);
+            Equal(false, h.Held[3]); Equal(false, h.Placed.ContainsKey(3));
+        });
         Check("intro empty and invalid seats never place P1 or phantom players", delegate {
             IntroFake h = new IntroFake(); h.Seats = new int[0];
             IntroRule rule = new IntroRule(); rule.Tick(h); h.Playing = false; h.Free = true; rule.Tick(h);

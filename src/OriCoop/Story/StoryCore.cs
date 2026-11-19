@@ -33,6 +33,8 @@ namespace OriCoop.Story
         public uint Generation;
         public bool Active, Woke;
         public StoryPoint[] Spots;
+        // T-105: seats (bit seat-1) that joined or left after the wake. They were not part of it: never held, never placed.
+        public byte Late;
     }
 
     internal static class IntroWire
@@ -40,7 +42,7 @@ namespace OriCoop.Story
         public static void Write(BinaryWriter w, IntroState state)
         {
             w.Write(state.Generation); w.Write(state.Active); w.Write(state.Woke);
-            if (state.Woke) foreach (StoryPoint p in state.Spots) { w.Write(p.X); w.Write(p.Y); w.Write(p.Z); }
+            if (state.Woke) { foreach (StoryPoint p in state.Spots) { w.Write(p.X); w.Write(p.Y); w.Write(p.Z); } w.Write(state.Late); }
         }
         public static IntroState Read(BinaryReader r)
         {
@@ -56,6 +58,7 @@ namespace OriCoop.Story
                         || float.IsNaN(p.Z) || float.IsInfinity(p.Z)) throw new InvalidDataException("invalid intro spot");
                     state.Spots[i] = p;
                 }
+                state.Late = r.ReadByte();
             }
             return state;
         }
@@ -72,8 +75,22 @@ namespace OriCoop.Story
         bool playing;
         public bool Active { get { return state.Active; } }
         public bool HoldsSeat(int seat)
-        { return seat >= 2 && seat <= 4 && (state.Active || state.Woke && !placed.Contains(seat)); }
+        { return seat >= 2 && seat <= 4 && (state.Active || state.Woke && !placed.Contains(seat) && !IsLate(seat)); }
+        static byte Bit(int seat) { return (byte)(1 << (seat - 1)); }
+        bool IsLate(int seat) { return (state.Late & Bit(seat)) != 0; }
         static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+        // Host: a seat connected (or reconnected) or left after the wake. (T-105) The host stays "woke" with the spots
+        // until it returns to the title, so without this a player joining an hour later was held, hidden and moved to
+        // the wake spot. A seat that leaves after the wake gives up its placement too, so a rejoin is a late join.
+        // Seats that join during the intro (Active) are part of it and keep waiting for the wake.
+        public void SeatJoined(int seat) { MarkLate(seat); }
+        public void SeatLeft(int seat) { MarkLate(seat); }
+        void MarkLate(int seat)
+        {
+            if (seat < 2 || seat > 4 || !state.Woke || state.Active || IsLate(seat)) return;
+            // A new snapshot object, so PublishIntro sends it right away.
+            state = new IntroState { Generation = state.Generation, Woke = true, Spots = state.Spots, Late = (byte)(state.Late | Bit(seat)) };
+        }
         public void Reset(IIntroHost host)
         {
             for (int seat = 1; seat <= 4; seat++) host.SetIntroHeld(seat, false);
@@ -122,7 +139,7 @@ namespace OriCoop.Story
             }
             if (state.Woke && !state.Active)
                 foreach (int seat in host.IntroSeats)
-                    if (seat >= 2 && seat <= 4 && !placed.Contains(seat) && host.CanPlaceIntroSeat(seat))
+                    if (seat >= 2 && seat <= 4 && !placed.Contains(seat) && !IsLate(seat) && host.CanPlaceIntroSeat(seat))
                     {
                         // A guest may still be restoring the host save when wake arrives. Do not reveal it
                         // or consume its one placement until that restore can no longer overwrite the spot.

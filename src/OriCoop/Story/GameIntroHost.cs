@@ -141,7 +141,9 @@ namespace OriCoop.Story
                 if (Services.Net.IsHost || Services.Net.Sender != 1) return;
                 remoteIntro = IntroWire.Read(r);
             });
-            Services.Net.PlayerJoined += delegate(int seat) { publishAt = 0; };
+            // T-105: only the host's rule decides; guests take its snapshot (with the late seats) as it is.
+            Services.Net.PlayerJoined += delegate(int seat) { publishAt = 0; if (Services.Net.IsHost) StorySync.IntroSeatJoined(seat); };
+            Services.Net.PlayerLeft += delegate(int seat) { if (Services.Net.IsHost) StorySync.IntroSeatLeft(seat); };
             Services.Net.SessionStarted += delegate {
                 remoteIntro = null; publishAt = 0; lastPublished = null;
                 if (!Services.Net.IsHost) StorySync.ResetIntro();

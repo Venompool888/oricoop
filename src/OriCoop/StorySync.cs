@@ -20,6 +20,8 @@ namespace OriCoop
         public static bool IntroHeld(int seat) { return Intro.HoldsSeat(seat); }
         internal static void TickIntro() { Intro.Tick(StoryHost.Current); }
         internal static void ResetIntro() { Intro.Reset(StoryHost.Current); }
+        internal static void IntroSeatJoined(int seat) { Intro.SeatJoined(seat); }
+        internal static void IntroSeatLeft(int seat) { Intro.SeatLeft(seat); }
         internal static void ApplyIntro()
         {
             // Called after the usual parking/visual updates, so nothing re-shows an intro-held Ori.
