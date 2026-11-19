@@ -364,6 +364,29 @@ namespace OriCoop.Rooms
             yield return Wait(() => Shared().GetString("backup") == upload.ToString(), 90);
             if (!Check(Shared().GetString("backup") == upload.ToString(), "guest acknowledged upload backup"))
                 yield break;
+            // T-130: the holder adopts the partner's progress (the choice at a co-op save divergence). SaveSync
+            // restarts the game to load it; that restart is not a return to the title, so the room session must stay
+            // and the next save must still upload to the room.
+            SaveSync.HostAdopt(GameController.Instance.SaveGameController.SaveToBytes());
+            if (!Check(SaveSync.HostAdopting, "host adopt started")) yield break;
+            bool restarted = false;
+            yield return Wait(delegate { restarted |= SaveSync.RestartingForLoad; return restarted && !SaveSync.HostAdopting; }, 90);
+            yield return Wait(() => NetPlay.LocalInGameplay(), 60);
+            if (!Check(restarted && !SaveSync.HostAdopting && NetPlay.LocalInGameplay(),
+                "adopted progress loaded through the restart")) yield break;
+            if (!Check(panel.Session.Active && panel.Session.Holder && SaveSlotsManager.CurrentSlotIndex == panel.Game.Slot,
+                "room session kept after adopting partner progress (T-130)")) yield break;
+            long adopted = panel.Session.Version;
+            yield return Wait(() => GameController.Instance.SaveGameController.CanPerformSave(), 30);
+            if (!Check(GameController.Instance.SaveGameController.CanPerformSave(), "game ready to save after adopting")) yield break;
+            GameController.Instance.SaveGameController.PerformSave();
+            yield return Wait(() => panel.Session.Version > adopted, 25);
+            yield return ReadInfo();
+            if (done) yield break;
+            if (!Check(panel.Session.Version > adopted && observed.Fields.GetLong("save.0.version", 0) == panel.Session.Version
+                && observed.Fields.GetString("save.0.holder") == auth.Steam,
+                "save after adopting uploads to the room, lease still held: v" + panel.Session.Version)) yield break;
+            upload = panel.Session.Version;
             GameController.Instance.RestartGame();
             yield return Wait(() => !panel.Session.Active
                 && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, 45);
