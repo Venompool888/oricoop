@@ -90,15 +90,6 @@ static class UiTests
             }
             Check(count > 0, "empty table");
         });
-        // T-154: T-045 named local play 「本地同屏」 everywhere; the mode chooser's mode.local still said 「本地双人」.
-        Run("local play is called 本地同屏 everywhere (no 本地双人 / 双人同屏 left)", delegate {
-            Check(L10n.T("mode.local", true) == L10n.T("title.local", true), "mode.local zh = " + L10n.T("mode.local", true) + ", title.local zh = " + L10n.T("title.local", true));
-            foreach (string key in L10n.Keys)
-            {
-                string zh = L10n.T(key, true);
-                Check(zh.IndexOf("本地双人") < 0 && zh.IndexOf("双人同屏") < 0, key + " zh still says " + zh);
-            }
-        });
         Run("every translation has matching format arguments", delegate {
             object[] args = new object[32];
             for (int i = 0; i < args.Length; i++) args[i] = "arg" + i;

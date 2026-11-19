@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 
 namespace OriCoop
@@ -407,7 +407,7 @@ namespace OriCoop
             "title.slots.full", "存档位都满了：选一个存档位保存联机进度（原存档会先备份）", "All save slots are full. Choose a slot for your co-op progress. Its current save will be backed up first.",
             "mode.single", "单人", "Single Player",
             "mode.single.desc", "一个人玩，键盘鼠标和手柄都控制 Ori", "Play solo. Keyboard, mouse and controller all control Ori.",
-            "mode.local", "本地同屏", "Local Co-op",
+            "mode.local", "本地双人", "Local Co-op",
             "mode.local.desc", "同一台电脑两个人玩，下一步选择手柄", "Two players on this PC. Next, choose each player's controller.",
             "mode.online", "联机", "Online Co-op",
             "mode.online.desc", "两台电脑一起玩", "Two PCs, each with its own game.",

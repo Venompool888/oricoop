@@ -713,17 +713,18 @@ namespace OriCoop
                 // Online: the local Ori dying goes downed while the partner can revive it (ReviveNet.cs).
                 if (NetPlay.Enabled && !isP2 && Revive.Enabled && P2Context.P1 != null && __instance.transform.IsChildOf(P2Context.P1.transform)) return !Revive.HandleDeathOnline(P2Context.P1);
                 if (NetPlay.Enabled && !isP2 && SessionRules.HandleOwnDeathOnline(__instance)) return false;
-                // Local co-op: either Ori's death becomes "downed" while the partner is alive (Revive decides).
+                // Local co-op: use the dying puppet's Ori, including offline seats 3 and 4.
                 if (!NetPlay.Enabled && Revive.Enabled)
                 {
-                    SeinCharacter who = isP2 ? P2Context.P2
+                    SeinCharacter who = isP2 ? puppet.Sein
                         : (P2Context.P1 != null && __instance.transform.IsChildOf(P2Context.P1.transform) ? P2Context.P1 : null);
                     if (who != null) return !Revive.HandleDeath(who);
                 }
                 if (!isP2) return true;
-                Log.LogInfo("P2 died; respawning at P1");
-                P2Context.P2.Mortality.Health.RestoreAllHealth();
-                if (P2Context.P1 != null) Teleport(P2Context.P2, P2Context.P1.Position);
+                SeinCharacter respawn = NetPlay.Enabled ? P2Context.P2 : puppet.Sein;
+                Log.LogInfo("P" + (NetPlay.Enabled ? 2 : puppet.Seat) + " died; respawning at P1");
+                respawn.Mortality.Health.RestoreAllHealth();
+                if (P2Context.P1 != null) Teleport(respawn, P2Context.P1.Position);
                 return false;
             }
         }
