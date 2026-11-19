@@ -27,6 +27,24 @@ namespace OriCoop.Rules
         }
     }
 
+    // What this PC last told the others about its own pause (msg 53) in the current session.
+    // T-104: nothing is sent before this PC's session has started. Connected comes first; a pause sent then is wrong
+    // twice over: the receiver clears what it heard at its own session start (which may already be past), and this PC's
+    // offline pause stops pausing at its session start, after which "not paused" equals the reset state and was never
+    // sent, so the guest stayed frozen for good.
+    public sealed class MenuReport
+    {
+        bool reported, started;
+        public void SessionStarted() { started = true; reported = false; }
+        public void SessionEnded() { started = false; reported = false; }
+        // true = send `paused` now (and it is remembered as told).
+        public bool ShouldSend(bool online, bool paused)
+        {
+            if (!online || !started || paused == reported) return false;
+            reported = paused; return true;
+        }
+    }
+
     // T-044: online nothing pauses. Native screens that suspend the game (help popups, page popups, skill-tree item
     // help) call Suspend/Resume in pairs, sometimes Resume without Suspend. Online the suspend is skipped and remembered
     // per owner, so its matching resume is skipped too and no other suspension's reference count moves. Offline, and a
