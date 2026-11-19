@@ -119,10 +119,26 @@ namespace OriCoop
             return result;
         }
         static void Load(RuntimeSceneMetaData scene) { Load(scene, null); }
+        // T-102: SceneBounds merges several rectangles, so its centre can fall in a gap outside the scene (L-shaped
+        // scenes); with the player there the streaming manager never keeps the scene loaded ("load" in every run and in
+        // discovery). Use the largest real boundary rectangle, and the designers' Sein placeholder when it lies inside.
+        static Rect Largest(RuntimeSceneMetaData scene)
+        {
+            Rect best = scene.SceneBounds; float area = -1f;
+            foreach (Rect r in scene.SceneBoundaries) if (r.width * r.height > area) { best = r; area = r.width * r.height; }
+            return best;
+        }
+        static Vector3 Anchor(RuntimeSceneMetaData scene)
+        {
+            Vector2 p = scene.PlaceholderPosition;
+            if (p != Vector2.zero && scene.IsInsideSceneBounds(new Vector3(p.x, p.y, 0f))) return new Vector3(p.x, p.y, 0f);
+            Vector2 c = Largest(scene).center;
+            return new Vector3(c.x, c.y, 0f);
+        }
         static void Load(RuntimeSceneMetaData scene, Vector3? position)
         {
-            Vector2 c = scene.SceneBounds.center;
-            if (Own != null) Plugin.Teleport(Own, position ?? new Vector3(c.x + (NetPlay.IsHost ? -1f : 1f), c.y, 0));
+            Vector3 a = Anchor(scene);
+            if (Own != null) Plugin.Teleport(Own, position ?? new Vector3(a.x + (NetPlay.IsHost ? -1f : 1f), a.y, 0));
             Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(scene.SceneBounds, true, false, false);
         }
         static NetCutsceneTest.Sample Bits(int step, ulong hash, bool found)
@@ -212,42 +228,115 @@ namespace OriCoop
             }
             Check(h, match, name);
         }
+        // T-102: reasons that make an entry INCONCLUSIVE instead of a game failure (e.g. "not-loadable-now").
+        static string s_inconclusive;
+        static bool s_storySeen, s_settledOk;
+        static Vector3 s_spot;
+        static bool Swimming
+        { get { return Own != null && Own.Abilities != null && Own.Abilities.Swimming != null && Own.Abilities.Swimming.IsSwimming; } }
+        static bool StoryRunning
+        { get { return StorySync.StoryActive || OriCoop.Story.StoryHost.Current.Inside || (UI.Fader != null && UI.Fader.CurrentState == FaderB.State.Timeline); } }
+        static int ViewRepairs() { return CutsceneGuard.Repairs - CutsceneGuard.SpiritRepairs; }
+        // Ori stands still on dry ground for 0.5 s; a spot inside rock, in water or on a slope that slides does not count.
+        static IEnumerator SettleAt(Vector3? position, float timeout)
+        {
+            s_settledOk = false;
+            if (Own == null) yield break;
+            if (position.HasValue)
+            {
+                Plugin.Teleport(Own, position.Value);
+                Own.PlatformBehaviour.PlatformMovement.PlaceOnGround(0.5f, 0f);
+            }
+            float end = Now + timeout, stableSince = -1f; Vector3 last = Own.Position;
+            while (Now < end)
+            {
+                if (Own == null) yield break;
+                Own.Mortality.DamageReciever.IsImmortal = true;
+                bool ok = Grounded && !Swimming && !GameController.Instance.IsLoadingGame && (Own.Position - last).sqrMagnitude < 0.25f;
+                last = Own.Position;
+                if (!ok) stableSince = -1f;
+                else if (stableSince < 0) stableSince = Now;
+                else if (Now - stableSince >= 0.5f) { s_settledOk = true; yield break; }
+                yield return null;
+            }
+        }
+        // Host only: the scene centre (where Load dropped Ori), then the save pedestals of the scene, then a grid over the
+        // scene dropped onto the floor below each point. Bounded so the waiting guest (60 s barrier) never runs out.
+        static IEnumerator HostFindSpot(TestHarness h, SweepEntry entry, RuntimeSceneMetaData meta)
+        {
+            float deadline = Now + 45f;
+            yield return SettleAt(null, 6f);
+            if (s_settledOk) { s_spot = Own.Position; h.Note("SWEEP spot centre " + s_spot); yield break; }
+            foreach (SavePedestal p in Pedestals(entry.Scene))
+            {
+                if (Now >= deadline || Storm(h)) yield break;
+                yield return SettleAt(p.transform.position + Vector3.left, 3f);
+                if (s_settledOk) { s_spot = Own.Position; h.Note("SWEEP spot pedestal " + s_spot); yield break; }
+            }
+            Rect b = Largest(meta);
+            foreach (float[] c in SweepPlan.Candidates(b.xMin, b.yMin, b.width, b.height))
+            {
+                if (Now >= deadline || Storm(h)) yield break;
+                yield return SettleAt(new Vector3(c[0], c[1], 0f), 2.5f);
+                if (s_settledOk && Loaded(entry.Scene) != null) { s_spot = Own.Position; h.Note("SWEEP spot grid " + s_spot); yield break; }
+            }
+            s_settledOk = false;
+            h.Note("SWEEP spot none in " + entry.Scene + " bounds=" + b);
+        }
         static IEnumerator Entry(TestHarness h, SweepEntry entry, RuntimeSceneMetaData meta, int step, float linger, SweepRecord record)
         {
             yield return NetCutsceneTest.Settle();
-            int repairs = CutsceneGuard.Repairs;
             // Do not save an airborne/unsafe origin. Both ends must have a valid current checkpoint before teleport.
             float readyEnd = Now + 20f;
             while (Now < readyEnd && !Storm(h) && (!Grounded || GameController.Instance.IsLoadingGame)) yield return null;
             bool ready = Grounded && !GameController.Instance.IsLoadingGame && !Storm(h);
             if (ready) Checkpoint();
-            NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = step + 11, Found = ready });
+            // T-102: the game never loads a scene whose LoadingCondition is false in this save; that is no failure.
+            bool loadable = meta.CanBeLoaded;
+            NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = step + 11, Found = ready, Ability = loadable });
             yield return NetCutsceneTest.Barrier(h, step + 11);
             NetCutsceneTest.Sample origin;
-            if (!ready || !NetCutsceneTest.Remote.TryGetValue(step + 11, out origin) || !origin.Found)
+            bool haveOrigin = NetCutsceneTest.Remote.TryGetValue(step + 11, out origin);
+            if (haveOrigin && (!loadable || !origin.Ability)) { s_inconclusive = "not-loadable-now"; yield break; }
+            if (!ready || !haveOrigin || !origin.Found)
             { Check(h, false, Storm(h) ? "exception-storm" : "place-or-settle"); yield break; }
-            Load(meta); float end = Now + 20f; bool placed = false;
-            while (Now < end && !Storm(h))
+            Load(meta);
+            float end = Now + 30f;
+            while (Now < end && !Storm(h) && (Loaded(entry.Scene) == null || GameController.Instance.IsLoadingGame))
+            { if (Own != null) Own.Mortality.DamageReciever.IsImmortal = true; yield return null; }
+            bool loaded = Loaded(entry.Scene) != null && !GameController.Instance.IsLoadingGame && Own != null;
+            bool settled = false; Vector3 spot = Vector3.zero;
+            if (loaded && entry.Kind == "save")
             {
-                if (Own != null) Own.Mortality.DamageReciever.IsImmortal = true;
-                if (Loaded(entry.Scene) != null && !GameController.Instance.IsLoadingGame && Own != null)
+                List<SavePedestal> ps = Pedestals(entry.Scene);
+                if (entry.Pedestal < ps.Count)
                 {
-                    if (!placed)
-                    {
-                        if (entry.Kind == "save")
-                        {
-                            List<SavePedestal> ps = Pedestals(entry.Scene);
-                            if (entry.Pedestal >= ps.Count) break;
-                            Plugin.Teleport(Own, ps[entry.Pedestal].transform.position + Vector3.right * (NetPlay.IsHost ? -1f : 1f));
-                        }
-                        placed = true;
-                    }
-                    if (Own.PlatformBehaviour.PlatformMovement.IsOnGround && Own.Speed.sqrMagnitude < 0.25f) break;
+                    yield return SettleAt(ps[entry.Pedestal].transform.position + Vector3.right * (NetPlay.IsHost ? -1f : 1f), 10f);
+                    settled = s_settledOk;
                 }
-                yield return null;
             }
-            bool loaded = Loaded(entry.Scene) != null && !GameController.Instance.IsLoadingGame;
-            bool settled = placed && Grounded;
+            else if (loaded && NetPlay.IsHost)
+            {
+                yield return HostFindSpot(h, entry, meta);
+                settled = s_settledOk; spot = s_spot;
+            }
+            // T-102: the host picks the standing spot and the guest stands next to it, so both ends are in the same
+            // place and stream the same neighbour scenes (a centre in rock / water / mid-air used to fail at once).
+            NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = step + 12, Found = NetPlay.IsHost ? settled : loaded,
+                Plays = SweepPlan.FloatBits(spot.x), Direction = SweepPlan.FloatBits(spot.y) });
+            yield return NetCutsceneTest.Barrier(h, step + 12);
+            NetCutsceneTest.Sample chosen;
+            if (loaded && entry.Kind != "save" && !NetPlay.IsHost && NetCutsceneTest.Remote.TryGetValue(step + 12, out chosen) && chosen.Found)
+            {
+                Vector3 host = new Vector3(SweepPlan.BitsFloat(chosen.Plays), SweepPlan.BitsFloat(chosen.Direction), 0f);
+                foreach (Vector3 offset in new[] { new Vector3(1.5f, 0.5f, 0f), new Vector3(-1.5f, 0.5f, 0f), new Vector3(0f, 1f, 0f) })
+                {
+                    yield return SettleAt(host + offset, 4f);
+                    if (s_settledOk) break;
+                }
+                settled = s_settledOk;
+            }
+            loaded = Loaded(entry.Scene) != null && !GameController.Instance.IsLoadingGame;
             if (loaded && settled && !Storm(h)) { Checkpoint(); s_placedPosition = Own.Position; }
             NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = step, Found = loaded && settled && !Storm(h), Ability = loaded });
             int failures = NetCutsceneTest.Failures(h);
@@ -261,6 +350,9 @@ namespace OriCoop
                 yield break;
             }
             Check(h, true, "loaded-found-both");
+            // T-102: the view checks count repairs from here on only, and never the spirit orb: the sweep teleports
+            // leave the orb behind, which is not a stuck view.
+            int repairs = ViewRepairs();
             int errors = h.ErrorCount;
             int restores = TestHarness.RestoreCheckpointCalls, loads = SaveSync.GuestLoads;
             s_restores = restores; s_loads = loads; s_unexpected = false; s_monitor = true;
@@ -268,17 +360,23 @@ namespace OriCoop
             while (Now < end && !Storm(h))
             {
                 Observe(restores, loads);
+                if (StoryRunning) s_storySeen = true;
                 NetTestHarness.BotLX = ((int)((end - Now) / 1.5f) % 2 == 0) ? 1f : -1f;
                 NetTestHarness.BotButtons = ((int)(Now * 5f) % 2 == 0) ? P2Input.BTN_X : 0;
                 yield return null;
             }
-            BotOff(); yield return NetCutsceneTest.Barrier(h, step + 1);
+            BotOff();
+            // T-102: a story or camera timeline the spot triggered pauses this end; let it finish before the digest
+            // barrier so the two ends compare the world after it, not halfway through on one side only.
+            float storyEnd = Now + 30f;
+            while (Now < storyEnd && StoryRunning) { s_storySeen = true; yield return null; }
+            yield return NetCutsceneTest.Barrier(h, step + 1);
             yield return Digests(h, step + 2, "digest");
             Observe(restores, loads);
             Check(h, Own != null && Own.Active, "own-present");
             bool puppet = P2Context.P2 != null && P2Context.P2 != Own && P2Context.P2.Active && Players.Remotes.Count == 1;
             Check(h, puppet, "partner-present");
-            Check(h, NetCutsceneTest.CameraFree() && CutsceneGuard.Repairs == repairs, "camera-free-no-repair");
+            Check(h, NetCutsceneTest.CameraFree() && ViewRepairs() == repairs, "camera-free-no-repair");
             Check(h, !s_unexpected, "no-unexpected-death-reload");
             if (entry.Kind == "save")
             {
@@ -295,7 +393,7 @@ namespace OriCoop
                 Check(h, SaveSync.Ready && Own != null && !GameController.Instance.IsLoadingGame && (NetPlay.IsHost || SaveSync.GuestLoads > beforeLoads), "checkpoint-reload-ready");
                 s_restores = TestHarness.RestoreCheckpointCalls; s_loads = SaveSync.GuestLoads; s_monitor = true;
                 yield return Digests(h, step + 6, "reload-digest");
-                Check(h, NetCutsceneTest.CameraFree() && CutsceneGuard.Repairs == repairs, "reload-camera-free-no-repair");
+                Check(h, NetCutsceneTest.CameraFree() && ViewRepairs() == repairs, "reload-camera-free-no-repair");
                 Check(h, Own != null && Own.Active && P2Context.P2 != null && P2Context.P2.Active, "reload-players-present");
             }
             if (Storm(h)) Check(h, false, "exception-storm");
@@ -342,6 +440,7 @@ namespace OriCoop
                 {
                     if (e.Index < resume) continue;
                     s_exception = null; s_checks = 0; Failed.Clear(); s_observing = true; s_monitor = false; s_unexpected = false;
+                    s_inconclusive = null; s_storySeen = false; int spiritBefore = CutsceneGuard.SpiritRepairs;
                     SweepRecord record = new SweepRecord { Index = e.Index, Side = Side, Kind = e.Kind, Scene = e.Scene, Start = DateTime.UtcNow.ToString("o") };
                     Record(h, record);
                     RuntimeSceneMetaData meta = metadata.Find(delegate(RuntimeSceneMetaData m) { return m.Scene == e.Scene; });
@@ -361,7 +460,10 @@ namespace OriCoop
                     if (Storm(h) && !Failed.Contains("exception-storm")) Check(h, false, "exception-storm");
                     record.Verdict = SweepReport.Classify(true, true, false, s_checks, Failed);
                     record.Fails = string.Join(",", Failed.ToArray()); record.End = DateTime.UtcNow.ToString("o");
-                    record.Note = s_exception ?? ("digestMatch=" + WorldSync.LastDigestMatch + " resyncs=" + WorldSync.DigestResyncs + " " + Diag());
+                    // T-102: an entry the game cannot load in this save is INCONCLUSIVE with its reason, not a failure.
+                    if (s_inconclusive != null && Failed.Count == 0) { record.Verdict = "INCONCLUSIVE"; record.Fails = s_inconclusive; }
+                    record.Note = (s_exception ?? ("digestMatch=" + WorldSync.LastDigestMatch + " resyncs=" + WorldSync.DigestResyncs + " " + Diag()))
+                        + " spiritRepairs=" + (CutsceneGuard.SpiritRepairs - spiritBefore) + (s_storySeen ? " story=seen" : "");
                     Record(h, record);
                     bool recover = Failed.Contains("exception-storm") || Failed.Contains("load") || Failed.Contains("place-or-settle")
                         || Failed.Contains("barrier-timeout") || Failed.Contains("step-or-partner-failure") || s_exception != null;

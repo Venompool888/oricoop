@@ -46,6 +46,8 @@ namespace OriCoop
         // Test-only mutation switch: ORICOOP_P3_OFF=1 restores the pre-fix behaviour so the P3 scenario can prove it fails.
         public static readonly bool Off = Environment.GetEnvironmentVariable("ORICOOP_P3_OFF") == "1";
         public static int PedestalPlaysSent, PedestalPlaysReceived, PedestalPlaysPlayed, Repairs, LocalPedestalActivations;
+        // The spirit-orb share of Repairs (snapped after a teleport, pulled out of MoveToPosition): no view was stuck (T-102).
+        public static int SpiritRepairs;
         static SeinCharacter Own { get { return StoryHost.Current.P1 != null ? StoryHost.Current.P1 : Characters.Sein; } }
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         public static void Log(string msg)
@@ -213,7 +215,7 @@ namespace OriCoop
             if (Off || Characters.Ori == null || Own == null || StoryHost.Current.Inside) return;
             if (Vector3.Distance(Characters.Ori.Position, Own.Position) <= 30f) return;
             if (StuckSpirit()) Characters.Ori.BackToPlayerController(); else Characters.Ori.MoveOriToPlayer();
-            Repairs++; Log("spirit snapped to player (" + why + ")");
+            Repairs++; SpiritRepairs++; Log("spirit snapped to player (" + why + ")");
         }
         static bool StuckSpirit()
         {
@@ -225,7 +227,7 @@ namespace OriCoop
         {
             if (Off) return;
             if (StuckSpirit() && (immediate || now - s_spiritAt >= 2f))
-            { Characters.Ori.BackToPlayerController(); s_spiritAt = now; Repairs++; Log("repair spirit"); }
+            { Characters.Ori.BackToPlayerController(); s_spiritAt = now; Repairs++; SpiritRepairs++; Log("repair spirit"); }
             if (Game.UI.SeinUI != null && !Game.UI.SeinUI.ShowUI && (immediate || now - s_uiAt >= 2f))
             { Game.UI.SeinUI.ShowUI = true; s_uiAt = now; Repairs++; Log("repair ShowUI"); }
             if (Letterbox.ShowLetterboxes && (immediate || now - s_letterboxAt >= 2f))
@@ -311,7 +313,7 @@ namespace OriCoop
             static void Prefix()
             {
                 if (!Off && Online && !StoryHost.Current.Inside && !StorySync.StoryActive && StuckSpirit())
-                { Characters.Ori.BackToPlayerController(); Repairs++; Log("repair spirit before checkpoint"); }
+                { Characters.Ori.BackToPlayerController(); Repairs++; SpiritRepairs++; Log("repair spirit before checkpoint"); }
             }
         }
     }

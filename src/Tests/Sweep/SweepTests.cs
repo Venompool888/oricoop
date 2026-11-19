@@ -34,9 +34,18 @@ class SweepTests
             List<SweepScene> cinematic = new List<SweepScene> {
                 new SweepScene("kuroAttackLandCliff", false, true, null, 0), new SweepScene("kuroNestFeeding", false, true, null, 0),
                 new SweepScene("kuroMomentTree", false, true, null, 0), new SweepScene("theSacrificeBurningNest", false, true, null, 0),
-                new SweepScene("sacrificeInsideNest", false, true, null, 0), new SweepScene("swallowsNestTheGift", false, true, null, 0),
+                new SweepScene("sacrificeInsideNest", false, true, null, 0), new SweepScene("swallowsNestTheGift", false, true, null, 0), new SweepScene("spiritTreeToRunawayTransition", false, true, null, 0),
                 new SweepScene("mountHoruHubTop", false, true, null, 0) };
             Check(SweepPlan.Build(cinematic, null, null, null, null).Count == 1, "default skip excludes cinematic/prologue scenes only");
+            // T-102: standing-spot candidates and the float carried through a barrier sample.
+            List<float[]> spots = SweepPlan.Candidates(100f, -50f, 40f, 20f);
+            Check(spots.Count == 14, "14 grid candidates after the centre");
+            Check(spots[0][0] == 120f && spots[0][1] == -35f, "first candidate is the middle column of the top row");
+            bool inside = true, centre = false;
+            foreach (float[] c in spots) { inside &= c[0] > 100f && c[0] < 140f && c[1] > -50f && c[1] < -30f; centre |= c[0] == 120f && c[1] == -40f; }
+            Check(inside && !centre, "candidates lie inside the bounds and skip the centre (tried first by the caller)");
+            foreach (float f in new[] { 0f, -0f, 1234.5f, -987.25f, float.Epsilon, float.MaxValue })
+                Check(SweepPlan.BitsFloat(SweepPlan.FloatBits(f)).Equals(f), "float round-trips through sample bits: " + f);
             bool invalidSkip = false; try { SweepPlan.Build(gameplay, null, null, null, null, "["); } catch (ArgumentException) { invalidSkip = true; }
             Check(invalidSkip, "invalid skip regex rejected");
             bool bad = false; try { SweepPlan.Build(scenes, null, null, "2/2", null); } catch (ArgumentException) { bad = true; }
