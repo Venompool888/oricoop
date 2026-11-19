@@ -272,7 +272,7 @@ namespace OriCoop
 
         static void OnNetBothDown(BinaryReader r)
         {
-            if (!Services.Net.Enabled || Services.Net.Sender != 1) return;
+            if (!Services.Net.Enabled || Services.Net.Sender != Services.Net.HostSeat) return;
             FinalDeaths++; NetBothDown++;
             Services.Log.Info("online: host says both Oris are down: checkpoint reload");
             ReleaseRemoteDowned();

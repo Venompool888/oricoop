@@ -20,6 +20,7 @@ namespace OriCoop.Seams
             public bool Connected { get { return NetPlay.Connected; } }
             public bool IsHost { get { return NetPlay.IsHost; } }
             public int Sender { get { return NetPlay.Sender; } }
+            public int HostSeat { get { return OriCoop.Authority.NetRoute.HostSeat; } }
             public void On(byte type, Action<BinaryReader> handler) { NetPlay.On(type, handler); }
             public void Send(byte type, bool reliable, Action<BinaryWriter> body) { NetPlay.Send(type, reliable, body); }
             public void SendTo(int seat, byte type, bool reliable, Action<BinaryWriter> body) { NetPlay.SendTo(seat, type, reliable, body); }

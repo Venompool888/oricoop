@@ -30,6 +30,7 @@ static class EnemyTests
         public bool Connected { get { return true; } }
         public bool IsHost { get { return Seat == 1; } }
         public int Sender { get; private set; }
+        public int HostSeat { get { return m_hostSeat; } set { m_hostSeat = value; } } int m_hostSeat = 1;
         public void On(byte type, Action<BinaryReader> handler) { handlers[type] = handler; }
         public void Send(byte type, bool reliable, Action<BinaryWriter> body)
         {

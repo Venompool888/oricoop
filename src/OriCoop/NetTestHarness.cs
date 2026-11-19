@@ -29,6 +29,7 @@ namespace OriCoop
         static readonly Dictionary<int, Dictionary<int, ThreePacket>> s_threePackets = new Dictionary<int, Dictionary<int, ThreePacket>>();
         static double s_goAt, s_pickupAt, s_collectedAt;
         static bool s_threeEnded, s_leaveReleased, s_done;
+        internal static bool HostLeftInServerMode;   // T-111: the 3P server-mode check made P1 leave (CoopSaveTest skips phase L)
         static float s_threeRise, s_threeTravel, s_threeError;
         static long s_threeFrames;
         static int ClientCount
@@ -683,6 +684,34 @@ namespace OriCoop
                 "3P pickup applied once, duplicate rejected, all keys agree");
 
             yield return ThreeRound(h, 6);
+            // T-111: in server mode the room outlives P1, so P1 is the one who leaves. The arbiter moves to seat 2 and
+            // seat 3 must obey its host-only messages (a gate count here; intro and wipe use the same sender check).
+            if (NetRoute.ServerMode)
+            {
+                if (Players.LocalSeat == 1) { h.Note("3P server: P1 leaving; harness completion quits this client"); yield break; }
+                by = Time.realtimeSinceStartup + 30f;
+                while ((PuppetAt(1) != null || Players.LocalSeat == 2 && !NetPlay.IsHost) && Time.realtimeSinceStartup < by) yield return null;
+                yield return Wait(1f);   // the arbiter change reaches seat 3 with the same server state
+                HostLeftInServerMode = PuppetAt(1) == null;
+                h.Check(PuppetAt(1) == null && NetPlay.IsHost == (Players.LocalSeat == 2),
+                    "3P server: P1 left and seat 2 arbitrates now (local P" + Players.LocalSeat + ", host seat " + NetRoute.HostSeat + ")");
+                if (Players.LocalSeat == 2)
+                {
+                    yield return Wait(1f);
+                    ForcedSync.TestSendCount("t111-gate", 1, 2);
+                    h.Note("3P server: new host sent gate count t111-gate 1/2");
+                    yield return Wait(10f);   // seat 3 checks within this window
+                }
+                else
+                {
+                    by = Time.realtimeSinceStartup + 10f;
+                    while (ForcedSync.TestCount("t111-gate") != 1 && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(ForcedSync.TestCount("t111-gate") == 1, "3P server: seat 3 applies the new host's gate count (T-111)");
+                }
+                ForcedSync.TestForget("t111-gate");
+                h.Check(Connected, "3P server: remaining players stay connected after the host left");
+                yield break;
+            }
             if (NetPlay.IsHost) NetPlay.SendTestSignal("leave");
             if (Players.LocalSeat == 3)
             {

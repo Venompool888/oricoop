@@ -140,7 +140,7 @@ namespace OriCoop.Story
         internal static void InitIntroNetwork()
         {
             Services.Net.On(IntroMessage, delegate(BinaryReader r) {
-                if (Services.Net.IsHost || Services.Net.Sender != 1) return;
+                if (Services.Net.IsHost || Services.Net.Sender != Services.Net.HostSeat) return;
                 remoteIntro = IntroWire.Read(r);
             });
             // T-105: only the host's rule decides; guests take its snapshot (with the late seats) as it is.

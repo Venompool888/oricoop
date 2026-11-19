@@ -12,6 +12,7 @@ $TS_Suites = [ordered]@{
     'net-relay'   = @('run-nettest.ps1', '-Relay')
     'net-3p'      = @('run-nettest.ps1', '-Clients', '3')
     'net-4p'      = @('run-nettest.ps1', '-Clients', '4')
+    'net-3p-cs'   = @('run-nettest.ps1', '-Clients', '3', '-CServer')   # T-111: server mode, P1 leaves, seat 2 hosts
     'net-newgame' = @('run-nettest.ps1', '-GuestNewGame')
     'net-lp2'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '2')
     'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
@@ -38,12 +39,12 @@ $TS_SuitePhases = [ordered]@{
 # --- module -> suites (see docs\modules.md for what each module contains)
 $TS_ModuleSuites = @{
     'M0' = $TS_AllSuites
-    'M1' = @('net', 'net-relay', 'net-3p', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-relay', 'coopsave')
+    'M1' = @('net', 'net-relay', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-relay', 'coopsave')
     'M2' = @('local', 'net', 'net-3p', 'coopsave')
     'M3' = @('net', 'net-relay')
     'M4' = @('net', 'net-3p')
-    'M5' = @('net', 'net-4p', 'local')
-    'M6' = @('net', 'local')
+    'M5' = @('net', 'net-3p-cs', 'net-4p', 'local')
+    'M6' = @('net', 'net-3p-cs', 'local')
     'M7' = @('coopsave', 'titlejoin', 'net-newgame', 'rooms')
     'M8' = @('local', 'titlejoin')
     'M9' = @()            # harness files map to their own suite below
@@ -52,7 +53,7 @@ $TS_ModuleSuites = @{
 $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-4p');
-    'NetTestHarness'   = @('net', 'net-3p', 'net-4p', 'net-lp2', 'net-lp3'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
+    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
@@ -92,7 +93,7 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -like 'src\Tests\*') { return @{ Suites = @(); Why = 'unit tests only' } }
     if ($p -like 'src\RelayServer\*') { return @{ Suites = @('net-relay', 'titlejoin-relay'); Why = 'relay server' } }
     if ($p -like 'src\RoomServer\*') { return @{ Suites = @('rooms'); Why = 'room server' } }
-    if ($p -like 'src\CServer\*') { return @{ Suites = @('net'); Why = 'C-server (run-nettest -CServer by hand if it exists)' } }
+    if ($p -like 'src\CServer\*') { return @{ Suites = @('net', 'net-3p-cs'); Why = 'C-server (net-3p-cs runs it)' } }
     if ($p -like 'src\TestQuiet\*' -or $p -eq 'src\test-launch.ps1') { return @{ Suites = @('local', 'net'); Why = 'test launcher' } }
     if ($p -match '^src\\run-(\w+)\.ps1$') {
         $s = @{ 'test' = @('local'); 'nettest' = @('net'); 'coopsave' = @('coopsave'); 'titlejoin' = @('titlejoin'); 'rooms' = @('rooms') }[$Matches[1]]
