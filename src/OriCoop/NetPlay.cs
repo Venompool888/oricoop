@@ -31,6 +31,7 @@ namespace OriCoop
         // Called by End() once the session is closed: a factory transport frees its own state (T-031: the C-server link
         // kept its socket, routing and arbiter role, because its peer's queued Disconnected event is never polled after End).
         public static Action Stopped;
+        public static Action Leaving;   // T-113: NetPlay.End is about to leave on purpose (still connected)
         // Set by a factory transport (e.g. the C-server code after its welcome) so the lobby shows that room code.
         public static string RoomCodeOverride;
         static string s_factoryTarget = "";
@@ -376,6 +377,8 @@ namespace OriCoop
         // Back to offline. Tells the partner, ends the session for every sync system, frees the socket.
         public static void End(string why)
         {
+            // T-113: a deliberate end, before the goodbye below: transports that hold seats (C-server) release them.
+            if (Enabled && Leaving != null) { try { Leaving(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: leaving hook: " + e.Message); } }
             OnlineRoomScreen.Reset();
             s_rtTransport = s_rtAddress = s_rtRoom = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;

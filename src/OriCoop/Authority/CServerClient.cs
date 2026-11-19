@@ -23,6 +23,7 @@ namespace OriCoop.Authority
                 Code = code, Token = token ?? new byte[16], Count = (byte)count };
             request.Identities.AddRange(identities);
             byte[] join = CsWire.Encode(request);
+            m_request = request;
             Code = "";
             Token = new byte[16];
             transport = new UdpTransport(0);
@@ -42,6 +43,21 @@ namespace OriCoop.Authority
         public AuthorityClient Authority { get; private set; }
         public int ArbiterSeat { get; private set; }
         public bool IsArbiter { get { return PrimarySeat != 0 && ArbiterSeat == PrimarySeat; } }
+
+        readonly CsMessage m_request;
+        // T-113: a token rejoin (mode 2) that the server no longer knows (result 4) retries as a fresh join (mode 1).
+        public bool RejoinFallsBackToJoin { get; set; }
+        public bool UsedFallback { get; private set; }
+
+        // T-113: join mode for a connection attempt. A guest joining the room it last sat in (menu re-entry with the
+        // same code, or NetPlay reconnecting) rejoins its seat with the saved token, falling back to a fresh join.
+        public static byte PlanJoin(bool isHost, string code, string lastCode, byte[] lastToken, string roomCodeOverride, out bool rejoin)
+        {
+            bool reconnect = !string.IsNullOrEmpty(roomCodeOverride) && roomCodeOverride == lastCode;
+            bool reenter = !isHost && !string.IsNullOrEmpty(code) && code == lastCode;
+            rejoin = lastToken != null && !string.IsNullOrEmpty(lastCode) && (reconnect || reenter);
+            return (byte)(rejoin ? 2 : isHost ? 0 : 1);
+        }
 
         public event Action<int> SeatAssigned;
         public event Action<string> JoinFailed;
@@ -67,6 +83,14 @@ namespace OriCoop.Authority
                         Code = message.Code;
                         Token = message.Token;
                         if (SeatAssigned != null) SeatAssigned(Seat);
+                    }
+                    else if (message.Result == 4 && RejoinFallsBackToJoin && m_request.Mode == 2 && !string.IsNullOrEmpty(m_request.Code))
+                    {
+                        // T-113: the saved seat is gone (held time over, or released when we left): join the room fresh,
+                        // once, on the same connection (the server accepts another CsJoin until one succeeds).
+                        RejoinFallsBackToJoin = false; UsedFallback = true;
+                        m_request.Mode = 1; m_request.Token = new byte[16];
+                        Send(CsWire.Encode(m_request), true);
                     }
                     else if (JoinFailed != null)
                     {
@@ -155,6 +179,15 @@ namespace OriCoop.Authority
         {
             RequireLocal(seat);
             SendAs(PrimarySeat, CsWire.Encode(new CsMessage { Type = CsWire.CsSeatRelease, Target = (byte)seat }), true);
+        }
+
+        // T-113: leaving on purpose: ask the server to free every seat of this device now (Target 0) instead of holding
+        // them for a reconnect. Older servers reply CsError and keep the hold; the token rejoin still works there.
+        public void ReleaseAll()
+        {
+            if (PrimarySeat == 0 || Peer.State != PeerState.Connected) return;
+            SendAs(PrimarySeat, CsWire.Encode(new CsMessage { Type = CsWire.CsSeatRelease, Target = 0 }), true);
+            Peer.Flush();
         }
 
         public void Leave()
