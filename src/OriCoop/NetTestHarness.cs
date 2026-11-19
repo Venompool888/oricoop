@@ -682,6 +682,19 @@ namespace OriCoop
                 && a.Applied - Three(4, 1).Applied == 1 && a.Rejected - Three(4, 1).Rejected == 1,
                 "3P pickup applied once, duplicate rejected, all keys agree");
 
+            // T-115: guest-to-guest broadcasts ride the P2P host's forward table (the C-server forwards everything): a
+            // soul link (80) and a co-push report (89) sent by seat 2 must reach seat 3.
+            int soulBefore = PartnerFx.SoulLinksReceived, pushBefore = PushBlockSync.CoPushHeard;
+            yield return ThreeRound(h, 40);
+            if (Players.LocalSeat == 2) { PartnerFx.TestSendSoulLink(); PushBlockSync.TestSendCoPush(); h.Note("3P seat 2 sent soul link and co-push"); }
+            if (Players.LocalSeat == 3)
+            {
+                by = Time.realtimeSinceStartup + 6f;
+                while ((PartnerFx.SoulLinksReceived == soulBefore || PushBlockSync.CoPushHeard == pushBefore) && Time.realtimeSinceStartup < by) yield return null;
+                h.Check(PartnerFx.SoulLinksReceived > soulBefore && PushBlockSync.CoPushHeard > pushBefore,
+                    "3P guest 3 receives guest 2's soul link (80) and co-push (89) (T-115; " + (PartnerFx.SoulLinksReceived - soulBefore) + "/" + (PushBlockSync.CoPushHeard - pushBefore) + ")");
+            }
+            yield return ThreeRound(h, 41);
             yield return ThreeRound(h, 6);
             if (NetPlay.IsHost) NetPlay.SendTestSignal("leave");
             if (Players.LocalSeat == 3)

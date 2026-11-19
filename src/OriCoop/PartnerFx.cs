@@ -37,7 +37,7 @@ namespace OriCoop
         public static string LastReviveEffect = "", LastReviveSound = "";
         public static float LastHurtPlayedAt = -1f, LastReviveAt = -1f;
         public static bool LastHurtStateOn, LastHurtAnimOn;
-        public static int SoulLinksSent, SoulLinksShown;
+        public static int SoulLinksSent, SoulLinksShown, SoulLinksReceived;
 
         static bool s_registered;
 
@@ -52,6 +52,15 @@ namespace OriCoop
             s_registered = true;
             Services.Net.On(MsgPuppetFx, OnNetPuppetFx);
             Services.Net.On(MsgSoulLink, OnNetSoulLink);
+            // T-115: guests only talk to the P2P host: it must relay a guest's soul link flame to the other guests.
+            if (!PushBlockSync.s_mutateNoForward) Services.Net.Forward(MsgSoulLink);
+        }
+        // T-115 net test: announce a soul link at our own position (the partners spawn the native flame on our puppet).
+        internal static void TestSendSoulLink()
+        {
+            if (Host.P1 == null) return;
+            int seat = Host.LocalSeat; Vector3 at = Host.P1.Position;
+            Services.Net.Send(MsgSoulLink, true, w => { w.Write((byte)seat); w.Write(at.x); w.Write(at.y); w.Write(at.z); });
         }
 
         // ---- soul link (T-029) -----------------------------------------------------------------------------------------
@@ -79,6 +88,7 @@ namespace OriCoop
         {
             int seat = r.ReadByte();
             Vector3 at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+            SoulLinksReceived++;
             SeinCharacter s = Revive.SeinAt(seat);
             if (s == null || s == Host.P1 || s.SoulFlame == null) { Log("got soul link for seat " + seat + " but no puppet"); return; }
             s.SoulFlame.DestroySoulFlame();
