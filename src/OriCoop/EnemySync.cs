@@ -455,6 +455,9 @@ namespace OriCoop
 
         static void Announce(Actor a)
         {
+            // Only the host reads presence reports (every other receiver dropped them after creating an entry, which made
+            // every guest track, and report, every enemy the host ever saw). (T-147)
+            if (Services.Net.IsHost) return;
             Send(Presence, true, delegate(BinaryWriter w) { WriteId(w, a); WriteVector(w, a.Origin); w.Write(a.Loaded); });
             a.PresenceSent(delegate { return Now; });
         }
@@ -462,9 +465,12 @@ namespace OriCoop
         {
             Actor a = ReadId(r); a.Origin = ReadVector(r); bool loaded = r.ReadBoolean();
             if (!Services.Net.IsHost) return;
-            a.Presence(Services.Net.Sender, loaded);
             // Position alone never grants authority: the chosen seat must report the scene loaded.
-            Scan(); Decide(a);
+            // T-147: no Scan per report (Tick scans every 0.25 s), and an unchanged owner is not re-granted to everyone.
+            int sender = Services.Net.Sender;
+            int action = a.OnPresence(sender, loaded, delegate { return PolicyDesiredOwner(a); });
+            if (action == 1) Grant(a, false, sender);
+            else if (action == 2) Decide(a);
         }
         static void Decide(Actor a)
         {
@@ -527,12 +533,12 @@ namespace OriCoop
                 if (a.LoadedSeats.Contains(remote.Key))
                     yield return new KeyValuePair<int, float>(remote.Key, Vector3.Distance(position, remote.Value));
         }
-        static void Grant(Actor a, bool transfer)
+        static void Grant(Actor a, bool transfer, int seat = 0)
         {
             State s = Mine(a) && a.Placeholder != null ? Capture(a, true) : a.Latest;
             Send(Authority, true, delegate(BinaryWriter w) {
                 WriteId(w, a); EnemyWire.WriteAuthority(w, 1, a.Epoch, a.OwnerSeat); WriteVector(w, a.Origin); WriteState(w, a, s, true);
-            });
+            }, seat);
         }
         static void ReadAuthority(BinaryReader r)
         {
