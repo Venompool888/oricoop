@@ -1,6 +1,6 @@
 # Runs the automated in-game co-op test against the isolated test copy.
 # Saves/settings are redirected to C:\OriCoop\appdata so the real %LOCALAPPDATA% saves are never touched.
-param([int]$Slot = 1, [int]$TimeoutSec = 300, [string]$Scenarios = '', [switch]$Force)
+param([int]$Slot = 1, [int]$TimeoutSec = 300, [string]$Scenarios = '', [switch]$Force, [int]$Width = 960, [int]$Height = 540)
 $ErrorActionPreference = 'Stop'
 # Never close a running game on our own: it is usually someone playing on this PC (a test run once closed a
 # live co-op session). test-launch.ps1 refuses while any oriDE.exe runs, launches quietly and stops the
@@ -39,7 +39,7 @@ if ($Scenarios) { $vars['ORICOOP_SCENARIOS'] = (($Scenarios -split '[\s,;]+') | 
 $cfg = Join-Path $TL_GameDir 'BepInEx\config\local.oricoop.cfg'
 $cfgBefore = if (Test-Path $cfg) { [IO.File]::ReadAllBytes($cfg) } else { $null }
 try {
-    $p = Start-TestGame -Arguments '-screen-fullscreen 0 -screen-width 960 -screen-height 540' -Vars $vars -Tag 'run-test'
+    $p = Start-TestGame -Arguments "-screen-fullscreen 0 -screen-width $Width -screen-height $Height" -Vars $vars -Tag 'run-test'
     if (-not (Wait-TestGames @($p) $TimeoutSec $null @($out))) { $p.Kill(); $p.WaitForExit(10000) | Out-Null; "TIMEOUT: game killed after $TimeoutSec s" }
 }
 finally { if ($cfgBefore -ne $null) { [IO.File]::WriteAllBytes($cfg, $cfgBefore) }; Complete-TestRun }

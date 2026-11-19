@@ -311,9 +311,12 @@ namespace OriCoop
         static Font s_font;
         static GUIStyle s_title, s_text, s_row, s_rowFocus, s_small;
 
+        static int s_stylesH;   // the screen height the styles were made for (T-093: a window that grows must not keep small fonts)
+
         static void Styles()
         {
-            if (s_title != null) return;
+            if (s_title != null && s_stylesH == Screen.height) return;
+            s_stylesH = Screen.height; s_modeH = 0;
             int size = Mathf.Max(14, Screen.height / 42);
             try { s_font = Font.CreateDynamicFontFromOSFont(new string[] { "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial" }, size); } catch (Exception) { s_font = null; }
             s_text = new GUIStyle(GUI.skin.label); s_text.fontSize = size; s_text.wordWrap = true; s_text.richText = true;
@@ -590,26 +593,66 @@ namespace OriCoop
             return style.CalcHeight(new GUIContent(text), width) + style.margin.vertical;
         }
 
+        // T-093: the chooser's own styles, sized from ModeSelectLayout for the current screen.
+        static int s_modeH;
+        static GUIStyle s_modeTitle, s_modeSmall, s_modeRow, s_modeRowFocus;
+
+        static void ModeStyles(OriCoop.Ui.ModeSelectLayout l)
+        {
+            if (s_modeH == Screen.height && s_modeRow != null) return;
+            s_modeH = Screen.height;
+            s_modeTitle = new GUIStyle(s_title); s_modeTitle.fontSize = (int)l.TitlePx; s_modeTitle.normal.textColor = new Color(0.92f, 0.97f, 1f);
+            s_modeSmall = new GUIStyle(s_small); s_modeSmall.fontSize = (int)l.SmallPx;
+            s_modeRow = new GUIStyle(s_row); s_modeRow.fontSize = (int)l.FontPx; s_modeRow.richText = true;
+            s_modeRow.padding = new RectOffset((int)(l.FontPx * 0.6f), (int)(l.FontPx * 0.6f), (int)(l.FontPx * 0.25f), (int)(l.FontPx * 0.25f));
+            s_modeRowFocus = new GUIStyle(s_modeRow); s_modeRowFocus.normal.textColor = new Color(1f, 1f, 1f);
+        }
+
+        // The selected row gets Ori's blue wisp (a slow soft pulse) instead of the old yellow bar.
+        static bool ModeRow(string id, string text, bool focused, float height)
+        {
+            GUIStyle style = focused ? s_modeRowFocus : s_modeRow;
+            Rect r = GUILayoutUtility.GetRect(new GUIContent(text), style, GUILayout.Height(height));
+            Vector2 p = GUIUtility.GUIToScreenPoint(r.position);
+            Rect screen = new Rect(p.x, p.y, r.width, r.height);
+            float pulse = 0.5f + 0.5f * Mathf.Sin(Time.unscaledTime * 3f);
+            NativeGui.Panel(id + ".background", screen, focused ? new Color(0.25f, 0.55f, 1f, 0.22f + 0.14f * pulse) : new Color(0.02f, 0.04f, 0.09f, 0.55f));
+            if (focused) NativeGui.Panel(id + ".glow", new Rect(screen.x - screen.height * 0.4f, screen.y - screen.height * 0.12f, screen.width + screen.height * 0.8f, screen.height * 1.24f),
+                new Color(0.3f, 0.6f, 1f, 0.07f + 0.05f * pulse));
+            if (!NativeGui.Available) return GUI.Button(r, text, style);
+            Color color = style.normal.textColor * GUI.color * GUI.contentColor;
+            if (GUI.enabled && r.Contains(Event.current.mousePosition))
+                NativeGui.Panel(id + ".hover", screen, new Color(0.4f, 0.7f, 1f, 0.14f * color.a));
+            NativeGui.Label(id, style.padding.Remove(screen), text, style.fontSize, style.alignment, color);
+            return GUI.Button(r, GUIContent.none, GUIStyle.none);
+        }
+
+        // Test hook (scenario modeselect): the layout the chooser was last drawn with and the screen it was for.
+        public static OriCoop.Ui.ModeSelectLayout LastModeLayout;
+        public static int LastModeScreenW, LastModeScreenH;
+
         static void DrawModeSelect()
         {
-            float w = Mathf.Min(Screen.width - 40f, 680f), lineH = s_text.fontSize * 1.9f;
-            float h = lineH * 9.4f;
-            Rect r = new Rect((Screen.width - w) * 0.5f, Mathf.Max(10f, (Screen.height - h) * 0.5f), w, h);
-            NativeGui.Panel("coop.mode.background", r, new Color(0.05f, 0.07f, 0.12f, 0.92f));
-            GUILayout.BeginArea(new Rect(r.x + 20f, r.y + 14f, r.width - 40f, r.height - 28f));
-            NativeGui.LayoutLabel("coop.mode.title", L10n.T("coop.play_how"), s_title);
-            GUILayout.Space(8f);
+            OriCoop.Ui.ModeSelectLayout l = OriCoop.Ui.ModeSelectLayout.Compute(Screen.width, Screen.height);
+            LastModeLayout = l; LastModeScreenW = Screen.width; LastModeScreenH = Screen.height;
+            ModeStyles(l);
+            float pad = l.FontPx * 0.7f;
+            Rect r = new Rect((Screen.width - l.PanelW) * 0.5f, Mathf.Max(10f, (Screen.height - l.PanelH) * 0.5f), l.PanelW, l.PanelH);
+            NativeGui.Panel("coop.mode.background", r, new Color(0.04f, 0.07f, 0.14f, 0.92f));
+            GUILayout.BeginArea(new Rect(r.x + pad, r.y + pad * 0.7f, r.width - 2f * pad, r.height - 1.4f * pad));
+            NativeGui.LayoutLabel("coop.mode.title", L10n.T("coop.play_how"), s_modeTitle);
+            GUILayout.Space(l.FontPx * 0.3f);
             string[] rows = {
-                L10n.F("coop.single_desc", s_small.fontSize),
-                L10n.F("coop.two_desc", s_small.fontSize)
+                L10n.F("coop.single_desc", (int)l.SmallPx),
+                L10n.F("coop.two_desc", (int)l.SmallPx)
             };
             for (int i = 0; i < rows.Length; i++)
             {
-                if (RowButton("coop.mode.row." + i, rows[i], i == s_focus, lineH * 2.1f))
+                if (ModeRow("coop.mode.row." + i, rows[i], i == s_focus, l.RowH))
                 { s_focus = i; Activate(i); }
             }
-            GUILayout.Space(8f);
-            NativeGui.LayoutLabel("coop.mode.hint", L10n.T("coop.play_hint"), s_small);
+            GUILayout.Space(l.FontPx * 0.3f);
+            NativeGui.LayoutLabel("coop.mode.hint", L10n.T("coop.play_hint"), s_modeSmall);
             GUILayout.EndArea();
         }
     }
