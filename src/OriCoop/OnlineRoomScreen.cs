@@ -20,10 +20,13 @@ namespace OriCoop
         public static bool Confirmed { get; private set; }
         internal static int DrawnSeatMask;
         internal static bool DrawnAddEnabled;
+        // NetPlay.Begin and End call this every time (End even when online play is already off). Only give the native page back
+        // if this screen had taken it (T-120: an unconditional reset showed and unlocked the page under the overlay lobby).
         public static void Reset()
         {
+            bool wasVisible = Visible;
             Visible = Confirmed = false; proceed = null; buttons.Clear(); drawn.Clear();
-            NativeModeMenu.RoomPanelVisible(false);
+            if (wasVisible || NativeModeMenu.OverlayUnlockMutated) NativeModeMenu.RoomPanelVisible(false);
         }
         public static bool BeforeProceed(Action next)
         {

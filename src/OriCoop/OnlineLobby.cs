@@ -53,7 +53,9 @@ namespace OriCoop
         const int PageHosting = 2;
         const int PageJoining = 3;
 
-        const string RelayCodeAlphabet = "0123456789ABCDEFGHJKLMNPQRSTUVWX";   // T-046: the 8x4 key grid: digit codes first, then older letter codes (no Y/Z)
+        // The 8x4 key grid: new codes use 2-9 (T-046), older relay / room codes A-Z without I and O plus 2-9: exactly 32 keys.
+        // (It held 0 and 1, which no code uses, and lacked Y and Z, so about a third of the old codes could not be typed: T-120.)
+        internal const string RelayCodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
 
         // XInput button masks
         const int A = 0x1000, B = 0x2000, X = 0x4000, Y = 0x8000, START = 0x10, BACK = 0x20,

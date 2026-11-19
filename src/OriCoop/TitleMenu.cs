@@ -161,10 +161,23 @@ namespace OriCoop
         internal static void RoomPanelVisible(bool visible)
         {
             if (s_mgr == null) return;
+            // T-120: with [Start] NativeLobby = false the overlay lobby (OnlineLobby) owns the screen; the native page under it
+            // stays hidden and locked until the lobby closes (OnlineBack / proceed), whatever the room screen does meanwhile.
+            if (!visible && OnlineLobby.IsOpen && !OverlayUnlockMutated) { HideUnderOverlay(); s_mgr.IsActive = true; return; }
             s_mgr.SetVisible(!visible);
             s_mgr.IsActive = !visible;
             s_mgr.IsLocked = visible;
             if (s_tooltip != null) s_tooltip.gameObject.SetActive(!visible);
+        }
+
+        // Test-only mutation (T-120): the old behaviour, the room screen's reset shows and unlocks the native page under the overlay.
+        internal static bool OverlayUnlockMutated { get { return Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1" && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_OVERLAY_UNLOCK") == "1"; } }
+
+        // The native page under the overlay lobby: hidden, locked, no tooltip (the Driver keeps it locked while the lobby is open).
+        static void HideUnderOverlay()
+        {
+            s_mgr.SetVisible(false); s_mgr.IsLocked = true;
+            if (s_tooltip != null) s_tooltip.gameObject.SetActive(false);
         }
 
         // Rooms already selected and wrote the slot; use the same host page and load action.
@@ -885,6 +898,38 @@ namespace OriCoop
             return "";
         }
 
+        // T-120: [Start] NativeLobby = false shows host / join as the overlay lobby over a hidden, locked native page. Online play
+        // starting or ending (NetPlay.Begin / End reset the room screen) must not bring that page back and unlock it: it would
+        // then take the same controller presses as the overlay. Also the overlay's room-code grid must hold every character a
+        // room code can have: new codes use 2-9, older relay / room codes A-Z without I and O plus 2-9.
+        static IEnumerator OverlayLobbyChecks(Action<bool, string> check)
+        {
+            yield return s_tHost.StartCoroutine(PressCoop());
+            if (!TitleOrbOpen) { check(false, "title menu: overlay lobby checks need the Co-op page (" + Labels + ")"); yield break; }
+            HideUnderOverlay();
+            OnlineLobby.Open("direct");
+            yield return s_tHost.StartCoroutine(TWait(0.5f));
+            OnlineRoomScreen.Reset();                       // NetPlay.Begin does this when the overlay starts hosting / joining
+            yield return s_tHost.StartCoroutine(TWait(0.6f));   // long enough for the Driver to unlock a page that lost its lock
+            check(!s_mgr.IsVisible && s_mgr.IsLocked, "title menu: overlay lobby: starting online play keeps the native page hidden and locked (visible="
+                + s_mgr.IsVisible + ", locked=" + s_mgr.IsLocked + ")");
+            OnlineRoomScreen.Show(delegate { });            // the room screen over the overlay, then the session ends
+            yield return s_tHost.StartCoroutine(TWait(0.3f));
+            NetPlay.End("T-120 overlay check");
+            yield return s_tHost.StartCoroutine(TWait(0.6f));
+            check(!s_mgr.IsVisible && s_mgr.IsLocked && !OnlineRoomScreen.Visible, "title menu: overlay lobby: ending online play keeps the native page hidden and locked (visible="
+                + s_mgr.IsVisible + ", locked=" + s_mgr.IsLocked + ", room screen=" + OnlineRoomScreen.Visible + ")");
+            string grid = OnlineLobbyOverlay.RelayCodeAlphabet, missing = "";
+            foreach (char c in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789") if (grid.IndexOf(c) < 0) missing += c;
+            check(missing.Length == 0 && grid.Length == 32, "title menu: overlay lobby room-code grid has every old and new code character in its 8x4 keys (missing '"
+                + missing + "', " + grid.Length + " keys)");
+            OnlineLobby.Close();
+            RoomPanelVisible(false);                        // the lobby closed: the native page comes back (OnlineBack does the same)
+            yield return s_tHost.StartCoroutine(TWait(0.6f));
+            check(s_mgr.IsVisible && !s_mgr.IsLocked, "title menu: overlay lobby closed: the native page is back and usable");
+            yield return s_tHost.StartCoroutine(Back(1f));
+        }
+
         public static IEnumerator TitleChecks(MonoBehaviour host, Action<bool, string> check, Action<string> note, int slot)
         {
             s_tHost = host;
@@ -1044,6 +1089,8 @@ namespace OriCoop
                 check(TitleOrbOpen && LastPage == "coop", "title menu: Back on host / join returns to the Co-op page (" + Labels + ")");
                 yield return s_tHost.StartCoroutine(Back(1f));
             }
+
+            yield return s_tHost.StartCoroutine(OverlayLobbyChecks(check));
 
             // Local co-op: leave the choice set; the harness then picks the slot and the save loads (checked there).
             yield return s_tHost.StartCoroutine(PressCoop());

@@ -385,8 +385,7 @@ namespace OriCoop
                 if (UseNativeLobby) { LobbyOpen(transport); return; }
                 // [Start] NativeLobby = false: host / join pages are the overlay (OnlineLobby.cs); this native page
                 // stays hidden underneath until the lobby proceeds or comes back.
-                s_mgr.SetVisible(false); s_mgr.IsLocked = true;
-                if (s_tooltip != null) s_tooltip.gameObject.SetActive(false);
+                HideUnderOverlay();
                 s_lobbyIndex = index;
                 OnlineLobby.Open(transport);
             }
