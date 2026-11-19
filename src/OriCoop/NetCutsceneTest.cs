@@ -695,10 +695,85 @@ namespace OriCoop
             }
             finally { UnityEngine.Object.Destroy(go); }
         }
+        // The animation key CutsceneAnimSync sends (same formula as CutsceneAnimSync.AnimationKey, which is private).
+        static string LookKey(TextureAnimationWithTransitions anim)
+        {
+            return (string)AccessTools.Method(typeof(CutsceneAnimSync), "AnimationKey").Invoke(null, new object[] { anim });
+        }
+        // Loaded animations with frames, longest name first (both ends load the same character animations).
+        static List<TextureAnimationWithTransitions> LookCandidates()
+        {
+            List<TextureAnimationWithTransitions> list = new List<TextureAnimationWithTransitions>();
+            foreach (TextureAnimationWithTransitions a in Resources.FindObjectsOfTypeAll<TextureAnimationWithTransitions>())
+                if (a != null && a.Animation != null && a.Animation.FrameGuids.Count > 0) list.Add(a);
+            list.Sort(delegate(TextureAnimationWithTransitions x, TextureAnimationWithTransitions y)
+            { int c = y.name.Length.CompareTo(x.name.Length); return c != 0 ? c : string.CompareOrdinal(x.name, y.name); });
+            return list;
+        }
+        // Review suspect (2026-11-19): the key is name + "|" + MoonGuid ("A B C D", ~43 chars) + "|" + count, and
+        // AnimWire.Write throws above 64 chars, inside the Harmony postfix of the game's PlayCharacterAnimation.Perform.
+        // The host plays the loaded animation with the longest name through the real action: the action must not throw
+        // and the guest's Ori must play the same animation.
+        static IEnumerator LookLongCase(TestHarness h)
+        {
+            int failures = Failures(h);
+            yield return Settle();
+            List<TextureAnimationWithTransitions> candidates = LookCandidates();
+            int over = 0; string longest = "";
+            foreach (TextureAnimationWithTransitions a in candidates)
+            {
+                string key = LookKey(a);
+                if (key.Length > 64) over++;
+                if (longest.Length < 300 && (key.Length > 64 || longest == "")) longest += a.name + "(" + key.Length + ") ";
+            }
+            h.Note("LOOK long: " + candidates.Count + " loaded animations, " + over + " with a key over 64 chars: " + longest);
+            TextureAnimationWithTransitions anim = candidates.Count > 0 ? candidates[0] : null;
+            // Read before the barrier: the host passes it first and sends at once, so the guest can receive the
+            // animation before it leaves the barrier.
+            int received = CutsceneAnimSync.Received, errors = CutsceneAnimSync.Errors;
+            Publish(new Sample { Step = 611, Found = anim != null, Plays = anim == null ? 0 : anim.name.Length });
+            yield return Barrier(h, 611);
+            GameObject go = null; PerformingAction action = null; Exception thrown = null;
+            try
+            {
+                if (NetPlay.IsHost && anim != null)
+                {
+                    go = new GameObject("OriCoop P3 long look fixture");
+                    Type type = AccessTools.TypeByName("PlayCharacterAnimation");
+                    action = (PerformingAction)go.AddComponent(type);
+                    AccessTools.Field(type, "Animation").SetValue(action, anim);
+                    try { action.Perform(null); } catch (Exception e) { thrown = e; }
+                    h.Check(thrown == null, "LOOK long: the game's PlayCharacterAnimation ran without an exception ("
+                        + anim.name + ", key " + LookKey(anim).Length + " chars" + (thrown == null ? "" : ", " + thrown.GetType().Name + ": " + thrown.Message) + ")");
+                    h.Check(CutsceneAnimSync.Errors == errors, "LOOK long: the animation was sent without a sync error (key fits the wire)");
+                }
+                int length = NetPlay.IsHost ? (anim == null ? 0 : anim.name.Length) : (Remote.ContainsKey(611) ? Remote[611].Plays : 0);
+                float end = Now + 2f; bool own = false;
+                while (Now < end)
+                {
+                    TextureAnimationWithTransitions current = Own == null ? null : Own.PlatformBehaviour.Visuals.Animation.Animator.CurrentTextureAnimationTransitions;
+                    own = Own != null && Own.Controller.IsPlayingAnimation && current != null && current.name.Length == length
+                        && (NetPlay.IsHost ? current == anim : CutsceneAnimSync.Received > received);
+                    if (own) break;
+                    yield return null;
+                }
+                h.Check(own, NetPlay.IsHost ? "LOOK long: host's Ori plays the long animation" : "LOOK long: guest's Ori plays the host's long animation");
+                Publish(612, Failures(h) > failures);
+                yield return Barrier(h, 612);
+                if (NetPlay.IsHost && action != null) action.Stop();
+                end = Now + 2f;
+                while (Now < end && Own != null && Own.Controller.IsPlayingAnimation) yield return null;
+                if (Own != null && Own.Controller.IsPlayingAnimation) Own.Controller.StopAnimation();
+                Publish(613, Failures(h) > failures);
+                yield return Barrier(h, 613);
+            }
+            finally { UnityEngine.Object.Destroy(go); }
+        }
         static IEnumerator LookRun(TestHarness h)
         {
             Local.Clear(); Bot();
             yield return Step(h, 600, LookCase(h));
+            yield return Step(h, 610, LookLongCase(h));
         }
         public static IEnumerator Run(TestHarness h)
         {
