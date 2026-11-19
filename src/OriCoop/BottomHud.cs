@@ -19,6 +19,9 @@ namespace OriCoop
     // points) keeps showing the team's value. Values come from the teammate's own Ori in local co-op and from the
     // Vitals message (79) online. Downed = drawn at 35 % opacity, gone (left / no Ori) = hidden. The bars fade with the
     // game's own HUD (pause, cutscenes, fades).
+    // T-116: online, a device can have extra local players (T-059). They are puppets here too, but this device owns
+    // them: their bars read their Ori directly, and this device sends Vitals for every seat it owns (one sender each),
+    // so the other devices show them as well.
     public static class BottomHud
     {
         public const byte MsgVitals = 79;
@@ -46,7 +49,8 @@ namespace OriCoop
         static readonly Dictionary<int, VitalsModel> s_net = new Dictionary<int, VitalsModel>();   // online: seat -> last received
         static readonly Dictionary<Type, StatKind> s_kinds = new Dictionary<Type, StatKind>();
         static readonly Dictionary<Type, FieldInfo> s_divide = new Dictionary<Type, FieldInfo>();
-        static readonly VitalsSender s_sender = new VitalsSender();
+        static readonly Dictionary<int, VitalsSender> s_senders = new Dictionary<int, VitalsSender>();   // online: one per seat this device owns
+        static readonly List<int> s_owned = new List<int>();
         static readonly HashSet<string> s_failures = new HashSet<string>();
         static bool s_patched, s_registered;
         static float s_lastTick;
@@ -137,7 +141,7 @@ namespace OriCoop
             if (puppet == null || puppet.Sein == null) return false;
             // A downed Ori is switched off (Revive) but keeps its (dimmed) bar; any other inactive Ori has none.
             if (!puppet.Sein.gameObject.activeInHierarchy && !Revive.IsDowned(puppet.Sein)) return false;
-            if (NetPlay.Enabled)
+            if (NetPlay.Enabled && !puppet.IsLocal)
             {
                 VitalsModel m;
                 if (!s_net.TryGetValue(c.Seat, out m) || !m.Have) return false;   // no numbers from that player yet
@@ -522,21 +526,34 @@ namespace OriCoop
             Services.Net.On(MsgVitals, OnVitals);
             Services.Net.Forward(MsgVitals);
             Services.Net.PlayerLeft += delegate(int seat) { s_net.Remove(seat); DestroyCopy(seat); };
-            Services.Net.SessionEnded += delegate { s_net.Clear(); s_sender.Reset(); DestroyAll(); };
-            Services.Net.SessionStarted += delegate { s_net.Clear(); s_sender.Reset(); };
+            Services.Net.SessionEnded += delegate { s_net.Clear(); s_senders.Clear(); DestroyAll(); };
+            Services.Net.SessionStarted += delegate { s_net.Clear(); s_senders.Clear(); };
         }
 
+        // Vitals for every seat this device owns: its own Ori and (T-116) its extra local players' Oris.
         static void SendOwn()
         {
-            if (!Services.Net.Connected) return;
-            SeinCharacter own = P2Context.P1;
-            if (own == null || P2Context.Inside) return;
-            VitalsSample s = Sample(own);
+            if (!Services.Net.Connected || P2Context.Inside) return;
             float now = Time.unscaledTime;
-            if (!s_sender.Due(s, now)) return;
-            int seat = Players.LocalSeat;
+            List<int> owned = s_owned; owned.Clear();   // reused: this runs every frame
+            if (P2Context.P1 != null) { SendSeat(Players.LocalSeat, P2Context.P1, now); owned.Add(Players.LocalSeat); }
+            foreach (Puppet p in Players.Remotes)
+                if (p != null && p.IsLocal && p.Sein != null && p.Seat >= 1 && p.Seat <= Players.MaxSeats && !owned.Contains(p.Seat))
+                { SendSeat(p.Seat, p.Sein, now); owned.Add(p.Seat); }
+            // A released seat may come back for another player: start it from a fresh sender (first sample sent at once).
+            List<int> stale = null;
+            foreach (int seat in s_senders.Keys) if (!owned.Contains(seat)) (stale ?? (stale = new List<int>())).Add(seat);
+            if (stale != null) foreach (int seat in stale) s_senders.Remove(seat);
+        }
+
+        static void SendSeat(int seat, SeinCharacter sein, float now)
+        {
+            VitalsSample s = Sample(sein);
+            VitalsSender sender;
+            if (!s_senders.TryGetValue(seat, out sender)) { sender = new VitalsSender(); s_senders[seat] = sender; }
+            if (!sender.Due(s, now)) return;
             Services.Net.Send(MsgVitals, true, w => VitalsModel.Write(w, seat, s));
-            s_sender.MarkSent(s, now);
+            sender.MarkSent(s, now);
             VitalsSent++;
         }
 
@@ -544,7 +561,8 @@ namespace OriCoop
         {
             int seat;
             VitalsSample s = VitalsModel.Read(r, out seat);
-            if (seat < 1 || seat > Players.MaxSeats || seat == Players.LocalSeat) return;
+            // Seats this device owns (its own and its extra local players) are read here, never from the network.
+            if (seat < 1 || seat > Players.MaxSeats || seat == Players.LocalSeat || Players.IsLocal(seat)) return;
             VitalsModel m;
             if (!s_net.TryGetValue(seat, out m)) { m = new VitalsModel(); s_net[seat] = m; }
             m.Set(s);

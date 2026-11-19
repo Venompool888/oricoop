@@ -21,6 +21,8 @@ namespace OriCoop
     //   revived Ori hidden for GlowSeconds and then faded in from white. Both PCs play it from the revive messages they
     //   already get (no extra message).
     //   66 PuppetFx  owner -> others   { byte seat, byte kind (0 hurt, 1 down), byte damageType, byte flags (1 badly hurt), float drop, float forceX }  reliable
+    // - T-116: a device's extra local players (T-059) are puppets too, but that device owns them: their hurt / down is
+    //   reported by it like its own Ori's (with their seat), and their death burst plays there.
     public static class PartnerFx
     {
         static IRulesHost Host { get { return SessionRules.Host; } }
@@ -88,6 +90,13 @@ namespace OriCoop
 
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected && Host.P1 != null; } }
 
+        // An extra local player of this device (T-059): a puppet that this device, not the network, drives.
+        static bool OwnedLocalPuppet(SeinCharacter s)
+        {
+            Puppet p = Players.OfSein(s);
+            return p != null && p.IsLocal;
+        }
+
         // ---- owner side: our Ori was hurt / went down ---------------------------------------------------------------
         struct Before { public SeinCharacter Sein; public float Health; public bool Downed; public Vector3 Pos; public bool Badly; }
 
@@ -144,8 +153,8 @@ namespace OriCoop
             bool downNow = Revive.IsDowned(s);
             float drop = b.Health - now;
             if (!downNow && drop <= 0f) return;      // not accepted (invincible, immortal, puppet, ...)
-            if (Services.Net.Enabled && Host.IsPuppet(s)) return; // an online puppet: its owner's game reports it
-            bool isOwn = s == Host.P1;
+            bool ownedHere = s == Host.P1 || OwnedLocalPuppet(s);   // T-116: our extra local players are ours too
+            if (Services.Net.Enabled && Host.IsPuppet(s) && !ownedHere) return; // another device's Ori: its owner's game reports it
             DamageType type = damage != null ? damage.Type : DamageType.Spikes;
             float forceX = damage != null ? damage.Force.x : 0f;
 
@@ -157,9 +166,10 @@ namespace OriCoop
                 Log("P" + Host.SeatOf(s) + " down: death burst played locally at " + b.Pos + " (" + type + ")");
                 Host.Trace("player", "down.fx", "who", "P" + Host.SeatOf(s), "local", 1, "pos", b.Pos, "type", type);
             }
-            if (!isOwn || !Online) return;
+            if (!ownedHere || !Online) return;
             EnsureRegistered();
-            int seat = Host.LocalSeat;
+            int seat = Host.SeatOf(s);
+            if (seat < 1) return;
             if (now <= 0f) downNow = true;           // a real death (both down): the game shows ours, the partner sees the burst
             byte kind = downNow ? KindDown : KindHurt;
             float d = drop;
@@ -180,7 +190,7 @@ namespace OriCoop
             float forceX = r.ReadSingle();
             if (kind == KindDown) DownReceived++; else HurtReceived++;
             SeinCharacter s = Revive.SeinAt(seat);
-            if (s == null || s == Host.P1) { Log("got " + kind + " for seat " + seat + " but no puppet"); return; }
+            if (s == null || s == Host.P1 || OwnedLocalPuppet(s)) { Log("got " + kind + " for seat " + seat + " but no puppet"); return; }
             try
             {
                 if (kind == KindDown) { PlayDeath(s, s.Position, type, Mathf.Max(drop, 1f)); DownPlayed++; }

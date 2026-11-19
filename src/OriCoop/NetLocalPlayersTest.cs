@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using System.Collections.Generic;
+using System.Globalization;
 using Game;
 using HarmonyLib;
 using UnityEngine;
@@ -41,13 +42,80 @@ namespace OriCoop
         static IEnumerator LocalPlayersChecks(TestHarness h)
         {
             localFinishAcks.Clear();
+            NetPlay.TestSignalReceived += LocalsSignal;
             try { yield return LocalPlayersCore(h); }
             finally
             {
+                NetPlay.TestSignalReceived -= LocalsSignal;
                 P2Input.BotActive = false; P2Input.BotLX = 0; localWallFixture = false; Bot(0, 0);
                 if (OnlineRoomScreen.Visible) OnlineRoomScreen.Continue();
             }
         }
+        // T-116: the extra local player (seat localExtra, on the device with seat 2) has a bottom status bar on every
+        // device: its own device reads its Ori, the others get its Vitals (message 79). Its damage reaches every bar (the
+        // host's within 1 s of the owner's report), and its hurt effect is sent by its device and played on the others'.
+        static float s_extraHp = -1f, s_extraHpAt = -1f;
+        static void LocalsSignal(int seat, string signal)
+        {
+            float v;
+            if (signal.StartsWith("locals-hp:", StringComparison.Ordinal)
+                && float.TryParse(signal.Substring(10), NumberStyles.Float, CultureInfo.InvariantCulture, out v))
+            { s_extraHp = v; s_extraHpAt = Time.realtimeSinceStartup; }
+        }
+
+        static IEnumerator LocalExtraBars(TestHarness h)
+        {
+            bool owner = Players.LocalSeat == 2;
+            float deadline = Time.realtimeSinceStartup + 5f;
+            while (!BottomHud.Visible(localExtra) && Time.realtimeSinceStartup < deadline) yield return null;
+            h.Check(BottomHud.Visible(localExtra), "locals: extra P" + localExtra + " has a bottom status bar on "
+                + (owner ? "its own device" : "this device") + " (T-116)");
+            int hurtSent = PartnerFx.HurtSent, hurtGot = PartnerFx.HurtReceived, hurtPlayed = PartnerFx.HurtPlayed;
+            s_extraHp = -1f; s_extraHpAt = -1f;
+            yield return ThreeRound(h, 601, ClientCount);   // every device has its counters before the extra is hurt
+            float bh, bmh, be, bme;
+            if (owner)
+            {
+                SeinCharacter extra = Players.OriOf(localExtra);
+                h.Check(extra != null, "locals: the extra's Ori exists on its own device");
+                if (extra == null) yield break;
+                extra.Mortality.Health.RestoreAllHealth();
+                float h0 = extra.Mortality.Health.Amount;
+                extra.Mortality.DamageReciever.OnRecieveDamage(new Damage(3f, Vector2.zero, extra.Position, DamageType.Spikes, null));
+                float hp = extra.Mortality.Health.Amount;
+                NetPlay.SendTestSignal("locals-hp:" + hp.ToString("R", CultureInfo.InvariantCulture));
+                h.Check(hp < h0, "locals: test damage reached the extra (" + F(h0) + " -> " + F(hp) + ")");
+                h.Check(PartnerFx.HurtSent == hurtSent + 1, "locals: the extra's hurt effect is sent to the other devices ("
+                    + (PartnerFx.HurtSent - hurtSent) + ")");
+                float took = -1f, t0 = Time.realtimeSinceStartup;
+                while (Time.realtimeSinceStartup < t0 + 3f)
+                {
+                    if (BottomHud.TryShown(localExtra, out bh, out bmh, out be, out bme) && Mathf.Abs(bh - hp) < 0.01f) { took = Time.realtimeSinceStartup - t0; break; }
+                    yield return null;
+                }
+                h.Check(took >= 0f && took <= 1f, "locals: the extra's own device shows its damage on its bar within 1 s (" + F(took) + " s)");
+            }
+            else
+            {
+                deadline = Time.realtimeSinceStartup + 5f;
+                if (NetPlay.IsHost) while (s_extraHpAt < 0f && Time.realtimeSinceStartup < deadline) yield return null;
+                if (NetPlay.IsHost) h.Check(s_extraHpAt >= 0f, "locals: the extra's device reported its damage (" + F(s_extraHp) + ")");
+                float took = -1f, t0 = NetPlay.IsHost && s_extraHpAt >= 0f ? s_extraHpAt : Time.realtimeSinceStartup;
+                while (Time.realtimeSinceStartup < t0 + 3f)
+                {
+                    bool shown = BottomHud.TryShown(localExtra, out bh, out bmh, out be, out bme);
+                    if (shown && (NetPlay.IsHost ? Mathf.Abs(bh - s_extraHp) < 0.01f : bh < bmh - 0.01f)) { took = Time.realtimeSinceStartup - t0; break; }
+                    yield return null;
+                }
+                h.Check(took >= 0f && took <= (NetPlay.IsHost ? 1f : 3f), "locals: the extra's damage reaches this device's bar for it"
+                    + (NetPlay.IsHost ? " within 1 s" : "") + " (" + F(took) + " s)");
+                deadline = Time.realtimeSinceStartup + 3f;
+                while (PartnerFx.HurtPlayed == hurtPlayed && Time.realtimeSinceStartup < deadline) yield return null;
+                h.Check(PartnerFx.HurtReceived > hurtGot && PartnerFx.HurtPlayed > hurtPlayed, "locals: the extra's hurt effect plays on this device's puppet (received "
+                    + (PartnerFx.HurtReceived - hurtGot) + ", played " + (PartnerFx.HurtPlayed - hurtPlayed) + ")");
+            }
+        }
+
         static IEnumerator LocalPlayersCore(TestHarness h)
         {
             float deadline = Time.realtimeSinceStartup + 120f;
@@ -100,6 +168,8 @@ namespace OriCoop
             if (Players.LocalSeat == 2) P2Input.BotLX = 0;
             h.Check(extraPuppet.Sein.Position.x > start.x + 1f, "locals: extra moves by independent input on every observer");
             yield return ThreeRound(h, 593, ClientCount);
+            yield return LocalExtraBars(h);
+            yield return ThreeRound(h, 602, ClientCount);
 
             Vector2 now, max;
             bool haveView = CoopCamera.ViewSize(out now, out max);
@@ -142,20 +212,37 @@ namespace OriCoop
             OnlineLocalPlayers.PositionChanged();
             // Let native physics land and TrackSafeGround sample the fresh location before the kill.
             yield return TestClock.WaitGame(1f);
+            int downSent = PartnerFx.DownSent, downLocal = PartnerFx.LocalDownPlayed, downGot = PartnerFx.DownReceived, downPlayed = PartnerFx.DownPlayed;
             yield return ThreeRound(h, 600, ClientCount);
             int restoresBeforeRevive = TestHarness.RestoreCheckpointCalls, loadsBeforeRevive = SaveSync.GuestLoads;
             int sentBeforeRevive = Revive.NetRevivesSent, appliedBeforeRevive = Revive.NetRevivesApplied;
             if (Players.LocalSeat == 2)
             {
                 extraPuppet = PuppetAt(localExtra);
-                // Exercise the actual local-puppet OnKill path, not a direct call to Revive.
-                extraPuppet.Sein.Mortality.DamageReciever.OnKill(new Damage(1000, Vector2.zero, extraPuppet.Sein.Position, DamageType.Spikes, null));
+                // Exercise the game's own damage path on the local puppet (it reaches OnKill itself, as spikes do), not a
+                // direct call to Revive; T-116: that path also plays and sends the death burst.
+                extraPuppet.Sein.Mortality.DamageReciever.OnRecieveDamage(new Damage(1000, Vector2.zero, extraPuppet.Sein.Position, DamageType.Spikes, null));
             }
             yield return LocalWait(1f);
             h.Check(Revive.DownedAtSeat(localExtra) != null, "locals: local extra death is downed on every device");
             Revive.Downed localDown = Revive.DownedAtSeat(localExtra);
             h.Check(localDown != null && Vector3.Distance(localDown.Marker, reviveStart) < 4f,
                 "locals: revive skull uses freshly grounded spawn terrain, not far wall");
+            // T-116: the extra's death burst plays on its own device and on the others' puppet; its bar stays, dimmed.
+            if (Players.LocalSeat == 2)
+                h.Check(PartnerFx.LocalDownPlayed == downLocal + 1 && PartnerFx.DownSent == downSent + 1,
+                    "locals: the extra's death burst plays on its own device and is sent to the others (played "
+                    + (PartnerFx.LocalDownPlayed - downLocal) + ", sent " + (PartnerFx.DownSent - downSent) + ")");
+            else
+            {
+                float until = Time.realtimeSinceStartup + 2f;
+                while (PartnerFx.DownPlayed == downPlayed && Time.realtimeSinceStartup < until) yield return null;
+                h.Check(PartnerFx.DownReceived > downGot && PartnerFx.DownPlayed > downPlayed,
+                    "locals: the extra's death burst plays on this device's puppet (received " + (PartnerFx.DownReceived - downGot)
+                    + ", played " + (PartnerFx.DownPlayed - downPlayed) + ")");
+            }
+            h.Check(BottomHud.Visible(localExtra) && BottomHud.Opacity(localExtra) < 0.6f,
+                "locals: the downed extra's bar stays, dimmed, on every device (opacity " + F(BottomHud.Opacity(localExtra)) + ")");
             yield return ThreeRound(h, 595, ClientCount);
             if (NetPlay.IsHost)
             {
