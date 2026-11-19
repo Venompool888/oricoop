@@ -28,6 +28,8 @@ namespace OriCoop.Story
         }
         public bool AllHere(string key, int players, float now) { return players >= 1 && Count(key, now) >= players; }
         public void Forget(int seat) { foreach (Dictionary<int, float> seats in gates.Values) seats.Remove(seat); }
+        public bool AnyInside(string key, IEnumerable<int> seats, float now)
+        { foreach (int seat in seats) if (IsInside(key, seat, now)) return true; return false; }
         public bool IsInside(string key, int seat, float now)
         {
             Dictionary<int, float> seats; float refreshed;
@@ -37,6 +39,14 @@ namespace OriCoop.Story
         public bool RecentlyFired(string key, float now) { float at; return fired.TryGetValue(key, out at) && now - at < 15f; }
         public IEnumerable<string> ActiveKeys(float now)
         { foreach (string key in gates.Keys) if (Count(key, now) > 0 && !RecentlyFired(key, now)) yield return key; }
+    }
+    // T-110: the gate waits for every player in the session (each seat, including the extra local players a PC
+    // added), and every PC reports presence for each of its own seats. A PC may only report seats it owns.
+    static class GateSeats
+    {
+        public const int MaxSeat = 4;
+        public static int Total(int localSeats, int readyRemoteSeats) { return Math.Max(1, localSeats + readyRemoteSeats); }
+        public static bool MayReport(int sender, int seat, int seatDevice) { return seat >= 1 && seat <= MaxSeat && seatDevice == sender; }
     }
     sealed class HoldMeter
     {
@@ -58,8 +68,12 @@ namespace OriCoop.Story
         { string key = r.ReadString(); if (key.Length > 1024) throw new InvalidDataException("gate key"); return key; }
         static float Position(BinaryReader r)
         { float v = r.ReadSingle(); if (float.IsNaN(v) || float.IsInfinity(v)) throw new InvalidDataException("gate position"); return v; }
-        public static void WriteState(BinaryWriter w, string key, bool inside) { w.Write(key); w.Write(inside); }
-        public static string ReadState(BinaryReader r, out bool inside) { string key = Key(r); inside = r.ReadBoolean(); return key; }
+        public static void WriteState(BinaryWriter w, string key, int seat, bool inside) { w.Write(key); w.Write((byte)seat); w.Write(inside); }
+        public static string ReadState(BinaryReader r, out int seat, out bool inside)
+        {
+            string key = Key(r); seat = r.ReadByte(); inside = r.ReadBoolean();
+            if (seat < 1 || seat > GateSeats.MaxSeat) throw new InvalidDataException("gate seat"); return key;
+        }
         public static void WriteCount(BinaryWriter w, string key, byte n, byte total) { w.Write(key); w.Write(n); w.Write(total); }
         public static string ReadCount(BinaryReader r, out byte n, out byte total)
         {
