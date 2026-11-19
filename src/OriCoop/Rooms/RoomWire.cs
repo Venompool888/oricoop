@@ -86,9 +86,24 @@ namespace OriCoop.Rooms
             }
         }
 
+        // Far above the largest real record (a room.dat with 20 saves and their history is about 5,100 fields); a request
+        // with more is hostile and is refused before any work is done on it (T-124).
+        public const int MaximumFields = 65536;
+
         public sealed class Fields
         {
+            // Insertion order is kept for Encode; the index makes Set/Get O(1). With a linear search, decoding a 5 MB
+            // body of ~800,000 distinct tiny fields took ~10^11 string compares on the server's request thread (T-124).
             readonly List<KeyValuePair<string, byte[]>> items = new List<KeyValuePair<string, byte[]>>();
+            readonly Dictionary<string, int> index = new Dictionary<string, int>(StringComparer.Ordinal);
+
+            public int Count
+            {
+                get
+                {
+                    return items.Count;
+                }
+            }
 
             public void Set(string name, string value)
             {
@@ -102,14 +117,13 @@ namespace OriCoop.Rooms
 
             public void Set(string name, byte[] value)
             {
-                for (int i = 0; i < items.Count; i++)
+                int i;
+                if (index.TryGetValue(name, out i))
                 {
-                    if (items[i].Key == name)
-                    {
-                        items[i] = new KeyValuePair<string, byte[]>(name, value);
-                        return;
-                    }
+                    items[i] = new KeyValuePair<string, byte[]>(name, value);
+                    return;
                 }
+                index.Add(name, items.Count);
                 items.Add(new KeyValuePair<string, byte[]>(name, value));
             }
 
@@ -120,14 +134,8 @@ namespace OriCoop.Rooms
 
             public byte[] GetBytes(string name)
             {
-                foreach (KeyValuePair<string, byte[]> pair in items)
-                {
-                    if (pair.Key == name)
-                    {
-                        return pair.Value;
-                    }
-                }
-                return null;
+                int i;
+                return name != null && index.TryGetValue(name, out i) ? items[i].Value : null;
             }
 
             public string GetString(string name)
@@ -194,6 +202,10 @@ namespace OriCoop.Rooms
                     Buffer.BlockCopy(bytes, position, value, 0, value.Length);
                     position += value.Length;
                     fields.Set(name, value);
+                    if (fields.Count > MaximumFields)
+                    {
+                        throw new FormatException("too many fields");
+                    }
                 }
                 return fields;
             }
