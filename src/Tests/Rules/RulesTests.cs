@@ -108,6 +108,8 @@ static class RulesTests
         return states;
     }
     static void Pause(Bus b, bool paused) { b.Send(53, true, delegate(BinaryWriter w) { w.Write(paused); }); }
+    // One SessionRules.RefreshMenu: tell the others when this PC's pause state changed.
+    static void Report(Bus b, MenuReport report, bool online, bool paused) { if (report.ShouldSend(online, paused)) Pause(b, paused); }
     static byte[] Write(Action<BinaryWriter> action)
     {
         MemoryStream m = new MemoryStream(); action(new BinaryWriter(m)); return m.ToArray();
@@ -116,6 +118,27 @@ static class RulesTests
 
     static int Main()
     {
+        // T-104: the host opened its pause menu before anyone joined (offline: a real pause). A guest connects; the
+        // host's per-frame menu refresh runs while connected but before its session starts, and its session start turns
+        // the offline pause into a skipped one. The guest must not end up believing the host is paused.
+        Run("join while the host's pause menu is open does not leave the guest paused", delegate {
+            Bus[] b = Network(2); MenuPresence[] m = Menus(b); MenuReport host = new MenuReport();
+            Report(b[0], host, false, true);          // offline pause menu: nothing to tell
+            m[1].Clear();                             // guest: host's Hello -> guest session starts (SessionRules.Started)
+            Report(b[0], host, true, true);           // host frame: connected, session not started yet
+            host.SessionStarted();                    // host: guest's Hello -> session starts, the pause no longer pauses
+            Report(b[0], host, true, false);          // host frames from now on
+            Report(b[0], host, true, false);
+            Check(!m[1].InMenu(1), "guest still records the host as paused: its world stays frozen");
+        });
+        Run("pause states sent after the session started reach the partner", delegate {
+            Bus[] b = Network(2); MenuPresence[] m = Menus(b); MenuReport guest = new MenuReport();
+            guest.SessionStarted();
+            Report(b[1], guest, true, true); Check(m[0].InMenu(2), "pause not delivered");
+            Report(b[1], guest, true, true); Report(b[1], guest, true, false); Check(!m[0].InMenu(2), "resume not delivered");
+            guest.SessionEnded(); guest.SessionStarted(); m[0].Clear();
+            Report(b[1], guest, true, true); Check(m[0].InMenu(2), "pause after a reconnect not delivered");
+        });
         Run("only the rescuer device advances online holds even with two seats", delegate {
             Check(ReviveLogic.CanSimulateHold(true, true), "local saver must advance");
             Check(!ReviveLogic.CanSimulateHold(true, false), "victim must not simulate the remote saver and finish early");

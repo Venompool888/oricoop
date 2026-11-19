@@ -24,7 +24,8 @@ namespace OriCoop
         }
         static readonly Dictionary<MenuScreenManager, MenuDebt> Menus = new Dictionary<MenuScreenManager, MenuDebt>();
         static readonly Dictionary<ResumeGameController, MenuDebt> Focus = new Dictionary<ResumeGameController, MenuDebt>();
-        static bool s_menu, s_paused, s_reported, s_hold;
+        static bool s_menu, s_paused, s_hold;
+        static readonly MenuReport s_report = new MenuReport();
         // T-044: help / page popups and skill-tree item help whose native suspend was skipped online.
         static readonly PopupLedger<object> Popups = new PopupLedger<object>();
         public static int SkippedPopupSuspends, SkippedMenuSuspends;
@@ -80,7 +81,7 @@ namespace OriCoop
         {
             PruneScreens();
             ReleaseRemotePause(false);
-            Sessions++; s_menuSeats.Clear(); s_reported = false;
+            Sessions++; s_menuSeats.Clear(); s_report.SessionStarted();
             s_hold = false; s_held = null; Host.ResetStory();
             Host.SessionStarted();
             // A menu/focus screen opened offline owns a real suspend reference. Retire exactly that
@@ -95,7 +96,7 @@ namespace OriCoop
         static void Ended()
         {
             ReleaseRemotePause(false);
-            Disconnects++; s_menuSeats.Clear(); s_menu = s_paused = s_reported = s_hold = false; s_held = null;
+            Disconnects++; s_menuSeats.Clear(); s_menu = s_paused = s_hold = false; s_report.SessionEnded(); s_held = null;
             Host.ResetStory();
             if (s_dead != null) RespawnGuest(false);
             Host.SessionEnded();
@@ -188,9 +189,8 @@ namespace OriCoop
             s_menuSeats.Set(Host.LocalSeat, s_paused);
             // MenuMessage now means "this player explicitly paused": only a menu that really
             // suspended this game counts. Focus loss never pauses online (SessionScreens).
-            if (Online && s_paused != s_reported)
+            if (s_report.ShouldSend(Online, s_paused))
             {
-                s_reported = s_paused;
                 bool paused = s_paused;
                 Services.Net.Send(MenuMessage, true, delegate(BinaryWriter w) { w.Write(paused); });
             }
