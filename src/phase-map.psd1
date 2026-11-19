@@ -49,6 +49,7 @@
         @{ Switch = 'ORICOOP_MUTATE_ROOMS_NATIVE_OFF'; File = 'src\OriCoop\NativeRooms.cs';   Suite = 'rooms';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_OVERLAY_UNLOCK';  File = 'src\OriCoop\TitleMenu.cs';      Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_REMOVE_GLOW';    File = 'src\OriCoop\NativeGlowTint.cs'; Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_FONT_LEAK';       File = 'src\OriCoop\Ui\OsFonts.cs';     Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_MODE_FIXED_SIZE'; File = 'src\OriCoop\Ui\ModeSelectLayout.cs'; Suite = 'local';  Phase = '' }
         @{ Switch = 'ORICOOP_TEST_THROW';            File = 'src\OriCoop\Plugin.cs';         Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_P3_OFF';                File = 'src\OriCoop\CutsceneGuard.cs';  Suite = 'net';       Phase = 'CUT' }
