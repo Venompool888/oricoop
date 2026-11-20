@@ -48,6 +48,7 @@ namespace OriCoop
         public static string Outcome = "";          // new | same | diverged-host | diverged-partner | cancel | legacy
         public static bool DivergenceSeen, CancelledByHost;
         public static int GuestSlot = -1, GuestWrites, BackupsMade, Commits, AdoptedHours = -1;
+        public static int LateCommits, CommitsReceived;   // T-129: commits to a seat that joined late (host) / commits heard (guest)
         public static string CoopId = "", LastCommitHash = "";
         public static string TestChoice = Environment.GetEnvironmentVariable("ORICOOP_COOPSAVE_CHOICE") ?? "";
         public static bool TestReady;   // set by CoopSaveTest once the host's harness runs (a cancel must not beat it)

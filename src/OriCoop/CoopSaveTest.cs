@@ -51,6 +51,11 @@ namespace OriCoop
             }
             else
             {
+                // T-129: every guest, also a 3rd/4th seat joining after the lineage was settled, gets the host's co-op save
+                // before its checkpoint (else a title join loads into the first empty slot or slot 0 with no copy).
+                h.Check(SaveSync.CheckpointsBeforeCommit == 0 && CoopSaves.CommitsReceived > 0,
+                    "L guest P" + Players.LocalSeat + " got the co-op save commit before its checkpoint (checkpoints first "
+                    + SaveSync.CheckpointsBeforeCommit + ", commits " + CoopSaves.CommitsReceived + ")");
                 float until = Time.realtimeSinceStartup + 10f;
                 while (CoopSaves.GuestWrites == 0 && Time.realtimeSinceStartup < until) yield return null;
                 CheckGuestCopy(h);
