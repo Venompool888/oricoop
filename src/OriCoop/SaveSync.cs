@@ -460,6 +460,9 @@ namespace OriCoop
             {
                 yield return AccessTools.Method(typeof(SaveSlotBackupsManager), "CreateCurrentBackup");
                 yield return AccessTools.Method(typeof(SaveSlotBackupsManager), "CreateBackup");
+                // T-127: the native One Life death (SeinDamageReciever.cs:366) deletes every backup of the current slot.
+                // On a guest that slot is its own save (its single-player game when it joined from one): keep them.
+                yield return AccessTools.Method(typeof(SaveSlotBackupsManager), "DeleteAllBackups");
             }
             static bool Prefix()
             {

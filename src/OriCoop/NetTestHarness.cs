@@ -1001,6 +1001,39 @@ namespace OriCoop
             }
         }
 
+        // T-127: a One Life wipe runs the game's own death on the guest, which deletes all five backups of its current
+        // slot (SeinDamageReciever.cs:366). Make sure that slot has backup files (stand-ins only where none exist), run
+        // the same call, and check every file is still there; the stand-ins are removed afterwards.
+        static void CheckGuestBackupsKept(TestHarness h)
+        {
+            int slot = SaveSlotsManager.CurrentSlotIndex;
+            object manager = AccessTools.Field(typeof(SaveSlotBackupsManager), "m_instance").GetValue(null);
+            if (manager == null) { h.Check(false, "W guest backups: the game's backup manager exists"); return; }
+            System.Reflection.MethodInfo name = AccessTools.Method(typeof(SaveSlotBackupsManager), "BackupName");
+            string[] paths = new string[5];
+            List<string> made = new List<string>();
+            try
+            {
+                for (int i = 0; i < paths.Length; i++)
+                {
+                    paths[i] = (string)name.Invoke(manager, new object[] { slot, i });
+                    if (!File.Exists(paths[i])) { File.WriteAllBytes(paths[i], new byte[] { 0 }); made.Add(paths[i]); }
+                }
+                int attempts = SaveSync.GuestBackupAttempts;
+                string failure = "";
+                try { SaveSlotBackupsManager.DeleteAllBackups(slot); }
+                catch (Exception e) { failure = " (" + e.GetType().Name + ")"; }
+                int kept = 0;
+                foreach (string path in paths) if (File.Exists(path)) kept++;
+                h.Check(kept == paths.Length && SaveSync.GuestBackupAttempts > attempts,
+                    "W One Life death on the guest keeps its slot " + slot + "'s backups (" + kept + "/" + paths.Length + " kept" + failure + ")");
+            }
+            finally
+            {
+                foreach (string path in made) { try { File.Delete(path); } catch (Exception) { } }
+            }
+        }
+
         static IEnumerator WorldStep(TestHarness h, int step)
         {
             bool host = NetPlay.IsHost; float start = Time.realtimeSinceStartup;
@@ -1017,6 +1050,7 @@ namespace OriCoop
                     GameController.Instance.SaveGameController.PerformSave();
                     SaveSlotBackupsManager.CreateCurrentBackup();
                     h.Check(SaveSync.GuestBackupAttempts > 0, "W guest automatic backup blocked (attempts=" + SaveSync.GuestBackupAttempts + ")");
+                    CheckGuestBackupsKept(h);
                     string newGame = Environment.GetEnvironmentVariable("ORICOOP_NEWGAME");
                     if (newGame == "1" || newGame == "noslot")
                     {
