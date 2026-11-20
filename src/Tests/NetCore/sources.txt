@@ -1,2 +1,3 @@
 OriCoop\Net\MessageBus.cs
 OriCoop\Net\SessionMachine.cs
+OriCoop\Net\FrameBufferTrim.cs

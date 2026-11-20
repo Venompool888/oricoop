@@ -162,7 +162,11 @@ namespace OriCoop
                     if (devices.TryGetValue(seat, out old))
                     {
                         remote.Hello = old.Hello; remote.InGameplay = old.InGameplay; remote.Scene = old.Scene; remote.Version = old.Version;
-                        if (IsHost && old.Seat != seat && DevicePrimaryChanged != null) DevicePrimaryChanged(old.Seat, seat);
+                        if (IsHost && old.Seat != seat)
+                        {
+                            s_bus.SeatRenumbered(old.Seat, seat); // T-149: accept its old Sender until it uses the new seat
+                            if (DevicePrimaryChanged != null) DevicePrimaryChanged(old.Seat, seat);
+                        }
                     }
                 }
             }

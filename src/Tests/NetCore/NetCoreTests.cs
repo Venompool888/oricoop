@@ -450,6 +450,60 @@ static class NetCoreTests
             Rig r = new Rig(false, true, false); r.Seat = 2; int calls = 0; r.Receive(70, 1, true, 0, Empty); r.Bus.ClearEarly();
             r.Bus.On(70, delegate(BinaryReader reader) { calls++; }); Equal(0, calls); r.Bus.ClearEarly(); r.Receive(70, 1, true, 0, Empty); Equal(1, calls);
         });
+        // T-149: host 1, A was seat 3, B (seat 2) left, C is seat 4. A adds a local player, the host renumbers A to 2
+        // (its extra player gets 3) and moves A's connection to seat 2. A stamps 3 until our seat table arrives.
+        Run("renumbered device keeps its old sender until it uses the new seat", delegate {
+            Rig r = new Rig(true, false, true); FakePeer a = new FakePeer(), c = new FakePeer();
+            r.Add(2, a); r.Add(3, null); r.Add(4, c); r.Bus.Forward(70);
+            r.Bus.Validate = delegate(byte[] bytes, int connection) { return bytes[1] == connection; };   // like ValidateSeatPacket
+            List<int> senders = new List<int>(); r.Bus.On(70, delegate(BinaryReader b) { senders.Add(r.Bus.Sender); b.ReadByte(); });
+            r.Bus.SeatRenumbered(3, 2);
+
+            r.Receive(70, 3, true, 2, delegate(BinaryWriter w) { w.Write((byte)7); });     // A, old stamp, reliable one-shot event
+            Equal(1, senders.Count); Equal(2, senders[0]);
+            Equal(1, c.Sent.Count); Bytes(new byte[] { 70, 2, 7 }, c.Sent[0].Bytes); Equal(0, a.Sent.Count);
+            r.Receive(70, 3, true, 4, delegate(BinaryWriter w) { w.Write((byte)8); });     // C claiming A's old seat: dropped
+            Equal(1, senders.Count); Equal(1, c.Sent.Count); Equal(0, a.Sent.Count);
+            r.Receive(70, 2, false, 2, delegate(BinaryWriter w) { w.Write((byte)9); });    // unreliable new stamp: window stays
+            r.Receive(70, 3, false, 2, delegate(BinaryWriter w) { w.Write((byte)10); });
+            Equal(3, senders.Count); Equal(2, senders[2]); Bytes(new byte[] { 70, 2, 10 }, c.Sent[2].Bytes);
+            r.Receive(70, 2, true, 2, delegate(BinaryWriter w) { w.Write((byte)11); });    // reliable new stamp ends the window
+            r.Receive(70, 3, true, 2, delegate(BinaryWriter w) { w.Write((byte)12); });
+            Equal(4, senders.Count); Equal(4, c.Sent.Count);
+        });
+        Run("renumber alias ends when the device leaves or the session resets", delegate {
+            Rig r = new Rig(true, false, true); r.Add(2, new FakePeer()); r.Add(4, new FakePeer());
+            int count = 0; r.Bus.On(70, delegate(BinaryReader b) { count++; });
+            r.Bus.SeatRenumbered(3, 2); r.Bus.ForgetSeat(2); r.Receive(70, 3, true, 2, Empty); Equal(0, count);
+            r.Bus.SeatRenumbered(3, 2); r.Bus.ClearRenumbered(); r.Receive(70, 3, true, 2, Empty); Equal(0, count);
+            r.Bus.SeatRenumbered(3, 2); r.Receive(70, 3, true, 2, Empty); Equal(1, count);
+        });
+        // T-150: frames that arrive while no puppet can play them stay bounded; the newest are kept for the spawn.
+        Run("idle frame buffer stays bounded and keeps the newest frames", delegate {
+            SortedDictionary<uint, int> buffer = new SortedDictionary<uint, int>(); uint play = 1;
+            for (uint tick = 1; tick <= 3600; tick++)   // one minute at 60 frames/s with this PC on the title screen
+            {
+                buffer[tick] = (int)tick;
+                play = FrameBufferTrim.TrimIdle(buffer, tick, play, FrameBufferTrim.IdleKeep);
+                Check(buffer.Count <= FrameBufferTrim.IdleKeep, "buffer grew to " + buffer.Count + " at tick " + tick);
+            }
+            Equal(FrameBufferTrim.IdleKeep, buffer.Count);
+            Check(buffer.ContainsKey(3600) && buffer.ContainsKey(3600 - 12), "newest frames (deepest jitter delay) kept");
+            Check(!buffer.ContainsKey(3600 - (uint)FrameBufferTrim.IdleKeep), "older frames dropped");
+            Equal(3600u - (uint)FrameBufferTrim.IdleKeep + 1, play);
+            Check(3600u - play <= 1024, "spawn catch-up is short");
+        });
+        Run("idle frame trim follows a tick wraparound", delegate {
+            SortedDictionary<uint, int> buffer = new SortedDictionary<uint, int>(); uint play = uint.MaxValue - 100, tick = play;
+            for (int i = 0; i < 300; i++, tick++) { buffer[tick] = i; play = FrameBufferTrim.TrimIdle(buffer, tick, play, FrameBufferTrim.IdleKeep); }
+            uint newest = tick - 1;
+            Equal(FrameBufferTrim.IdleKeep, buffer.Count); Check(buffer.ContainsKey(newest), "newest kept"); Equal(newest - 31u, play);
+        });
+        Run("idle frame trim never moves an already-played stream backwards", delegate {
+            SortedDictionary<uint, int> buffer = new SortedDictionary<uint, int>();
+            Equal(501u, FrameBufferTrim.TrimIdle(buffer, 500, 501, FrameBufferTrim.IdleKeep));
+            buffer[510] = 1; Equal(501u, FrameBufferTrim.TrimIdle(buffer, 510, 501, FrameBufferTrim.IdleKeep)); Equal(1, buffer.Count);
+        });
         Console.WriteLine("NetCore: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }
