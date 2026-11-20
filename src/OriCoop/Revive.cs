@@ -11,7 +11,8 @@ namespace OriCoop
 {
     // Local co-op downed / revive (the owner's design, 2026-11-14):
     // - An Ori that dies while its partner is alive is "downed" instead: a skull marker stays at its last solid ground.
-    // - The partner stands near the skull and holds the Spirit Flame button (the game's structure-interaction button:
+    // - A living teammate (with three or more players: any of them, see MultiRevive) stands near the skull and holds
+    //   the Spirit Flame button (the game's structure-interaction button:
     //   spirit wells, doors, map stones). Progress 0-100% over 1.5 s of holding; releasing pauses it, progress is kept.
     // - While holding, the saver's health drains at (health when the revive started) / 2 / 1.5 s; what was drained is
     //   the revived Ori's health (at least 1). Any accepted damage to the saver interrupts the hold (drained health and
@@ -63,7 +64,9 @@ namespace OriCoop
             return false;
         }
         static int PlayerOf(SeinCharacter s) { return Host.SeatOf(s); }
-        internal static bool MultiRevive { get { return Services.Net.Enabled && Host.PuppetCount > 1; } }
+        // Three or more players (online, or offline P3/P4 since T-057): any living player at the skull can revive, the
+        // nearest one holding wins (T-107). Two players keep the classic "the partner revives" path.
+        internal static bool MultiRevive { get { return Host.PuppetCount > 1; } }
         internal static SeinCharacter Partner(SeinCharacter s)
         {
             if (!MultiRevive)
@@ -291,7 +294,7 @@ namespace OriCoop
         {
             if (saver == null || d == null) return false;
             Vector3 at;
-            if (!MultiRevive || !Host.RemotePos(PlayerOf(saver), out at)) at = saver.Position;
+            if (!Services.Net.Enabled || !MultiRevive || !Host.RemotePos(PlayerOf(saver), out at)) at = saver.Position;
             Vector3 v = at - d.Marker;
             return Mathf.Abs(v.x) < Radius && Mathf.Abs(v.y) < Radius;
         }
@@ -433,19 +436,19 @@ namespace OriCoop
             static void Postfix(SeinHealthController __instance) { if (AnyDowned) OnHealthDamaged(__instance); }
         }
 
-        // Near a partner's skull, the Spirit Flame button revives instead of attacking.
+        // Near a teammate's skull, the Spirit Flame button revives instead of attacking; everyone else keeps the flame.
+        internal static bool FlameBlocked(SeinCharacter me)
+        {
+            if (!AnyDowned || me == null || IsDowned(me)) return false;
+            foreach (Downed d in s_down)
+                if (d != null && d.Sein != me && SaverNear(me, d)) return true;
+            return false;
+        }
+
         [HarmonyPatch(typeof(SeinStandardSpiritFlameAbility), "UpdateCharacterState")]
         static class NoFlameWhileReviving
         {
-            static bool Prefix()
-            {
-                if (!AnyDowned) return true;
-                SeinCharacter me = Characters.Sein; // P2 inside P2 context
-                if (me == null || IsDowned(me)) return true;
-                foreach (Downed d in s_down)
-                    if (d != null && d.Sein != me && SaverNear(me, d)) return false;
-                return true;
-            }
+            static bool Prefix() { return !FlameBlocked(Characters.Sein); } // P2/P3/P4 inside their own context
         }
 
         // A checkpoint created while P2 triggers it (soul link, spirit well, checkpoint zone) saves P2's spot: the game
