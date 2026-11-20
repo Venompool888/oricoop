@@ -65,8 +65,8 @@ Expect ($c0 -contains 'run-nettest -Clients 3 phases=' -and $c0 -contains 'run-n
 
 # 1. local flaky, net fails twice in WO, titlejoin passes.
 $r = Invoke-Fake @{ FAKE_LOCAL = 'flaky'; FAKE_NET = 'wo' } $files
-Expect ($r.Out -match 'PLAN: .*net \[WO\]') 'plan: net runs the selected phase WO'
-Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=WO' }).Count -eq 2) 'net failed in WO: rerun once with only WO, never a third time'
+Expect ($r.Out -match 'PLAN: .*net \[R,WO\]') 'plan: net runs the selected phases R,WO (WorldObjSync, T-144)'
+Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=R,WO' }).Count -eq 1 -and @($r.Calls | Where-Object { $_ -eq 'run-nettest phases=WO' }).Count -eq 1) 'net failed in WO: rerun once with only WO, never a third time'
 Expect (@($r.Calls | Where-Object { $_ -like 'run-test phases=*' }).Count -eq 2) 'local failed once: rerun once'
 Expect (@($r.Calls | Where-Object { $_ -like 'run-titlejoin phases=*' }).Count -eq 1) 'titlejoin passed: not rerun'
 Expect ($r.Out -match '(?m)^local: FLAKY') 'local that passes on the rerun is FLAKY'
@@ -92,7 +92,7 @@ Expect (@($r.Calls).Count -eq 1 -and $r.Out -match 'AFFECTED FAIL') 'ORICOOP_RER
 
 # 4. a failure outside any phase (start-up) reruns the suite with the same phases.
 $r = Invoke-Fake @{ FAKE_NET = 'startup' } 'src/OriCoop/WorldObjSync.cs'
-Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=WO' }).Count -eq 2 -and $r.Out -match '(?m)^net: FLAKY') 'start-up failure: rerun with the same phases (WO); passing then = FLAKY'
+Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=R,WO' }).Count -eq 2 -and $r.Out -match '(?m)^net: FLAKY') 'start-up failure: rerun with the same phases (R,WO); passing then = FLAKY'
 
 # 5. A file whose module selects every phase (M7): net keeps them all, net-newgame only its own phases (T-096; net-relay,
 #    the other capped suite, went with the relay in T-159).

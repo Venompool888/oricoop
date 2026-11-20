@@ -242,6 +242,9 @@ namespace OriCoop
             yield return Barrier(h, 8);
             restores0 = TestHarness.RestoreCheckpointCalls;
             int bothDown0 = Revive.NetBothDown;
+            // T-144: a one-shot hazard that fired before the wipe must be re-armed by the reload on this PC.
+            const int oneShotId = 0x54313434;
+            WorldObjSync.TestMarkFired(oneShotId);
             if (host)
             {
                 Hurt(Own, 1000f);
@@ -276,6 +279,7 @@ namespace OriCoop
             h.Check(lingerFrames == 0, "R3 partner's skull hidden within 0.3 s of 'both down' and through the reload (T-026): "
                 + lingerFrames + " frames still shown, first at +" + lingerFirst.ToString("F2") + " s");
             h.Check(!Revive.AnyDowned, "R3 nobody downed after the reload");
+            h.Check(!WorldObjSync.TestHasFired(oneShotId), "R3 the reload forgets one-shot hazards that fired before it (T-144, resets=" + WorldObjSync.OneShotResets + ")");
             h.Check(Revive.NetBothDown >= 1, "R3 'both down' was decided once (host) and applied here");
             yield return Barrier(h, 10);
             yield return SoulLink(h, host);

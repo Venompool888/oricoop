@@ -65,9 +65,8 @@ namespace OriCoop
         static readonly int[] s_flipSentFrame = { -1, -1, -1, -1 };
         static readonly Dictionary<int, Component> s_byId = new Dictionary<int, Component>();
         static readonly Dictionary<int, bool> s_triggerReplicable = new Dictionary<int, bool>();
-        static readonly HashSet<int> s_firedOnce = new HashSet<int>();
-        static readonly HashSet<long> s_seenSeq = new HashSet<long>();
-        static readonly Queue<long> s_seenOrder = new Queue<long>();
+        static readonly World.OneShotTriggers s_firedOnce = new World.OneShotTriggers();
+        static readonly World.SeenEvents s_seen = new World.SeenEvents(4096);
         static uint s_seq;
         // Rising water follower state (guest).
         static float s_waterY, s_waterSpeed, s_waterAt2 = -10f, s_waterWaitSince; static int s_waterId, s_waterWaitId, s_hostWaterId; static float s_hostWaterY, s_hostWaterAt, s_hostWaterRate;
@@ -98,12 +97,14 @@ namespace OriCoop
             NetPlay.On(MsgState, ReadState);
             NetPlay.SessionStarted += Reset;
             NetPlay.SessionEnded += Reset;
+            // T-145: a player taking a seat (maybe a new process whose seq restarts) must not inherit its old keys.
+            NetPlay.PlayerJoined += delegate(int seat) { s_seen.SeatJoined(seat); };
             Log("registered (Enabled=" + Enabled + ")");
         }
 
         static void Reset()
         {
-            s_byId.Clear(); s_triggerReplicable.Clear(); s_firedOnce.Clear(); s_seenSeq.Clear(); s_seenOrder.Clear(); s_deferred.Clear();
+            s_byId.Clear(); s_triggerReplicable.Clear(); s_firedOnce.Clear(); s_seen.Clear(); s_deferred.Clear();
             s_waterAt2 = -10f; s_lastFlipActivity = -10f;
         }
 
@@ -153,9 +154,7 @@ namespace OriCoop
         {
             byte kind = r.ReadByte(); int id = r.ReadInt32(); uint seq = r.ReadUInt32();
             if (!Enabled) return;
-            long key = ((long)NetPlay.Sender << 32) | seq;
-            if (!s_seenSeq.Add(key)) return;
-            s_seenOrder.Enqueue(key); while (s_seenOrder.Count > 4096) s_seenSeq.Remove(s_seenOrder.Dequeue());
+            if (!s_seen.FirstTime(NetPlay.Sender, seq)) return;
             byte[] payload = r.ReadBytes((int)(r.BaseStream.Length - r.BaseStream.Position));
             ApplyEvent(kind, id, payload, false);
         }
@@ -237,11 +236,11 @@ namespace OriCoop
                     {
                         what = "trigger"; PlayerCollisionTrigger t = Find<PlayerCollisionTrigger>(id); found = t != null;
                         if (DeferIfNotStarted(kind, id, payload, t)) { deferred = true; break; }
-                        if (t != null && !(t.TriggerOnce && s_firedOnce.Contains(id)) && (t.Active || t.TriggerOnce))
+                        if (t != null && !(t.TriggerOnce && s_firedOnce.HasFired(id)) && (t.Active || t.TriggerOnce))
                         {
                             // WorldSync may already have written the partner's Active=false (TriggerOnce): run it once anyway.
                             t.Active = true;
-                            if (t.TriggerOnce) s_firedOnce.Add(id);
+                            if (t.TriggerOnce) s_firedOnce.TryFire(id);
                             t.DoTrigger(false);
                         }
                         break;
@@ -359,7 +358,10 @@ namespace OriCoop
         public static bool RopeAttached(AttachToRope a) { return (bool)M_ropeAttached.Invoke(a, null); }
         public static float WaterSpeed(RisingWater w) { return (float)F_waterSpeed.GetValue(w); }
         // Harness: re-arm a TriggerOnce trigger on this PC (the same scene is used again at 200 ms).
-        public static void ForgetTrigger(PlayerCollisionTrigger t) { if (t != null) { s_firedOnce.Remove(IdOf(t)); t.Active = true; } }
+        public static void ForgetTrigger(PlayerCollisionTrigger t) { if (t != null) { s_firedOnce.Forget(IdOf(t)); t.Active = true; } }
+        // Harness (R3, T-144): mark an id as fired here / ask whether it still counts as fired.
+        public static void TestMarkFired(int id) { s_firedOnce.TryFire(id); }
+        public static bool TestHasFired(int id) { return s_firedOnce.HasFired(id); }
         public static bool IsReplicableTrigger(PlayerCollisionTrigger t) { return t != null && Replicable(t, IdOf(t)); }
 
         // WorldSync: objects whose state this module carries (live hard writes would fight it).
@@ -597,6 +599,22 @@ namespace OriCoop
             }
         }
 
+        // T-144: a checkpoint reload (wipe, or a guest reloading the host's checkpoint) puts the game's TriggerOnce triggers
+        // back to their saved Active state, so this PC's one-shot record goes too: the next pass fires on every PC again.
+        // Test-only mutation ORICOOP_MUTATE_WOBJ_KEEP_FIRED=1 keeps the record (pre-T-144) and must fail R3's check.
+        static readonly bool s_mutateKeepFired = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WOBJ_KEEP_FIRED") == "1";
+        public static int OneShotResets;
+        [HarmonyPatch(typeof(RestoreCheckpointController), "RestoreCheckpoint")]
+        static class RestoreForgetsOneShots
+        {
+            static void Postfix()
+            {
+                if (s_mutateKeepFired) return;
+                if (s_firedOnce.Count > 0) Log("checkpoint restored: forget " + s_firedOnce.Count + " fired one-shot trigger(s)");
+                s_firedOnce.CheckpointRestored(); OneShotResets++;
+            }
+        }
+
         // Falling rocks and other hazard triggers: PlayerCollisionTrigger only sees Characters.Current (the local Ori;
         // PlayerCollisionTrigger.cs:28-47), so a rock fell only on the PC whose own Ori passed. The passer's PC fires it and
         // sends message 75; a puppet's touch (OnTriggerEnter in its context) is dropped.
@@ -613,7 +631,7 @@ namespace OriCoop
                 // Send only what Trigger.DoTrigger (Trigger.cs:29) will really start here; the partner skips the condition.
                 if (t.DontTriggerWhileRunning && t.ActionToRun is ActionWithDuration && ((ActionWithDuration)t.ActionToRun).IsPerforming) return true;
                 if (t.Condition != null && !t.Condition.Validate(null)) return true;
-                if (t.TriggerOnce) { if (!s_firedOnce.Add(id)) return true; }
+                if (t.TriggerOnce) { if (!s_firedOnce.TryFire(id)) return true; }
                 SendEvent(KTrigger, id, null, "trigger " + t.name);
                 return true;
             }

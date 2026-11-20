@@ -210,6 +210,8 @@ namespace OriCoop
         static NetPeer s_peer;
         static PeerHub s_hub;
         static bool s_factorySession;
+        // C-server session: the server hands every seat's message to every other seat (no host relaying needed).
+        internal static bool ServerForwardsAll { get { return s_factorySession; } }
         static bool HasHub { get { return s_hub != null; } }
         static bool WaitingForSeat { get { return s_session.WaitingForSeat; } }
         public static NetPeer Peer { get { return !HasHub ? s_peer : Primary == null ? null : Primary.Peer; } }
