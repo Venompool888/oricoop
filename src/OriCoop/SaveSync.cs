@@ -77,7 +77,7 @@ namespace OriCoop
             Ready = false;
         }
 
-        internal static void RebindDevice(int previous, int primary) { s_guests.Rebind(previous, primary); }
+        internal static void RebindDevice(int previous, int primary) { s_guests.Rebind(previous, primary); CoopSaves.RebindDevice(previous, primary); }
 
         public static bool ReadyForSeat(int seat)
         {

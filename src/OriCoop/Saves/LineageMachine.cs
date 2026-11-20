@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using OriCoop.Seams;
 
@@ -125,6 +126,12 @@ namespace OriCoop.Saves
         readonly ILineageActions m_actions;
         LineageStage m_stage;
         float m_stageAt;
+        // T-128: with 3-4 players every guest present at the offer answers. The host waits for all of them (or the reply
+        // timeout): one guest's diverged copy must reach the host's choice even if another guest answered "no copy" first.
+        readonly HashSet<int> m_seats = new HashSet<int>();     // host: guest device seats in the session
+        readonly HashSet<int> m_waiting = new HashSet<int>();   // host: seats whose reply to the current offer is missing
+        LineageReply m_same, m_new;
+        int m_replies, m_choiceSeat = -1;                      // m_choiceSeat: the guest whose diverged copy is on offer
 
         public LineageMachine(INetBus net, IClock clock, ILineageActions actions)
         { m_net = net; m_clock = clock; m_actions = actions; }
@@ -141,18 +148,41 @@ namespace OriCoop.Saves
             m_net.On(LineageWire.Upload, ReceiveUpload);
             m_net.SessionEnded += Reset;
             m_net.PlayerJoined += SeatJoined;
+            m_net.PlayerLeft += SeatLeft;
         }
 
         // T-129: a seat that joins after the lineage was settled (3rd/4th player, server mode) never saw the offer or the
         // commit broadcast. Give it the co-op save now, before its checkpoint (same reliable channel, so it arrives
         // first): a guest joining from the title then keeps the copy in its linked/empty slot or is asked for one.
         // While the lineage is still open (Offered..Adopting) the commit broadcast at the decision reaches it anyway.
+        // T-128: the host also tracks the guest seats, to wait for every reply to an offer.
         void SeatJoined(int seat)
         {
-            if (m_net.IsHost && m_stage == LineageStage.Proceed) m_actions.CommitTo(seat);
+            if (!m_net.IsHost) return;
+            m_seats.Add(seat);
+            if (m_stage == LineageStage.Proceed) m_actions.CommitTo(seat);
         }
 
-        void Reset() { m_stage = LineageStage.Idle; m_actions.Reset(); }
+        void Reset()
+        {
+            m_stage = LineageStage.Idle; m_seats.Clear(); m_waiting.Clear(); m_same = m_new = null; m_replies = 0; m_choiceSeat = -1;
+            m_actions.Reset();
+        }
+
+        void SeatLeft(int seat)
+        {
+            m_seats.Remove(seat);
+            if (m_waiting.Remove(seat)) FinishRepliesIfComplete();
+        }
+
+        // A device's primary seat changed (NetPlay.DevicePrimaryChanged): its messages now come from the new seat.
+        public void Rebind(int previous, int primary)
+        {
+            if (previous == primary) return;
+            if (m_seats.Remove(previous)) m_seats.Add(primary);
+            if (m_waiting.Remove(previous)) m_waiting.Add(primary);
+            if (m_choiceSeat == previous) m_choiceSeat = primary;
+        }
 
         public bool HostGate()
         {
@@ -162,7 +192,11 @@ namespace OriCoop.Saves
                 case LineageStage.Proceed: case LineageStage.Done: return true;
                 case LineageStage.Offered:
                     if (m_clock.RealTime - m_stageAt > 10f)
-                    { m_actions.ReplyTimeout(); SetStage(LineageStage.Proceed); return true; }
+                    {
+                        // Some guests answered (a seat that never does runs an older mod): decide on those answers.
+                        if (m_replies > 0) { FinishReplies(); return m_stage == LineageStage.Proceed; }
+                        m_actions.ReplyTimeout(); SetStage(LineageStage.Proceed); return true;
+                    }
                     return false;
                 case LineageStage.Uploading:
                     if (m_clock.RealTime - m_stageAt > 15f)
@@ -181,6 +215,8 @@ namespace OriCoop.Saves
             try
             {
                 LineageOffer offer = m_actions.PrepareOffer();
+                m_waiting.Clear(); foreach (int seat in m_seats) m_waiting.Add(seat);
+                m_same = m_new = null; m_replies = 0; m_choiceSeat = -1;
                 m_net.Send(LineageWire.Offer, true, delegate(BinaryWriter w)
                 {
                     offer.PlayerId = m_actions.PlayerId; offer.Name = m_actions.LocalName;
@@ -208,17 +244,36 @@ namespace OriCoop.Saves
         void ReceiveReply(BinaryReader r)
         {
             if (!m_net.IsHost || m_stage != LineageStage.Offered) return;
+            int seat = m_net.Sender;
             LineageReply reply = LineageWire.ReadReply(r);
             m_actions.ReplyReceived(reply);
-            if (!reply.Found) { m_actions.NewReply(reply); Decide(false); }
-            else if (reply.Hash == m_actions.HostHash) { m_actions.SameReply(); Decide(false); }
-            else
+            m_waiting.Remove(seat); m_replies++;
+            if (reply.Found && reply.Hash != m_actions.HostHash)
             {
+                // A diverged copy: the host chooses now; that guest is the one asked for its progress.
+                m_choiceSeat = seat;
                 m_actions.BeginChoosing(reply);
                 SetStage(LineageStage.Choosing);
                 m_net.Send(LineageWire.Request, true, delegate(BinaryWriter w) { LineageWire.WriteRequest(w, LineageWire.ChoosingRequest); });
                 m_actions.ChoosingSent();
+                return;
             }
+            if (reply.Found) { if (m_same == null) m_same = reply; }
+            else if (m_new == null || (m_new.FreeSlot && !reply.FreeSlot)) m_new = reply;   // keep a "no free slot" answer for its warning
+            FinishRepliesIfComplete();
+        }
+
+        void FinishRepliesIfComplete()
+        {
+            if (m_stage == LineageStage.Offered && m_waiting.Count == 0 && m_replies > 0) FinishReplies();
+        }
+
+        // Every guest answered without a diverged copy: the same lineage if anyone holds it, else a new one.
+        void FinishReplies()
+        {
+            if (m_same != null) m_actions.SameReply();
+            else m_actions.NewReply(m_new);
+            Decide(false);
         }
 
         public void Decide(bool partner)
@@ -226,7 +281,11 @@ namespace OriCoop.Saves
             if (partner)
             {
                 SetStage(LineageStage.Uploading);
-                m_net.Send(LineageWire.Request, true, delegate(BinaryWriter w) { LineageWire.WriteRequest(w, LineageWire.UploadRequest); });
+                // Only the guest whose copy was on offer uploads: another guest has no matching slot and would send an
+                // empty upload that could arrive first and void the host's choice (T-128).
+                Action<BinaryWriter> body = delegate(BinaryWriter w) { LineageWire.WriteRequest(w, LineageWire.UploadRequest); };
+                if (m_choiceSeat >= 0) m_net.SendTo(m_choiceSeat, LineageWire.Request, true, body);
+                else m_net.Send(LineageWire.Request, true, body);
                 return;
             }
             m_actions.HostChosen(m_stage == LineageStage.Choosing || m_stage == LineageStage.Uploading);
@@ -259,6 +318,7 @@ namespace OriCoop.Saves
         void ReceiveUpload(BinaryReader r)
         {
             if (!m_net.IsHost || m_stage != LineageStage.Uploading) return;
+            if (m_choiceSeat >= 0 && m_net.Sender != m_choiceSeat) return;
             int length; byte[] bytes = LineageWire.ReadUpload(r, out length);
             if (!m_actions.ValidUpload(length, bytes)) { Decide(false); return; }
             try

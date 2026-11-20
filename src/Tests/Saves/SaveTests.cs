@@ -63,7 +63,12 @@ partial class SaveTests
         Run("reply timeout boundary and late reply", ReplyTimeout);
         Run("upload timeout boundary", UploadTimeout);
         Run("cancel request and delay", CancelDelay);
-        Run("first reply wins with four seats", FirstReplyWinsFourSeats);
+        Run("every reply counts with four seats", EveryReplyCountsFourSeats);
+        Run("T-128 guest without a copy answering first does not skip the choice", NoCopyFirstStillChooses);
+        Run("T-128 partner choice uploads from the diverged guest only", UploadFromChosenGuest);
+        Run("T-128 another guest's upload is ignored", OtherGuestUploadIgnored);
+        Run("T-128 host waits for every guest's reply", WaitsForEveryReply);
+        Run("T-128 reply timeout decides on the replies that came", PartialRepliesTimeout);
         Run("player leaves during offer", DepartureDuringOffer);
         Run("session reset", SessionReset);
         Run("offer failure falls back", FailedOffer);

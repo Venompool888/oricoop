@@ -9,6 +9,7 @@ namespace OriCoop
     {
         public static bool HostGate() { return s_machine.HostGate(); }
         public static void HostAdoptFinished() { s_machine.AdoptionFinished(); }
+        internal static void RebindDevice(int previous, int primary) { s_machine.Rebind(previous, primary); }
 
         // T-126: SaveSync.CheckPromotion: this guest is now the host (server-mode arbiter change). Its game's current
         // slot is its own single-player slot (joined in-game) or the title fallback: host saves would overwrite it.

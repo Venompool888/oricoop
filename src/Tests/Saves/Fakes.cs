@@ -183,10 +183,11 @@ sealed class Scenario
     public readonly LineageMachine HostMachine, GuestMachine;
     public Scenario()
     {
-        HostBus = Network.Add(1); GuestBus = Network.Add(2);
-        Host = new FakeLineage(HostBus); Guest = new FakeLineage(GuestBus);
-        HostMachine = new LineageMachine(HostBus, Clock, Host); GuestMachine = new LineageMachine(GuestBus, Clock, Guest);
-        HostMachine.Init(); GuestMachine.Init();
+        // The host's machine runs before any guest joins (as in the game, where it is created at start-up).
+        HostBus = Network.Add(1); Host = new FakeLineage(HostBus);
+        HostMachine = new LineageMachine(HostBus, Clock, Host); HostMachine.Init();
+        GuestBus = Network.Add(2); Guest = new FakeLineage(GuestBus);
+        GuestMachine = new LineageMachine(GuestBus, Clock, Guest); GuestMachine.Init();
     }
     public void Offer() { HostMachine.HostGate(); Network.Pump(); }
     public void Diverge(string hash)
