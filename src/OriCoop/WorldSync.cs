@@ -635,6 +635,7 @@ namespace OriCoop
             ISerializable live = Find(scene, id);
             if (s_excluded.Contains(key) || (live != null && Excluded(live))) return;
             if (live != null && Describe(live) != schema) throw new InvalidDataException("world schema differs for " + key);
+            int[] forwardTo = null;
             if (NetPlay.IsHost)
             {
                 // Detect a local edit even if it happened since our previous 250 ms scan.
@@ -653,12 +654,16 @@ namespace OriCoop
                     catch (Exception e) { Disable(key, live, e); }
                 }
                 float changed;
-                if (s_changed.TryGetValue(key, out changed) && Time.realtimeSinceStartup - changed < 0.5f)
+                if (!s_changed.TryGetValue(key, out changed)) changed = World.WorldRelay.Never;
+                World.RelayPlan plan = World.WorldRelay.OnRemoteBlob(true, NetPlay.ServerForwardsAll, NetPlay.Sender,
+                    RemoteDevices(), Time.realtimeSinceStartup, changed);
+                if (!plan.Apply)
                 {
                     Blob authoritative;
-                    if (s_blobs.TryGetValue(key, out authoritative)) SendBlobs(new List<Blob> { authoritative });
+                    if (plan.SendOwnToAll && s_blobs.TryGetValue(key, out authoritative)) SendBlobs(new List<Blob> { authoritative });
                     return;
                 }
+                forwardTo = plan.ForwardTo;
             }
             StoreCheckpoint(scene, id, bytes);
             if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay()) ApplyLive(scene, id, bytes);
@@ -670,6 +675,28 @@ namespace OriCoop
             if (!s_bad.Contains(key)) s_blobs[key] = MakeBlob(scene, id, bytes, schema, type);
             else s_blobs.Remove(key);
             s_known[key] = incoming; // Remote application is never a new local proposal.
+            // T-141: the other guests (P2P / relay: connected only to us) get the accepted blob now, not after a digest
+            // resync 5-60 s later, during which their own whole-GameController blob could overwrite it again.
+            if (forwardTo != null && forwardTo.Length > 0 && !s_mutateNoRebroadcast)
+            {
+                List<Blob> accepted = new List<Blob> { MakeBlob(scene, id, bytes, schema, type) };
+                foreach (int seat in forwardTo) SendBlobs(accepted, seat);
+            }
+        }
+
+        // Test-only mutation (net-3p world check): the host keeps an accepted guest blob to itself again (pre-T-141).
+        static readonly bool s_mutateNoRebroadcast = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_NO_REBROADCAST") == "1";
+
+        // Device seats this PC is connected to (a guest device's extra local seats share its peer: one copy per device).
+        static int[] RemoteDevices()
+        {
+            List<int> devices = new List<int>();
+            foreach (int seat in NetPlay.RemoteSeats)
+            {
+                int device = NetPlay.DeviceSeat(seat);
+                if (!devices.Contains(device)) devices.Add(device);
+            }
+            return devices.ToArray();
         }
 
         static void ApplyLive(MoonGuid scene, MoonGuid id, byte[] bytes)

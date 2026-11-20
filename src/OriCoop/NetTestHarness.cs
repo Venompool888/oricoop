@@ -729,6 +729,8 @@ namespace OriCoop
             h.Check(a.WorldCount > 0 && a.WorldCount == b.WorldCount && a.WorldCount == c.WorldCount
                 && a.Digest == b.Digest && a.Digest == c.Digest, "3P world digests equal on all three after 5 s");
 
+            yield return ThreeGuestWorldChange(h);
+
             yield return ThreeRound(h, 4);
             int keys = Three(4, 1).Keys;
             if (NetPlay.IsHost)
@@ -852,6 +854,34 @@ namespace OriCoop
                 if (!s_done) throw new InvalidOperationException("3P host completion signal missing");
             }
         }
+        // T-141: guest P2 changes a world event (GameController blob, like a door / lever / story flag); guest P3, which in
+        // P2P / relay talks only to the host, must see it within 3 s. Before T-141 it came only with a digest resync (two
+        // mismatching rounds 5 s apart, at least ~5-10 s). Mutation ORICOOP_MUTATE_WORLD_NO_REBROADCAST=1 must fail it.
+        static IEnumerator ThreeGuestWorldChange(TestHarness h)
+        {
+            const int target = 4141;
+            try
+            {
+                // Create the fixture event everywhere first and let the scans settle, so no PC's own first capture of
+                // it (value 0) races the change below.
+                FixtureState();
+                yield return Wait(1.5f);
+                yield return ThreeRound(h, 30);
+                float start = Time.realtimeSinceStartup;
+                if (Players.LocalSeat == 2) FixtureState().Value = target;
+                float until = start + 3f;
+                while (FixtureState().Value != target && Time.realtimeSinceStartup < until) yield return null;
+                h.Note("3P guest world change seen on P" + Players.LocalSeat + " value=" + FixtureState().Value
+                    + " elapsedMs=" + F((Time.realtimeSinceStartup - start) * 1000f));
+                h.Check(FixtureState().Value == target, "3P P" + Players.LocalSeat + " has guest P2's world event change within 3 s");
+                yield return ThreeRound(h, 31);
+            }
+            finally
+            {
+                if (s_worldFixture != null) { UnityEngine.Object.Destroy(s_worldFixture.gameObject); s_worldFixture = null; }
+            }
+        }
+
         // Independent, numbered barriers keep W out of the movement phases' single "go" signal.
         const byte MsgWorldTest = 25;
         static readonly Dictionary<int, WorldTestPacket> s_worldPackets = new Dictionary<int, WorldTestPacket>();
