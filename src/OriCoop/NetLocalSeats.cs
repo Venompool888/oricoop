@@ -11,6 +11,7 @@ namespace OriCoop
         // 6/7 are automatic add/release commands, not a player-facing approval workflow.
         const byte MsgLocalAdd = 6, MsgLocalRelease = 7, MsgSeatTable = 8, MsgSeatFrames = 9;
         static readonly SeatTable s_seats = new SeatTable();
+        static readonly int[] s_lastOwners = new int[5];   // the table at the last ReconcileSeats (T-133 renames)
         static bool s_seatChangePending;
         internal static event Action<int, int> DevicePrimaryChanged;
         public static bool MultiSeatSupported { get { return !s_factorySession; } }
@@ -29,12 +30,12 @@ namespace OriCoop
         static void EnsureHostSeats() { if (Enabled && IsHost && !s_factorySession && s_seats.Count == 0) s_seats.Add(1); }
         static void RetainHostLocalSeats()
         {
-            s_seats.KeepDevice(1); s_seatChangePending = false;
+            s_seats.KeepDevice(1); s_seats.CopyOwners(s_lastOwners); s_seatChangePending = false;
             s_extraSent.Clear(); Array.Clear(s_extraCount, 0, s_extraCount.Length);
         }
         static void ResetLocalSeats()
         {
-            s_seats.Clear(); s_seatChangePending = false;
+            s_seats.Clear(); s_seats.CopyOwners(s_lastOwners); s_seatChangePending = false;
             s_extraSent.Clear(); Array.Clear(s_extraCount, 0, s_extraCount.Length);
             foreach (Puppet puppet in new List<Puppet>(Players.Remotes)) if (puppet.IsLocal) Plugin.DespawnPuppet(puppet);
             OnlineLocalPlayers.Reset();
@@ -166,6 +167,11 @@ namespace OriCoop
                 }
             }
             foreach (RemoteState remote in s_remotes.Values) if (DeviceSeat(remote.Seat) == remote.Seat) CopyDeviceStatus(remote);
+            // T-133: on every PC (host, the renumbered guest, the other guests) whatever is keyed by a device's primary seat
+            // (enemy ownership, presence, symbols) follows it to its new number.
+            int[] renamed = s_seats.Renames(s_lastOwners);
+            s_seats.CopyOwners(s_lastOwners);
+            if (Array.Exists(renamed, s => s != 0)) Players.RaiseSeatsRenamed(renamed);
             if (primary != 0 && primary != previous)
             { s_statusDirty = true; SendReliable(MsgHello, w => w.Write(ModVersion)); }
         }

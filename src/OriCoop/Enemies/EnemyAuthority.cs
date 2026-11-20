@@ -129,6 +129,19 @@ namespace OriCoop.Enemies
         }
         internal bool AcceptOwnerMessage(int localSeat, uint epoch, int sender, bool checkFrozen)
         { return Known && !Mine(localSeat) && (!checkFrozen || !Frozen) && Epoch == epoch && OwnerSeat == sender; }
+        // T-133: a device's primary seat was renumbered (renamed[old] = new, 0 = unchanged). The device keeps simulating
+        // its enemies: owner, pending owner and presence move to the new number together (applied at once, so a chain
+        // like 4->3 with 3->2 cannot mix them up).
+        internal void RenameSeats(int[] renamed)
+        {
+            OwnerSeat = RenamedSeat(renamed, OwnerSeat);
+            PendingOwner = RenamedSeat(renamed, PendingOwner);
+            List<int> loaded = new List<int>(LoadedSeats);
+            LoadedSeats.Clear();
+            foreach (int seat in loaded) LoadedSeats.Add(RenamedSeat(renamed, seat));
+        }
+        internal static int RenamedSeat(int[] renamed, int seat)
+        { return seat > 0 && seat < renamed.Length && renamed[seat] != 0 ? renamed[seat] : seat; }
     }
 
     internal struct EnemyTickPosition

@@ -94,6 +94,7 @@ namespace OriCoop
             Services.Net.Forward(Snapshots, Life, Symbols, Shot);
             Services.Net.SessionStarted += Begin; Services.Net.SessionEnded += Reset;
             Services.Net.PlayerLeft += RemoveSeat;
+            Players.SeatsRenamed += RenameSeats;
             Services.Net.PlayerJoined += delegate(int seat)
             {
                 foreach (KeyValuePair<string, ushort> symbol in s_symbols)
@@ -570,6 +571,20 @@ namespace OriCoop
             if (Mine(a)) Resume(a); else { a.ExpectFirstSnapshot = true; FreezeBodies(a); }
             Grant(a, true);
             Trace("owner change", a, "ReadHandoff");
+        }
+        // T-133: a device's primary seat was renumbered (a guest added a local player into a lower free seat). The enemies
+        // it simulates, its presence and the symbols it sent follow it to the new number on every PC; before, it froze them
+        // (Mine compared the old owner with its new seat) and the host rejected its snapshots (sender != owner).
+        static void RenameSeats(int[] renamed)
+        {
+            foreach (Actor a in s_actors.Values) a.RenameSeats(renamed);
+            List<KeyValuePair<uint, string>> moved = new List<KeyValuePair<uint, string>>();
+            foreach (KeyValuePair<uint, string> symbol in s_remoteSymbols)
+                if (EnemyAuthority.RenamedSeat(renamed, (int)(symbol.Key >> 16)) != (int)(symbol.Key >> 16)) moved.Add(symbol);
+            foreach (KeyValuePair<uint, string> symbol in moved) s_remoteSymbols.Remove(symbol.Key);
+            foreach (KeyValuePair<uint, string> symbol in moved)
+                s_remoteSymbols[SymbolKey(EnemyAuthority.RenamedSeat(renamed, (int)(symbol.Key >> 16)), (ushort)(symbol.Key & 0xFFFF))] = symbol.Value;
+            Services.Log.Info("enemies: device seats renumbered; " + s_actors.Count + " enemies and " + moved.Count + " symbols follow");
         }
         static void RemoveSeat(int seat)
         {

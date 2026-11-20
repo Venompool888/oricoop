@@ -132,7 +132,8 @@ namespace OriCoop
             }
             if (s_down[Host.LocalSeat] != null || SpectateActive)
             {
-                s_spectate.Tick(new[] { Host.LocalSeat }, PresentSeats, DownedSeats());
+                // T-108: spectate only once every player on this PC is down (T-042); the primary seat comes first.
+                s_spectate.Tick(Players.LocalSeats, PresentSeats, DownedSeats());
                 if (SpectateActive)
                 {
                     if (Input.GetKeyDown(KeyCode.A) || Core.Input.MenuLeft.OnPressed) SpectatePrevious();
@@ -227,7 +228,7 @@ namespace OriCoop
         static void ReleaseRemoteDowned()
         {
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
-                if (seat != Host.LocalSeat && s_down[seat] != null) { Downed d = s_down[seat]; s_down[seat] = null; RestoreDowned(d, false); }
+                if (seat != Host.LocalSeat && s_down[seat] != null) { Downed d = s_down[seat]; s_down[seat] = null; RestoreUnrescued(d); }
         }
 
         static void OnNetRevive(BinaryReader r)
