@@ -46,6 +46,10 @@ namespace OriCoop
         // Test-only mutation switch: ORICOOP_P3_OFF=1 restores the pre-fix behaviour so the P3 scenario can prove it fails.
         public static readonly bool Off = Environment.GetEnvironmentVariable("ORICOOP_P3_OFF") == "1";
         public static int PedestalPlaysSent, PedestalPlaysReceived, PedestalPlaysPlayed, Repairs, LocalPedestalActivations;
+        // T-137: camera puppet repairs, and the gate that stops clearing a puppet the scene keeps setting.
+        public static int PuppetRepairs;
+        public static readonly PuppetRepairGate PuppetGate = new PuppetRepairGate {
+            Disabled = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GUARD_FIGHTS_SCENE") == "1" };
         static SeinCharacter Own { get { return StoryHost.Current.P1 != null ? StoryHost.Current.P1 : Characters.Sein; } }
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         public static void Log(string msg)
@@ -178,6 +182,8 @@ namespace OriCoop
             Trace("local input locked", (gc != null && (gc.LockInput || gc.LockInputByAction)
                 || own != null && own.CutsceneBlocked != null && own.CutsceneBlocked.Active).ToString());
             float now = Time.realtimeSinceStartup;
+            int puppetId = puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f ? puppet.CinematicPuppet.GetInstanceID() : 0;
+            if (PuppetGate.Observe(puppetId, now)) Log("camera puppet came straight back: the scene drives it, not clearing it for 30 s (T-137)");
             // Only LockPlayerInputAction's coroutine sets LockInputByAction and it clears it after a few seconds; a
             // coroutine killed with its GameObject (story stopped / deactivated mid-way) never does and the player can't
             // move at all (it also keeps the originator's story alive). Held 20 s: release it.
@@ -246,8 +252,12 @@ namespace OriCoop
             CameraPuppetController puppet = CameraPuppet();
             // A held cinematic puppet is only a lock if it keeps the view away from the player.
             SeinCharacter followed = Revive.SpectateSein;
-            if (puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f && CameraDistance(followed != null ? followed : Own) > 10f && now - s_puppetAt >= 2f)
-            { puppet.Tween = 0; puppet.CinematicPuppet = null; s_puppetAt = now; Repairs++; Log("repair camera puppet"); }
+            if (puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f && CameraDistance(followed != null ? followed : Own) > 10f && now - s_puppetAt >= 2f
+                && PuppetGate.ShouldRepair(puppet.CinematicPuppet.GetInstanceID(), now))
+            {
+                PuppetGate.Repaired(puppet.CinematicPuppet.GetInstanceID(), now);
+                puppet.Tween = 0; puppet.CinematicPuppet = null; s_puppetAt = now; Repairs++; PuppetRepairs++; Log("repair camera puppet");
+            }
             if (UI.Cameras.Current != null && Own != null && !IsPlayerCameraTarget(UI.Cameras.Current.Target) && now - s_targetAt >= 2f)
             {
                 ICharacter previous = Characters.Current; Characters.Current = Own;
