@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
+using System.Reflection;
 using Game;
 using HarmonyLib;
 using UnityEngine;
@@ -116,6 +117,43 @@ namespace OriCoop
             }
         }
 
+        // T-138: the extra local player's soul link (the save flame; T-029's message 80) appears beside it on every
+        // device. Its own device casts it the way the extra's own update does: in the extra's context.
+        static readonly FieldInfo s_extraFlameField = typeof(SeinSoulFlame).GetField("m_soulFlame", BindingFlags.Instance | BindingFlags.NonPublic);
+        static SoulFlame FlameOf(SeinCharacter s) { return s == null || s.SoulFlame == null ? null : s_extraFlameField.GetValue(s.SoulFlame) as SoulFlame; }
+
+        static IEnumerator LocalExtraSoulLink(TestHarness h)
+        {
+            bool owner = Players.LocalSeat == 2;
+            SoulFlame before = FlameOf(Players.OriOf(localExtra));
+            int sent = PartnerFx.SoulLinksSent, shown = PartnerFx.SoulLinksShown;
+            yield return ThreeRound(h, 603, ClientCount);   // every device has its "before" flame
+            SeinCharacter extra = Players.OriOf(localExtra);
+            h.Check(extra != null, "locals: the extra's Ori exists for the soul link");
+            if (extra == null) yield break;
+            if (owner)
+            {
+                Puppet puppet = PuppetAt(localExtra);
+                P2Context.Enter(puppet);
+                try { typeof(SeinSoulFlame).GetMethod("CastSoulFlame", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(extra.SoulFlame, null); }
+                finally { P2Context.Exit(); }
+                SoulFlame mine = FlameOf(extra);
+                h.Check(mine != null && mine != before && Vector3.Distance(mine.Position, extra.Position) < 0.5f,
+                    "locals: the extra casts a soul link at its own position (T-138)");
+                h.Check(PartnerFx.SoulLinksSent == sent + 1, "locals: the extra's soul link is sent to the other devices ("
+                    + (PartnerFx.SoulLinksSent - sent) + ")");
+            }
+            else
+            {
+                float end = Time.realtimeSinceStartup + 5f; SoulFlame seen = null;
+                while (Time.realtimeSinceStartup < end) { seen = FlameOf(extra); if (seen != null && seen != before) break; yield return null; }
+                bool appeared = seen != null && seen != before;
+                float d = appeared ? Vector3.Distance(seen.Position, extra.Position) : -1f;
+                h.Check(appeared && seen.gameObject.activeInHierarchy && d < 2f && PartnerFx.SoulLinksShown > shown,
+                    "locals: the extra's soul link flame appears beside it on this device (T-138, " + (appeared ? F(d) : "none") + ")");
+            }
+        }
+
         static IEnumerator LocalPlayersCore(TestHarness h)
         {
             float deadline = Time.realtimeSinceStartup + 120f;
@@ -169,6 +207,7 @@ namespace OriCoop
             h.Check(extraPuppet.Sein.Position.x > start.x + 1f, "locals: extra moves by independent input on every observer");
             yield return ThreeRound(h, 593, ClientCount);
             yield return LocalExtraBars(h);
+            yield return LocalExtraSoulLink(h);
             yield return ThreeRound(h, 602, ClientCount);
 
             Vector2 now, max;
