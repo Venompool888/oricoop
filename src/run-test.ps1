@@ -1,6 +1,8 @@
 # Runs the automated in-game co-op test against the isolated test copy.
 # Saves/settings are redirected to C:\OriCoop\appdata so the real %LOCALAPPDATA% saves are never touched.
-param([int]$Slot = 1, [int]$TimeoutSec = 300, [string]$Scenarios = '', [switch]$Force, [int]$Width = 960, [int]$Height = 540)
+# -TimeoutSec: watchdog for the whole run (default 480: the scenario list took ~297 s on 2026-11-19 and T-107/T-134 add
+#   about 20 s of offline four-player checks; it stays above TestHarness's own 420 s limit).
+param([int]$Slot = 1, [int]$TimeoutSec = 480, [string]$Scenarios = '', [switch]$Force, [int]$Width = 960, [int]$Height = 540)
 $ErrorActionPreference = 'Stop'
 # Never close a running game on our own: it is usually someone playing on this PC (a test run once closed a
 # live co-op session). test-launch.ps1 refuses while any oriDE.exe runs, launches quietly and stops the
