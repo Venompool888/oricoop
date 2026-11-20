@@ -614,17 +614,45 @@ namespace OriCoop
             h.Check(Three(451, 1).Alive && AllFour(451, p => p.DownMask == 28 && p.Wipes == Three(450, p.Seat).Wipes
                 && p.Restores == Three(450, p.Seat).Restores && p.Loads == Three(450, p.Seat).Loads),
                 "4P P2/P3/P4 down with host alive causes no wipe");
-            s_fourPinned = false;
+
+            // The host holds Spirit Flame at the group: one saver at several skulls revives each of them.
+            if (Players.LocalSeat == 1) Bot(0, P2Input.BTN_X);
+            yield return FourAwait(h, delegate { return FourDownMask() == 0 && FourAlive; }, 10f, "host revives P2/P3/P4");
+            Bot(0, 0);
+            yield return ThreeRound(h, 453, 4);
+            h.Check(AllFour(453, p => p.DownMask == 0 && p.Alive), "4P the host's Spirit Flame hold revives P2/P3/P4 at its feet");
+
+            // T-131: a teammate that is loading (its Ori is gone from the others' games meanwhile) is alive. P2/P4 go down
+            // again, P3 reports "loading" (the host removes its puppet, as for a real reload) and the host dies: P2/P4
+            // down with P3 loading must not be a wipe. (Not P4: it is the late joiner whose T-129 check expects no save offers.)
+            if (Players.LocalSeat == 2 || Players.LocalSeat == 4) FourKill();
+            yield return FourAwait(h, delegate { return FourDownMask() == 20; }, 8f, "P2/P4 down again");
+            if (Players.LocalSeat == 3) NetPlay.TestReportLoading = true;
+            yield return FourAwait(h, delegate { return Players.LocalSeat != 1 || Players.OriOf(3) == null; }, 10f, "P3's puppet gone on the host");
+            yield return ThreeRound(h, 454, 4);
             if (Players.LocalSeat == 1) FourKill();
+            yield return FourAwait(h, delegate { return FourDownMask() == 22 || Revive.NetBothDown > baseline.Wipes; }, 8f, "host downed while P3 loads");
+            yield return FourTicks(h, 30);
+            if (Players.LocalSeat == 3) NetPlay.TestReportLoading = false;
+            yield return FourAwait(h, delegate { return Players.LocalSeat != 1 || Players.OriOf(3) != null; }, 20f, "P3's puppet back on the host");
+            yield return ThreeRound(h, 455, 4);
+            h.Check(Three(455, 3).Alive && AllFour(455, p => p.DownMask == 22 && p.Wipes == Three(450, p.Seat).Wipes
+                && p.Restores == Three(450, p.Seat).Restores && p.Loads == Three(450, p.Seat).Loads),
+                "4P host dies while P2/P4 are down and P3 is loading: no wipe, P3 stays alive (T-131)");
+
+            // The last one standing (P3) goes down: one host-decided wipe and reload on all four.
+            s_fourPinned = false;
+            if (Players.LocalSeat == 3) FourKill();
             yield return FourAwait(h, delegate {
                 return FourReady && Revive.NetBothDown > baseline.Wipes && TestHarness.RestoreCheckpointCalls > baseline.Restores
                     && (Players.LocalSeat == 1 || SaveSync.GuestLoads > baseline.Loads && SaveSync.JoinedHost);
             }, 75f, "one host-decided wipe and all checkpoint reloads");
-            yield return ThreeRound(h, 452, 4);
-            h.Check(AllFour(452, p => p.Ready && p.Alive && p.DownMask == 0 && p.PuppetCount == 3
+            yield return ThreeRound(h, 456, 4);
+            h.Check(AllFour(456, p => p.Ready && p.Alive && p.DownMask == 0 && p.PuppetCount == 3
                 && p.Wipes == Three(450, p.Seat).Wipes + 1 && p.Restores == Three(450, p.Seat).Restores + 1
                 && (p.Seat == 1 || p.Joined && p.Loads == Three(450, p.Seat).Loads + 1)),
                 "4P all down causes one wipe and reload on all four");
+            NetPlay.TestReportLoading = false;
         }
 
         static IEnumerator ThreeClients(TestHarness h)

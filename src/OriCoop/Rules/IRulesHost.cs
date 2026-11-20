@@ -16,6 +16,7 @@ namespace OriCoop.Rules
         SeinCharacter P2 { get; }
         bool Inside { get; }
         SeinCharacter SeinAt(int seat);
+        bool SeatInSession(int seat);   // online: a teammate's seat in this session, even while it has no Ori (loading)
         IEnumerable<SeinCharacter> RemoteCharacters { get; }
         int SeatOf(SeinCharacter sein);
         int SeatOfSlot(int slot);

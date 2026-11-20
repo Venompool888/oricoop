@@ -28,6 +28,7 @@ namespace OriCoop.Rules
             foreach (Puppet p in Players.Remotes) if (p.Seat == seat) return p.Sein;
             return null;
         }
+        public bool SeatInSession(int seat) { return NetPlay.Enabled && NetPlay.RemoteInSession(seat); }
         public IEnumerable<SeinCharacter> RemoteCharacters
         {
             get { foreach (Puppet p in Players.Remotes) yield return p == null ? null : p.Sein; }
