@@ -201,7 +201,9 @@ if (-not $ReportOnly) {
                 if (-not $aborted -and (Test-Path (Join-Path $run 'host.done')) -and (Test-Path (Join-Path $run 'guest.done'))) { break }
             } finally {
                 Complete-TestRun; Exit-TestRun
-                if ($heldLock -and (Test-Path -LiteralPath $heldLock) -and ((Get-Content -LiteralPath $heldLock -Raw -ErrorAction SilentlyContinue) -match [regex]::Escape('session=' + $env:ORICOOP_SESSION))) {
+                # Only our own hand lock: its session= line equals our session name exactly (T-119), and no launcher wrote it.
+                $held = $(if ($heldLock -and (Test-Path -LiteralPath $heldLock)) { Read-LockInfo $heldLock } else { @{} })
+                if ($held.ContainsKey('session') -and -not $held.ContainsKey('pid') -and [string]::Equals($held['session'], [string]$env:ORICOOP_SESSION, [StringComparison]::Ordinal)) {
                     Remove-Item -LiteralPath $heldLock -Force -ErrorAction SilentlyContinue
                 }
             }

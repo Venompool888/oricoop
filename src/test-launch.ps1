@@ -187,6 +187,47 @@ public static class OriTestLaunch5
 '@
 }
 
+# T-119: a stale lock is deleted only if it still holds exactly the bytes that were judged stale. The handle is opened
+# without delete sharing and delete-on-close is set on that same handle, so no other run can delete or replace the
+# file between the check and the delete. (Two runs waiting on the same dead holder: B judged the old lock stale, A
+# deleted it and took the copy, then B's plain Remove-Item deleted A's new lock and B took the copy too.)
+if (-not ('OriLockFile1' -as [type])) {
+    Add-Type -TypeDefinition @'
+using System;
+using System.IO;
+using System.Runtime.InteropServices;
+using Microsoft.Win32.SafeHandles;
+
+public static class OriLockFile1
+{
+    [DllImport("kernel32.dll", SetLastError = true, CharSet = CharSet.Unicode)]
+    static extern SafeFileHandle CreateFileW(string name, uint access, uint share, IntPtr security, uint disposition, uint flags, IntPtr template);
+    [DllImport("kernel32.dll", SetLastError = true)]
+    static extern bool SetFileInformationByHandle(SafeFileHandle handle, int infoClass, ref byte info, uint size);
+
+    // true = the file held exactly `expected` and is now deleted; false = it changed, is gone or is open without read sharing.
+    public static bool DeleteIfUnchanged(string path, byte[] expected)
+    {
+        const uint GENERIC_READ = 0x80000000, DELETE = 0x00010000, FILE_SHARE_READ = 1, OPEN_EXISTING = 3;
+        const int FileDispositionInfo = 4;
+        SafeFileHandle h = CreateFileW(path, GENERIC_READ | DELETE, FILE_SHARE_READ, IntPtr.Zero, OPEN_EXISTING, 0, IntPtr.Zero);
+        if (h.IsInvalid) return false;
+        using (FileStream fs = new FileStream(h, FileAccess.Read))   // closing fs closes h: the delete happens then
+        {
+            MemoryStream ms = new MemoryStream();
+            byte[] buf = new byte[4096]; int n;
+            while ((n = fs.Read(buf, 0, buf.Length)) > 0) ms.Write(buf, 0, n);
+            byte[] now = ms.ToArray();
+            if (expected == null || now.Length != expected.Length) return false;
+            for (int i = 0; i < now.Length; i++) if (now[i] != expected[i]) return false;
+            byte delete = 1;
+            return SetFileInformationByHandle(h, FileDispositionInfo, ref delete, 1);
+        }
+    }
+}
+'@
+}
+
 # All test copies (existing or not). Copy a keeps the historical paths.
 function Get-TestCopies {
     foreach ($c in @('a', 'b', 'c', 'd', 'e')) {
@@ -301,10 +342,19 @@ function Get-CopyGames($copy) {
     @(Get-Process oriDE -ErrorAction SilentlyContinue | Where-Object { $p = Get-ProcPath $_; $p -and [string]::Equals($p, $copy.Exe, [StringComparison]::OrdinalIgnoreCase) })
 }
 
-function Read-LockInfo([string]$path) {
+function ConvertFrom-LockText([string]$text) {
     $h = @{}
-    try { foreach ($l in [IO.File]::ReadAllLines($path)) { $i = $l.IndexOf('='); if ($i -gt 0) { $h[$l.Substring(0, $i)] = $l.Substring($i + 1) } } } catch { }
+    foreach ($l in ($text -split "`r?`n")) { $i = $l.IndexOf('='); if ($i -gt 0) { $h[$l.Substring(0, $i)] = $l.Substring($i + 1) } }
     $h
+}
+function Read-LockInfo([string]$path) {
+    $text = ''
+    try { $text = [IO.File]::ReadAllText($path) } catch { }
+    ConvertFrom-LockText $text
+}
+function Remove-LockIfUnchanged([string]$path, [byte[]]$seen) {
+    if (-not $seen) { return $false }
+    try { return [OriLockFile1]::DeleteIfUnchanged($path, $seen) } catch { return $false }
 }
 
 # Stale = (for locks written by this launcher) the PowerShell that took it has exited; foreign-format (hand-made)
@@ -342,11 +392,16 @@ function Enter-CopyLock($copy, [string]$script) {
                 [IO.File]::WriteAllText($copy.Lock, "session=$session`r`nscript=$script`r`npid=$PID`r`npidStart=$($me.StartTime.ToUniversalTime().Ticks)`r`ntime=$([DateTime]::UtcNow.ToString('o'))`r`ncopy=$($copy.Name)`r`n")
                 return $true
             }
-            if ($attempt -eq 0 -and (Test-Path -LiteralPath $copy.Lock) -and (Test-LockStale $copy.Lock)) {
-                $old = Read-LockInfo $copy.Lock
-                Write-Host ('stale lock on copy ' + $copy.Name + ' removed (session=' + $old['session'] + ' time=' + $old['time'] + ')')
-                Remove-Item -LiteralPath $copy.Lock -Force -ErrorAction SilentlyContinue
-                continue
+            # Read the lock BEFORE judging it, and delete only those exact bytes (T-119): if another run replaced it
+            # meanwhile, that run holds the copy now.
+            $seen = $null
+            if ($attempt -eq 0) { try { $seen = [IO.File]::ReadAllBytes($copy.Lock) } catch { } }
+            if ($seen -and (Test-LockStale $copy.Lock)) {
+                $old = ConvertFrom-LockText ([Text.Encoding]::UTF8.GetString($seen))
+                if (Remove-LockIfUnchanged $copy.Lock $seen) {
+                    Write-Host ('stale lock on copy ' + $copy.Name + ' removed (session=' + $old['session'] + ' time=' + $old['time'] + ')')
+                    continue
+                }
             }
             return $false
         }
@@ -359,12 +414,25 @@ function Exit-AlongsideLock {
     if ($f -and (Test-Path -LiteralPath $f) -and (Read-LockInfo $f)['pid'] -eq [string]$PID) { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
 }
 
-# A lock this session made BY HAND (no pid= line, its session name inside) may be reused by its own runs. A lock written
-# by the launcher always has pid= and belongs to that run, even if another run of the same session wants the copy.
+# A lock this session made BY HAND (no pid= line) may be reused by its own runs. A lock written by the launcher always has
+# pid= and belongs to that run, even if another run of the same session wants the copy.
+# T-119: the session name must match EXACTLY (ordinal): the lock's session= line, or for an old free-text lock its first
+# line, either the name alone or the name, a space and a time. It used to be a case-insensitive substring match over the
+# whole file, so sessions named 'T-070', 'nettest' or 'sweep' reused run-scenesweep's lock
+# ("session=T-070-<pid>-<stamp>", "script=run-scenesweep.ps1 (held for its run-nettest child)") and installed their DLL
+# into the copy the sweep was using.
 function Test-LockReusableByName([string]$lock) {
-    if (-not $env:ORICOOP_SESSION -or -not (Test-Path -LiteralPath $lock)) { return $false }
-    if ((Read-LockInfo $lock).ContainsKey('pid')) { return $false }
-    return [bool]((Get-Content -LiteralPath $lock -Raw -ErrorAction SilentlyContinue) -match [regex]::Escape($env:ORICOOP_SESSION))
+    $me = $env:ORICOOP_SESSION
+    if (-not $me -or -not (Test-Path -LiteralPath $lock)) { return $false }
+    $text = ''
+    try { $text = [IO.File]::ReadAllText($lock) } catch { return $false }
+    $info = ConvertFrom-LockText $text
+    if ($info.ContainsKey('pid')) { return $false }
+    if ($info.ContainsKey('session')) { return [string]::Equals($info['session'].Trim(), $me, [StringComparison]::Ordinal) }
+    $first = (($text -split "`r?`n") | Select-Object -First 1)
+    if ($first -eq $null) { return $false }
+    $first = $first.Trim()
+    return ([string]::Equals($first, $me, [StringComparison]::Ordinal) -or ($first.StartsWith($me + ' ', [StringComparison]::Ordinal) -and $first.Substring($me.Length + 1) -match '^\d'))
 }
 
 function Exit-CopyLock {
