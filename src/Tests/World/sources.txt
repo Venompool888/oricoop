@@ -2,3 +2,11 @@ OriCoop\World\HeldEvents.cs
 OriCoop\World\WorldRelay.cs
 OriCoop\World\OneShotTriggers.cs
 OriCoop\World\SeenEvents.cs
+OriCoop\World\WorldItems.cs
+OriCoop\World\DeltaObject.cs
+OriCoop\World\WorldDeltaPeer.cs
+OriCoop\Authority\IAuthority.cs
+OriCoop\Authority\CsWire.cs
+OriCoop\Authority\Arbiter.cs
+OriCoop\Authority\AuthorityClient.cs
+OriCoop\Authority\HostArbiter.cs

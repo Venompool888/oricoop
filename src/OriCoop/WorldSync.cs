@@ -10,7 +10,7 @@ namespace OriCoop
 {
     // SaveSceneManager's registry is the wire schema: scene GUID + object GUID + its normal Archive.
     // The cache includes objects seen on either peer, so unloaded scenes remain part of the shared world.
-    public static class WorldSync
+    public static partial class WorldSync
     {
         // The game's checkpoint reader deliberately refunds/normalizes Highlighted doors.
         // Until a dedicated transient-door protocol exists, only stable states are applied live.
@@ -80,12 +80,13 @@ namespace OriCoop
             if (s_init) return;
             s_init = true;
             NetPlay.On(MsgBlobs, Receive);
+            InitDelta();   // T-168: GameController / GameWorld go item by item (WorldSync.Delta.cs)
             // T-115: the stone co-push handler and its P2P relay at load, not when this PC first runs a stone (a host
             // without that scene loaded never relayed a guest's push).
             PushBlockSync.EnsureRegistered();
             NetPlay.On(MsgResync, delegate(BinaryReader r) {
                 string why = r.ReadString();
-                if (!NetPlay.IsHost || !SaveSync.Ready) return;
+                if (!NetPlay.IsHost || !SaveSync.Ready || VersionRefused()) return;
                 Plugin.Log.LogInfo("net: full resync requested: " + why);
                 s_fullPending = true;
             });
@@ -109,11 +110,14 @@ namespace OriCoop
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             s_digestSequence = s_receivedDigest = 0;
             s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; s_mismatchStreak = 0;
+            ResetDelta();
         }
 
         public static void Tick()
         {
-            if (!NetPlay.Connected || !SaveSync.Ready || !NetPlay.LocalInGameplay()) return;
+            if (!NetPlay.Connected || !SaveSync.Ready || !NetPlay.LocalInGameplay() || VersionRefused()) return;
+            HostReady();
+            if (!s_awaitSnapshot) s_delta.Flush();
             if (s_deferred.Count != 0)
             {
                 Blob[] waiting = new List<Blob>(s_deferred.Values).ToArray(); s_deferred.Clear();
@@ -135,7 +139,7 @@ namespace OriCoop
             }
             if (!NetPlay.AnyRemoteInGameplay || s_awaitSnapshot) return;
             float now = Time.realtimeSinceStartup;
-            if (now >= s_scanAt) { s_scanAt = now + 0.25f; SendBlobs(Capture(false)); }
+            if (now >= s_scanAt) { s_scanAt = now + 0.25f; SendBlobs(RouteAggregates(Capture(false))); }
             if (now >= s_digestAt) { s_digestAt = now + 5f; SendDigest(); }
             if (now - s_bandwidthAt >= 5f)
             {
@@ -445,8 +449,10 @@ namespace OriCoop
                         if (bytes.Length > MaxBlob) throw new InvalidDataException("Archive exceeds 4 MB limit");
                         Blob blob = MakeBlob(scene, entry.Id, bytes, Describe(save), save.GetType().FullName);
                         Blob old;
-                        if (s_blobs.TryGetValue(key, out old) && old.Hash != blob.Hash)
+                        bool seen = s_blobs.TryGetValue(key, out old);
+                        if (seen && old.Hash != blob.Hash)
                             s_changed[key] = Time.realtimeSinceStartup;
+                        else if (!seen) ObserveAggregate(blob);
                         s_blobs[key] = blob;
                     }
                     catch (Exception e)
@@ -476,12 +482,15 @@ namespace OriCoop
             }
             float start = Time.realtimeSinceStartup;
             Capture(true);
+            SnapshotSent();
+            uint watermark = s_delta.Watermark;
             SendBlobsMessage(seat, delegate(BinaryWriter w) { w.Write((byte)1); });
             List<Blob> blobs = new List<Blob>(s_blobs.Values);
             s_sendingSnapshot = true;
             try { SendBlobs(blobs, seat); }
             finally { s_sendingSnapshot = false; }
-            SendBlobsMessage(seat, delegate(BinaryWriter w) { w.Write((byte)2); });
+            // net5 (T-168): the end marker carries the newest world item batch this snapshot contains.
+            SendBlobsMessage(seat, delegate(BinaryWriter w) { w.Write((byte)2); w.Write(watermark); });
             Plugin.Log.LogInfo("net: full world snapshot " + blobs.Count + " objects in "
                 + ((Time.realtimeSinceStartup - start) * 1000f).ToString("F1") + " ms");
         }
@@ -532,16 +541,17 @@ namespace OriCoop
 
         static void Receive(BinaryReader reader)
         {
-            if (!SaveSync.Ready) return;
+            if (!SaveSync.Ready || VersionRefused()) return;
             byte kind = reader.ReadByte();
             if (kind == 1)
             {
-                if (!NetPlay.IsHost) { s_awaitSnapshot = true; s_parts.Clear(); }
+                if (!NetPlay.IsHost) { s_awaitSnapshot = true; s_parts.Clear(); s_delta.BeginSnapshot(); }
                 return;
             }
             if (kind == 2)
             {
-                if (!NetPlay.IsHost) { s_awaitSnapshot = false; s_scanAt = Time.realtimeSinceStartup + 0.25f; }
+                uint watermark = reader.ReadUInt32();
+                if (!NetPlay.IsHost) { s_awaitSnapshot = false; s_scanAt = Time.realtimeSinceStartup + 0.25f; s_delta.EndSnapshot(watermark); }
                 return;
             }
             if (kind != 0) throw new InvalidDataException("unknown world batch");
@@ -665,6 +675,10 @@ namespace OriCoop
                 }
                 forwardTo = plan.ForwardTo;
             }
+            // T-168: an aggregate object only comes whole in a snapshot; it becomes the agreed state and my own batches
+            // still on their way to the arbiter stay on top of it.
+            else if (DeltaActive && World.WorldItems.IsAggregate((byte)schema))
+                bytes = SnapshotAggregate(scene, id, schema, type, bytes);
             StoreCheckpoint(scene, id, bytes);
             if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay()) ApplyLive(scene, id, bytes);
             else if (live != null && !s_bad.Contains(key))
@@ -799,7 +813,7 @@ namespace OriCoop
             if (!NetPlay.Connected || NetPlay.IsHost || !SaveSync.Ready) return;
             float now = Time.realtimeSinceStartup;
             if (now < s_requestAt) return;
-            s_requestAt = now + 1f; s_awaitSnapshot = true;
+            s_requestAt = now + 1f; s_awaitSnapshot = true; s_delta.BeginSnapshot();
             Plugin.Log.LogInfo("net: request full resync: " + reason);
             NetPlay.Send(MsgResync, true, delegate(BinaryWriter w) { w.Write(reason); });
         }
@@ -857,7 +871,7 @@ namespace OriCoop
         {
             uint sequence = reader.ReadUInt32();
             int count = reader.ReadInt32(); ulong hash = reader.ReadUInt64(), progress = reader.ReadUInt64();
-            if (!SaveSync.Ready || !ProgressSync.Ready || !NetPlay.LocalInGameplay() || s_awaitSnapshot) return;
+            if (!SaveSync.Ready || !ProgressSync.Ready || !NetPlay.LocalInGameplay() || s_awaitSnapshot || VersionRefused()) return;
             int localCount; ulong localHash = Digest(out localCount);
             s_receivedDigest = sequence; s_remoteManifest.Clear(); CopyManifest(s_compareManifest);
             LastRemoteCount = count; LastLocalCount = localCount; LastRemoteHash = hash; LastLocalHash = localHash;

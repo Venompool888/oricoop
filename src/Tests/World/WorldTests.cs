@@ -111,7 +111,9 @@ static class WorldTests
             Check(seen.Count == 2, "count " + seen.Count);
             seen.FirstTime(4, 1); seen.FirstTime(4, 2); seen.FirstTime(4, 3);   // 5 offered, window 4: (3,1) goes
             Check(seen.Count == 4 && !seen.FirstTime(3, 2) && seen.FirstTime(3, 1), "oldest evicted first");
-        });        Console.WriteLine("World: " + cases + " cases, " + failures + " failed");
+        });
+        DeltaSyncTests.Register(Run);   // T-168
+        Console.WriteLine("World: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }
 }

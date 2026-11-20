@@ -207,6 +207,17 @@ namespace OriCoop
         {
             get { foreach (RemoteState remote in s_remotes.Values) if (remote.InGameplay) return true; return false; }
         }
+        // T-168: "P<seat> <version>" of a remote whose Hello names another protocol version, null if none. World sync
+        // refuses to run with it (mixed item / whole-blob world sync would silently lose changes).
+        internal static string MismatchedVersion
+        {
+            get
+            {
+                foreach (RemoteState remote in s_remotes.Values)
+                    if (remote.Hello && !string.IsNullOrEmpty(remote.Version) && remote.Version != ModVersion) return "P" + remote.Seat + " " + remote.Version;
+                return null;
+            }
+        }
         static NetPeer s_peer;
         static PeerHub s_hub;
         static bool s_factorySession;
