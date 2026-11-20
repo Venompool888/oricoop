@@ -1,5 +1,5 @@
 # Two to four isolated Ori clients; none uses the owner's real LOCALAPPDATA save location.
-# -Clients 3|4: processes start together; only the LAST guest connects after LateJoinSec (default 20).
+# -Clients 3|4: processes start together; only the LAST guest connects after LateJoinSec (default 20) and after the host settled the save lineage (T-129 marker file).
 # -Relay: all games go through a local RelayServer.exe with one room code (the "server version") instead of direct UDP;
 #   works with -Clients 2..4 (every guest joins the same room). $env:ORICOOP_TEST_RELAY = 'host:port' uses that
 #   relay server instead of starting a local one.
@@ -141,6 +141,12 @@ try {
     $roomFile = Join-Path $testDir 'relay-room.txt'
     Remove-Item $roomFile -Force -ErrorAction SilentlyContinue
     if ($Relay -or $CServer) { $script:ExtraEnv['ORICOOP_NET_ROOM_FILE'] = $roomFile }
+    # T-129: the last guest connects only after the host settled the save lineage with the others (the host writes this
+    # marker at its first lineage commit; NetTestHarness.LateJoinGate). The games take ~30 s to start, so LateJoinSec
+    # alone has already run out by then and the 'late' guest used to see the offer like everyone else.
+    $lineageFile = Join-Path $testDir 'lineage-settled.txt'
+    Remove-Item $lineageFile -Force -ErrorAction SilentlyContinue
+    if ($Clients -ge 3) { $script:ExtraEnv['ORICOOP_NET_LINEAGE_FILE'] = $lineageFile }
     # All clients are prepared first, then launched back to back (Unity refuses a copy that starts after another
     # has finished starting), then each one's start-up is awaited.
     # Only the last guest joins late (LateJoinSec); the others connect at once.

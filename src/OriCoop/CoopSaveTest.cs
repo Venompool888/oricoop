@@ -59,10 +59,9 @@ namespace OriCoop
                 float until = Time.realtimeSinceStartup + 10f;
                 while (CoopSaves.GuestWrites == 0 && Time.realtimeSinceStartup < until) yield return null;
                 CheckGuestCopy(h);
-                // T-129 (d194dd8) late-guest check backed out 2026-11-20: in net-3p the "late" guest still sees the offer
-                // (the host offers only once it is connected), so "joined after the lineage was settled" fails unmutated and
-                // the scenario is not exercised. Re-enable once the suite really joins a guest after the lineage settles.
-                // if (LateGuest) CheckLateGuest(h);
+                // T-129: the late guest really joins after the lineage settled (NetTestHarness.LateJoinGate waits for the host's
+                // lineage marker; d194dd8's version without the gate failed unmutated and was backed out in af0c29c).
+                if (LateGuest) CheckLateGuest(h);
             }
         }
 
