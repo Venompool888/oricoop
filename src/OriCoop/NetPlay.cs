@@ -106,7 +106,11 @@ namespace OriCoop
         static ConfigEntry<float> s_snapDist, s_blend;
         static string s_modeNow = "off";
         public static bool Enabled { get { return s_modeNow == "host" || s_modeNow == "join"; } }
-        public static bool IsHost { get { return s_modeNow == "host" || HostOverride; } }
+        // T-158: in a server-mode (transport factory) session the host role is the arbiter only (HostOverride, set by the
+        // C-server link from the room roster). The room creator loses it while another seat arbitrates: after its seat
+        // expired and it came back on another seat (T-113 fallback), or while it has no seat. P2P / relay / Steam unchanged.
+        static readonly bool s_mutateCreatorHost = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_CREATOR_HOST") == "1";
+        public static bool IsHost { get { return s_factorySession && !s_mutateCreatorHost ? HostOverride : (s_modeNow == "host" || HostOverride); } }
 
         sealed class PeerAdapter : IMessagePeer
         {
