@@ -14,12 +14,13 @@ namespace OriCoop
     //   62 Revived   owner -> saver     "I'm back" (clears the skull there too)     reliable
     //   63 BothDown  host  -> guest     "we're both down: reload"                   reliable
     //   64 Progress  saver -> others    downed seat, rescuer seat, progress 0..1     unreliable
+    //   87 DownedState owner -> all     each local seat: down (skull x,y,z) or up    reliable (T-166, SendDownedState)
     // Both down is decided by the host only, so simultaneous deaths can't trigger two different reloads. The host
     // runs the normal death/checkpoint reload; the guest runs its own normal death too, and SaveSync brings its
     // world back in line with the host's save afterwards.
     public static partial class Revive
     {
-        public const byte MsgDowned = 60, MsgRevive = 61, MsgRevived = 62, MsgBothDown = 63, MsgProgress = 64;
+        public const byte MsgDowned = 60, MsgRevive = 61, MsgRevived = 62, MsgBothDown = 63, MsgProgress = 64, MsgDownedState = 87;
         static bool s_netRegistered;
         static SpectateState s_spectate = new SpectateState();
         internal static bool SpectateActive { get { return s_spectate.Active; } }
@@ -45,6 +46,7 @@ namespace OriCoop
             Services.Net.On(MsgRevived, OnNetRevived);
             Services.Net.On(MsgBothDown, OnNetBothDown);
             Services.Net.On(MsgProgress, OnNetProgress);
+            Services.Net.On(MsgDownedState, OnNetDownedState);
             Services.Net.PlayerLeft += ClearSeat;
         }
 
@@ -91,15 +93,20 @@ namespace OriCoop
         // Every frame while online (from Plugin's online path).
         public static void TickOnline()
         {
-            if (Services.Net.Enabled) PartnerFx.EnsureRegistered(); // partner hurt visuals also when revive is off
+            if (Services.Net.Enabled) RegisterNet(); // partner hurt visuals also when revive is off; T-166 snapshots also while loading
             if (!Online)
             {
                 ResetSpectate();
+                s_seenRemote = 0;   // back online: tell everyone our seats' state again (T-166)
                 if (AnyDowned && Services.Net.Enabled && !Services.Net.Connected) ClearAll("partner disconnected", Host.P1 != null);
                 return;
             }
             RegisterNet(); Subscribe();
             TrackSafeGround();
+            int seen = 0;
+            foreach (int seat in PresentSeats) if (!Players.IsLocal(seat)) seen |= 1 << seat;
+            if ((seen & ~s_seenRemote) != 0) SendDownedState();
+            s_seenRemote = seen;
             foreach (int localSeat in Players.LocalSeats)
             {
                 Downed own = s_down[localSeat];
@@ -203,24 +210,75 @@ namespace OriCoop
             Vector3 m = new Vector3(message.X, message.Y, message.Z);
             if (!Online || NetPlay.DeviceSeat(seat) != Services.Net.Sender || Players.IsLocal(seat)) return;
             NetDownedReceived++;
-            if (s_down[seat] == null)
+            if (s_down[seat] == null) AddRemoteDowned(seat, m);
+            HostWipeIfAllDown();
+        }
+
+        static void AddRemoteDowned(int seat, Vector3 marker)
+        {
+            Downed d = new Downed();
+            d.Sein = SeinAt(seat); d.Player = seat; d.Marker = marker; d.Remote = true;
+            s_roster.TryAdd(seat, d);
+            KeepHidden(d);
+            EnsureWatchdog();
+            Services.Log.Info("online: partner downed at " + marker + " (hold Spirit Flame near the skull to revive)");
+        }
+
+        static void HostWipeIfAllDown()
+        {
+            if (!Services.Net.IsHost || !AnyDowned || !AllDown(null)) return;
+            // We (host) were already down and now the guest: both out.
+            FinalDeaths++; NetBothDown++;
+            Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
+            Services.Net.Send(MsgBothDown, true, w => { });
+            ReleaseRemoteDowned();
+            KillP1Normally();
+        }
+
+        // T-166: a PC that was loading (or rejoined) had no puppets meanwhile, so it ignored the downed messages of that
+        // time (OnNetDowned needs Online). Whenever this PC sees a teammate's Ori appear again it tells everyone the state
+        // of its own seats: down (with the skull) or up. Receivers apply it even before their own puppets are back:
+        // a missed down gets its skull, a skull of someone revived meanwhile goes.
+        static int s_seenRemote;
+        public static int NetDownedStatesSent, NetDownedStatesApplied;
+
+        static void SendDownedState()
+        {
+            int[] local = Players.LocalSeats;
+            Services.Net.Send(MsgDownedState, true, w =>
             {
-                Downed d = new Downed();
-                d.Sein = SeinAt(seat); d.Player = seat; d.Marker = m; d.Remote = true;
-                s_roster.TryAdd(seat, d);
-                KeepHidden(d);
-                EnsureWatchdog();
-                Services.Log.Info("online: partner downed at " + m + " (hold Spirit Flame near the skull to revive)");
-            }
-            if (Services.Net.IsHost && AllDown(null))
+                w.Write((byte)local.Length);
+                foreach (int seat in local)
+                {
+                    Downed d = s_down[seat];
+                    bool down = d != null && !d.Remote;
+                    w.Write((byte)seat); w.Write(down);
+                    if (down) { w.Write(d.Marker.x); w.Write(d.Marker.y); w.Write(d.Marker.z); }
+                }
+            });
+            NetDownedStatesSent++;
+        }
+
+        static void OnNetDownedState(BinaryReader r)
+        {
+            if (!Enabled || !Services.Net.Enabled || !Services.Net.Connected) return;
+            int count = r.ReadByte();
+            if (count > ReviveLogic.MaxSeats) return;
+            for (int i = 0; i < count; i++)
             {
-                // We (host) were already down and now the guest: both out.
-                FinalDeaths++; NetBothDown++;
-                Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
-                Services.Net.Send(MsgBothDown, true, w => { });
-                ReleaseRemoteDowned();
-                KillP1Normally();
+                int seat = r.ReadByte();
+                bool down = r.ReadBoolean();
+                Vector3 m = down ? new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()) : Vector3.zero;
+                if (seat < 1 || seat > ReviveLogic.MaxSeats || NetPlay.DeviceSeat(seat) != Services.Net.Sender || Players.IsLocal(seat)) continue;
+                Downed d = s_down[seat];
+                if (down && d == null) { AddRemoteDowned(seat, m); NetDownedStatesApplied++; }
+                else if (!down && d != null && d.Remote)
+                {
+                    s_down[seat] = null; RestoreDowned(d, false); NetDownedStatesApplied++;
+                    Services.Log.Info("online: P" + seat + " is up again (missed its revive while loading)");
+                }
             }
+            HostWipeIfAllDown();
         }
 
         // Both down: every partner's downed state ends with the checkpoint reload. Clear it at once (host and guest

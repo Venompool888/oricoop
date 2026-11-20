@@ -399,6 +399,8 @@ namespace OriCoop
                 yield return FourStory(h);
                 yield return FourEnemy(h);
                 yield return FourPlace(h, arena);
+                yield return FourLoadingSync(h);
+                yield return FourPlace(h, arena);
                 yield return FourWipe(h);
                 h.Check(h.ErrorCount == 0, "4P no Unity errors/exceptions");
                 yield return ThreeRound(h, 499, 4);
@@ -603,6 +605,43 @@ namespace OriCoop
                 s_fourForcedOwner = 0; s_fourPinned = false;
             }
         }
+        // T-166: a guest that is really loading drops its puppets of the others, so it ignores the downed messages of that
+        // time. Back in the game it must still learn who went down meanwhile (the owners resend their seats' state when
+        // its Ori appears again), and a revive during its load must not leave a skull behind.
+        static IEnumerator FourLoadingSync(TestHarness h)
+        {
+            Bot(0, 0); yield return ThreeRound(h, 444, 4);
+            if (Players.LocalSeat == 3) NetPlay.TestLoading = true;
+            yield return FourAwait(h, delegate { return Players.LocalSeat != 3 || Players.Remotes.Count == 0; }, 10f, "P3 loading (its puppets of the others gone)");
+            yield return ThreeRound(h, 445, 4);
+            if (Players.LocalSeat == 2) FourKill();
+            yield return FourAwait(h, delegate { return Players.LocalSeat == 3 || Revive.DownedAtSeat(2) != null; }, 8f, "P2 down while P3 loads");
+            yield return FourTicks(h, 20);
+            if (Players.LocalSeat == 3)
+            {
+                h.Note("4P P3 while loading knows P2 is down: " + (Revive.DownedAtSeat(2) != null));
+                NetPlay.TestLoading = false;
+            }
+            yield return FourAwait(h, delegate { return Players.LocalSeat != 3 || Players.Remotes.Count == 3; }, 20f, "P3 back with three puppets");
+            yield return FourAwait(h, delegate { return Revive.DownedAtSeat(2) != null; }, 6f, "P2's skull known on every PC");
+            yield return ThreeRound(h, 446, 4);
+            h.Check(AllFour(446, p => p.DownMask == 4), "4P P3 learns that P2 went down while it was loading (T-166)");
+
+            // P3 loads again and the host revives P2 meanwhile: no skull is left on P3.
+            if (Players.LocalSeat == 3) NetPlay.TestLoading = true;
+            yield return FourAwait(h, delegate { return Players.LocalSeat != 3 || Players.Remotes.Count == 0; }, 10f, "P3 loading again");
+            yield return ThreeRound(h, 447, 4);
+            if (Players.LocalSeat == 1) Bot(0, P2Input.BTN_X);
+            yield return FourAwait(h, delegate { return Players.LocalSeat == 3 || Revive.DownedAtSeat(2) == null; }, 10f, "host revives P2 while P3 loads");
+            Bot(0, 0);
+            if (Players.LocalSeat == 3) NetPlay.TestLoading = false;
+            yield return FourAwait(h, delegate { return Players.LocalSeat != 3 || Players.Remotes.Count == 3; }, 20f, "P3 back again");
+            yield return FourAwait(h, delegate { return Revive.DownedAtSeat(2) == null; }, 6f, "P2's skull gone on every PC");
+            yield return ThreeRound(h, 448, 4);
+            h.Check(AllFour(448, p => p.DownMask == 0) && Three(448, 2).Alive, "4P P2's revive during P3's load leaves no skull on P3");
+            NetPlay.TestLoading = false;
+        }
+
         static IEnumerator FourWipe(TestHarness h)
         {
             Bot(0, 0); yield return ThreeRound(h, 450, 4);

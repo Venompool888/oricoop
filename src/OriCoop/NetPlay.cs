@@ -47,7 +47,7 @@ namespace OriCoop
         {
             InitLocalSeats();
             Forward(9, 75, 70, 71, 66, 67, Revive.MsgDowned, Revive.MsgRevive, Revive.MsgRevived,
-                Revive.MsgBothDown, Revive.MsgProgress, 53);
+                Revive.MsgBothDown, Revive.MsgProgress, Revive.MsgDownedState, 53);
         }
         static readonly bool s_noForward = TestHarness.Enabled && Environment.GetEnvironmentVariable("ORICOOP_NET_NO_FORWARD") == "1";
         public static void Forward(params byte[] types) { s_bus.Forward(types); }
@@ -778,7 +778,7 @@ namespace OriCoop
             else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
             if (!Connected || WaitingForSeat) return;
 
-            bool inGame = LocalInGameplay();
+            bool inGame = LocalInGameplay() && !TestLoading;   // TestLoading: as while loading, also drop the puppets here
             bool shown = inGame && !TestReportLoading;   // what the others are told
             string scene = LocalScene(shown);
             if (shown != s_sentInGameplay || scene != s_sentScene || s_statusDirty)
@@ -825,6 +825,8 @@ namespace OriCoop
 
         // Test only (T-131, the 4P wipe check): tell the others "not in gameplay", as while loading, without loading.
         internal static bool TestReportLoading;
+        // Test only (T-166): behave as if loading here too (the puppets of the others go, so revive messages are missed).
+        internal static bool TestLoading;
 
         // T-131: a teammate in this session (it said hello), also while its Ori is away (loading, rejoining).
         internal static bool RemoteInSession(int seat) { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello; }
