@@ -1941,5 +1941,46 @@ namespace OriCoop
             }
             finally { Stop(); }
         }
+
+        // T-129 late join (net-3p / net-4p / net-lp3): the last guest (ORICOOP_NET_CONNECT_AT > 0) must join AFTER the host
+        // settled the co-op save lineage with the others. A fixed delay is not enough (the games take ~30 s to start, so a
+        // 20 s hold has already run out), so the host writes ORICOOP_NET_LINEAGE_FILE at its first lineage commit and the
+        // late guest does not connect before that file exists (60 s fallback, so a host that never commits cannot hang it).
+        static readonly string s_lineageFile = Environment.GetEnvironmentVariable("ORICOOP_NET_LINEAGE_FILE") ?? "";
+        static bool LateJoinGuest
+        {
+            get { long at; return long.TryParse(Environment.GetEnvironmentVariable("ORICOOP_NET_CONNECT_AT"), out at) && at > 0; }
+        }
+        static float s_lateHeldSince = -1f;
+        static bool s_lateReleased;
+
+        [HarmonyPatch(typeof(NetPlay), "Open")]
+        static class LateJoinGate
+        {
+            static bool Prefix()
+            {
+                if (s_lateReleased || !TestHarness.Enabled || s_lineageFile.Length == 0 || NetPlay.IsHost || !LateJoinGuest) return true;
+                if (s_lateHeldSince < 0f) { s_lateHeldSince = Time.realtimeSinceStartup; Plugin.Log.LogInfo("net test: late guest waits for the host's lineage marker"); }
+                bool marker = false;
+                try { marker = File.Exists(s_lineageFile); } catch (Exception) { }
+                if (!marker && Time.realtimeSinceStartup - s_lateHeldSince < 60f) return false;
+                s_lateReleased = true;
+                if (marker) Plugin.Log.LogInfo("net test: host settled the lineage; late guest connects after " + (Time.realtimeSinceStartup - s_lateHeldSince).ToString("F1") + " s");
+                else Plugin.Log.LogWarning("net test: no lineage marker from the host within 60 s; late guest connects anyway");
+                return true;
+            }
+        }
+
+        [HarmonyPatch]
+        static class LineageMarker
+        {
+            static System.Reflection.MethodBase TargetMethod() { return AccessTools.Method(typeof(CoopSaves), "Commit", new Type[] { typeof(int) }); }
+            static void Postfix()
+            {
+                if (!TestHarness.Enabled || s_lineageFile.Length == 0 || !NetPlay.IsHost || CoopSaves.Commits == 0) return;
+                try { if (!File.Exists(s_lineageFile)) { File.WriteAllText(s_lineageFile, "settled"); Plugin.Log.LogInfo("net test: lineage settled; marker written for the late guest"); } }
+                catch (Exception e) { Plugin.Log.LogWarning("net test: lineage marker: " + e.Message); }
+            }
+        }
     }
 }
