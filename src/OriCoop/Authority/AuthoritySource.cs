@@ -13,6 +13,11 @@ namespace OriCoop.Authority
         static Action<byte[]> serverReceive;
         static readonly Stopwatch clock = Stopwatch.StartNew();
 
+        // T-168: committed events of whichever authority is current (P2P host, P2P guest, C-server, single player), so a
+        // listener does not have to follow Current switching between them.
+        public static event Action<CommittedEvent> AnyCommitted;
+        static void Relay(CommittedEvent e) { Action<CommittedEvent> handler = AnyCommitted; if (handler != null) handler(e); }
+
         public static IAuthority Current
         {
             get
@@ -35,6 +40,7 @@ namespace OriCoop.Authority
                         NetRoute.SendTo(seat, message[0], reliable,
                             delegate(BinaryWriter writer) { writer.Write(message, 2, message.Length - 2); });
                     }, delegate { return clock.Elapsed.TotalMilliseconds; });
+                host.Local.Committed += Relay;
                 host.SeatJoined(Players.LocalSeat);
             }
             return host;
@@ -51,6 +57,7 @@ namespace OriCoop.Authority
                     NetPlay.Send(message[0], reliable,
                         delegate(BinaryWriter writer) { writer.Write(message, 2, message.Length - 2); });
                 }, false);
+            single.Committed += Relay; guest.Committed += Relay;
             NetPlay.PlayerJoined += delegate(int seat) { if (NetPlay.IsHost) GetHost().SeatJoined(seat); };
             NetPlay.PlayerLeft += delegate(int seat) { if (host != null && NetPlay.IsHost) host.SeatLeft(seat); };
             NetPlay.SessionStarted += delegate { if (NetPlay.IsHost) GetHost().SeatJoined(Players.LocalSeat); };
@@ -83,7 +90,9 @@ namespace OriCoop.Authority
         internal static void UseServer(IAuthority server, Action<byte[]> receive)
         {
             Initialize();
+            if (AuthoritySource.server != null) AuthoritySource.server.Committed -= Relay;
             AuthoritySource.server = server; serverReceive = receive;
+            if (server != null) server.Committed += Relay;
         }
     }
 }

@@ -206,6 +206,7 @@ static partial class StoryTests
             sizes["0.2.0-net3"] = new[] { 6, 54 }; animKey["0.2.0-net3"] = "swimIdle|1 2 3 4|12";   // waiting, woke (4 spots)
             // net4: T-105 late-seat byte; T-121 key = name (max 40) | FNV-1a of the first frame | frame count
             sizes["0.2.0-net4"] = new[] { 6, 55 }; animKey["0.2.0-net4"] = "swimIdle|d0343fbb|12";
+            sizes["0.2.0-net5"] = new[] { 6, 55 }; animKey["0.2.0-net5"] = "swimIdle|d0343fbb|12";   // T-168: world items, intro unchanged
             string v = OriCoop.Net.ProtocolVersion.Mod;
             if (!sizes.ContainsKey(v)) throw new Exception("no pinned wire formats for " + v);
             MemoryStream a = new MemoryStream(); IntroWire.Write(new BinaryWriter(a), new IntroState { Active = true });

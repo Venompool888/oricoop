@@ -27,7 +27,7 @@ namespace OriCoop
         const byte MsgThreeTest = 98;
         static readonly HashSet<int> s_readySeats = new HashSet<int>();
         static readonly Dictionary<int, Dictionary<int, ThreePacket>> s_threePackets = new Dictionary<int, Dictionary<int, ThreePacket>>();
-        static double s_goAt, s_pickupAt, s_collectedAt;
+        static double s_goAt, s_pickupAt, s_collectedAt, s_worldGoAt;
         static bool s_threeEnded, s_leaveReleased, s_done;
         internal static bool HostLeftInServerMode;   // T-111: the 3P server-mode check made P1 leave (CoopSaveTest skips phase L)
         static float s_threeRise, s_threeTravel, s_threeError;
@@ -50,6 +50,8 @@ namespace OriCoop
                 && double.TryParse(signal.Substring(3), NumberStyles.Float, CultureInfo.InvariantCulture, out at)) s_goAt = at;
             if (seat == 1 && signal.StartsWith("pickup:", StringComparison.Ordinal)
                 && double.TryParse(signal.Substring(7), NumberStyles.Float, CultureInfo.InvariantCulture, out at)) s_pickupAt = at;
+            if (seat == 1 && signal.StartsWith("wgo:", StringComparison.Ordinal)
+                && double.TryParse(signal.Substring(4), NumberStyles.Float, CultureInfo.InvariantCulture, out at)) s_worldGoAt = at;
         }
         static void ThreeSessionEnded() { s_threeEnded = true; }
 
@@ -392,6 +394,7 @@ namespace OriCoop
                 yield return ThreeRound(h, 401, 4);
                 h.Check(AllFour(401, p => p.Forwarded - Three(400, p.Seat).Forwarded == (p.Seat == 2 ? 0 : 1)),
                     "4P P2 message 66 reaches host/P3/P4 once with sender P2");
+                yield return SameRttWorld(h, 4, 460);   // T-168
 
                 yield return FourPlace(h, arena);
                 yield return FourRevive(h);
@@ -730,6 +733,7 @@ namespace OriCoop
                 && a.Digest == b.Digest && a.Digest == c.Digest, "3P world digests equal on all three after 5 s");
 
             yield return ThreeGuestWorldChange(h);
+            yield return SameRttWorld(h, 3, 32);   // T-168: every seat changes its own world event at the same instant
 
             yield return ThreeRound(h, 4);
             int keys = Three(4, 1).Keys;
@@ -880,6 +884,79 @@ namespace OriCoop
             {
                 if (s_worldFixture != null) { UnityEngine.Object.Destroy(s_worldFixture.gameObject); s_worldFixture = null; }
             }
+        }
+
+        // T-168: world events live in ONE save object (GameController). Every seat changes its OWN fixture event at the same
+        // clock instant (well inside one RTT); every PC must end with all of them (3P: two guests + host + guest at once;
+        // 4P: all four; net-3p-cs: through the C-server's arbiter). Before T-168 the whole object went to the host and the
+        // later copy replaced the earlier one, so all but one change were lost (the digest resync then agreed on that).
+        // Mutation ORICOOP_MUTATE_WORLD_WHOLE_BLOB=1 (items proposed whole again) must fail it.
+        static readonly Dictionary<int, WorldEvents> s_seatFixtures = new Dictionary<int, WorldEvents>();
+        static WorldEventsRuntime SeatFixture(int seat)
+        {
+            WorldEvents fixture;
+            if (!s_seatFixtures.TryGetValue(seat, out fixture) || fixture == null)
+            {
+                GameObject go = new GameObject("OriCoop T-168 world event fixture P" + seat);
+                go.SetActive(false);
+                fixture = go.AddComponent<WorldEvents>();
+                fixture.MoonGuid = new MoonGuid(0x57434f4f, 0x50544553, 0x54313638, seat);
+                s_seatFixtures[seat] = fixture;
+            }
+            return WorldEventsManager.Instance.Find(fixture);
+        }
+        static void DropSeatFixtures()
+        {
+            foreach (WorldEvents fixture in s_seatFixtures.Values) if (fixture != null) UnityEngine.Object.Destroy(fixture.gameObject);
+            s_seatFixtures.Clear();
+        }
+        static int SameRttTarget(int seat) { return 1680 + seat; }
+        static bool AllSeatFixtures(int count)
+        {
+            for (int seat = 1; seat <= count; seat++) if (SeatFixture(seat).Value != SameRttTarget(seat)) return false;
+            return true;
+        }
+        static string SeatFixtureValues(int count)
+        {
+            string values = "";
+            for (int seat = 1; seat <= count; seat++) values += (seat > 1 ? "," : "") + "P" + seat + "=" + SeatFixture(seat).Value;
+            return values;
+        }
+
+        static IEnumerator SameRttWorld(TestHarness h, int count, int step)
+        {
+            string prefix = count + "P";
+            try
+            {
+                for (int seat = 1; seat <= count; seat++) SeatFixture(seat);   // every PC knows every fixture first (value 0)
+                yield return Wait(1.5f);
+                s_worldGoAt = 0;
+                yield return ThreeRound(h, step, count);
+                if (NetPlay.IsHost)
+                { s_worldGoAt = Clock() + 1.0; NetPlay.SendTestSignal("wgo:" + s_worldGoAt.ToString("R", CultureInfo.InvariantCulture)); }
+                float by = Time.realtimeSinceStartup + 12f;
+                while (s_worldGoAt == 0 && Time.realtimeSinceStartup < by) { if (ClientCount == 4) HoldFour(); yield return null; }
+                if (s_worldGoAt == 0) throw new InvalidOperationException(prefix + " same-RTT world signal missing");
+                // Every PC holds incoming item batches until 0.6 s after the go instant (a long RTT), so each one proposes
+                // its change before it has seen any other: the case that lost changes before T-168.
+                WorldSync.TestHoldBatchesUntil = Time.realtimeSinceStartup + (float)(s_worldGoAt - Clock()) + 0.6f;
+                while (Clock() < s_worldGoAt) { if (ClientCount == 4) HoldFour(); yield return null; }
+                double lateMs = (Clock() - s_worldGoAt) * 1000.0;
+                SeatFixture(Players.LocalSeat).Value = SameRttTarget(Players.LocalSeat);
+                WorldSync.TestScanNow();
+                float start = Time.realtimeSinceStartup;
+                while (!AllSeatFixtures(count) && Time.realtimeSinceStartup - start < 4f) { if (ClientCount == 4) HoldFour(); yield return null; }
+                h.Note(prefix + " same-RTT world events on P" + Players.LocalSeat + ": " + SeatFixtureValues(count)
+                    + " lateMs=" + F((float)lateMs) + " elapsedMs=" + F((Time.realtimeSinceStartup - start) * 1000f));
+                h.Check(AllSeatFixtures(count), prefix + " P" + Players.LocalSeat + " keeps every seat's same-RTT world event change ("
+                    + SeatFixtureValues(count) + ")");
+                // Stays that way: no later whole-object overwrite or resync takes any of them back.
+                yield return Wait(1.5f);
+                h.Check(AllSeatFixtures(count), prefix + " P" + Players.LocalSeat + " still has every same-RTT world event 1.5 s later ("
+                    + SeatFixtureValues(count) + ")");
+                yield return ThreeRound(h, step + 1, count);
+            }
+            finally { DropSeatFixtures(); }
         }
 
         // Independent, numbered barriers keep W out of the movement phases' single "go" signal.
@@ -1095,6 +1172,7 @@ namespace OriCoop
             finally
             {
                 if (s_worldFixture != null) { UnityEngine.Object.Destroy(s_worldFixture.gameObject); s_worldFixture = null; }
+                DropSeatFixtures();
             }
         }
 
@@ -1204,6 +1282,7 @@ namespace OriCoop
             {
                 WorldTestPacket partner = PartnerWorld(3);
                 h.Check(partner.Keys == s_worldGuestTarget, "W partner observed guest keystone exactly once");
+                SeatFixture(1); SeatFixture(2);   // T-168 fixtures known on both PCs before step 5 changes them
                 s_worldEventValue = (host ? FixtureState().Value : partner.WorldValue) + 1;
                 if (host) FixtureState().Value = s_worldEventValue;
                 while (FixtureState().Value != s_worldEventValue && Time.realtimeSinceStartup - start < 1f) yield return null;
@@ -1218,10 +1297,18 @@ namespace OriCoop
                 h.Check(BytesEqual(localEvent, partner.WorldBytes), "W world event bytes identical (local=" + BitConverter.ToString(localEvent) + ", remote=" + BitConverter.ToString(partner.WorldBytes) + ")");
                 s_worldXP = host ? local.XP : partner.XP;
                 h.Check(local.XP == s_worldXP && partner.XP == s_worldXP, "W concurrent XP baseline=" + s_worldXP);
+                // T-168: host and guest each change their OWN world event right after the same barrier (inside one RTT);
+                // both live in the one GameController object, and both must survive on both PCs.
+                WorldSync.TestHoldBatchesUntil = Time.realtimeSinceStartup + 0.6f;   // see SameRttWorld
+                SeatFixture(Players.LocalSeat).Value = SameRttTarget(Players.LocalSeat);
+                WorldSync.TestScanNow();
                 Own.Level.GainExperience(host ? 10 : 7);
                 while (Own.Level.TotalExperience != s_worldXP + 17 && Time.realtimeSinceStartup - start < 1f) yield return null;
                 h.Note("W concurrent XP old=" + s_worldXP + " host=10 guest=7 total=" + Own.Level.TotalExperience + " raw=" + Own.Level.Experience + " level=" + Own.Level.Current + " elapsedMs=" + F((Time.realtimeSinceStartup - start) * 1000f));
                 h.Check(Own.Level.TotalExperience == s_worldXP + 17, "W simultaneous XP total old+17 within 1 s");
+                while (!AllSeatFixtures(2) && Time.realtimeSinceStartup - start < 3f) yield return null;
+                h.Note("W same-RTT world events " + SeatFixtureValues(2) + " elapsedMs=" + F((Time.realtimeSinceStartup - start) * 1000f));
+                h.Check(AllSeatFixtures(2), "2P host's and guest's same-RTT world event changes both kept (" + SeatFixtureValues(2) + ")");
                 yield break;
             }
             if (step == 6)
@@ -1804,7 +1891,7 @@ namespace OriCoop
         public static IEnumerator Run(TestHarness h)
         {
             s_readySeats.Clear(); s_threePackets.Clear();
-            s_goAt = s_pickupAt = s_collectedAt = 0; s_threeEnded = s_leaveReleased = s_done = false;
+            s_goAt = s_pickupAt = s_collectedAt = s_worldGoAt = 0; s_threeEnded = s_leaveReleased = s_done = false;
             NetPlay.TestSignalReceived += ReadTestSignal;
             NetPlay.SessionEnded += ThreeSessionEnded;
             if (ClientCount == 3 || ClientCount == 4 || Environment.GetEnvironmentVariable("ORICOOP_NET_LOCAL_PLAYERS") == "1") NetPlay.On(MsgThreeTest, ReadThree);
