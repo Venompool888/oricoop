@@ -40,6 +40,18 @@ if (Test-Path $nightly) {
     foreach ($s in $nightlySwitches) { Ok ($listed -contains $s) ($s + ' (nightly mutation) has a row in phase-map.psd1') }
 }
 
+# T-118: a change to a suite's own script runs every suite that uses that script; a change to the launcher or TestQuiet
+# runs every suite (all of them start their games through it).
+foreach ($s in $TS_Suites.Keys) {
+    $file = 'src\' + $TS_Suites[$s][0]
+    $got = @((Get-Selection @($file)).Suites)
+    Ok ($got -contains $s) ('a change to ' + $file + ' runs suite ' + $s + ' (selected: ' + ($got -join ',') + ')')
+}
+foreach ($file in @('src\test-launch.ps1', 'src\TestQuiet\InputBlock.cs')) {
+    $got = @((Get-Selection @($file)).Suites)
+    Ok (($got -join ',') -eq ($TS_AllSuites -join ',')) ('a change to ' + $file + ' runs every suite (selected: ' + ($got -join ',') + ')')
+}
+
 # The phase list matches the harness.
 $harness = Get-Content (Join-Path $TS_Root 'src\OriCoop\NetTestHarness.cs') -Raw
 $m2 = [regex]::Match($harness, 'AllPhases\s*=\s*\{([^}]*)\}')

@@ -94,10 +94,15 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -like 'src\RelayServer\*') { return @{ Suites = @('net-relay', 'titlejoin-relay'); Why = 'relay server' } }
     if ($p -like 'src\RoomServer\*') { return @{ Suites = @('rooms'); Why = 'room server' } }
     if ($p -like 'src\CServer\*') { return @{ Suites = @('net', 'net-3p-cs'); Why = 'C-server (net-3p-cs runs it)' } }
-    if ($p -like 'src\TestQuiet\*' -or $p -eq 'src\test-launch.ps1') { return @{ Suites = @('local', 'net'); Why = 'test launcher' } }
-    if ($p -match '^src\\run-(\w+)\.ps1$') {
-        $s = @{ 'test' = @('local'); 'nettest' = @('net'); 'coopsave' = @('coopsave'); 'titlejoin' = @('titlejoin'); 'rooms' = @('rooms') }[$Matches[1]]
-        return @{ Suites = @($s | Where-Object { $_ }); Why = 'its own script' }
+    # T-118: every suite starts its games through the launcher and TestQuiet (Start-TestClients, copy locks, the run cap,
+    # input block), not only local and net.
+    if ($p -like 'src\TestQuiet\*' -or $p -eq 'src\test-launch.ps1') { return @{ Suites = $TS_AllSuites; Why = 'test launcher: every suite uses it' } }
+    # A suite's own script: every suite that runs it (run-nettest.ps1 -> all net-* suites, run-titlejoin.ps1 -> both
+    # titlejoin suites), from the suite table above, so a new suite is covered without another entry here (T-118).
+    if ($p -match '^src\\(run-[\w-]+\.ps1)$') {
+        $own = $Matches[1]
+        $s = @($TS_Suites.Keys | Where-Object { $TS_Suites[$_][0] -eq $own })
+        if ($s.Count) { return @{ Suites = $s; Why = 'its own script (every suite that runs it)' } }
     }
     if ($p -like 'src\assets\*') { return @{ Suites = @('local'); Why = 'assets' } }
     if ($p -like 'src\OriCoop\*') {
