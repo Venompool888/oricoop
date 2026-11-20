@@ -543,6 +543,8 @@ namespace OriCoop
             if (prefab == null) { Log.LogError("characters/seinCharacter prefab not found"); return null; }
 
             ICharacter savedCurrent = Characters.Current;
+            GameplayCamera spawnCam = UI.Cameras.Current;
+            Transform camBefore = spawnCam != null ? spawnCam.Target : null;
             GameObject go;
             P2Lifecycle.SpawningP2 = true;
             float offset = !NetPlay.Enabled && seat > 2 ? 0f : 1f;
@@ -553,6 +555,7 @@ namespace OriCoop
             // SeinCharacter.Awake made the new copy the global Sein; give that back to P1.
             Characters.Sein = p1;
             Characters.Current = savedCurrent;
+            PuppetCameraGuard.AfterSpawn(spawnCam, camBefore, p2);   // T-101: and the camera target
 
             P2Context.P1 = p1;
             Puppet puppet;
