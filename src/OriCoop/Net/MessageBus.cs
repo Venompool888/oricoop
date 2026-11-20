@@ -32,6 +32,8 @@ namespace OriCoop.Net
         readonly Dictionary<byte, Action<BinaryReader>> handlers = new Dictionary<byte, Action<BinaryReader>>();
         readonly HashSet<byte> forward = new HashSet<byte>();
         readonly Dictionary<byte, Queue<byte[]>> early = new Dictionary<byte, Queue<byte[]>>();
+        // T-149: connection seat -> the seat that device stamped before the host renumbered its primary.
+        readonly Dictionary<int, int> renumbered = new Dictionary<int, int>();
 
         public MessageBus(IMessageContext context, SessionMachine session, Action<byte, Exception> earlyError)
         {
@@ -70,8 +72,34 @@ namespace OriCoop.Net
         }
 
         public void ClearEarly() { early.Clear(); }
+
+        // T-149: the host moved a connected device's primary seat (SeatTable.Add gives it the lowest free seat). The
+        // device keeps stamping its old seat until our seat table reaches it, so for that one connection the old
+        // Sender is accepted and re-stamped (handlers and forwarding see the new seat) until its first reliable
+        // message under the new seat. Reliable delivery is ordered, so nothing it sent earlier is still on the way.
+        public void SeatRenumbered(int oldSeat, int newSeat)
+        {
+            if (!context.IsHost || context.FactorySession || oldSeat == newSeat) return;
+            int original;
+            if (renumbered.TryGetValue(oldSeat, out original)) { renumbered.Remove(oldSeat); oldSeat = original; }
+            renumbered[newSeat] = oldSeat;
+        }
+        public void ClearRenumbered() { renumbered.Clear(); }
+
+        byte[] Restamp(byte[] message, bool reliable, int sourceSeat)
+        {
+            int oldSeat;
+            if (sourceSeat == 0 || !renumbered.TryGetValue(sourceSeat, out oldSeat)) return message;
+            if (message[1] == sourceSeat) { if (reliable) renumbered.Remove(sourceSeat); return message; }
+            if (message[1] != oldSeat) return message;
+            byte[] copy = (byte[])message.Clone();
+            copy[1] = (byte)sourceSeat;
+            return copy;
+        }
+
         public void ForgetSeat(int seat)
         {
+            foreach (int key in new List<int>(renumbered.Keys)) if (key == seat || renumbered[key] == seat) renumbered.Remove(key);
             foreach (Queue<byte[]> queue in early.Values)
             {
                 int count = queue.Count;
@@ -127,7 +155,9 @@ namespace OriCoop.Net
 
         public void Dispatch(byte[] message, bool reliable, int sourceSeat)
         {
-            if (message.Length < 2 || Validate != null && !Validate(message, sourceSeat)) return;
+            if (message.Length < 2) return;
+            if (renumbered.Count != 0) message = Restamp(message, reliable, sourceSeat);
+            if (Validate != null && !Validate(message, sourceSeat)) return;
             BinaryReader r = new BinaryReader(new MemoryStream(message));
             byte type = r.ReadByte();
             int previous = Sender;

@@ -661,7 +661,7 @@ namespace OriCoop
             s_session.Reset();
             if (keepHostLocals) RetainHostLocalSeats(); else ResetLocalSeats();
             s_statusDirty = true; s_sentCount = 0;
-            s_bus.ClearEarly();
+            s_bus.ClearEarly(); s_bus.ClearRenumbered();
         }
 
         // Test hook: ORICOOP_NET_SIM = "lagMs,jitterMs,lossPercent,dupPercent" on outgoing packets.
@@ -845,7 +845,7 @@ namespace OriCoop
             {
                 if (s_hub != null) s_hub.Poll(); else s_relayHub.Poll();
                 foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
-                    if (remote.Peer != null) ReadPeer(remote.Peer, remote);
+                    if (remote.Peer != null) ReadPeer(remote.Peer, remote, true);
                 if (s_hub != null) s_hub.Flush(); else s_relayHub.Flush();
             }
             else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
@@ -883,10 +883,12 @@ namespace OriCoop
             return inGame && Core.Scenes.Manager != null && Core.Scenes.Manager.CurrentScene != null ? Core.Scenes.Manager.CurrentScene.Scene : "";
         }
 
-        static void ReadPeer(NetPeer peer, RemoteState source)
+        static void ReadPeer(NetPeer peer, RemoteState source, bool stopIfMoved = false)
         {
             byte[] msg; bool reliable;
-            while (peer.TryReceive(out msg, out reliable))
+            // T-149: a message (MsgLocalAdd) can renumber this device's primary and move its peer to another seat's
+            // remote; the rest of its queue is read on the next Update under the new seat, not under the stale one.
+            while ((!stopIfMoved || source.Peer == peer) && peer.TryReceive(out msg, out reliable))
             {
                 try { Handle(msg, reliable, source); }
                 catch (Exception e) { Plugin.Log.LogWarning("net: bad message: " + e.Message); }
@@ -1055,7 +1057,12 @@ namespace OriCoop
 
         static void PlayRemote(RemoteState remote)
         {
-            if (remote.Puppet == null || remote.Puppet.Sein == null) return;
+            if (remote.Puppet == null || remote.Puppet.Sein == null)
+            {
+                // T-150: nothing plays these frames now; keep only the newest few for when the puppet appears.
+                if (remote.HavePlay) remote.PlayTick = FrameBufferTrim.TrimIdle(remote.Buffer, remote.NewestTick, remote.PlayTick, FrameBufferTrim.IdleKeep);
+                return;
+            }
             SeinCharacter p2 = remote.Puppet.Sein;
             if (!remote.HavePlay) { HoldNeutral(remote); return; }
 
