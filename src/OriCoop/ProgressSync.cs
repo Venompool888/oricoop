@@ -17,13 +17,15 @@ namespace OriCoop
         const byte MsgProgress = 20, MsgAction = 21, MsgSkillStatus = 22;
         static readonly ProgressQueue<MoonGuid> s_pending = new ProgressQueue<MoonGuid>();
         static readonly ProgressInbox s_inbox = new ProgressInbox();
+        static readonly OwnSkillTree s_ownTree = new OwnSkillTree();
         static uint s_sequence;
         static ulong s_sentHash;
         static bool s_sent, s_applying;
         static int s_energyDoorDepth;
         static PickupBase s_synthetic;
         static float s_next;
-        static int s_loggedCollector;
+        static int s_loggedCollector, s_ignoredActions;
+        static float s_ignoredLogAt;
         static float s_collectorWarningAt;
         public static int ActionsApplied, ActionsRejected;
         public static bool SkillPurchaseForwardingEnabled = true;
@@ -80,6 +82,8 @@ namespace OriCoop
                 if (!Services.Net.IsHost) { SkillPurchaseForwardingEnabled = ProgressWire.ApplySkillStatus(false, enabled, SkillPurchaseForwardingEnabled); Services.Log.Warn("net: skill purchase forwarding enabled=" + enabled); }
             });
             Services.Net.SessionStarted += Reset; Services.Net.SessionEnded += Reset;
+            Services.Net.PlayerLeft += delegate(int seat) { s_pending.SeatLeft(seat); };       // T-143
+            Services.Net.PlayerJoined += delegate(int seat) { s_pending.SeatJoined(seat); };
             // SharedProgress's proximity postfix bypasses trigger callbacks. Disable that local-coop
             // shortcut online, where touching a puppet must never collect on behalf of its owner.
             Type t = typeof(SharedProgress).GetNestedType("PickupPatch", BindingFlags.NonPublic);
@@ -88,9 +92,9 @@ namespace OriCoop
         static bool LocalPickupShortcut() { return !Services.Net.Enabled; }
         static void Reset()
         {
-            s_pending.Reset(); s_inbox.Snapshot = null;
+            s_pending.Reset(); s_inbox.Snapshot = null; s_ownTree.Clear();
             s_sequence = 0; s_sent = false; s_next = 0; ActionsApplied = ActionsRejected = 0;
-            s_loggedCollector = 0; s_collectorWarningAt = 0;
+            s_loggedCollector = 0; s_collectorWarningAt = 0; s_ignoredActions = 0; s_ignoredLogAt = 0;
             SkillPurchaseForwardingEnabled = true;
         }
 
@@ -229,7 +233,8 @@ namespace OriCoop
             try
             {
                 EnsureSkillTree(p);
-                ulong merged = SkillSplit.Merge(OwnedBits(p), s.Abilities, s_tree);   // keep this player's own skill tree
+                // Keep this player's own skill tree (T-142: the tree held before a host checkpoint load, see HoldOwnSkillTree).
+                ulong merged = SkillSplit.Merge(s_ownTree.Local(OwnedBits(p)), s.Abilities, s_tree);
                 for (int i = 0; i < 43; i++)
                 {
                     bool value = (merged & (1UL << i)) != 0;
@@ -245,6 +250,17 @@ namespace OriCoop
                 RefreshSkills();
             }
             finally { s_applying = false; }
+        }
+        // T-142: a guest about to load a mid-session host checkpoint (wipe / host reload) keeps its own skill tree; the
+        // loaded save carries the host's. The next Apply merges with the held abilities (Story\SkillSplit.cs OwnSkillTree).
+        public static void HoldOwnSkillTree()
+        {
+            if (Services.Net.IsHost) return;
+            if (!Ready) { Services.Log.Warn("net: own skill tree not held before the host checkpoint (progress not ready)"); return; }
+            if (s_ownTree.Held) return;
+            ulong owned = OwnedBits(Own);
+            s_ownTree.Hold(owned);
+            Services.Log.Info("net: holding own skill tree across the host checkpoint (abilities " + owned.ToString("X") + ")");
         }
         static void RefreshSkills()
         {
@@ -270,7 +286,14 @@ namespace OriCoop
         static void ReceiveAction(BinaryReader r)
         {
             ProgressAction a = ProgressAction.Read(r);
-            if (Services.Net.IsHost) s_pending.Enqueue(Services.Net.Sender, a);
+            if (!Services.Net.IsHost || s_pending.Enqueue(Services.Net.Sender, a)) return;
+            // T-143: a duplicate (or an action from a seat that has left) is dropped; say so, at most every 5 s.
+            s_ignoredActions++;
+            float now = Time.realtimeSinceStartup;
+            if (now < s_ignoredLogAt) return;
+            s_ignoredLogAt = now + 5f;
+            Services.Log.Info("net: progress action ignored (duplicate or seat gone) P" + Services.Net.Sender + " seq=" + a.Sequence
+                + " " + a.Kind + " (" + s_ignoredActions + " ignored so far)");
         }
         static void ApplyAction(ProgressAction a)
         {

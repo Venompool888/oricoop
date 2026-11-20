@@ -77,6 +77,13 @@ namespace OriCoop.Story
         public ProgressAction Dequeue() { return pending.Dequeue(); }
         public bool RecordPickup(TGuid guid) { return collected.Add(guid); }
         public void ClearPickups() { collected.Clear(); }
+        // T-143: sequences are per connection. A guest that rejoins (its sequence restarts at 1), or a new player in the
+        // freed seat, must not hit the old seat's history. No "seat gone" block: the departed connection is no longer read
+        // after the leave (its remote and route are removed), and a device renumbered into a freed seat (NetLocalSeats
+        // ReconcileSeats) keeps its Hello, so no PlayerJoined would ever reopen such a block.
+        public void SeatLeft(int seat) { Forget(seat); }
+        public void SeatJoined(int seat) { Forget(seat); }
+        void Forget(int seat) { actions.RemoveWhere(delegate(ulong key) { return (int)(key >> 32) == seat; }); }
         public void Reset() { actions.Clear(); collected.Clear(); pending.Clear(); }
     }
     internal static class ProgressWire

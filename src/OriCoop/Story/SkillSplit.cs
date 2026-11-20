@@ -34,4 +34,28 @@ namespace OriCoop.Story
         // A guest applying a snapshot: shared abilities from the host, its own skill-tree abilities kept.
         public static ulong Merge(ulong local, ulong remote, ulong tree) { return (remote & ~tree) | (local & tree); }
     }
+
+    // T-142: a host checkpoint push (a wipe, or the host reloading) makes a guest load the host's save bytes, which carry
+    // the HOST's skill tree. Before such a load the guest holds its own abilities here; the next snapshot merge takes its
+    // skill-tree bits from the held value instead of the (now host's) live ones, so the guest keeps its own tree and its
+    // points follow from `earned` as usual. The first load of a session (joining) is not held: per T-047 a joining guest
+    // starts from the host's save.
+    internal sealed class OwnSkillTree
+    {
+        bool held;
+        ulong bits;
+        public bool Held { get { return held; } }
+
+        // Two pushes before the next merge: the second load starts from the host's bits, so the first hold wins.
+        public void Hold(ulong owned) { if (held) return; bits = owned; held = true; }
+
+        // The `local` abilities for the next snapshot merge: the held ones once, then the live ones again.
+        public ulong Local(ulong live)
+        {
+            if (!held) return live;
+            held = false; return bits;
+        }
+
+        public void Clear() { held = false; bits = 0; }
+    }
 }

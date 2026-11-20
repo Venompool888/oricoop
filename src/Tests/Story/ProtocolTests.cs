@@ -341,6 +341,24 @@ static partial class StoryTests
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); ProgressAction a = new ProgressAction { Sequence = 1 };
             Equal(true, q.Enqueue(2, a)); Equal(false, q.Enqueue(2, a)); Equal(true, q.Enqueue(3, a)); Equal(2, q.Count);
         });
+        // T-143: a guest that rejoins (sequence restarts at 1), or a new player in the freed seat, is not treated as
+        // repeating the old seat's actions. A device renumbered into a freed seat (no new Hello) is accepted there.
+        Check("progress seat rejoin restarts sequence (T-143)", delegate {
+            ProgressQueue<Guid> q = new ProgressQueue<Guid>();
+            for (uint i = 1; i <= 5; i++) Equal(true, q.Enqueue(2, new ProgressAction { Sequence = i }));
+            for (uint i = 1; i <= 5; i++) Equal(true, q.Enqueue(3, new ProgressAction { Sequence = i }));
+            while (q.Count > 0) q.Dequeue();
+            q.SeatLeft(3);                                                     // seat 2 stays, the session goes on
+            q.SeatJoined(3);
+            int accepted = 0;
+            for (uint i = 1; i <= 7; i++) if (q.Enqueue(3, new ProgressAction { Sequence = i })) accepted++;
+            Equal(7, accepted);
+            Equal(false, q.Enqueue(3, new ProgressAction { Sequence = 7 }));    // still deduplicated after the rejoin
+            Equal(false, q.Enqueue(2, new ProgressAction { Sequence = 5 }));    // the seat that stayed keeps its history
+            Equal(true, q.Enqueue(2, new ProgressAction { Sequence = 6 }));
+            q.SeatLeft(4);                                                     // seat 4 leaves; another device is renumbered into it
+            Equal(true, q.Enqueue(4, new ProgressAction { Sequence = 9 }));    // without a new Hello: still accepted
+        });
         Check("progress pickup guid duplicate suppression", delegate {
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); Equal(true, q.RecordPickup(new Guid(Id(1)))); Equal(false, q.RecordPickup(new Guid(Id(1))));
             Equal(true, q.RecordPickup(new Guid(Id(2)))); q.ClearPickups(); Equal(true, q.RecordPickup(new Guid(Id(1))));
