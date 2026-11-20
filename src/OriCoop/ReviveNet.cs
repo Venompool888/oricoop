@@ -14,13 +14,13 @@ namespace OriCoop
     //   62 Revived   owner -> saver     "I'm back" (clears the skull there too)     reliable
     //   63 BothDown  host  -> guest     "we're both down: reload"                   reliable
     //   64 Progress  saver -> others    downed seat, rescuer seat, progress 0..1     unreliable
-    //   87 DownedState owner -> all     each local seat: down (skull x,y,z) or up    reliable (T-166, SendDownedState)
+    //   91 DownedState owner -> all     each local seat: down (skull x,y,z) or up    reliable (T-166, SendDownedState)
     // Both down is decided by the host only, so simultaneous deaths can't trigger two different reloads. The host
     // runs the normal death/checkpoint reload; the guest runs its own normal death too, and SaveSync brings its
     // world back in line with the host's save afterwards.
     public static partial class Revive
     {
-        public const byte MsgDowned = 60, MsgRevive = 61, MsgRevived = 62, MsgBothDown = 63, MsgProgress = 64, MsgDownedState = 87;
+        public const byte MsgDowned = 60, MsgRevive = 61, MsgRevived = 62, MsgBothDown = 63, MsgProgress = 64, MsgDownedState = 91;
         static bool s_netRegistered;
         static SpectateState s_spectate = new SpectateState();
         internal static bool SpectateActive { get { return s_spectate.Active; } }
