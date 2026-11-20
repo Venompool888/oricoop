@@ -23,6 +23,7 @@ Set-Content (Join-Path $calls ([guid]::NewGuid().ToString() + '.txt')) ($name + 
 '@
 Set-Content (Join-Path $fake 'run-test.ps1') ($common + [Environment]::NewLine + @'
 if ($env:FAKE_LOCAL -eq 'leak' -and $n -eq 1) { '[   2.00] RESULT PASS 2/2'; 'OWNER SETTINGS CHANGED BY A TEST (T-094): HKCU\x: before w=3840; after w=640'; 'FAIL: this run changed the owner''s game settings (exit 7, T-094).'; exit 7 }
+if ($env:FAKE_LOCAL -eq 'leak0') { '[   2.00] RESULT PASS 2/2'; 'OWNER SETTINGS CHANGED BY A TEST (T-094): HKCU\x: before w=3840; after w=640'; exit 0 }
 if ($env:FAKE_LOCAL -eq 'flaky' -and $n -eq 1) { '[   1.00] FAIL visual self-check: no P2 visual problems'; '[   2.00] RESULT FAIL 1/2'; exit 1 }
 '[   2.00] RESULT PASS 2/2'
 '@)
@@ -81,6 +82,10 @@ Expect ($r.Out -match 'AFFECTED PASS \(flaky, passed on the rerun: local\)' -and
 # 2b. a suite that changed the owner's settings (exit 7): FAIL at once, never rerun, never FLAKY.
 $r = Invoke-Fake @{ FAKE_LOCAL = 'leak' } 'src/run-test.ps1'
 Expect (@($r.Calls).Count -eq 1 -and $r.Out -match '(?m)^local: FAIL' -and $r.Out -match 'AFFECTED FAIL' -and $r.Code -eq 1) 'owner settings changed (exit 7): no rerun, the run fails'
+
+# 2c. T-117: the owner-settings failure text alone fails the suite, even when its script exits 0 (run-rooms used to).
+$r = Invoke-Fake @{ FAKE_LOCAL = 'leak0' } 'src/run-test.ps1'
+Expect (@($r.Calls).Count -eq 1 -and $r.Out -match '(?m)^local: FAIL' -and $r.Code -eq 1) 'OWNER SETTINGS CHANGED with exit 0: FAIL, no rerun'
 
 # 3. reruns off.
 $r = Invoke-Fake @{ FAKE_LOCAL = 'flaky'; ORICOOP_RERUN = '0' } 'src/run-test.ps1'

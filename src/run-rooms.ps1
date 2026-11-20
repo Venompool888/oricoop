@@ -108,6 +108,7 @@ try {
     Complete-TestRun
 }
 # One verdict line for callers (run-affected): the per-step "ROOMS PASS n" lines are no verdict (T-082).
-if ($ok) { 'ROOMS RESULT PASS'; exit 0 }
-'ROOMS RESULT FAIL'
+if ($ok) { 'ROOMS RESULT PASS' } else { 'ROOMS RESULT FAIL' }
+Exit-TestRun   # LAST: releases the copy lock; exit 7 if this run changed the owner's game settings (T-094, T-117)
+if ($ok) { exit 0 }
 exit 1
