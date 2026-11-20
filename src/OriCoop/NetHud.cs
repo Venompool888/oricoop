@@ -141,13 +141,27 @@ namespace OriCoop
             s_dotTex.hideFlags = HideFlags.HideAndDontSave;
         }
 
+        // Callers often pass already-translated text first and "" second (saves, rooms): the empty side falls back to
+        // the other one, so English players no longer get blank toasts (T-135).
         public static void Toast(string zh, string en)
         {
-            Toast(L10n.Zh ? zh : en);
+            Toast(s_noFallbackMutation ? (L10n.Zh ? zh : en) : L10n.Pick(zh, en));
+        }
+        // Test-only mutation switch (T-135): the old pick-by-language without fallback.
+        static readonly bool s_noFallbackMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_TOAST_NO_FALLBACK") == "1";
+        internal static int QueuedToasts { get { return s_toastQueue.Count; } }
+        internal static string LastQueuedToast { get { string last = null; foreach (ToastItem t in s_toastQueue) last = t.Text; return last; } }
+        // Test helper: drop toasts queued after the first `keep` (a check's own toasts must not show for seconds).
+        internal static void TestDropQueuedToasts(int keep)
+        {
+            ToastItem[] items = s_toastQueue.ToArray(); s_toastQueue.Clear();
+            for (int i = 0; i < items.Length && i < keep; i++) s_toastQueue.Enqueue(items[i]);
         }
 
         public static void Toast(string text)
         {
+            // An empty toast showed nothing yet held the queue for 3.5 s (T-135).
+            if (string.IsNullOrEmpty(text) && !s_noFallbackMutation) return;
             ToastItem item;
             item.Text = text ?? "";
             item.StartTime = 0f;

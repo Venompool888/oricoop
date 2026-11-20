@@ -253,6 +253,22 @@ namespace OriCoop
             finally { Bot(0); if (guest && UI.Menu != null) UI.Menu.HideMenuScreen(true); }
             yield return Wait(0.5f);
             h.Check(!SessionRules.PausedByPartner && !SessionRules.LocalPaused && !SessionRules.LocalLocked, "S4 menu closed: nothing paused or locked");
+            // T-132: online the F8 panel must not write back the LockInput it saw when it opened. A story box that lets go
+            // while the panel is open stays released; one that takes the lock while it is open keeps it after closing.
+            if (guest && GameController.Instance != null)
+            {
+                GameController gc = GameController.Instance;
+                gc.LockInput = true; CoopMenu.Open(); yield return null;
+                bool openLocked = CoopMenu.IsOpen && SessionRules.LocalLocked;
+                gc.LockInput = false; yield return null; CoopMenu.Close(); yield return null;
+                bool released = !gc.LockInput;
+                gc.LockInput = false; CoopMenu.Open(); yield return null; gc.LockInput = true; yield return null; CoopMenu.Close(); yield return null;
+                bool kept = gc.LockInput;
+                gc.LockInput = false;
+                h.Check(openLocked, "S4 F8 online: the open panel holds this player (T-132)");
+                h.Check(released, "S4 F8 online: a story lock released while the panel was open stays released (T-132)");
+                h.Check(kept, "S4 F8 online: a story lock taken while the panel was open survives closing it (T-132)");
+            }
             Dictionary<ISuspendable, int> after = SuspensionCounts(); int compared = 0, changed = 0;
             foreach (KeyValuePair<ISuspendable, int> pair in before)
             { int count; if (after.TryGetValue(pair.Key, out count)) { compared++; if (count != pair.Value) changed++; } }
