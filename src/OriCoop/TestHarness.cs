@@ -600,54 +600,71 @@ namespace OriCoop
             Check(Vector3.Distance(P1.Position, pp) > 5f, "pickup: P1 was nowhere near the pickup (" + F(Vector3.Distance(P1.Position, pp)) + ")");
             Check(best == null || best.IsCollected, "pickup: P2 touching the pickup collected it");
             Check(SharedProgress.PickupsByP2 > byP2, "pickup: counted as collected by P2 (" + (SharedProgress.PickupsByP2 - byP2) + ")");
-            yield return StartCoroutine(PickupByP3(best, p1Pos));
+            yield return StartCoroutine(PickupByP3(p1Pos));
             Check(m_errors == err0, "pickup: no errors");
         }
 
-        // T-134: offline P3 (three or four players) collects pickups for P1 just like P2.
-        IEnumerator PickupByP3(PickupBase taken, Vector3 p1Pos)
+        // T-134: offline P3 (three or four players) collects pickups for P1 just like P2. The map rarely has a second
+        // pickup near the start (P2's pass takes the whole orb cluster), so P3 gets its own: a green spirit-light orb from
+        // the game's spawner, as an enemy drops it (pooled, never saved), next to P3 and 10 units from P1 and P2 (out of
+        // P1's pickup attraction). Without the T-134 patch only P2 collects for P1 and this orb stays.
+        IEnumerator PickupByP3(Vector3 p1Pos)
         {
-            PickupBase target = null; float bestD = float.MaxValue;
-            foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
-            {
-                if (pb == null || pb == taken || pb.IsCollected || !pb.gameObject.scene.IsValid() || !pb.gameObject.scene.isLoaded) continue;
-                if (pb.transform.parent != null && !pb.transform.parent.gameObject.activeInHierarchy) continue;
-                if (pb.transform.position == Vector3.zero) continue;
-                float d = Vector3.Distance(pb.transform.position, p1Pos);
-                if (d > 3f && d < 20f && d < bestD) { bestD = d; target = pb; }   // on screen with the group camera
-            }
-            if (target == null) { Skip("pickup: no second uncollected pickup within 20 units for P3"); yield break; }
             Plugin plugin = Plugin.Instance;
             int p1Pad = plugin.P1Pad, p2Pad = plugin.P2Pad;
             GameSeatView seats = new GameSeatView();
+            Vector3 spot = p1Pos + new Vector3(10f, 1.5f, 0f);
             try
             {
                 plugin.AssignPad(1, 0);
                 plugin.AssignPad(2, 3);
                 bool added = seats.AddLocalPlayer(new InputDevice(InputDevice.DeviceKind.Pad, 1));
                 SeinCharacter p3 = seats.OriOf(3);
-                Check(added && p3 != null, "pickup: P3 joins for the second pickup");
+                Check(added && p3 != null, "pickup: P3 joins for its own pickup");
                 if (p3 == null) yield break;
                 p3.Mortality.Health.RestoreAllHealth(); p3.Mortality.DamageReciever.MakeInvincible(10f);
-                Note("pickup: P3 uses " + target.name + " (" + target.GetType().Name + ") " + F(bestD) + " from P1");
-                int byP3 = SharedProgress.PickupsBySeat[3];
-                Vector3 pp = target.transform.position;
                 Plugin.LeashOverride = 200f;
-                float end = Time.unscaledTime + 3f;
-                while (Time.unscaledTime < end && !target.IsCollected)
+                // P3 stands at the spot first, so the group camera frames it and the orb is not culled off-screen.
+                for (int i = 0; i < 20; i++)
                 {
-                    if (target.gameObject.activeInHierarchy && target.transform.position != Vector3.zero) pp = target.transform.position;
+                    Plugin.Teleport(p3, spot - new Vector3(0f, 1f, 0f));
+                    Plugin.Teleport(P1, p1Pos - new Vector3(0f, 0.5f, 0f));
+                    Plugin.Teleport(P2, p1Pos + new Vector3(1f, -0.5f, 0f));
+                    yield return null;
+                }
+                // Spawned orbs come from the game's object pool, so the orb may be an object that already existed (inactive):
+                // look for a live orb near the spot that was not there before. Collection is counted per seat, so only P3
+                // can raise PickupsBySeat[3], also if it takes the orb in the frame it appears.
+                HashSet<PickupBase> nearBefore = new HashSet<PickupBase>();
+                foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+                    if (pb != null && pb.gameObject.activeInHierarchy && Vector3.Distance(pb.transform.position, spot) < 4f) nearBefore.Add(pb);
+                int byP3 = SharedProgress.PickupsBySeat[3];
+                bool spawner = OrbSpawnerManager.Instance != null;
+                if (spawner) OrbSpawnerManager.Instance.Spawn(OrbSpawnerManager.ItemType.GreenExpOrb, spot, Vector2.zero, DropPickup.State.Hover);
+                PickupBase target = null;
+                Vector3 pp = spot;
+                float end = Time.unscaledTime + 4f;
+                while (spawner && Time.unscaledTime < end && SharedProgress.PickupsBySeat[3] == byP3)
+                {
+                    if (target == null)
+                        foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+                            if (pb != null && !nearBefore.Contains(pb) && pb.gameObject.activeInHierarchy && !pb.IsCollected
+                                && Vector3.Distance(pb.transform.position, spot) < 4f) { target = pb; break; }
+                    if (target != null && target.gameObject.activeInHierarchy) pp = target.transform.position;
                     Plugin.Teleport(p3, pp - new Vector3(0f, 0.5f, 0f));
-                    // P1 and P2 wait together, away from the pickup: only P3 can be the collector.
+                    // P1 and P2 wait together, away from the orb: only P3 can be the collector.
                     Plugin.Teleport(P1, p1Pos - new Vector3(0f, 0.5f, 0f));
                     Plugin.Teleport(P2, p1Pos + new Vector3(1f, -0.5f, 0f));
                     yield return null;
                 }
                 Plugin.LeashOverride = -1f;
+                bool collected = SharedProgress.PickupsBySeat[3] > byP3;
+                Check(target != null || collected, "pickup: a test orb for P3 spawns from the game's orb spawner (spawner=" + spawner + ")");
+                if (target == null && !collected) yield break;
+                float radius = target != null ? target.Radius : 2f;
                 float d1 = Vector3.Distance(P1.Position, pp), d2 = Vector3.Distance(P2.Position, pp);
-                Check(d1 > target.Radius && d2 > target.Radius, "pickup: P1 and P2 stayed away from P3's pickup (" + F(d1) + ", " + F(d2) + ")");
-                Check(target.IsCollected && SharedProgress.PickupsBySeat[3] > byP3,
-                    "pickup: P3 touching a pickup collected it for P1 (collected=" + target.IsCollected + ", by P3=" + (SharedProgress.PickupsBySeat[3] - byP3) + ")");
+                Check(d1 > radius && d2 > radius, "pickup: P1 and P2 stayed away from P3's orb (" + F(d1) + ", " + F(d2) + ")");
+                Check(collected, "pickup: P3 touching an orb collected it for P1 (by P3=" + (SharedProgress.PickupsBySeat[3] - byP3) + ")");
             }
             finally
             {
