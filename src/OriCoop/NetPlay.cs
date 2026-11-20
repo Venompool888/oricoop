@@ -22,7 +22,7 @@ namespace OriCoop
     //   Frames  (unreliable) the last few fixed steps (redundant copies: one lost packet loses nothing)
     public static partial class NetPlay
     {
-        public const string ModVersion = "0.2.0-net3";
+        public const string ModVersion = OriCoop.Net.ProtocolVersion.Mod;   // T-140: bump it there (pinned by the unit tests)
         public static int Sender { get { return s_bus.Sender; } private set { s_bus.Sender = value; } }
         public static bool HostOverride;
         public static Func<int, byte, bool, Action<BinaryWriter>, bool> SendToOverride;

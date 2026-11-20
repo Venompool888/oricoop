@@ -22,6 +22,8 @@ static partial class StoryTests
         public bool IntroAtTitle { get { return AtTitle; } }
         public StoryPoint IntroP1Position { get { return Origin; } }
         public int[] IntroSeats { get { return Seats; } }
+        public int[] SessionSeats;   // null = no seat table (offline / C-server): the old cases
+        public int[] IntroSessionSeats { get { return SessionSeats; } }
         public IntroState RemoteIntro { get { return Remote; } }
         public bool IntroHostSession { get { return HostSession; } }
         public bool TryIntroGround(StoryPoint candidate, out StoryPoint spot)
@@ -161,6 +163,56 @@ static partial class StoryTests
             h.HostSession = true; rule.Reset(h); rule.Tick(h); Equal(true, h.Held[2]);   // back in a session: wait for the host
             h.Remote = new IntroState { Generation = 3 }; rule.Tick(h); Equal(false, h.Held[2]);
             h.HostSession = false; h.Remote = null; rule.Reset(h); rule.Tick(h); Equal(false, h.Held[2]);
+        });
+        // T-139: an extra local player (F8, T-059) added after the wake only changes the seat table (no PlayerJoined).
+        // It was not part of the wake: never held, never moved to the wake spot, on the host and on its own PC.
+        Check("intro extra local seat added after the wake is neither held nor placed on the host", delegate {
+            IntroFake h = new IntroFake(); h.Seats = new[] { 1, 2 }; h.SessionSeats = new[] { 1, 2 };
+            IntroRule rule = new IntroRule(); rule.Tick(h); h.Playing = false; h.Free = true; rule.Tick(h);
+            Equal(1, h.Placements);
+            h.SessionSeats = new[] { 1, 2, 3 }; h.Seats = new[] { 1, 2, 3 }; rule.Tick(h);
+            Equal(false, h.Held[3]); Equal(false, h.Placed.ContainsKey(3)); Equal(1, h.Placements);
+            rule.Tick(h); Equal(4, h.Remote.Late & 4);   // the host's snapshot tells the guests
+            Equal(false, h.Held[3]); Equal(1, h.Placements);
+        });
+        Check("intro extra local seat added during the intro still waits and is placed at the wake", delegate {
+            IntroFake h = new IntroFake(); h.Seats = new[] { 1, 2 }; h.SessionSeats = new[] { 1, 2 };
+            IntroRule rule = new IntroRule(); rule.Tick(h);
+            h.SessionSeats = new[] { 1, 2, 3 }; h.Seats = new[] { 1, 2, 3 }; rule.Tick(h); Equal(true, h.Held[3]);
+            h.Playing = false; h.Free = true; rule.Tick(h);
+            Equal(2, h.Placements); Equal(true, h.Placed.ContainsKey(3)); Equal(false, h.Held[3]);
+        });
+        Check("intro guest's own new extra seat is not placed before the host's late snapshot arrives", delegate {
+            IntroState woke = new IntroState { Generation = 1, Woke = true, Spots = new[] { new StoryPoint(0, 0, 0), new StoryPoint(3.5f, 0, 0), new StoryPoint(-3.5f, 0, 0), new StoryPoint(7, 0, 0) } };
+            IntroFake g = new IntroFake(); g.Authority = false; g.Playing = false; g.Free = true;
+            g.Remote = woke; g.Seats = new[] { 2, 1 }; g.SessionSeats = new[] { 1, 2 };
+            IntroRule rule = new IntroRule(); rule.Tick(g); Equal(1, g.Placements);   // seat 2 was part of the wake
+            g.SessionSeats = new[] { 1, 2, 3 }; g.Seats = new[] { 2, 1, 3 }; rule.Tick(g);
+            Equal(false, g.Held[3]); Equal(false, g.Placed.ContainsKey(3));
+            g.Remote = new IntroState { Generation = 1, Woke = true, Spots = woke.Spots };   // an older snapshot again
+            rule.Tick(g); Equal(false, g.Held[3]); Equal(1, g.Placements);
+        });
+        Check("intro first look at the seat table (session start) marks nobody late", delegate {
+            IntroFake h = new IntroFake(); h.Seats = new[] { 1 }; h.PlacementReady = false;
+            IntroRule rule = new IntroRule(); rule.Tick(h); h.Playing = false; h.Free = true; rule.Tick(h);
+            h.SessionSeats = new[] { 1, 2 }; h.Seats = new[] { 1, 2 }; h.PlacementReady = true; rule.Tick(h);
+            Equal(true, h.Placed.ContainsKey(2));
+        });
+        // T-140: a changed wire format needs a new protocol version, or mixed kits show no warning and misread each other.
+        // Each version pins what went on the wire: intro snapshot sizes (msg 54) and the cutscene animation key (T-121).
+        Check("protocol version matches the pinned wire formats", delegate {
+            Dictionary<string, int[]> sizes = new Dictionary<string, int[]>();
+            Dictionary<string, string> animKey = new Dictionary<string, string>();
+            sizes["0.2.0-net3"] = new[] { 6, 54 }; animKey["0.2.0-net3"] = "swimIdle|1 2 3 4|12";   // waiting, woke (4 spots)
+            // net4: T-105 late-seat byte; T-121 key = name (max 40) | FNV-1a of the first frame | frame count
+            sizes["0.2.0-net4"] = new[] { 6, 55 }; animKey["0.2.0-net4"] = "swimIdle|d0343fbb|12";
+            string v = OriCoop.Net.ProtocolVersion.Mod;
+            if (!sizes.ContainsKey(v)) throw new Exception("no pinned wire formats for " + v);
+            MemoryStream a = new MemoryStream(); IntroWire.Write(new BinaryWriter(a), new IntroState { Active = true });
+            MemoryStream b = new MemoryStream();
+            IntroWire.Write(new BinaryWriter(b), new IntroState { Woke = true, Spots = new StoryPoint[4] });
+            Equal(sizes[v][0], (int)a.Length); Equal(sizes[v][1], (int)b.Length);
+            Equal(animKey[v], AnimKey.Make("swimIdle", "1 2 3 4", 12));
         });
         Check("intro empty and invalid seats never place P1 or phantom players", delegate {
             IntroFake h = new IntroFake(); h.Seats = new int[0];
