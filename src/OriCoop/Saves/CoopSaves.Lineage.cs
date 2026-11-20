@@ -10,6 +10,56 @@ namespace OriCoop
         public static bool HostGate() { return s_machine.HostGate(); }
         public static void HostAdoptFinished() { s_machine.AdoptionFinished(); }
 
+        // T-126: SaveSync.CheckPromotion: this guest is now the host (server-mode arbiter change). Its game's current
+        // slot is its own single-player slot (joined in-game) or the title fallback: host saves would overwrite it.
+        // Saving moves to the co-op copy this guest kept from the old host's commits; without one, saving stays off.
+        public static bool SavesBlocked;
+        public static int PromotedFrom = -1;   // test / diagnostics: the slot the game played before the promotion
+
+        static readonly bool s_mutateNoPromotion = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_PROMOTION") == "1";
+        public static void Promote()
+        {
+            if (s_mutateNoPromotion) return;   // test-only: the T-126 bug (saving stays on the slot played before joining)
+            s_machine.Promote();
+            int current = SafeCurrentSlot();
+            PromotedFrom = current;
+            int slot = HostPromotion.SaveSlot(SessionSlot, HaveCommit, FirstEmptySlot(current));
+            if (slot < 0)
+            {
+                SavesBlocked = true; s_hostLink = null; s_hostSlot = -1;
+                SavesHost.Current.Toast(SavesHost.Current.Translate("saves.host_no_slot"), "");
+                Services.Log.Warn("coop save: now the host, but no slot may hold the co-op save (copy kept=" + SessionSlot
+                    + " commit=" + HaveCommit + "); saving stays off; slot " + current + " is untouched");
+                return;
+            }
+            SaveSlotsManager.CurrentSlotIndex = slot;
+            SaveSlotsManager.BackupIndex = -1;
+            SaveSlotsManager.FindOrCreateSaveSlot(slot);
+            s_hostSlot = slot;
+            byte[] bytes = ReadSlot(slot);
+            s_hostHash = Hash(bytes);
+            s_hostLink = bytes == null ? null : ValidLink(slot, bytes);
+            if (s_hostLink == null)
+            {
+                s_hostLink = new CoopLink();
+                s_hostLink.Coop = CoopId.Length > 0 ? CoopId : Guid.NewGuid().ToString("N");
+                SaveHeader h = ReadHeader(bytes);
+                s_hostLink.SaveId = h != null ? h.Id : "";
+            }
+            CoopId = s_hostLink.Coop;
+            Services.Log.Info("coop save: now the host; saving the co-op world to slot " + slot
+                + (slot == SessionSlot ? " (co-op copy)" : " (empty slot)") + " instead of slot " + current + "; lineage " + CoopId);
+        }
+
+        static int FirstEmptySlot(int current)
+        {
+            int count = SlotCount;
+            try { if (SaveSlotsManager.Instance != null) count = Math.Min(SlotCount, SaveSlotsManager.SaveSlotCount); } catch (Exception) { }
+            for (int i = 0; i < count; i++)
+                if (i != current && !File.Exists(SavePath(i))) return i;
+            return -1;
+        }
+
         static void Commit() { Commit(-1); }
 
         // seat < 0: every guest (the decision, every host save). seat >= 0: only that seat, which joined after the

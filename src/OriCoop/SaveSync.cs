@@ -18,6 +18,7 @@ namespace OriCoop
     {
         static bool s_started, s_loading, s_disabled, s_restartFinished, s_restoreFinished, s_hostAdopt;
         static readonly SeatReadiness s_guests = new SeatReadiness();
+        static readonly HostPromotion s_promotion = new HostPromotion();
         static byte[] s_pending;
         static byte[] s_loadingBytes;
         static byte[] s_titleLoadBytes;   // guest joining from an empty slot: PerformLoad reads these (GuestJoin.cs)
@@ -58,6 +59,7 @@ namespace OriCoop
         {
             Ready = s_started = s_loading = s_disabled = s_hostAdopt = false;
             s_guests.Clear();
+            s_promotion.Reset();
             s_pending = null;
             s_loadingBytes = null;
             s_titleLoadBytes = null;
@@ -105,6 +107,7 @@ namespace OriCoop
             SubsystemGuard.Run("CoopSaves.Tick", s_coopSavesTick);
             SubsystemGuard.Run("GuestJoin.Tick", s_guestJoinTick);
             if (!Services.Net.Connected || !s_started || s_disabled) return;
+            CheckPromotion();
             if (Services.Net.IsHost && !s_hostAdopt)
             {
                 // Co-op save lineage first (CoopSaves): the host may adopt the partner's progress before the
@@ -221,6 +224,7 @@ namespace OriCoop
         static void FinishJoin()
         {
             s_loading = s_restoreFinished = false; Ready = true;
+            s_promotion.Joined();
             Services.Log.Info("net: guest join liveHost=" + HostJoinPosition + " distance=" + GuestJoinDistance
                 + " elapsedAfterLoadMs=" + (GuestJoinElapsed * 1000f) + " placed=" + JoinedHost);
             Services.Net.Send(SaveWire.LoadedMessage, true, SaveWire.WriteLoaded);
@@ -325,6 +329,33 @@ namespace OriCoop
             }
         }
 
+        // T-126: the server made this guest the host (legacy arbiter) mid-session. The players still here already play
+        // the co-op world (ready, no checkpoint); saving moves off the slot this player had loaded before joining.
+        // Runs from Tick and before every save path, so a save in the same frame as the role change is covered.
+        static void CheckPromotion()
+        {
+            if (!Services.Net.Enabled || !Services.Net.Connected || !s_started || s_disabled) return;
+            if (!s_promotion.Check(Services.Net.IsHost)) return;
+            try
+            {
+                int[] seats = NetPlay.RemoteSeats;
+                foreach (int seat in seats) s_guests.JoinReady(seat);
+                Ready = true;
+                Services.Log.Info("net: this guest is now the host; " + seats.Length + " seat(s) already in the world");
+                CoopSaves.Promote();
+            }
+            catch (Exception e) { Services.Log.Warn("net: taking over as host: " + e); }
+        }
+
+        // Host-side saves are off: promoted without a slot that may hold the co-op world (CoopSaves.Promote).
+        static bool PromotedSaveBlocked(string what)
+        {
+            CheckPromotion();
+            if (!Services.Net.IsHost || !CoopSaves.SavesBlocked) return false;
+            Services.Log.Info("net: promoted host " + what + " suppressed (no slot for the co-op save)");
+            return true;
+        }
+
         static void Disable(string item, Exception e)
         {
             // Do not invent an alternate serializer/load path if the game's API fails.
@@ -425,7 +456,9 @@ namespace OriCoop
         {
             static bool Prefix()
             {
-                if (!Services.Net.Enabled || Services.Net.IsHost) return true;
+                if (!Services.Net.Enabled) return true;
+                if (PromotedSaveBlocked("PerformSave")) return false;
+                if (Services.Net.IsHost) return true;
                 GuestSaveAttempts++;
                 Services.Log.Info("net: guest PerformSave suppressed (attempt " + GuestSaveAttempts + ")");
                 return false;
@@ -437,7 +470,9 @@ namespace OriCoop
         {
             static bool Prefix()
             {
-                if (!Services.Net.Enabled || Services.Net.IsHost) return true;
+                if (!Services.Net.Enabled) return true;
+                if (PromotedSaveBlocked("SaveToFile")) return false;
+                if (Services.Net.IsHost) return true;
                 GuestFileAttempts++;
                 Services.Log.Info("net: guest SaveToFile suppressed (attempt " + GuestFileAttempts + ")");
                 return false;
@@ -466,7 +501,9 @@ namespace OriCoop
             }
             static bool Prefix()
             {
-                if (!Services.Net.Enabled || Services.Net.IsHost) return true;
+                if (!Services.Net.Enabled) return true;
+                if (PromotedSaveBlocked("save backup")) return false;
+                if (Services.Net.IsHost) return true;
                 GuestBackupAttempts++;
                 Services.Log.Info("net: guest save backup suppressed (attempt " + GuestBackupAttempts + ")");
                 return false;

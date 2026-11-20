@@ -280,6 +280,7 @@ namespace OriCoop
             "saves.waiting_choice", "两份联机存档不同，等待主机选择…", "Co-op saves differ: waiting for the host to choose...",
             "saves.host_cancelled", "主机取消了联机，你的存档未改动", "Host cancelled online play: your save is unchanged",
             "saves.no_slot", "没有空存档位：联机进度不会保存在本机", "No empty save slot: co-op progress is not kept on this PC",
+            "saves.host_no_slot", "你现在是主机，但没有空存档位：联机进度不会保存在本机", "You are now the host, but no save slot is free: co-op progress is not saved on this PC",
             "saves.new_game", "新游戏", "New game",
             "saves.saved_slot", "联机进度保存在存档 {0}（与 {1}）", "Co-op progress saved to slot {0} (with {1})",
             "saves.diverged", "联机存档出现分歧", "Your co-op saves have diverged",

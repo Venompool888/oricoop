@@ -39,7 +39,12 @@ namespace OriCoop
             if (!NetPlay.Enabled) yield break;
             // T-111: after P1 left a server-mode room (3P host-leave check) the save lineage after a host handover is a
             // separate question (follow-up in T-111); the remaining seats skip phase L there.
-            if (NetTestHarness.HostLeftInServerMode) { h.Note("phase L skipped: P1 left the server-mode room"); yield break; }
+            if (NetTestHarness.HostLeftInServerMode)
+            {
+                if (NetPlay.IsHost) { IEnumerator p = PromotedHostSave(h); while (p.MoveNext()) yield return p.Current; }
+                else h.Note("phase L skipped: P1 left the server-mode room");
+                yield break;
+            }
             h.Note("phase L co-op save lineage");
             // T-111: in server mode the arbiter moves to seat 2 when P1 leaves, but the save lineage stays P1's: a seat
             // that only became the arbiter checks its guest copy, not a host slot it never had.
@@ -63,6 +68,28 @@ namespace OriCoop
                 // lineage marker; d194dd8's version without the gate failed unmutated and was backed out in af0c29c).
                 if (LateGuest) CheckLateGuest(h);
             }
+        }
+
+        // T-126: seat 2 became the host when P1 left the server-mode room. A save now must land in its co-op copy, never in
+        // the slot it played before joining (its own single-player save), and must go out as a commit.
+        static IEnumerator PromotedHostSave(TestHarness h)
+        {
+            h.Note("phase L: promoted host save (T-126)");
+            int from = CoopSaves.PromotedFrom, to = SaveSlotsManager.CurrentSlotIndex;
+            h.Check(from >= 0 && !CoopSaves.SavesBlocked && to == CoopSaves.SessionSlot,
+                "L promoted host saves to its co-op copy slot " + CoopSaves.SessionSlot + " (playing " + to + ", before " + from + ", blocked " + CoopSaves.SavesBlocked + ")");
+            string fromHash = from >= 0 && File.Exists(Path(from)) ? CoopSaves.Hash(File.ReadAllBytes(Path(from))) : "";
+            int commits = CoopSaves.Commits;
+            float until = Time.realtimeSinceStartup + 15f;
+            while (!GameController.Instance.SaveGameController.CanPerformSave() && Time.realtimeSinceStartup < until) yield return null;
+            GameController.Instance.SaveGameController.PerformSave();
+            yield return Wait(1f);
+            if (from >= 0 && from != to)
+                h.Check((File.Exists(Path(from)) ? CoopSaves.Hash(File.ReadAllBytes(Path(from))) : "") == fromHash,
+                    "L promoted host's own slot " + from + " is untouched by the save");
+            byte[] bytes = File.Exists(Path(to)) ? File.ReadAllBytes(Path(to)) : null;
+            h.Check(bytes != null && CoopSaves.Commits == commits + 1 && CoopSaves.LastCommitHash == CoopSaves.Hash(bytes),
+                "L promoted host committed the co-op save it wrote to slot " + to + " (commits " + commits + " -> " + CoopSaves.Commits + ")");
         }
 
         // net-3p / net-4p: the last guest connects LateJoinSec after the others (run-nettest.ps1, ORICOOP_NET_CONNECT_AT).

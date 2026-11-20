@@ -69,7 +69,7 @@ namespace OriCoop
             s_reply = null; s_hostLink = null; s_hostSlot = -1;
             s_offerCoop = s_offerHostId = s_offerHostName = ""; s_guestMatch = -1;
             s_lastWrittenHash = null; s_noSlotToldOnce = s_savedToldOnce = false;
-            GuestJoiningEmpty = false; GuestPickedSlot = -1; SessionSlot = -1; NoSlotForCopy = false;
+            GuestJoiningEmpty = false; GuestPickedSlot = -1; SessionSlot = -1; NoSlotForCopy = false; SavesBlocked = false; PromotedFrom = -1;
             s_commitBytes = null; s_commitCoop = s_commitHostId = s_commitHostName = s_commitSaveId = null;
         }
 

@@ -16,6 +16,8 @@ namespace OriCoop.Saves
             m_guests.Remove(previous); m_guests[primary] = device;
         }
         public void Join(int seat) { m_guests[seat] = new GuestState(); }
+        // T-126: a seat already playing the co-op world when this player became the host (no checkpoint to send).
+        public void JoinReady(int seat) { GuestState g = new GuestState(); g.Sent = g.Ready = true; m_guests[seat] = g; }
         public void Leave(int seat) { m_guests.Remove(seat); }
         public void Clear() { m_guests.Clear(); }
         public void MarkSent(int seat) { m_guests[seat].Sent = true; }
