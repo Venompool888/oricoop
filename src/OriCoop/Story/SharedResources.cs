@@ -41,5 +41,27 @@ namespace OriCoop.Story
         }
         public void Remember(int p2Keys, int p2Maps, float p2Energy)
         { Initialized = true; keys = p2Keys; maps = p2Maps; energy = p2Energy; }
+
+        // T-134: every extra local player (offline P2-P4) shares the pool. After each sync all extras hold the same
+        // values (the baseline), so each extra's change since then is added to P1 in turn.
+        public SharedValues MergeAll(SharedValues p1, float maxEnergy, SharedValues[] extras)
+        {
+            if (!Initialized) return p1;
+            SharedValues result = p1;
+            foreach (SharedValues e in extras)
+            {
+                result.Keys = MergeKeys(result.Keys, e.Keys);
+                result.Maps = MergeMaps(result.Maps, e.Maps);
+                result.Energy = MergeEnergy(result.Energy, e.Energy, maxEnergy);
+            }
+            return result;
+        }
+
+        // The values every extra held after the last sync: a player who joins starts from these, so its first sync adds
+        // nothing (starting from P1's live values would count P1's own change since that sync twice).
+        public SharedValues Baseline
+        {
+            get { SharedValues v = new SharedValues(); v.Keys = keys; v.Maps = maps; v.Energy = energy; return v; }
+        }
     }
 }

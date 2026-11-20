@@ -54,7 +54,9 @@ namespace OriCoop
         static int[] s_baseline = new int[4];
         static float s_ignoreNavUntil, s_backHeld;
         static float s_savedTimeScale = 1f;
-        static bool s_savedLockInput;
+        static bool s_savedLockInput, s_ownsLockInput;
+        // Test-only mutation switch (T-132): online too, save LockInput at open and write it back at close.
+        static readonly bool s_staleLockMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_MENU_STALE_LOCK") == "1";
         static string s_message = "";
         static readonly bool[] s_connected = new bool[4];
         static readonly int[] s_buttons = new int[4];
@@ -139,7 +141,12 @@ namespace OriCoop
             s_savedTimeScale = Time.timeScale;
             s_changedTimeScale = !NetPlay.Enabled && !s_fromPause;
             if (s_changedTimeScale) Time.timeScale = 0f;
-            if (GameController.Instance != null) { s_savedLockInput = GameController.Instance.LockInput; GameController.Instance.LockInput = true; }
+            // Offline the game is frozen (time scale 0 or the pause menu), so nothing else touches LockInput while the panel
+            // is open: save it and write it back. Online the world keeps running and a story box may take or drop the lock
+            // meanwhile; writing back the value from opening time froze the player or freed them mid-dialog (T-132).
+            // Online the panel holds this player's Ori through SessionRules.LocalLocked and leaves LockInput alone.
+            s_ownsLockInput = !NetPlay.Enabled || s_staleLockMutation;
+            if (s_ownsLockInput && GameController.Instance != null) { s_savedLockInput = GameController.Instance.LockInput; GameController.Instance.LockInput = true; }
             PollPads(); PollPads();
             Plugin.Log.LogInfo("co-op menu opened (" + (page == PageModeSelect ? "mode select" : page == PageSetup ? "2-player setup" : "settings") + ")");
         }
@@ -150,7 +157,8 @@ namespace OriCoop
             IsOpen = false;
             s_waitFor = 0;
             if (s_changedTimeScale) Time.timeScale = s_savedTimeScale;
-            if (GameController.Instance != null) GameController.Instance.LockInput = s_savedLockInput;
+            if (s_ownsLockInput && GameController.Instance != null) GameController.Instance.LockInput = s_savedLockInput;
+            s_ownsLockInput = false;
             P2Input.StartLatched = false;
             KeyboardOnlyP1.HoldUntilReleased = true;
             KeyboardOnlyP1.Refresh();

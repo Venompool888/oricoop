@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using UnityEngine;
 using OriCoop.Rooms;
+using OriCoop.Ui;
 
 namespace OriCoop
 {
@@ -129,13 +130,13 @@ namespace OriCoop
                             {
                                 string id = room.Id;
                                 string desc = RoomDescription(p, room, zh);
-                                RoomRow(rows, RF("rooms.save_count", zh, room.Name, room.Saves.Count), desc,
+                                RoomRow(rows, RF("rooms.save_count", zh, MarkupText.Plain(room.Name), room.Saves.Count), desc,
                                     room.Server == p.Server && p.Online ? (Action)delegate { p.OpenRoom(id); } : null);
                                 if (room.Server != p.Server || !p.Online)
                                     foreach (RoomBackupSave save in room.Saves)
                                     {
                                         string sid = save.Id;
-                                        RoomRow(rows, RF("rooms.copy_named", zh, save.Name), RoomsPanel.FormatSummary(save.Summary, zh),
+                                        RoomRow(rows, RF("rooms.copy_named", zh, MarkupText.Plain(save.Name)), RoomsPanel.FormatSummary(save.Summary, zh),
                                             delegate { p.CopyLocal(id, sid); });
                                     }
                             }
@@ -145,22 +146,22 @@ namespace OriCoop
                         RoomWire.Fields info = p.Info;
                         string members = "";
                         for (int i = 0; i < info.GetLong("m.count", 0); i++)
-                            members += RF("rooms.member", zh, info.GetLong("m." + i + ".seat", 0), info.GetString("m." + i + ".nick")) + "\n";
-                        RoomRow(rows, info.GetString("name") + " - " + info.GetString("code"),
+                            members += RF("rooms.member", zh, info.GetLong("m." + i + ".seat", 0), MarkupText.Plain(info.GetString("m." + i + ".nick"))) + "\n";
+                        RoomRow(rows, MarkupText.Plain(info.GetString("name")) + " - " + info.GetString("code"),
                             RF("rooms.share", zh, info.GetString("code")) + "\n" + members
                             + RF("rooms.last_played", zh, RoomsPanel.TimeText(info.GetLong("played", 0))), null);
                         for (int i = 0; i < info.GetLong("save.count", 0); i++)
                         {
                             string prefix = "save." + i + ".";
                             string save = info.GetString(prefix + "id");
-                            string name = info.GetString(prefix + "name");
+                            string name = MarkupText.Plain(info.GetString(prefix + "name"));
                             string desc = RoomsPanel.FormatSummary(info.GetString(prefix + "summary"), zh);
                             for (int seat = 1; seat <= 2; seat++)
                                 desc += "\n" + RF("rooms.seat_seconds", zh, seat, info.GetLong(prefix + "secs.seat." + seat, 0));
                             desc += "\n" + RF("rooms.saved", zh, info.GetLong(prefix + "secs.both", 0),
-                                p.MemberName(info.GetString(prefix + "by")), RoomsPanel.TimeText(info.GetLong(prefix + "at", 0)));
+                                MarkupText.Plain(p.MemberName(info.GetString(prefix + "by"))), RoomsPanel.TimeText(info.GetLong(prefix + "at", 0)));
                             string holder = info.GetString(prefix + "holder");
-                            if (holder.Length > 0) desc += "\n" + RF("rooms.playing", zh, p.MemberName(holder));
+                            if (holder.Length > 0) desc += "\n" + RF("rooms.playing", zh, MarkupText.Plain(p.MemberName(holder)));
                             RoomRow(rows, L10n.T("rooms.continue", zh) + " " + RF("rooms.save_version", zh, name, info.GetString(prefix + "version")),
                                 desc, delegate { p.Enter(save); });
                             RoomRow(rows, RF("rooms.copy_named", zh, name), desc, delegate { p.CopySave(save); });
@@ -168,7 +169,7 @@ namespace OriCoop
                     }
                     else if (s_page == PageRoomCreate)
                     {
-                        RoomRow(rows, L10n.T("rooms.name", zh) + ": " + p.AutoName, L10n.T("rooms.auto_name.desc", zh), null);
+                        RoomRow(rows, L10n.T("rooms.name", zh) + ": " + MarkupText.Plain(p.AutoName), L10n.T("rooms.auto_name.desc", zh), null);
                         RoomDialRow(rows, false, zh);
                         for (int i = 0; i < SaveSlotsManager.SaveSlotCount; i++)
                         {
@@ -209,7 +210,7 @@ namespace OriCoop
         static string RoomDescription(RoomsPanel p, RoomBackupInfo room, bool zh)
         {
             string desc = "";
-            foreach (RoomBackupMember member in room.Members) desc += RF("rooms.member", zh, member.Seat, member.Nick) + "\n";
+            foreach (RoomBackupMember member in room.Members) desc += RF("rooms.member", zh, member.Seat, MarkupText.Plain(member.Nick)) + "\n";
             RoomWire.Fields detail;
             if (p.Refreshed.TryGetValue(room.Id, out detail))
             {
@@ -218,7 +219,7 @@ namespace OriCoop
                 {
                     string holder = detail.GetString("save." + i + ".holder");
                     foreach (RoomBackupMember member in room.Members)
-                        if (holder.Length > 0 && member.Steam == holder) desc += "\n" + RF("rooms.playing", zh, member.Nick);
+                        if (holder.Length > 0 && member.Steam == holder) desc += "\n" + RF("rooms.playing", zh, MarkupText.Plain(member.Nick));
                 }
             }
             return desc;

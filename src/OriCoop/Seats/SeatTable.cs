@@ -53,5 +53,17 @@ namespace OriCoop.Seats
         public void KeepDevice(int device)
         { for (int i = 1; i <= 4; i++) if (owners[i] != device) owners[i] = 0; }
         public void Clear() { Array.Clear(owners, 0, owners.Length); }
+
+        // T-133: which device primaries changed number since `before` (a copy of an earlier table, see CopyOwners).
+        // Add relabels every seat of the adding device, so its old primary seat now belongs to its new primary.
+        // renamed[oldPrimary] = newPrimary; 0 = unchanged (or the device left: that is PlayerLeft, not a rename).
+        public int[] Renames(int[] before)
+        {
+            int[] renamed = new int[5];
+            for (int seat = 1; seat <= 4; seat++)
+                if (before[seat] == seat && owners[seat] != 0 && owners[seat] != seat) renamed[seat] = owners[seat];
+            return renamed;
+        }
+        public void CopyOwners(int[] into) { Array.Copy(owners, into, 5); }
     }
 }

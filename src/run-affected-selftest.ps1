@@ -8,10 +8,14 @@ $fail = 0
 function Expect([bool]$ok, [string]$what) { if ($ok) { 'PASS ' + $what } else { $script:fail++; 'FAIL ' + $what } }
 
 # Each fake suite writes "<script> <args> phases=<ORICOOP_PHASES>" to its own file in calls\; its behaviour comes from FAKE_* variables.
+# T-160: the name holds EVERY argument (undeclared ones such as -Clients 3 or -LocalPlayers land in $args), so two suites
+# never share a call counter; the planted net behaviours apply only to the plain 'net' suite ($plain).
 $common = @'
 param([switch]$Relay, [switch]$GuestNewGame, [string]$Transport = '')
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
-$name = [IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Path) + $(if ($Relay) { ' -Relay' } elseif ($GuestNewGame) { ' -GuestNewGame' } elseif ($Transport) { ' -Transport ' + $Transport } else { '' })
+$extra = @($args) -join ' '
+$name = [IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Path) + $(if ($Relay) { ' -Relay' } elseif ($GuestNewGame) { ' -GuestNewGame' } elseif ($Transport) { ' -Transport ' + $Transport } else { '' }) + $(if ($extra) { ' ' + $extra } else { '' })
+$plain = -not $Relay -and -not $GuestNewGame -and -not $Transport -and -not $extra
 $calls = Join-Path $dir 'calls'; New-Item -ItemType Directory -Force $calls | Out-Null   # one file per call: suites run in parallel
 $n = @(Get-ChildItem $calls -Filter *.txt | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_ -like ($name + ' phases=*') }).Count + 1
 Set-Content (Join-Path $calls ([guid]::NewGuid().ToString() + '.txt')) ($name + ' phases=' + $env:ORICOOP_PHASES)
@@ -27,11 +31,11 @@ Set-Content (Join-Path $fake 'run-titlejoin.ps1') ($common + [Environment]::NewL
 '@)
 Set-Content (Join-Path $fake 'run-nettest.ps1') ($common + [Environment]::NewLine + @'
 '[   0.10] net role=host'
-if (-not $Relay -and -not $GuestNewGame -and $env:FAKE_NET -eq 'wo') {
+if ($plain -and $env:FAKE_NET -eq 'wo') {
     '[   0.20] === phase INTRO'; '[   1.00] PASS INTRO gameplay fixture ready'; '[   2.00] === phase WO'; '[   3.00] FAIL WO1 lever state matches'
     '[   4.00] === phase END'; '[   5.00] PASS G puppet removed within 7 s'; '[   6.00] RESULT FAIL'; 'NETTEST FAIL'; exit 1
 }
-if (-not $Relay -and -not $GuestNewGame -and $env:FAKE_NET -eq 'startup' -and $n -eq 1) {
+if ($plain -and $env:FAKE_NET -eq 'startup' -and $n -eq 1) {
     '[   0.20] FAIL net puppet appears within 40 s'; '[   6.00] RESULT FAIL'; 'NETTEST FAIL'; exit 1
 }
 '[   0.20] === phase MOVE'; '[   1.00] PASS C still Connected'; '[   2.00] === phase END'; '[   6.00] RESULT PASS 2/2'; 'NETTEST PASS'
@@ -50,6 +54,13 @@ function Invoke-Fake([hashtable]$vars, [string[]]$files) {
 }
 # -File passes a comma list as one string; run-affected splits nothing itself, so give the files as one argument each.
 $files = 'src/run-test.ps1,src/run-titlejoin.ps1,src/OriCoop/WorldObjSync.cs'
+
+# 0. T-160: a fake call is named by all its arguments, so net-3p (-Clients 3) is never counted as the plain net suite.
+Remove-Item (Join-Path $fake 'calls') -Recurse -Force -ErrorAction SilentlyContinue
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $fake 'run-nettest.ps1') -Clients 3 | Out-Null
+& powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $fake 'run-nettest.ps1') | Out-Null
+$c0 = @(Get-ChildItem (Join-Path $fake 'calls') -Filter *.txt | ForEach-Object { Get-Content $_.FullName })
+Expect ($c0 -contains 'run-nettest -Clients 3 phases=' -and $c0 -contains 'run-nettest phases=') ('fake suites are named by all their arguments (got: ' + ($c0 -join ' | ') + ')')
 
 # 1. local flaky, net fails twice in WO, net-relay capped, titlejoin passes.
 $r = Invoke-Fake @{ FAKE_LOCAL = 'flaky'; FAKE_NET = 'wo' } $files

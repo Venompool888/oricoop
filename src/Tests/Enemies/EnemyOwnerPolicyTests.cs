@@ -18,13 +18,16 @@ static class EnemyOwnerPolicyTests
         public readonly Arbiter Arbiter = new Arbiter("enemies", new ArbiterOptions(), 0);
         public readonly AuthorityClient[] Clients = new AuthorityClient[3];
         public readonly EnemyLeasePolicy[] Policies = new EnemyLeasePolicy[3];
+        public readonly int[] DropUnreliable = new int[3];   // T-146: lose the next N unreliable sends of a seat
         public LeaseRig()
         {
             for (int seat = 1; seat <= 2; seat++)
             {
                 int localSeat = seat;
                 Clients[seat] = new AuthorityClient(AuthorityMode.Server, delegate { return localSeat; },
-                    delegate(byte[] bytes, bool reliable) { Deliver(Arbiter.Handle(localSeat, CsWire.Decode(bytes), Now)); }, false);
+                    delegate(byte[] bytes, bool reliable) {
+                        if (!reliable && DropUnreliable[localSeat] > 0) { DropUnreliable[localSeat]--; return; }
+                        Deliver(Arbiter.Handle(localSeat, CsWire.Decode(bytes), Now)); }, false);
                 Policies[seat] = new EnemyLeasePolicy(delegate { return Clients[localSeat]; });
                 Deliver(Arbiter.JoinAt(seat, (ulong)seat, "seat" + seat, Now));
             }
@@ -203,6 +206,51 @@ static class EnemyOwnerPolicyTests
             rig.Now = 250; rig.Policies[1].RequestOwnership("actor", 10, false);
             rig.Now = 1000; rig.Policies[2].RequestOwnership("actor", 5, false);
             Check(rig.Clients[2].OwnerOf("e:actor") == 2 && rig.Clients[2].EpochOf("e:actor") == 2, "stalled owner held lease forever");
+        });
+        // T-146: the near seat (score 1) owns; the far seat (score 20) asks every poll. Real arbiter and client protocol.
+        run("a lost heartbeat does not hand the enemy to the far seat (T-146)", delegate {
+            LeaseRig rig = new LeaseRig();
+            rig.Policies[1].RequestOwnership("actor", 1, false);
+            for (int tick = 1; tick <= 30; tick++)
+            {
+                rig.Now = tick * 267;
+                if (tick % 7 == 0) rig.DropUnreliable[1] = 1;      // this poll's heartbeat is lost
+                rig.Policies[2].RequestOwnership("actor", 20, false);
+                rig.Policies[1].RequestOwnership("actor", 1, false);
+                Check(rig.Clients[2].OwnerOf("e:actor") == 1, "far seat took the enemy after a lost heartbeat at " + rig.Now + "ms");
+            }
+        });
+        run("a 400 ms hitch of the near owner keeps the enemy (T-146)", delegate {
+            LeaseRig rig = new LeaseRig();
+            rig.Policies[1].RequestOwnership("actor", 1, false);
+            rig.Now = 267; rig.Policies[1].RequestOwnership("actor", 1, false);
+            rig.Now = 534; rig.Policies[1].RequestOwnership("actor", 1, false);
+            rig.Now = 934; rig.Policies[2].RequestOwnership("actor", 20, false);   // owner silent for 400 ms
+            Check(rig.Clients[2].OwnerOf("e:actor") == 1, "hitch handed the enemy to the far seat");
+            rig.Policies[1].RequestOwnership("actor", 1, false);
+            Check(rig.Clients[1].OwnerOf("e:actor") == 1 && rig.Clients[1].EpochOf("e:actor") == 1, "owner churned");
+        });
+        run("a stalled owner still hands over, even to a worse score (T-146)", delegate {
+            LeaseRig rig = new LeaseRig();
+            rig.Policies[1].RequestOwnership("actor", 1, false);
+            rig.Now = 267; rig.Policies[1].RequestOwnership("actor", 1, false);
+            rig.Now = 1500; rig.Policies[2].RequestOwnership("actor", 20, false);
+            Check(rig.Clients[2].OwnerOf("e:actor") == 1, "far seat took over before the stall window");
+            rig.Now = 2400; rig.Policies[2].RequestOwnership("actor", 20, false);
+            Check(rig.Clients[2].OwnerOf("e:actor") == 2, "stalled owner kept the enemy forever");
+        });
+        run("new owner's first heartbeat counts across epochs, no bounce back (T-146)", delegate {
+            LeaseRig rig = new LeaseRig();
+            rig.Policies[1].RequestOwnership("actor", 10, false);
+            for (int tick = 1; tick <= 8; tick++) { rig.Now = tick * 250; rig.Policies[1].RequestOwnership("actor", 10, false); }
+            rig.Now = 2100; rig.Policies[2].RequestOwnership("actor", 5, false);
+            rig.Policies[1].Release("actor");
+            Check(rig.Clients[2].OwnerOf("e:actor") == 2, "release handover");
+            long dropped = rig.Arbiter.DroppedStates;
+            rig.Now = 2350; rig.Policies[2].RequestOwnership("actor", 5, false);      // first heartbeat, version 1
+            Check(rig.Arbiter.DroppedStates == dropped, "new owner's first heartbeat dropped as stale");
+            rig.Now = 2700; rig.Policies[1].RequestOwnership("actor", 10, false);
+            Check(rig.Clients[1].OwnerOf("e:actor") == 2, "old owner took the enemy back");
         });
         run("default owner policy delegates unchanged host decision", delegate {
             EnemyAuthority.Policy = null;

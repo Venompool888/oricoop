@@ -1,4 +1,3 @@
-using System.Reflection;
 using HarmonyLib;
 
 namespace OriCoop
@@ -10,12 +9,12 @@ namespace OriCoop
     // Exception: a guest's checkpoint transfer (SaveSync) restarts the game on purpose to load the host's save.
     static class TitleReturn
     {
-        static readonly FieldInfo s_transferField = AccessTools.Field(typeof(SaveSync), "s_loading");
         public static int SessionsEnded;
         // Test-only mutation switch: proves the "title" checks fail without this fix.
         static readonly bool s_mutate = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_KEEP_NET") == "1";
 
-        static bool TransferRunning { get { return s_transferField != null && (bool)s_transferField.GetValue(null); } }
+        // T-157: the same rule as RoomGame (SaveSync.RestartingForLoad), so a quit after a failed load ends the session.
+        static bool TransferRunning { get { return SaveSync.RestartingForLoad; } }
 
         [HarmonyPatch(typeof(GameController), "RestartGame")]
         static class RestartPatch

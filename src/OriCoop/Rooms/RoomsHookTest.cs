@@ -277,10 +277,12 @@ namespace OriCoop.Rooms
                 yield return Press("roomsmenu", "rooms.create");
                 if (done) yield break;
                 string name = panel.AutoName;
-                string prefix = L10n.F("rooms.default_name", Environment.GetEnvironmentVariable("ORICOOP_TEST_NICK")) + " #";
+                string prefix = L10n.F("rooms.default_name", Environment.GetEnvironmentVariable("ORICOOP_TEST_NICK")) + " ";
                 int number;
                 if (!Check(name.StartsWith(prefix) && int.TryParse(name.Substring(prefix.Length), out number) && number >= 1,
-                    "no text entry: generated room name matches nick's room #N")) yield break;
+                    "no text entry: generated room name matches nick's room N (" + name + ")")) yield break;
+                // T-136: # * $ @ ^ [ ] < > are MessageBox markup; a generated name must not contain any of them.
+                if (!Check(!OriCoop.Ui.MarkupText.HasMarkup(name), "generated room name has no MessageBox markup (" + name + ")")) yield break;
                 Publish("name", name);
                 yield return Dial("roomcreate", "rooms.password", "1234");
                 yield return Press("roomcreate", "rooms.create_slot", L10n.F("rooms.create_slot", 1, ""));
@@ -312,6 +314,10 @@ namespace OriCoop.Rooms
                 Publish("code", info.GetString("code"));
             }
             else if (!Check(room == Shared().GetString("room"), "joined shared room id")) yield break;
+            // T-136: the native room page shows names without markup (a # would turn the rest of the row yellow).
+            string[] viewRows = NativeModeMenu.TestRoomRows(); string marked = null;
+            foreach (string row in viewRows) if (OriCoop.Ui.MarkupText.HasMarkup(row)) { marked = row; break; }
+            if (!Check(viewRows.Length > 0 && marked == null, "room page rows carry no MessageBox markup (" + (marked ?? viewRows.Length + " rows") + ")")) yield break;
             yield return Press("roomview", "rooms.continue");
             if (done) yield break;
             if (role == "host") yield return Host();

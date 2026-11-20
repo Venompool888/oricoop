@@ -25,6 +25,15 @@ namespace OriCoop
 
         public static bool Zh { get { return LanguageCode != null && LanguageCode() == "zh"; } }
 
+        // A (zh, en) pair where callers may pass text that is already in the player's language and "" for the other
+        // (T-135): pick by language, fall back to the other side when the picked one is empty; "" only if both are.
+        public static string Pick(string zh, string en, bool zhFirst)
+        {
+            string first = zhFirst ? zh : en, second = zhFirst ? en : zh;
+            return !string.IsNullOrEmpty(first) ? first : second ?? "";
+        }
+        public static string Pick(string zh, string en) { return Pick(zh, en, Zh); }
+
         public static string T(string key) { return T(key, Zh); }
 
         public static string T(string key, bool zh)
@@ -192,7 +201,7 @@ namespace OriCoop
             "rooms.playing", "{0} 正在玩", "{0} is playing",
             "rooms.copy_named", "复制到单人存档：{0}", "Copy to single player: {0}",
             "rooms.default_name", "{0} 的房间", "{0}'s room",
-            "rooms.auto_name", "{0} 的房间 #{1}", "{0}'s room #{1}",
+            "rooms.auto_name", "{0} 的房间 {1}", "{0}'s room {1}",   // no # (MessageBox markup, T-136)
             "rooms.auto_name.desc", "房间名自动生成", "The room name is generated automatically.",
             "rooms.password_dial", "4-8 位数字密码\n上下转动 · 左右移动 · 数字键输入 · X 删除 · Y 粘贴\nA / Enter 完成 · B / Esc 取消", "4-8 digit password\nUp/Down: turn - Left/Right: move - digits: type - X: delete - Y: paste\nA / Enter: done - B / Esc: cancel",
             "rooms.share", "{0} — 把房间码和密码发给伙伴", "{0} - Send the code and password to your partner",

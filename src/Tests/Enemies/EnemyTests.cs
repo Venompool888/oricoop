@@ -30,6 +30,7 @@ static class EnemyTests
         public bool Connected { get { return true; } }
         public bool IsHost { get { return Seat == 1; } }
         public int Sender { get; private set; }
+        public int HostSeat { get { return m_hostSeat; } set { m_hostSeat = value; } } int m_hostSeat = 1;
         public void On(byte type, Action<BinaryReader> handler) { handlers[type] = handler; }
         public void Send(byte type, bool reliable, Action<BinaryWriter> body)
         {
@@ -113,6 +114,12 @@ static class EnemyTests
         Run("pending target leave cancels transfer", delegate { EnemyAuthority a = new EnemyAuthority(); a.Known = true; a.OwnerSeat = 2; a.BeginDecision(3, 1); Check(a.SeatLeft(3, true, delegate { return 7; }) == 2 && a.OwnerSeat == 2 && a.Epoch == 2 && !a.Frozen && !a.PendingTakeover, "target leave"); });
         Run("snapshot epoch and sender", delegate { EnemyAuthority a = new EnemyAuthority(); a.Known = true; a.OwnerSeat = 2; a.Epoch = 5; Check(a.AcceptOwnerMessage(1, 5, 2, true) && !a.AcceptOwnerMessage(1, 4, 2, true) && !a.AcceptOwnerMessage(1, 5, 3, true), "snapshot validation"); a.Frozen = true; Check(!a.AcceptOwnerMessage(1, 5, 2, true), "frozen snapshot"); });
         Run("tick wrap and generations", delegate { Check(EnemyOwnership.AcceptState(1, uint.MaxValue - 1, false, 1, 1, false, false), "tick wrap"); Check(!EnemyOwnership.AcceptState(1, 10, true, 1, 11, false, false), "resurrection"); Check(EnemyOwnership.AcceptState(1, 10, true, 2, 1, false, false), "new generation"); Check(!EnemyOwnership.AcceptState(2, 10, false, 1, 11, false, true), "old generation"); });
+        Run("hit from the previous epoch reaching the new owner is queued, not dropped (T-151)", delegate {
+            Check(EnemyOwnership.HitDecision(3, 3, false, false, true, 4, 5, true) == 1, "host that just took over dropped the hit");
+            Check(EnemyOwnership.HitDecision(3, 3, false, false, true, 4, 5, false) == 1, "guest that just took over dropped the hit");
+            Check(EnemyOwnership.HitDecision(3, 3, true, false, true, 4, 5, true) == 0, "already applied hit queued again");
+            Check(EnemyOwnership.HitDecision(3, 3, false, false, true, 6, 5, true) == 0, "future epoch accepted");
+        });
         Run("hit routing across epochs", delegate { Check(EnemyOwnership.HitDecision(2, 2, false, false, true, 4, 4, true) == 2, "owner apply"); Check(EnemyOwnership.HitDecision(2, 2, false, true, false, 4, 5, true) == 1, "frozen queue"); Check(EnemyOwnership.HitDecision(2, 2, false, false, false, 4, 5, true) == 1, "stale queue"); Check(EnemyOwnership.HitDecision(2, 2, false, false, false, 5, 5, true) == 3, "host forward"); Check(EnemyOwnership.HitDecision(2, 2, false, false, false, 6, 5, true) == 0, "future drop"); Check(EnemyOwnership.HitDecision(2, 1, false, false, true, 5, 5, true) == 0 && EnemyOwnership.HitDecision(2, 2, true, false, true, 5, 5, true) == 0, "generation or duplicate"); });
         Run("life state ordering", delegate { Check(EnemyOwnership.AcceptLife(2, 10, false, false, 2, 10, false), "equal tick allowed"); Check(!EnemyOwnership.AcceptLife(2, 10, false, false, 2, 9, false), "reordered"); Check(EnemyOwnership.AcceptLife(2, 10, false, true, 2, 9, false), "new owner ticks"); Check(!EnemyOwnership.AcceptLife(2, 10, true, true, 2, 11, false), "resurrection"); Check(EnemyOwnership.AcceptLife(2, 10, true, false, 3, 1, false), "respawn"); });
         Run("fake bus remote handoff", delegate {
@@ -214,6 +221,50 @@ static class EnemyTests
             Check(OriCoop.Authority.CoPushRule.Multiplier(0, 1, 0.05f) == 1f, "only the partner pushes");
             Check(OriCoop.Authority.CoPushRule.Multiplier(1, 1, 0.31f) == 1f, "partner's report is stale");
             Check(OriCoop.Authority.CoPushRule.Multiplier(1, 1, -1f) == 1f, "no report yet");
+        });
+        // T-133: a guest's primary seat renumbered (3 -> 2) keeps simulating its enemies on every PC.
+        Run("renamed device keeps its enemies", delegate {
+            EnemyAuthority a = new EnemyAuthority();
+            a.Known = true; a.OwnerSeat = 3; a.Epoch = 4; a.Presence(1, true); a.Presence(3, true);
+            int[] renamed = new int[5]; renamed[3] = 2;
+            a.RenameSeats(renamed);
+            Check(a.OwnerSeat == 2 && a.Mine(2) && !a.Mine(3), "the renumbered guest still owns it under its new seat");
+            Check(a.AcceptOwnerMessage(1, 4, 2, true) && !a.AcceptOwnerMessage(1, 4, 3, true), "the host takes its snapshots from the new seat only");
+            Check(a.LoadedSeats.Contains(2) && !a.LoadedSeats.Contains(3) && a.LoadedSeats.Contains(1), "presence moves with it (seat 3 is now its extra)");
+        });
+        Run("seat renames apply at once and leave others alone", delegate {
+            EnemyAuthority a = new EnemyAuthority();
+            a.Known = true; a.OwnerSeat = 4; a.PendingOwner = 3; a.Presence(3, true); a.Presence(4, true);
+            int[] renamed = new int[5]; renamed[4] = 3; renamed[3] = 2;
+            a.RenameSeats(renamed);
+            Check(a.OwnerSeat == 3 && a.PendingOwner == 2, "4->3 and 3->2 together, not chained into 2");
+            Check(a.LoadedSeats.Count == 2 && a.LoadedSeats.Contains(3) && a.LoadedSeats.Contains(2), "presence renamed once");
+            EnemyAuthority b = new EnemyAuthority(); b.Known = true; b.OwnerSeat = 1; b.RenameSeats(renamed);
+            Check(b.OwnerSeat == 1, "an enemy of another device is unchanged");
+        });
+        // T-114: two Oris on one PC on the same stone report one direction for the PC.
+        Run("co-push: one PC's Oris report one direction", delegate {
+            float now = 10f;
+            int[] dir = new int[5]; float[] at = { -10f, -10f, -10f, -10f, -10f };
+            Check(OriCoop.Authority.CoPushRule.DeviceDir(dir, at, now, 0.15f) == 0, "nobody on the stone");
+            dir[2] = 1; at[2] = now; dir[4] = 0; at[4] = now;
+            Check(OriCoop.Authority.CoPushRule.DeviceDir(dir, at, now, 0.15f) == 1, "a holder does not cancel the pusher");
+            dir[4] = 1;
+            Check(OriCoop.Authority.CoPushRule.DeviceDir(dir, at, now, 0.15f) == 1, "both push right");
+            dir[4] = -1;
+            Check(OriCoop.Authority.CoPushRule.DeviceDir(dir, at, now, 0.15f) == 0, "pushing against each other");
+            at[4] = now - 0.2f;
+            Check(OriCoop.Authority.CoPushRule.DeviceDir(dir, at, now, 0.15f) == 1, "the Ori that let go no longer counts");
+            at[2] = now - 0.2f;
+            Check(OriCoop.Authority.CoPushRule.DeviceDir(dir, at, now, 0.15f) == 0, "everyone let go");
+        });
+        Run("co-push with several remote pushers (T-115)", delegate {
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { 1, -1 }, new[] { 0.05f, 0.05f }) == 1.5f, "a third pushing the other way keeps the boost");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { -1, 1 }, new[] { 0.05f, 0.05f }) == 1.5f, "order of reports does not matter");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { -1, 0 }, new[] { 0.05f, 0.05f }) == 1f, "nobody pushes our way");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(1, new[] { 1 }, new[] { 0.5f }) == 1f, "the only same-way report is stale");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(0, new[] { 1, 1 }, new[] { 0.05f, 0.05f }) == 1f, "we do not push");
+            Check(OriCoop.Authority.CoPushRule.Multiplier(-1, new int[0], new float[0]) == 1f, "no remote reports");
         });
         Run("first snapshot from new owner", delegate { Check(!EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, false) && EnemyOwnership.AcceptState(1, 1000, false, 1, 100, false, true), "peer tick clocks"); });
     }

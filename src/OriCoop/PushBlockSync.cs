@@ -24,8 +24,13 @@ namespace OriCoop
             public int OwnerSeat;
             public float InteractionUntil = -10f, GrabbedAt = -10f;
             // T-049 two-pusher speed-up: our push direction (-1/0/+1) and the partner's latest report.
-            public int LocalPushDir, RemotePushDir, SentPushDir;
-            public float LocalPushAt = -10f, RemotePushAt = -10f, PushSentAt = -10f, BaseMultiplier = -1f;
+            public int LocalPushDir, SentPushDir;
+            public readonly int[] SeatPushDir = new int[5];                     // T-114: each local Ori's own push
+            public readonly float[] SeatPushAt = { -10f, -10f, -10f, -10f, -10f };
+            public float LocalPushAt = -10f, PushSentAt = -10f, BaseMultiplier = -1f;
+            // T-115: one report per remote seat (3-4 players), not a single slot every sender overwrites.
+            public readonly Dictionary<int, int> RemotePushDirs = new Dictionary<int, int>();
+            public readonly Dictionary<int, float> RemotePushAts = new Dictionary<int, float>();
             public bool HasRemote;
             public uint StateEpoch, StateVersion;
             public Vector3 RemotePos, RemoteVel;
@@ -78,7 +83,7 @@ namespace OriCoop
 
         public static bool Online { get { return NetPlay.Enabled && NetPlay.Connected && P2Context.P1 != null; } }
 
-        static void EnsureRegistered()
+        internal static void EnsureRegistered()
         {
             if (s_registered) return;
             s_registered = true;
@@ -86,6 +91,8 @@ namespace OriCoop
             NetPlay.SessionStarted += delegate { ResetOwnership("connected"); };
             NetPlay.SessionEnded += delegate { ResetOwnership("disconnected"); };
             NetPlay.On(MsgCoPush, OnCoPush);
+            // T-115: guests only talk to the P2P host: it must relay a guest's push to the other guests.
+            if (!s_mutateNoForward) NetPlay.Forward(MsgCoPush);
             s_layerDefault = LayerMask.NameToLayer("Default");
             s_layerIgnore = LayerMask.NameToLayer("pushPullBlock");
         }
@@ -347,7 +354,8 @@ namespace OriCoop
             float now = Time.realtimeSinceStartup;
             if (what == "grab") st.GrabbedAt = now;
             if (Moving(pm) || now - st.GrabbedAt < 0.5f) st.InteractionUntil = now + 0.15f;
-            NoteOwnPush(st, PushDir(pm), now);
+            SeinCharacter me = LocalOri(pm);
+            NoteOwnPush(st, me == null ? 0 : Players.SeatOf(me), PushDir(pm), now);
             Simulates(st);
             LeaseStep(b, st);
             Rigidbody rb = s_body(b);
@@ -364,18 +372,38 @@ namespace OriCoop
 
         // T-049: which way our Ori moves the stone: Push goes the way it faces, Pull the other way; 0 = only holding.
         public const byte MsgCoPush = 89;   // docs/net-msg-ids.md
-        public static int CoPushSent, CoPushReceived, CoPushBoosted;
-        static int PushDir(PlatformMovement pm)
+        public static int CoPushSent, CoPushReceived, CoPushBoosted, CoPushHeard;
+        // T-115 mutation: the P2P host does not relay 89 / 80 (the 3P test must fail).
+        internal static readonly bool s_mutateNoForward = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_FX_FORWARD") == "1";
+        static readonly List<int> s_pushDirs = new List<int>();
+        static readonly List<float> s_pushAges = new List<float>();
+        // T-115 net test: a push report for a stone nobody has (id 0); receivers count it before the id lookup.
+        internal static void TestSendCoPush() { NetPlay.Send(MsgCoPush, true, w => { w.Write(0); w.Write((sbyte)1); }); }
+        internal static int PushDir(PlatformMovement pm)
         {
-            SeinCharacter s = P2Context.P1;
-            if (s == null || s.PlatformBehaviour.PlatformMovement != pm || s.Abilities.GrabBlock == null || !s.Abilities.GrabBlock.IsGrabbing) return 0;
+            SeinCharacter s = LocalOri(pm);
+            if (s == null || s.Abilities.GrabBlock == null || !s.Abilities.GrabBlock.IsGrabbing) return 0;
             SeinGrabBlock.State state = s.Abilities.GrabBlock.CurrentState;
             int facing = s.FaceLeft ? -1 : 1;
             return state == SeinGrabBlock.State.Push ? facing : state == SeinGrabBlock.State.Pull ? -facing : 0;
         }
 
-        static void NoteOwnPush(St st, int dir, float now)
+        // T-114: the Ori on this PC (P1 or an extra local player) that this movement component belongs to; null otherwise.
+        static SeinCharacter LocalOri(PlatformMovement pm)
         {
+            if (pm == null) return null;
+            SeinCharacter p1 = P2Context.P1;
+            if (p1 != null && p1.PlatformBehaviour.PlatformMovement == pm) return p1;
+            foreach (Puppet p in Players.Remotes)
+                if (p.IsLocal && p.Sein != null && p.Sein.PlatformBehaviour.PlatformMovement == pm) return p.Sein;
+            return null;
+        }
+
+        // seat: whose call this is; this PC reports one direction for all its Oris on the stone (CoPushRule.DeviceDir).
+        internal static void NoteOwnPush(St st, int seat, int dir, float now)
+        {
+            if (seat >= 1 && seat < st.SeatPushDir.Length) { st.SeatPushDir[seat] = dir; st.SeatPushAt[seat] = now; }
+            dir = CoPushRule.DeviceDir(st.SeatPushDir, st.SeatPushAt, now, 0.15f);
             st.LocalPushDir = dir; st.LocalPushAt = now;
             if (dir == 0 && st.SentPushDir == 0) return;
             if (dir == st.SentPushDir && now - st.PushSentAt < 0.1f) return;
@@ -387,9 +415,10 @@ namespace OriCoop
 
         static void OnCoPush(BinaryReader r)
         {
-            int id = r.ReadInt32(); int dir = r.ReadSByte();
+            int id = r.ReadInt32(); int dir = r.ReadSByte(); CoPushHeard++;
             St st; if (!s_byId.TryGetValue(id, out st)) return;
-            st.RemotePushDir = Math.Sign(dir); st.RemotePushAt = Time.realtimeSinceStartup; CoPushReceived++;
+            int seat = NetPlay.Sender;
+            st.RemotePushDirs[seat] = Math.Sign(dir); st.RemotePushAts[seat] = Time.realtimeSinceStartup; CoPushReceived++;
         }
 
         // Every step on every PC: both pushing the same way -> the game's own push/pull speed ratio x1.5 (Oris and stone).
@@ -398,7 +427,14 @@ namespace OriCoop
             if (st.BaseMultiplier < 0f) st.BaseMultiplier = b.MoveSpeedMultiplier;
             float now = Time.realtimeSinceStartup;
             int local = online && now - st.LocalPushAt < 0.15f ? st.LocalPushDir : 0;
-            float m = online ? CoPushRule.Multiplier(local, st.RemotePushDir, now - st.RemotePushAt) : 1f;
+            float m = 1f;
+            if (online)
+            {
+                s_pushDirs.Clear(); s_pushAges.Clear();
+                foreach (KeyValuePair<int, int> report in st.RemotePushDirs)
+                { s_pushDirs.Add(report.Value); s_pushAges.Add(now - st.RemotePushAts[report.Key]); }
+                m = CoPushRule.Multiplier(local, s_pushDirs, s_pushAges);
+            }
             float target = st.BaseMultiplier * m;
             if (b.MoveSpeedMultiplier != target)
             {
@@ -407,10 +443,10 @@ namespace OriCoop
             }
         }
 
-        static bool Moving(PlatformMovement pm)
+        internal static bool Moving(PlatformMovement pm)
         {
-            SeinCharacter s = P2Context.P1;
-            if (s == null || s.PlatformBehaviour.PlatformMovement != pm || s.Abilities.GrabBlock == null) return true;
+            SeinCharacter s = LocalOri(pm);
+            if (s == null || s.Abilities.GrabBlock == null) return true;
             SeinGrabBlock grab = s.Abilities.GrabBlock;
             return grab.IsGrabbing && (grab.CurrentState == SeinGrabBlock.State.Push || grab.CurrentState == SeinGrabBlock.State.Pull);
         }

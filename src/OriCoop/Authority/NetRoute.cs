@@ -16,6 +16,12 @@ namespace OriCoop.Authority
 
         public static bool ServerMode { get { return s_server != null; } }
 
+        // T-111: the seat whose host-only messages (gate counts and fires, intro, wipe) everyone obeys. P2P: the host
+        // is always seat 1. Server mode: the arbiter moves to the lowest online seat when P1 leaves, so a fixed
+        // "Sender == 1" dropped every message of the new host.
+        static readonly bool s_mutateSeatOne = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_HOST_SEAT_ONE") == "1";
+        public static int HostSeat { get { return s_server != null && s_server.ArbiterSeat > 0 && !s_mutateSeatOne ? s_server.ArbiterSeat : 1; } }
+
         // Replaces NetPlay.IsHost wherever it means "I arbitrate this".
         public static bool IsArbiter { get { return s_server != null ? s_server.IsArbiter : NetPlay.IsHost; } }
 

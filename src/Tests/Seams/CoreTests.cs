@@ -11,6 +11,7 @@ static class CoreTests
         public bool Connected { get { return true; } }
         public bool IsHost { get; set; }
         public int Sender { get; set; }
+        public int HostSeat { get { return m_hostSeat; } set { m_hostSeat = value; } } int m_hostSeat = 1;
         readonly Action<BinaryReader>[] m_handlers = new Action<BinaryReader>[256];
         public FakeBus Peer;
         public void On(byte type, Action<BinaryReader> handler) { m_handlers[type] = handler; }

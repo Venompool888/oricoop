@@ -56,6 +56,9 @@ $Mutations = @(
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
     @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^native rooms page has rows$' }
+    @{ Name = 'MUTATE_ROOM_NAME_HASH';  Env = @{ ORICOOP_MUTATE_ROOM_NAME_HASH = '1' };  Script = @('run-rooms.ps1'); Expect = 'generated room name' }
+    @{ Name = 'MUTATE_TOAST_NO_FALLBACK'; Env = @{ ORICOOP_MUTATE_TOAST_NO_FALLBACK = '1' }; Script = @('run-test.ps1', '-Scenarios', 'move'); Expect = '^toast: English falls back' }
+    @{ Name = 'MUTATE_MENU_STALE_LOCK (S4)'; Env = @{ ORICOOP_MUTATE_MENU_STALE_LOCK = '1'; ORICOOP_PHASES = 'S4' }; Script = @('run-nettest.ps1'); Expect = '^S4 F8 online: a story lock' }
     @{ Name = 'MUTATE_OVERLAY_UNLOCK';  Env = @{ ORICOOP_MUTATE_OVERLAY_UNLOCK = '1' };  Script = @('run-test.ps1'); Expect = '^title menu: overlay lobby: (starting|ending) online play keeps' }
     @{ Name = 'MUTATE_REMOVE_GLOW';     Env = @{ ORICOOP_MUTATE_REMOVE_GLOW = '1' };     Script = @('run-test.ps1'); Expect = '^title menu: remove page glow is red' }
     @{ Name = 'MUTATE_FONT_LEAK';       Env = @{ ORICOOP_MUTATE_FONT_LEAK = '1' };       Script = @('run-test.ps1'); Expect = '^title menu: menu resizes and recreated HUD text leave no extra fonts' }
