@@ -48,6 +48,7 @@ static partial class StoryTests
         GateCases();
         AnimCases();
         SkillCases();
+        PuppetGateCases();
         return failures == 0 ? 0 : 1;
     }
 }

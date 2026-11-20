@@ -411,6 +411,29 @@ namespace OriCoop
                 yield return Wait(6f);
                 CheckRestored(h, "repair");
                 h.Check(CutsceneGuard.Repairs >= repairs + 3, "CUT repair: watchdog repaired broken state");
+                // T-137: a scene camera framing zone sets the cinematic puppet every frame on purpose (still < 120 s
+                // after the story): the watchdog may clear it once, then must leave it alone (it used to every 2 s).
+                GameObject framing = new GameObject("OriCoop T-137 framing zone");
+                framing.transform.position = Own.Position + new Vector3(25f, 0f, 0f);
+                int puppetRepairs = CutsceneGuard.PuppetRepairs, driven = CutsceneGuard.PuppetGate.DrivenDetections;
+                try
+                {
+                    float drive = Now + 7f;
+                    while (Now < drive)
+                    {
+                        CameraPuppetController framed = CutsceneGuard.CameraPuppet();
+                        if (framed != null) { framed.CinematicPuppet = framing.transform; framed.Tween = 1f; }
+                        yield return null;
+                    }
+                }
+                finally
+                {
+                    CameraPuppetController framed = CutsceneGuard.CameraPuppet();
+                    if (framed != null) { framed.Tween = 0; framed.CinematicPuppet = null; }
+                    UnityEngine.Object.Destroy(framing);
+                }
+                h.Check(CutsceneGuard.PuppetRepairs - puppetRepairs <= 1, "CUT repair: a scene-driven camera puppet is cleared at most once in 7 s (T-137, "
+                    + (CutsceneGuard.PuppetRepairs - puppetRepairs) + " repairs, driven seen " + (CutsceneGuard.PuppetGate.DrivenDetections - driven) + ")");
             }
             finally { input.Stop(); UnityEngine.Object.Destroy(go); UnityEngine.Object.Destroy(s_dummy); s_dummy = null; }
         }
