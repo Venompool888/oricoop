@@ -40,6 +40,24 @@ static partial class StoryTests
             Equal(0UL, SkillSplit.Shared(host, Tree) & Tree);
             Equal(0UL, SkillSplit.Merge(1UL << 2, 0UL, Tree) & ~Tree); // the host lost a story ability: so does the guest
         });
+        // T-142: abilities 0..6; tree A=1 (1 pt), B=3 (2 pt), C=5 (1 pt), D=6 (3 pt); 0, 2, 4 are story abilities.
+        Check("skills: a host checkpoint push keeps the guest's own tree and points (T-142)", delegate {
+            ulong tree = (1UL << 1) | (1UL << 3) | (1UL << 5) | (1UL << 6);
+            int[] prices = { 0, 1, 0, 2, 0, 1, 3 };
+            ulong a = 1UL << 1, b = 1UL << 3, c = 1UL << 5, d = 1UL << 6;
+            int earned = 10;
+            ulong host = (1UL << 0) | (1UL << 2) | a | b, guest = (1UL << 0) | c | d;
+            Equal(6, SkillSplit.Points(earned, guest, tree, prices));
+            OwnSkillTree own = new OwnSkillTree();
+            own.Hold(guest);                                               // before loading the host's checkpoint
+            ulong live = host;                                             // the loaded save carries the host's abilities
+            ulong merged = SkillSplit.Merge(own.Local(live), SkillSplit.Shared(host, tree), tree);
+            Equal((1UL << 0) | (1UL << 2) | c | d, merged);                // own C+D, no A/B; story 2 follows the host
+            Equal(6, SkillSplit.Points(earned, merged, tree, prices));
+            Equal(merged, SkillSplit.Merge(own.Local(merged), SkillSplit.Shared(host, tree), tree)); // later merges: live
+            own.Hold(guest); own.Hold(host);                               // two pushes before a merge: the first hold wins
+            Equal(guest, own.Local(host)); Equal(false, own.Held);
+        });
         Check("skills: points never go below zero; unknown tree keeps the old shared behaviour", delegate {
             Equal(0, SkillSplit.Points(1, Tree, Tree, Prices));
             Equal(7, SkillSplit.Earned(7, ulong.MaxValue, 0UL, Prices));

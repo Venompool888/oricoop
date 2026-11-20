@@ -17,6 +17,7 @@ namespace OriCoop
     public static class SaveSync
     {
         static bool s_started, s_loading, s_disabled, s_restartFinished, s_restoreFinished, s_hostAdopt;
+        static bool s_joined;   // T-142: this guest finished its join load in this session; later loads are host checkpoints
         static readonly SeatReadiness s_guests = new SeatReadiness();
         static readonly HostPromotion s_promotion = new HostPromotion();
         static byte[] s_pending;
@@ -57,7 +58,7 @@ namespace OriCoop
 
         static void Reset()
         {
-            Ready = s_started = s_loading = s_disabled = s_hostAdopt = false;
+            Ready = s_started = s_loading = s_disabled = s_hostAdopt = s_joined = false;
             s_guests.Clear();
             s_promotion.Reset();
             s_pending = null;
@@ -146,6 +147,9 @@ namespace OriCoop
                 s_restartFinished = s_restoreFinished = false;
                 s_joinStartedAt = Services.Clock.RealTime;
                 s_loadWatch = Stopwatch.StartNew();
+                // T-142: a mid-session host checkpoint (wipe / host reload) carries the host's skill tree; keep ours.
+                // The join load is left alone (T-047: a joining guest starts from the host's save).
+                if (s_joined && !Services.Net.IsHost) SavesHost.Current.HoldOwnSkillTree();
                 try
                 {
                     Plugin.DespawnNow(s_hostAdopt ? "adopting partner progress" : "online checkpoint transfer");
@@ -224,6 +228,7 @@ namespace OriCoop
         static void FinishJoin()
         {
             s_loading = s_restoreFinished = false; Ready = true;
+            if (!Services.Net.IsHost) s_joined = true;
             s_promotion.Joined();
             Services.Log.Info("net: guest join liveHost=" + HostJoinPosition + " distance=" + GuestJoinDistance
                 + " elapsedAfterLoadMs=" + (GuestJoinElapsed * 1000f) + " placed=" + JoinedHost);
