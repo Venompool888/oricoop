@@ -372,6 +372,33 @@ static class UiTests
             Equal("123 456", r.Render(false, delegate(string c) { return "[" + c + "]"; }));
         });
 
+        // T-136: names shown in a MessageBox lose the characters the game parses as markup.
+        Run("markup: room and player names are drawn without colour markers", delegate {
+            Equal("Bob's room 2", MarkupText.Plain("Bob's room #2"));
+            Equal("a b c", MarkupText.Plain("*a* $b$ @c@"));
+            Equal("x", MarkupText.Plain("[x]"));
+            Equal("plain 名字", MarkupText.Plain("plain 名字"));
+            Equal("", MarkupText.Plain(null));
+            Check(MarkupText.HasMarkup("room #1") && MarkupText.HasMarkup("^small^") && !MarkupText.HasMarkup("room 1"), "HasMarkup");
+            foreach (bool zh in new[] { false, true })
+            {
+                string name = string.Format(L10n.T("rooms.auto_name", zh), "Bob", 3);
+                Check(!MarkupText.HasMarkup(name), "auto room name has no markup: " + name);
+            }
+        });
+
+        // T-135: a (zh, en) pair with one side empty shows the other side instead of a blank toast.
+        Run("toast text: the empty language falls back to the other", delegate {
+            Equal("中文", L10n.Pick("中文", "", false));
+            Equal("English", L10n.Pick("", "English", true));
+            Equal("English", L10n.Pick("中文", "English", false));
+            Equal("中文", L10n.Pick("中文", "English", true));
+            Equal("", L10n.Pick("", null, false));
+            s_language = "en"; Equal("only zh", L10n.Pick("only zh", ""));
+            s_language = "zh"; Equal("only en", L10n.Pick("", "only en"));
+            s_language = "en";
+        });
+
         return s_failed == 0 ? 0 : 1;
     }
 }

@@ -63,7 +63,8 @@ namespace OriCoop
         public static bool Respawning { get { return s_dead != null; } }
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         static SeinCharacter Own { get { return Host.P1 != null ? Host.P1 : Characters.Sein; } }
-        public static bool LocalLocked { get { return Online && (s_menu || Popups.AnyOpen || Respawning || Host.StoryWatching); } }
+        // The co-op panel (F8) online holds its player like a menu, whether or not a partner is connected yet (T-132).
+        public static bool LocalLocked { get { return Online && (s_menu || Popups.AnyOpen || Respawning || Host.StoryWatching) || Services.Net.Enabled && Host.CoopMenuOpen; } }
 
         public static void Init()
         {

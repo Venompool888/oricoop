@@ -201,6 +201,17 @@ namespace OriCoop
             Check(CoopMenu.IsOpen, "F8: panel stays open after opening the log folder");
             CoopMenu.Close();
             CoopMenu.OpenFolderHook = null;
+            // T-135: callers pass already-translated text and "" for the other language; an English player must still
+            // see it, and an empty toast must not hold the queue.
+            {
+                Func<string> language = L10n.LanguageCode; int queued = NetHud.QueuedToasts; string last;
+                L10n.LanguageCode = delegate { return "en"; };
+                try { NetHud.Toast("仅中文提示", ""); NetHud.Toast("", ""); last = NetHud.LastQueuedToast; }
+                finally { L10n.LanguageCode = language; }
+                Check(NetHud.QueuedToasts == queued + 1 && last == "仅中文提示", "toast: English falls back to the only text given, an empty toast is not queued (T-135; queued "
+                    + (NetHud.QueuedToasts - queued) + ", last '" + last + "')");
+                NetHud.TestDropQueuedToasts(queued);
+            }
             yield return StartCoroutine(Wait(1f));
             // Save isolation: P2 must not take over any of P1's checkpoint save entries.
             int p1SaveEntries1 = CountSaveEntriesUnder(P1.transform), p2Entries = CountSaveEntriesUnder(P2.transform);

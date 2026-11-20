@@ -32,7 +32,7 @@
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
         'WorldObjSync' = 'WO'; 'PushBlockSync' = 'P'
         'OnlineCamera' = 'CAM'; 'CoopCamera' = 'MOVE,CAM'; 'CutsceneGuard' = 'INTRO,S4,CAM,CUT'
-        'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'
+        'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'; 'CoopMenu' = 'S4'   # F8 online holds the player and leaves LockInput alone (T-132)
         'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = ''
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
     }
@@ -49,6 +49,9 @@
         @{ Switch = 'ORICOOP_MUTATE_BOTTOMHUD_LAYOUT'; File = 'src\OriCoop\BottomHud.cs'; Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_SIGNPOST';       File = 'src\OriCoop\P2Extras.cs';       Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_TOAST_NO_FALLBACK'; File = 'src\OriCoop\NetHud.cs';      Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_ROOM_NAME_HASH'; File = 'src\OriCoop\Rooms\RoomsPanel.cs'; Suite = 'rooms';   Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_MENU_STALE_LOCK'; File = 'src\OriCoop\CoopMenu.cs';      Suite = 'net';       Phase = 'S4' }
         @{ Switch = 'ORICOOP_MUTATE_ROOMS_NATIVE_OFF'; File = 'src\OriCoop\NativeRooms.cs';   Suite = 'rooms';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_OVERLAY_UNLOCK';  File = 'src\OriCoop\TitleMenu.cs';      Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_REMOVE_GLOW';    File = 'src\OriCoop\NativeGlowTint.cs'; Suite = 'local';     Phase = '' }
