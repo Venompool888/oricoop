@@ -110,7 +110,7 @@ while ($queue.Count -gt 0 -or $running.Count -gt 0) {
         $text = if (Test-Path $r.Log) { Get-Content $r.Log -Raw } else { '' }
         # PASS needs a verdict line, no failure line and exit code 0: a suite that threw or was refused (exit != 0) is a
         # FAIL even if it printed nothing (T-084), and run-rooms' per-step "ROOMS PASS n" lines are no verdict (T-082).
-        $ok = $text -match '(?m)(NETTEST PASS|COOPSAVE PASS|TITLEJOIN \w+ PASS|ROOMS RESULT PASS|\] RESULT PASS)' -and $text -notmatch '(?m)(NETTEST FAIL|COOPSAVE FAIL|TITLEJOIN \w+ FAIL|ROOMS (RESULT FAIL|FAIL|DONE fail)|\] RESULT FAIL|no result file)' -and $r.Proc.ExitCode -eq 0
+        $ok = $text -match '(?m)(NETTEST PASS|COOPSAVE PASS|TITLEJOIN \w+ PASS|ROOMS RESULT PASS|\] RESULT PASS)' -and $text -notmatch '(?m)(NETTEST FAIL|COOPSAVE FAIL|TITLEJOIN \w+ FAIL|ROOMS (RESULT FAIL|FAIL|DONE fail)|\] RESULT FAIL|no result file|OWNER SETTINGS CHANGED BY A TEST)' -and $r.Proc.ExitCode -eq 0
         if ($text -cmatch 'OWNER IS PLAYING') { $ok = $false; $status = 'STOPPED (owner playing)' } else { $status = $(if ($ok) { 'PASS' } else { 'FAIL' }) }
         $job = $r.Job
         $now = $sw.Elapsed.TotalSeconds; $got = $(if ($r.Got -ge 0) { $r.Got } else { $r.Start })

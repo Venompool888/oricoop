@@ -30,8 +30,13 @@ if ($Net) {
     $runStart = Get-Date
     # -TimeoutSec is passed on only when given: run-nettest's own default fits a full net run (300 s does not).
     $netArgs = @{}; if ($PSBoundParameters.ContainsKey('TimeoutSec')) { $netArgs.TimeoutSec = $TimeoutSec }
+    $global:LASTEXITCODE = 0
     try { & (Join-Path $PSScriptRoot 'run-nettest.ps1') @netArgs | Tee-Object -FilePath (Join-Path $traceDir 'nettest-output.txt') | Select-Object -Last 8 }
     finally { Remove-Item Env:ORICOOP_TRACE_DIR, Env:ORICOOP_TRACE_LEVEL -ErrorAction SilentlyContinue }
+    # T-117: run-nettest runs in this PowerShell, so its exit code would be lost: the owner / lock stops (2/3/4) and the
+    # safety stops (5 input not blocked, 6 copy refused, 7 owner's settings changed) end this test with the same code.
+    $netCode = $LASTEXITCODE
+    if (@(2, 3, 4, 5, 6, 7) -contains $netCode) { 'TRACE NET FAIL: run-nettest stopped with exit ' + $netCode; exit $netCode }
     $files = @(Get-ChildItem $traceDir -Filter 'OriCoop-trace-*.log')
     $sids = @{}; $roles = @{}
     foreach ($f in $files) {
@@ -112,4 +117,6 @@ $fail = @()
 foreach ($k in $seen.Keys) { 'live check ' + $k + ': ' + $(if ($seen[$k] -ne $null) { 'seen at ' + $seen[$k] + ' s' } else { 'MISSING' }); if ($seen[$k] -eq $null) { $fail += $k } }
 'smallest lag of the newest trace line while running: ' + [Math]::Round($bestLag, 2) + ' s (limit ' + $MaxLagSec + ')'
 if ($ipLeak) { 'IP address leaked into the trace: ' + $ipLeak.Substring(0, [Math]::Min(3, $ipLeak.Length)) + '...'; $fail += 'ip' }
-if ($fail.Count -eq 0) { 'TRACE LIVE PASS' } else { 'TRACE LIVE FAIL: ' + ($fail -join ','); exit 1 }
+if ($fail.Count -eq 0) { 'TRACE LIVE PASS' } else { 'TRACE LIVE FAIL: ' + ($fail -join ',') }
+Exit-TestRun   # LAST: releases the copy lock; exit 7 if this run changed the owner's game settings (T-094, T-117)
+if ($fail.Count) { exit 1 }
