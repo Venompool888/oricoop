@@ -59,6 +59,17 @@ namespace OriCoop.Story
                 return seats.ToArray();
             }
         }
+        public int[] IntroSessionSeats
+        {
+            get
+            {
+                // T-139: the seat table (host: authoritative; guest: the host's published copy). C-server sessions have none.
+                if (!Services.Net.Enabled || !NetPlay.MultiSeatSupported) return null;
+                List<int> seats = new List<int>();
+                for (int seat = 1; seat <= 4; seat++) if (NetPlay.SeatOwner(seat) != 0) seats.Add(seat);
+                return seats.Count == 0 ? null : seats.ToArray();
+            }
+        }
         public bool CanPlaceIntroSeat(int seat)
         {
             SeinCharacter ori = OriAt(seat); GameController gc = GameController.Instance;
@@ -140,7 +151,7 @@ namespace OriCoop.Story
         internal static void InitIntroNetwork()
         {
             Services.Net.On(IntroMessage, delegate(BinaryReader r) {
-                if (Services.Net.IsHost || Services.Net.Sender != 1) return;
+                if (Services.Net.IsHost || Services.Net.Sender != Services.Net.HostSeat) return;
                 remoteIntro = IntroWire.Read(r);
             });
             // T-105: only the host's rule decides; guests take its snapshot (with the late seats) as it is.

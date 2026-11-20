@@ -22,7 +22,7 @@ namespace OriCoop
     //   Frames  (unreliable) the last few fixed steps (redundant copies: one lost packet loses nothing)
     public static partial class NetPlay
     {
-        public const string ModVersion = "0.2.0-net3";
+        public const string ModVersion = OriCoop.Net.ProtocolVersion.Mod;   // T-140: bump it there (pinned by the unit tests)
         public static int Sender { get { return s_bus.Sender; } private set { s_bus.Sender = value; } }
         public static bool HostOverride;
         public static Func<int, byte, bool, Action<BinaryWriter>, bool> SendToOverride;
@@ -31,6 +31,7 @@ namespace OriCoop
         // Called by End() once the session is closed: a factory transport frees its own state (T-031: the C-server link
         // kept its socket, routing and arbiter role, because its peer's queued Disconnected event is never polled after End).
         public static Action Stopped;
+        public static Action Leaving;   // T-113: NetPlay.End is about to leave on purpose (still connected)
         // Set by a factory transport (e.g. the C-server code after its welcome) so the lobby shows that room code.
         public static string RoomCodeOverride;
         static string s_factoryTarget = "";
@@ -105,7 +106,11 @@ namespace OriCoop
         static ConfigEntry<float> s_snapDist, s_blend;
         static string s_modeNow = "off";
         public static bool Enabled { get { return s_modeNow == "host" || s_modeNow == "join"; } }
-        public static bool IsHost { get { return s_modeNow == "host" || HostOverride; } }
+        // T-158: in a server-mode (transport factory) session the host role is the arbiter only (HostOverride, set by the
+        // C-server link from the room roster). The room creator loses it while another seat arbitrates: after its seat
+        // expired and it came back on another seat (T-113 fallback), or while it has no seat. P2P / relay / Steam unchanged.
+        static readonly bool s_mutateCreatorHost = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_CREATOR_HOST") == "1";
+        public static bool IsHost { get { return s_factorySession && !s_mutateCreatorHost ? HostOverride : (s_modeNow == "host" || HostOverride); } }
 
         sealed class PeerAdapter : IMessagePeer
         {
@@ -376,6 +381,8 @@ namespace OriCoop
         // Back to offline. Tells the partner, ends the session for every sync system, frees the socket.
         public static void End(string why)
         {
+            // T-113: a deliberate end, before the goodbye below: transports that hold seats (C-server) release them.
+            if (Enabled && Leaving != null) { try { Leaving(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: leaving hook: " + e.Message); } }
             OnlineRoomScreen.Reset();
             s_rtTransport = s_rtAddress = s_rtRoom = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;

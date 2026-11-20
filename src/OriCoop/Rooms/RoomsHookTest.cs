@@ -277,10 +277,12 @@ namespace OriCoop.Rooms
                 yield return Press("roomsmenu", "rooms.create");
                 if (done) yield break;
                 string name = panel.AutoName;
-                string prefix = L10n.F("rooms.default_name", Environment.GetEnvironmentVariable("ORICOOP_TEST_NICK")) + " #";
+                string prefix = L10n.F("rooms.default_name", Environment.GetEnvironmentVariable("ORICOOP_TEST_NICK")) + " ";
                 int number;
                 if (!Check(name.StartsWith(prefix) && int.TryParse(name.Substring(prefix.Length), out number) && number >= 1,
-                    "no text entry: generated room name matches nick's room #N")) yield break;
+                    "no text entry: generated room name matches nick's room N (" + name + ")")) yield break;
+                // T-136: # * $ @ ^ [ ] < > are MessageBox markup; a generated name must not contain any of them.
+                if (!Check(!OriCoop.Ui.MarkupText.HasMarkup(name), "generated room name has no MessageBox markup (" + name + ")")) yield break;
                 Publish("name", name);
                 yield return Dial("roomcreate", "rooms.password", "1234");
                 yield return Press("roomcreate", "rooms.create_slot", L10n.F("rooms.create_slot", 1, ""));
@@ -312,6 +314,10 @@ namespace OriCoop.Rooms
                 Publish("code", info.GetString("code"));
             }
             else if (!Check(room == Shared().GetString("room"), "joined shared room id")) yield break;
+            // T-136: the native room page shows names without markup (a # would turn the rest of the row yellow).
+            string[] viewRows = NativeModeMenu.TestRoomRows(); string marked = null;
+            foreach (string row in viewRows) if (OriCoop.Ui.MarkupText.HasMarkup(row)) { marked = row; break; }
+            if (!Check(viewRows.Length > 0 && marked == null, "room page rows carry no MessageBox markup (" + (marked ?? viewRows.Length + " rows") + ")")) yield break;
             yield return Press("roomview", "rooms.continue");
             if (done) yield break;
             if (role == "host") yield return Host();
@@ -364,6 +370,29 @@ namespace OriCoop.Rooms
             yield return Wait(() => Shared().GetString("backup") == upload.ToString(), 90);
             if (!Check(Shared().GetString("backup") == upload.ToString(), "guest acknowledged upload backup"))
                 yield break;
+            // T-130: the holder adopts the partner's progress (the choice at a co-op save divergence). SaveSync
+            // restarts the game to load it; that restart is not a return to the title, so the room session must stay
+            // and the next save must still upload to the room.
+            SaveSync.HostAdopt(GameController.Instance.SaveGameController.SaveToBytes());
+            if (!Check(SaveSync.HostAdopting, "host adopt started")) yield break;
+            bool restarted = false;
+            yield return Wait(delegate { restarted |= SaveSync.RestartingForLoad; return restarted && !SaveSync.HostAdopting; }, 90);
+            yield return Wait(() => NetPlay.LocalInGameplay(), 60);
+            if (!Check(restarted && !SaveSync.HostAdopting && NetPlay.LocalInGameplay(),
+                "adopted progress loaded through the restart")) yield break;
+            if (!Check(panel.Session.Active && panel.Session.Holder && SaveSlotsManager.CurrentSlotIndex == panel.Game.Slot,
+                "room session kept after adopting partner progress (T-130)")) yield break;
+            long adopted = panel.Session.Version;
+            yield return Wait(() => GameController.Instance.SaveGameController.CanPerformSave(), 30);
+            if (!Check(GameController.Instance.SaveGameController.CanPerformSave(), "game ready to save after adopting")) yield break;
+            GameController.Instance.SaveGameController.PerformSave();
+            yield return Wait(() => panel.Session.Version > adopted, 25);
+            yield return ReadInfo();
+            if (done) yield break;
+            if (!Check(panel.Session.Version > adopted && observed.Fields.GetLong("save.0.version", 0) == panel.Session.Version
+                && observed.Fields.GetString("save.0.holder") == auth.Steam,
+                "save after adopting uploads to the room, lease still held: v" + panel.Session.Version)) yield break;
+            upload = panel.Session.Version;
             GameController.Instance.RestartGame();
             yield return Wait(() => !panel.Session.Active
                 && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, 45);

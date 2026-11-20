@@ -201,6 +201,17 @@ namespace OriCoop
             Check(CoopMenu.IsOpen, "F8: panel stays open after opening the log folder");
             CoopMenu.Close();
             CoopMenu.OpenFolderHook = null;
+            // T-135: callers pass already-translated text and "" for the other language; an English player must still
+            // see it, and an empty toast must not hold the queue.
+            {
+                Func<string> language = L10n.LanguageCode; int queued = NetHud.QueuedToasts; string last;
+                L10n.LanguageCode = delegate { return "en"; };
+                try { NetHud.Toast("仅中文提示", ""); NetHud.Toast("", ""); last = NetHud.LastQueuedToast; }
+                finally { L10n.LanguageCode = language; }
+                Check(NetHud.QueuedToasts == queued + 1 && last == "仅中文提示", "toast: English falls back to the only text given, an empty toast is not queued (T-135; queued "
+                    + (NetHud.QueuedToasts - queued) + ", last '" + last + "')");
+                NetHud.TestDropQueuedToasts(queued);
+            }
             yield return StartCoroutine(Wait(1f));
             // Save isolation: P2 must not take over any of P1's checkpoint save entries.
             int p1SaveEntries1 = CountSaveEntriesUnder(P1.transform), p2Entries = CountSaveEntriesUnder(P2.transform);
@@ -589,7 +600,79 @@ namespace OriCoop
             Check(Vector3.Distance(P1.Position, pp) > 5f, "pickup: P1 was nowhere near the pickup (" + F(Vector3.Distance(P1.Position, pp)) + ")");
             Check(best == null || best.IsCollected, "pickup: P2 touching the pickup collected it");
             Check(SharedProgress.PickupsByP2 > byP2, "pickup: counted as collected by P2 (" + (SharedProgress.PickupsByP2 - byP2) + ")");
+            yield return StartCoroutine(PickupByP3(p1Pos));
             Check(m_errors == err0, "pickup: no errors");
+        }
+
+        // T-134: offline P3 (three or four players) collects pickups for P1 just like P2. The map rarely has a second
+        // pickup near the start (P2's pass takes the whole orb cluster), so P3 gets its own: a green spirit-light orb from
+        // the game's spawner, as an enemy drops it (pooled, never saved), next to P3 and 10 units from P1 and P2 (out of
+        // P1's pickup attraction). Without the T-134 patch only P2 collects for P1 and this orb stays.
+        IEnumerator PickupByP3(Vector3 p1Pos)
+        {
+            Plugin plugin = Plugin.Instance;
+            int p1Pad = plugin.P1Pad, p2Pad = plugin.P2Pad;
+            GameSeatView seats = new GameSeatView();
+            Vector3 spot = p1Pos + new Vector3(10f, 1.5f, 0f);
+            try
+            {
+                plugin.AssignPad(1, 0);
+                plugin.AssignPad(2, 3);
+                bool added = seats.AddLocalPlayer(new InputDevice(InputDevice.DeviceKind.Pad, 1));
+                SeinCharacter p3 = seats.OriOf(3);
+                Check(added && p3 != null, "pickup: P3 joins for its own pickup");
+                if (p3 == null) yield break;
+                p3.Mortality.Health.RestoreAllHealth(); p3.Mortality.DamageReciever.MakeInvincible(10f);
+                Plugin.LeashOverride = 200f;
+                // P3 stands at the spot first, so the group camera frames it and the orb is not culled off-screen.
+                for (int i = 0; i < 20; i++)
+                {
+                    Plugin.Teleport(p3, spot - new Vector3(0f, 1f, 0f));
+                    Plugin.Teleport(P1, p1Pos - new Vector3(0f, 0.5f, 0f));
+                    Plugin.Teleport(P2, p1Pos + new Vector3(1f, -0.5f, 0f));
+                    yield return null;
+                }
+                // Spawned orbs come from the game's object pool, so the orb may be an object that already existed (inactive):
+                // look for a live orb near the spot that was not there before. Collection is counted per seat, so only P3
+                // can raise PickupsBySeat[3], also if it takes the orb in the frame it appears.
+                HashSet<PickupBase> nearBefore = new HashSet<PickupBase>();
+                foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+                    if (pb != null && pb.gameObject.activeInHierarchy && Vector3.Distance(pb.transform.position, spot) < 4f) nearBefore.Add(pb);
+                int byP3 = SharedProgress.PickupsBySeat[3];
+                bool spawner = OrbSpawnerManager.Instance != null;
+                if (spawner) OrbSpawnerManager.Instance.Spawn(OrbSpawnerManager.ItemType.GreenExpOrb, spot, Vector2.zero, DropPickup.State.Hover);
+                PickupBase target = null;
+                Vector3 pp = spot;
+                float end = Time.unscaledTime + 4f;
+                while (spawner && Time.unscaledTime < end && SharedProgress.PickupsBySeat[3] == byP3)
+                {
+                    if (target == null)
+                        foreach (PickupBase pb in Resources.FindObjectsOfTypeAll<PickupBase>())
+                            if (pb != null && !nearBefore.Contains(pb) && pb.gameObject.activeInHierarchy && !pb.IsCollected
+                                && Vector3.Distance(pb.transform.position, spot) < 4f) { target = pb; break; }
+                    if (target != null && target.gameObject.activeInHierarchy) pp = target.transform.position;
+                    Plugin.Teleport(p3, pp - new Vector3(0f, 0.5f, 0f));
+                    // P1 and P2 wait together, away from the orb: only P3 can be the collector.
+                    Plugin.Teleport(P1, p1Pos - new Vector3(0f, 0.5f, 0f));
+                    Plugin.Teleport(P2, p1Pos + new Vector3(1f, -0.5f, 0f));
+                    yield return null;
+                }
+                Plugin.LeashOverride = -1f;
+                bool collected = SharedProgress.PickupsBySeat[3] > byP3;
+                Check(target != null || collected, "pickup: a test orb for P3 spawns from the game's orb spawner (spawner=" + spawner + ")");
+                if (target == null && !collected) yield break;
+                float radius = target != null ? target.Radius : 2f;
+                float d1 = Vector3.Distance(P1.Position, pp), d2 = Vector3.Distance(P2.Position, pp);
+                Check(d1 > radius && d2 > radius, "pickup: P1 and P2 stayed away from P3's orb (" + F(d1) + ", " + F(d2) + ")");
+                Check(collected, "pickup: P3 touching an orb collected it for P1 (by P3=" + (SharedProgress.PickupsBySeat[3] - byP3) + ")");
+            }
+            finally
+            {
+                Plugin.LeashOverride = -1f;
+                seats.RemoveLocalPlayer(3);
+                plugin.AssignPad(2, p2Pad);
+                plugin.AssignPad(1, p1Pad);
+            }
         }
 
         public static bool P1HoldSpiritFlame;
@@ -1640,6 +1723,7 @@ namespace OriCoop
                 P2Input.BotPads[1].LX = P2Input.BotPads[2].LX = 0f;
                 Check(p3.Position.x > x3 + 0.6f, "fourplayer: P3 can walk inward while P4 pushes outward");
 
+                yield return StartCoroutine(FourPlayerSharedPool(new[] { null, P1, P2, p3, p4 }));
                 yield return StartCoroutine(FourPlayerRevives(ground, new[] { null, P1, P2, p3, p4 }));
 
                 seats.RemoveLocalPlayer(3);
@@ -1734,6 +1818,7 @@ namespace OriCoop
                 yield return StartCoroutine(FourPlayerDownAndRevive(3, 1, ground, oris));
                 yield return StartCoroutine(FourPlayerDownAndRevive(4, 2, ground, oris));
                 yield return StartCoroutine(FourPlayerDownAndRevive(2, -1, ground, oris));
+                yield return StartCoroutine(FourPlayerOtherRescuers(ground, oris));
                 Check(RestoreCheckpointCalls == restores, "fourplayer: no checkpoint reload during revives (reloads=" +
                     (RestoreCheckpointCalls - restores) + ")");
             }
@@ -1847,6 +1932,82 @@ namespace OriCoop
             float dx = ori.Position.x - start, saverDx = P1.Position.x - saverStart;
             Check(dx * direction > 0.6f && Mathf.Abs(saverDx) < 0.5f,
                 who + " walks with its own bot pad after revive (dx=" + F(dx) + ", P1 dx=" + F(saverDx) + ")");
+        }
+
+        // T-134: keystones, map stones and energy are one pool for all four local Oris, not only P1 and P2.
+        IEnumerator FourPlayerSharedPool(SeinCharacter[] oris)
+        {
+            int keys = P1.Inventory.Keystones, maps = P1.Inventory.MapStones;
+            float energy = P1.Energy.Current, max = P1.Energy.Max;
+            try
+            {
+                // P1 refills (a spirit well, a save): every Ori gets it.
+                if (max >= 1f) P1.Energy.Current = max;
+                P1.Inventory.Keystones = keys + 2;
+                yield return TestClock.WaitGame(0.3f);
+                for (int seat = 2; seat <= 4; seat++)
+                    Check(oris[seat].Inventory.Keystones == keys + 2 && (max < 1f || Mathf.Abs(oris[seat].Energy.Current - max) < 0.01f),
+                        "fourplayer: P1's keystones and energy reach P" + seat + " (keys=" + oris[seat].Inventory.Keystones + "/" + (keys + 2) +
+                        ", energy=" + F(oris[seat].Energy.Current) + "/" + F(max) + ")");
+                // P3 picks up a keystone, P4 a map stone and P4 spends energy: P1 and everyone else see all of it.
+                oris[3].Inventory.Keystones += 1;
+                oris[4].Inventory.MapStones += 1;
+                if (max >= 1f) oris[4].Energy.Current -= 1f;
+                yield return TestClock.WaitGame(0.3f);
+                Check(P1.Inventory.Keystones == keys + 3 && P1.Inventory.MapStones == maps + 1 && (max < 1f || Mathf.Abs(P1.Energy.Current - (max - 1f)) < 0.01f),
+                    "fourplayer: P3's keystone, P4's map stone and P4's spent energy land in P1's pool (keys=" + P1.Inventory.Keystones + "/" + (keys + 3) +
+                    ", maps=" + P1.Inventory.MapStones + "/" + (maps + 1) + ", energy=" + F(P1.Energy.Current) + "/" + F(max - 1f) + ")");
+                for (int seat = 2; seat <= 4; seat++)
+                    Check(oris[seat].Inventory.Keystones == P1.Inventory.Keystones && oris[seat].Inventory.MapStones == P1.Inventory.MapStones
+                        && Mathf.Abs(oris[seat].Energy.Current - P1.Energy.Current) < 0.01f,
+                        "fourplayer: P" + seat + " holds the shared pool (keys=" + oris[seat].Inventory.Keystones + ", maps=" + oris[seat].Inventory.MapStones +
+                        ", energy=" + F(oris[seat].Energy.Current) + ")");
+            }
+            finally
+            {
+                P1.Inventory.Keystones = keys; P1.Inventory.MapStones = maps; P1.Energy.Current = energy;
+            }
+            yield return TestClock.WaitGame(0.2f);   // the next sync copies P1's restored values to everyone
+        }
+
+        // T-107: with three or more players anyone at the skull revives, not only the lowest living seat. P3 (pad 1)
+        // revives P1 while P2, the first living seat, stands away from the skull; then P2 while P1 stands away.
+        IEnumerator FourPlayerOtherRescuers(Vector3 ground, SeinCharacter[] oris)
+        {
+            SeinCharacter p3 = oris[3];
+            foreach (int seat in new[] { 1, 2 })
+            {
+                string who = "fourplayer: P3 revives P" + seat;
+                SeinCharacter ori = oris[seat], first = seat == 1 ? oris[2] : oris[1];
+                PlaceFourPlayerTeam(ground, oris);
+                p3.Mortality.Health.SetAmount(Mathf.Min(6f, p3.Mortality.Health.MaxHealth));
+                yield return TestClock.WaitGame(0.8f);
+                int revives = Revive.Revives;
+                Hurt(ori, 1000f);
+                yield return TestClock.WaitGame(0.65f);
+                Revive.Downed down = Revive.DownedAtSeat(seat);
+                Check(down != null && down.Sein == ori && Revive.IsDowned(ori), who + ": P" + seat + " goes down first (record seat=" +
+                    (down == null ? 0 : down.Player) + ")");
+                if (down == null || down.Sein != ori) yield break;
+                Plugin.Teleport(first, down.Marker + Vector3.left * 3.5f);   // outside Revive.Radius, inside the 6-unit group wall
+                Plugin.Teleport(p3, down.Marker + Vector3.right * 0.8f);
+                yield return TestClock.WaitGame(0.6f);
+                bool firstNear = Revive.SaverNear(first, down), p3Near = Revive.SaverNear(p3, down);
+                Check(!firstNear && p3Near && Revive.FlameBlocked(p3) && !Revive.FlameBlocked(first),
+                    who + ": setup, only P3 at the skull; P3's flame revives, the far player's flame still attacks (first near=" + firstNear +
+                    ", P3 near=" + p3Near + ", P3 flame blocked=" + Revive.FlameBlocked(p3) + ", far flame blocked=" + Revive.FlameBlocked(first) + ")");
+                float saverHealth = p3.Mortality.Health.Amount;
+                P2Input.BotPads[1].Buttons = P2Input.BTN_X;
+                yield return TestClock.WaitGame(Revive.HoldSeconds + 0.3f);
+                P2Input.BotPads[1].Buttons = 0;
+                yield return TestClock.WaitGame(PartnerFx.GlowSeconds + PartnerFx.FadeSeconds + 0.2f);
+                float health = ori.Mortality.Health.Amount, given = saverHealth - p3.Mortality.Health.Amount;
+                bool back = Revive.DownedAtSeat(seat) == null && !Revive.IsDowned(ori);
+                Check(back && down.Rescuer == 3 && Revive.Revives == revives + 1 && health >= 1f && given > 0.05f,
+                    who + " by holding Spirit Flame at the skull (rescuer=" + down.Rescuer + ", progress=" + F(down.Progress) +
+                    ", health=" + F(health) + ", donated=" + F(given) + ", revives=" + (Revive.Revives - revives) + ")");
+                if (!back) { if (seat == 1) Revive.ClearAll("fourplayer rescuer test cleanup", false); yield break; }
+            }
         }
 
         IEnumerator FourPlayerDownedMotion(Vector3 ground, Vector3 downAt, SeinCharacter[] oris)
@@ -2085,9 +2246,11 @@ namespace OriCoop
             foreach (KeyValuePair<string, int> count in SubsystemGuard.Counts)
                 if (count.Value > 5) throwing.Add(count.Key + "=" + count.Value);
             Check(throwing.Count == 0, "subsystem throws <= 5" + (throwing.Count > 0 ? ": " + string.Join(", ", throwing.ToArray()) : ""));
-            if (NetPlay.Enabled)
+            // T-152: a net test that leaves online play before the end (NetPlay.End) still reports its counts.
+            bool netRun = NetPlay.Enabled || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ORICOOP_NET_CLIENTS"));
+            if (netRun)
             {
-                NetTestHarness.Stop();
+                if (NetPlay.Enabled) NetTestHarness.Stop();
                 Note(m_fails.Count == 0 ? "RESULT PASS " + m_checks + "/" + m_checks : "RESULT FAIL " + m_fails.Count + "/" + m_checks);
             }
             else Note((m_fails.Count == 0 ? "RESULT PASS" : "RESULT FAIL (" + m_fails.Count + ")") + (m_skips.Count > 0 ? " with " + m_skips.Count + " skipped" : ""));

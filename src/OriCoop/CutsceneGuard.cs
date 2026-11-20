@@ -50,6 +50,8 @@ namespace OriCoop
         public static int PuppetRepairs;
         public static readonly PuppetRepairGate PuppetGate = new PuppetRepairGate {
             Disabled = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GUARD_FIGHTS_SCENE") == "1" };
+        // The spirit-orb share of Repairs (snapped after a teleport, pulled out of MoveToPosition): no view was stuck (T-102).
+        public static int SpiritRepairs;
         static SeinCharacter Own { get { return StoryHost.Current.P1 != null ? StoryHost.Current.P1 : Characters.Sein; } }
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         public static void Log(string msg)
@@ -69,7 +71,13 @@ namespace OriCoop
                 || spectated != null && target == spectated.Transform
                 || target != null && StoryHost.Current.IsPluginCameraTarget(target);
         }
-        public static void Init() { Services.Net.On(PedestalMessage, ReceivePedestal); Services.Net.On(LeverMessage, ReceiveLever); }
+        public static void Init()
+        {
+            Services.Net.On(PedestalMessage, ReceivePedestal); Services.Net.On(LeverMessage, ReceiveLever);
+            // T-115: the P2P host relays a guest's pedestal / lever to the other guests before handling it; it used to
+            // re-send only after playing it, so a host without that scene loaded (or loading) never passed it on.
+            Services.Net.Forward(PedestalMessage, LeverMessage);
+        }
 
         // ---- Levers (playtest 19:07, Spirit Cavern B): the lever's Direction is host-authoritative world state, so a
         // guest's push was silently undone by the host's blob while its camera story ran locally and was "mirrored" on
@@ -97,7 +105,6 @@ namespace OriCoop
                 }
                 finally { s_applyingLever = false; }
             }
-            if (Services.Net.IsHost) Services.Net.Send(LeverMessage, true, delegate(BinaryWriter w) { ObjectWire.WriteLever(w, id.ToByteArray(), (byte)direction); });
         }
         [HarmonyPatch]
         static class LeverScope
@@ -155,8 +162,6 @@ namespace OriCoop
             ReplayingPedestal = true;
             try { pedestal.ActivatePedestal(); PedestalPlaysPlayed++; Log("pedestal play played " + id); }
             finally { ReplayingPedestal = false; }
-            // Guests only talk to the host: forward so every other guest plays it too (the sender ignores the echo).
-            if (Services.Net.IsHost) Services.Net.Send(PedestalMessage, true, delegate(BinaryWriter w) { ObjectWire.WritePedestal(w, id.ToByteArray()); });
         }
         static void Trace(string key, string value)
         {
@@ -219,7 +224,7 @@ namespace OriCoop
             if (Off || Characters.Ori == null || Own == null || StoryHost.Current.Inside) return;
             if (Vector3.Distance(Characters.Ori.Position, Own.Position) <= 30f) return;
             if (StuckSpirit()) Characters.Ori.BackToPlayerController(); else Characters.Ori.MoveOriToPlayer();
-            Repairs++; Log("spirit snapped to player (" + why + ")");
+            Repairs++; SpiritRepairs++; Log("spirit snapped to player (" + why + ")");
         }
         static bool StuckSpirit()
         {
@@ -231,7 +236,7 @@ namespace OriCoop
         {
             if (Off) return;
             if (StuckSpirit() && (immediate || now - s_spiritAt >= 2f))
-            { Characters.Ori.BackToPlayerController(); s_spiritAt = now; Repairs++; Log("repair spirit"); }
+            { Characters.Ori.BackToPlayerController(); s_spiritAt = now; Repairs++; SpiritRepairs++; Log("repair spirit"); }
             if (Game.UI.SeinUI != null && !Game.UI.SeinUI.ShowUI && (immediate || now - s_uiAt >= 2f))
             { Game.UI.SeinUI.ShowUI = true; s_uiAt = now; Repairs++; Log("repair ShowUI"); }
             if (Letterbox.ShowLetterboxes && (immediate || now - s_letterboxAt >= 2f))
@@ -321,7 +326,7 @@ namespace OriCoop
             static void Prefix()
             {
                 if (!Off && Online && !StoryHost.Current.Inside && !StorySync.StoryActive && StuckSpirit())
-                { Characters.Ori.BackToPlayerController(); Repairs++; Log("repair spirit before checkpoint"); }
+                { Characters.Ori.BackToPlayerController(); Repairs++; SpiritRepairs++; Log("repair spirit before checkpoint"); }
             }
         }
     }

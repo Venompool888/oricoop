@@ -301,7 +301,11 @@ namespace OriCoop
                     if (!p1Available && puppet.Sein.gameObject.activeSelf)
                     { puppet.Sein.gameObject.SetActive(false); P2Extras.SetCompanionActive(puppet, false); }
                     else if (p1Available && m_parked)
-                    { puppet.Sein.gameObject.SetActive(true); P2Extras.SetCompanionActive(puppet, true); Teleport(puppet.Sein, p1.Position); }
+                    {
+                        // T-109: a downed extra local player stays switched off at its skull until it is revived.
+                        if (puppet.IsLocal && Revive.IsDowned(puppet.Sein)) continue;
+                        puppet.Sein.gameObject.SetActive(true); P2Extras.SetCompanionActive(puppet, true); Teleport(puppet.Sein, p1.Position);
+                    }
                 }
                 m_parked = !p1Available;
                 P2Input.HoldStill = !Revive.IsDowned(p1) && (!p1Available || p1.Controller == null || !p1.Controller.CanMove || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
@@ -539,6 +543,8 @@ namespace OriCoop
             if (prefab == null) { Log.LogError("characters/seinCharacter prefab not found"); return null; }
 
             ICharacter savedCurrent = Characters.Current;
+            GameplayCamera spawnCam = UI.Cameras.Current;
+            Transform camBefore = spawnCam != null ? spawnCam.Target : null;
             GameObject go;
             P2Lifecycle.SpawningP2 = true;
             float offset = !NetPlay.Enabled && seat > 2 ? 0f : 1f;
@@ -549,6 +555,7 @@ namespace OriCoop
             // SeinCharacter.Awake made the new copy the global Sein; give that back to P1.
             Characters.Sein = p1;
             Characters.Current = savedCurrent;
+            PuppetCameraGuard.AfterSpawn(spawnCam, camBefore, p2);   // T-101: and the camera target
 
             P2Context.P1 = p1;
             Puppet puppet;
@@ -711,7 +718,17 @@ namespace OriCoop
                 bool isP2 = puppet != null;
                 // Online: the partner's Ori lives and dies in its owner's game; here it just keeps following them.
                 if (isP2 && NetPlay.Enabled && !puppet.IsLocal) { puppet.Sein.Mortality.Health.RestoreAllHealth(); return false; }
-                if (isP2 && NetPlay.Enabled && puppet.IsLocal && Revive.Enabled) return !Revive.HandleDeathOnline(puppet.Sein);
+                if (isP2 && NetPlay.Enabled && puppet.IsLocal)
+                {
+                    if (Revive.Enabled && Revive.HandleDeathOnline(puppet.Sein)) return false;
+                    // T-103: never the game's own death for an extra local player: on a puppet it reloads the whole game
+                    // (One Life would end the save). Nobody online to revive it (the host alone, or every guest left)
+                    // or classic rules: it comes back beside P1, as P2 does in local co-op.
+                    Log.LogInfo("P" + puppet.Seat + " (extra local player) died with nobody to revive it; respawning at P1");
+                    puppet.Sein.Mortality.Health.RestoreAllHealth();
+                    if (P2Context.P1 != null) Teleport(puppet.Sein, P2Context.P1.Position);
+                    return false;
+                }
                 // Online: the local Ori dying goes downed while the partner can revive it (ReviveNet.cs).
                 if (NetPlay.Enabled && !isP2 && Revive.Enabled && P2Context.P1 != null && __instance.transform.IsChildOf(P2Context.P1.transform)) return !Revive.HandleDeathOnline(P2Context.P1);
                 if (NetPlay.Enabled && !isP2 && SessionRules.HandleOwnDeathOnline(__instance)) return false;

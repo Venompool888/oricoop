@@ -54,7 +54,9 @@ namespace OriCoop
         static int[] s_baseline = new int[4];
         static float s_ignoreNavUntil, s_backHeld;
         static float s_savedTimeScale = 1f;
-        static bool s_savedLockInput;
+        static bool s_savedLockInput, s_ownsLockInput;
+        // Test-only mutation switch (T-132): online too, save LockInput at open and write it back at close.
+        static readonly bool s_staleLockMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_MENU_STALE_LOCK") == "1";
         static string s_message = "";
         static readonly bool[] s_connected = new bool[4];
         static readonly int[] s_buttons = new int[4];
@@ -139,7 +141,12 @@ namespace OriCoop
             s_savedTimeScale = Time.timeScale;
             s_changedTimeScale = !NetPlay.Enabled && !s_fromPause;
             if (s_changedTimeScale) Time.timeScale = 0f;
-            if (GameController.Instance != null) { s_savedLockInput = GameController.Instance.LockInput; GameController.Instance.LockInput = true; }
+            // Offline the game is frozen (time scale 0 or the pause menu), so nothing else touches LockInput while the panel
+            // is open: save it and write it back. Online the world keeps running and a story box may take or drop the lock
+            // meanwhile; writing back the value from opening time froze the player or freed them mid-dialog (T-132).
+            // Online the panel holds this player's Ori through SessionRules.LocalLocked and leaves LockInput alone.
+            s_ownsLockInput = !NetPlay.Enabled || s_staleLockMutation;
+            if (s_ownsLockInput && GameController.Instance != null) { s_savedLockInput = GameController.Instance.LockInput; GameController.Instance.LockInput = true; }
             PollPads(); PollPads();
             Plugin.Log.LogInfo("co-op menu opened (" + (page == PageModeSelect ? "mode select" : page == PageSetup ? "2-player setup" : "settings") + ")");
         }
@@ -150,7 +157,8 @@ namespace OriCoop
             IsOpen = false;
             s_waitFor = 0;
             if (s_changedTimeScale) Time.timeScale = s_savedTimeScale;
-            if (GameController.Instance != null) GameController.Instance.LockInput = s_savedLockInput;
+            if (s_ownsLockInput && GameController.Instance != null) GameController.Instance.LockInput = s_savedLockInput;
+            s_ownsLockInput = false;
             P2Input.StartLatched = false;
             KeyboardOnlyP1.HoldUntilReleased = true;
             KeyboardOnlyP1.Refresh();
@@ -312,13 +320,23 @@ namespace OriCoop
         static GUIStyle s_title, s_text, s_row, s_rowFocus, s_small;
 
         static int s_stylesH;   // the screen height the styles were made for (T-093: a window that grows must not keep small fonts)
+        static int s_fontSize;
+        static readonly string[] FontNames = { "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial" };
+
+        // T-153: a new font only when the size really changes, and the old one is destroyed (it leaked on every resize).
+        internal static void EnsureFont(int size)
+        {
+            if (s_font != null && s_fontSize == size && !OriCoop.Ui.OsFonts.LeakMutated) return;
+            s_font = OriCoop.Ui.OsFonts.Replace(s_font, FontNames, size); s_fontSize = size;
+            s_stylesH = 0;   // the styles still point at the old (destroyed) font: rebuild them at the next draw
+        }
 
         static void Styles()
         {
             if (s_title != null && s_stylesH == Screen.height) return;
-            s_stylesH = Screen.height; s_modeH = 0;
             int size = Mathf.Max(14, Screen.height / 42);
-            try { s_font = Font.CreateDynamicFontFromOSFont(new string[] { "Microsoft YaHei UI", "Microsoft YaHei", "SimHei", "Arial" }, size); } catch (Exception) { s_font = null; }
+            EnsureFont(size);
+            s_stylesH = Screen.height; s_modeH = 0;
             s_text = new GUIStyle(GUI.skin.label); s_text.fontSize = size; s_text.wordWrap = true; s_text.richText = true;
             if (s_font != null) s_text.font = s_font;
             s_text.normal.textColor = new Color(0.92f, 0.94f, 1f);

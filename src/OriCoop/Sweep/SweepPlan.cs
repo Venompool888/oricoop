@@ -25,8 +25,9 @@ namespace OriCoop.Sweep
         // catAndMouse* = scripted escape chases (teleporting in triggers the scripted death/camera); *Test*/*Placeholder =
         // dev scenes outside the world map, from which recovery cannot teleport back. kuroAttack/kuroMoment/kuroNest/
         // theSacrifice/sacrifice*/swallowsNest* = cinematic or prologue scenes with no playable ground (first full sweep:
-        // every one failed placement after a 4-minute timeout).
-        public const string DefaultSkip = "(?i)^(credits|worldMap|titleScreen|intro|outro|catAndMouse|kuroAttack|kuroMoment|kuroNest|theSacrifice|sacrifice|swallowsNest|.*Background$|.*Cutscene|.*Test|.*Placeholder$)";
+        // every one failed placement after a 4-minute timeout). spiritTreeToRunaway* = the scripted run-away transition: entering
+        // it starts the transition, so it never stays loaded (T-102).
+        public const string DefaultSkip = "(?i)^(credits|worldMap|titleScreen|intro|outro|catAndMouse|kuroAttack|kuroMoment|kuroNest|theSacrifice|sacrifice|swallowsNest|spiritTreeToRunaway|.*Background$|.*Cutscene|.*Test|.*Placeholder$)";
         static int Index(string value, int fallback)
         {
             if (string.IsNullOrEmpty(value)) return fallback;
@@ -60,6 +61,19 @@ namespace OriCoop.Sweep
             }
             return result;
         }
+        // T-102: standing-spot candidates inside a scene's bounds after the centre: three rows from the top down (Ori is
+        // dropped onto the floor below each point), middle columns first.
+        public static List<float[]> Candidates(float xMin, float yMin, float width, float height)
+        {
+            List<float[]> result = new List<float[]>();
+            foreach (float fy in new[] { 0.75f, 0.5f, 0.25f })
+                foreach (float fx in new[] { 0.5f, 0.3f, 0.7f, 0.15f, 0.85f })
+                    if (!(fx == 0.5f && fy == 0.5f)) result.Add(new[] { xMin + width * fx, yMin + height * fy });
+            return result;
+        }
+        // A float carried in an int field of a barrier sample, bit for bit.
+        public static int FloatBits(float value) { return BitConverter.ToInt32(BitConverter.GetBytes(value), 0); }
+        public static float BitsFloat(int bits) { return BitConverter.ToSingle(BitConverter.GetBytes(bits), 0); }
         public static string Hash(IList<SweepEntry> entries)
         {
             // FNV-1a over explicit invariant, length-delimited UTF-8 fields (not randomized String.GetHashCode).

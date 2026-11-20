@@ -22,6 +22,7 @@ static class RulesTests
         public bool Connected { get { return true; } }
         public bool IsHost { get { return Seat == 1; } }
         public int Sender { get; private set; }
+        public int HostSeat { get { return m_hostSeat; } set { m_hostSeat = value; } } int m_hostSeat = 1;
         public event Action SessionStarted;
         public event Action SessionEnded;
         public event Action<int> PlayerJoined;

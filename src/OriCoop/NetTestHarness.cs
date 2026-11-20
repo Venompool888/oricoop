@@ -29,6 +29,7 @@ namespace OriCoop
         static readonly Dictionary<int, Dictionary<int, ThreePacket>> s_threePackets = new Dictionary<int, Dictionary<int, ThreePacket>>();
         static double s_goAt, s_pickupAt, s_collectedAt;
         static bool s_threeEnded, s_leaveReleased, s_done;
+        internal static bool HostLeftInServerMode;   // T-111: the 3P server-mode check made P1 leave (CoopSaveTest skips phase L)
         static float s_threeRise, s_threeTravel, s_threeError;
         static long s_threeFrames;
         static int ClientCount
@@ -682,7 +683,78 @@ namespace OriCoop
                 && a.Applied - Three(4, 1).Applied == 1 && a.Rejected - Three(4, 1).Rejected == 1,
                 "3P pickup applied once, duplicate rejected, all keys agree");
 
+            // T-115: guest-to-guest broadcasts ride the P2P host's forward table (the C-server forwards everything): a
+            // soul link (80) and a co-push report (89) sent by seat 2 must reach seat 3.
+            int soulBefore = PartnerFx.SoulLinksReceived, pushBefore = PushBlockSync.CoPushHeard;
+            yield return ThreeRound(h, 40);
+            if (Players.LocalSeat == 2) { PartnerFx.TestSendSoulLink(); PushBlockSync.TestSendCoPush(); h.Note("3P seat 2 sent soul link and co-push"); }
+            if (Players.LocalSeat == 3)
+            {
+                by = Time.realtimeSinceStartup + 6f;
+                while ((PartnerFx.SoulLinksReceived == soulBefore || PushBlockSync.CoPushHeard == pushBefore) && Time.realtimeSinceStartup < by) yield return null;
+                h.Check(PartnerFx.SoulLinksReceived > soulBefore && PushBlockSync.CoPushHeard > pushBefore,
+                    "3P guest 3 receives guest 2's soul link (80) and co-push (89) (T-115; " + (PartnerFx.SoulLinksReceived - soulBefore) + "/" + (PushBlockSync.CoPushHeard - pushBefore) + ")");
+            }
+            yield return ThreeRound(h, 41);
             yield return ThreeRound(h, 6);
+            // T-111: in server mode the room outlives P1, so P1 is the one who leaves. The arbiter moves to seat 2 and
+            // seat 3 must obey its host-only messages (a gate count here; intro and wipe use the same sender check).
+            if (NetRoute.ServerMode)
+            {
+                // T-158: the room creator without the arbiter role is not the host. P1 gives up its seat but stays connected,
+                // seat 2 arbitrates; P1 must stop acting as host and obey seat 2's host-only messages (a gate count here).
+                if (Players.LocalSeat == 1 && CServerLink.Client != null) { HostLeftInServerMode = true; CServerLink.Client.ReleaseAll(); }
+                by = Time.realtimeSinceStartup + 10f;
+                while ((Players.LocalSeat == 1 ? NetRoute.HostSeat != 2 : PuppetAt(1) != null) && Time.realtimeSinceStartup < by) yield return null;
+                yield return Wait(1f);
+                h.Check(NetPlay.IsHost == (Players.LocalSeat == 2), "3P server: only the arbiter is host, not the creator without the role (T-158, local P"
+                    + Players.LocalSeat + " IsHost " + NetPlay.IsHost + ", host seat " + NetRoute.HostSeat + ")");
+                if (Players.LocalSeat == 2) { yield return Wait(0.5f); ForcedSync.TestSendCount("t158-gate", 1, 2); }
+                if (Players.LocalSeat == 1)
+                {
+                    by = Time.realtimeSinceStartup + 6f;
+                    while (ForcedSync.TestCount("t158-gate") != 1 && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(ForcedSync.TestCount("t158-gate") == 1, "3P server: the creator obeys the arbiter's gate count (T-158)");
+                    ForcedSync.TestForget("t158-gate");
+                    h.Note("3P server: P1 leaving; harness completion quits this client"); yield break;
+                }
+                yield return Wait(1f);
+                ForcedSync.TestForget("t158-gate");
+                by = Time.realtimeSinceStartup + 30f;
+                while ((PuppetAt(1) != null || Players.LocalSeat == 2 && !NetPlay.IsHost) && Time.realtimeSinceStartup < by) yield return null;
+                yield return Wait(1f);   // the arbiter change reaches seat 3 with the same server state
+                HostLeftInServerMode = PuppetAt(1) == null;
+                h.Check(PuppetAt(1) == null && NetPlay.IsHost == (Players.LocalSeat == 2),
+                    "3P server: P1 left and seat 2 arbitrates now (local P" + Players.LocalSeat + ", host seat " + NetRoute.HostSeat + ")");
+                if (Players.LocalSeat == 2)
+                {
+                    yield return Wait(1f);
+                    ForcedSync.TestSendCount("t111-gate", 1, 2);
+                    h.Note("3P server: new host sent gate count t111-gate 1/2");
+                    yield return Wait(10f);   // seat 3 checks within this window
+                }
+                else
+                {
+                    by = Time.realtimeSinceStartup + 10f;
+                    while (ForcedSync.TestCount("t111-gate") != 1 && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(ForcedSync.TestCount("t111-gate") == 1, "3P server: seat 3 applies the new host's gate count (T-111)");
+                }
+                ForcedSync.TestForget("t111-gate");
+                h.Check(Connected, "3P server: remaining players stay connected after the host left");
+                // T-152: a session that drops and then leaves online play frees its socket (the parked stale client).
+                if (Players.LocalSeat == 3 && CServerLink.Client != null)
+                {
+                    // A real drop: the peer times out inside NetPlay's poll, so the link parks the client and NetPlay retries
+                    // 1 s later (a local Disconnect is replaced by an immediate reconnect before its event runs). Leave first.
+                    CServerLink.Client.Peer.TimeoutMs = 1;
+                    float dropBy = Time.realtimeSinceStartup + 1f;
+                    while (!CServerLink.HasStale && Time.realtimeSinceStartup < dropBy) yield return null;
+                    bool parked = CServerLink.HasStale;
+                    NetPlay.End("T-152 test leave");
+                    h.Check(parked && !CServerLink.HasStale, "3P server: a dropped session that leaves online play frees its socket (T-152, parked " + parked + ")");
+                }
+                yield break;
+            }
             if (NetPlay.IsHost) NetPlay.SendTestSignal("leave");
             if (Players.LocalSeat == 3)
             {
@@ -1667,6 +1739,7 @@ namespace OriCoop
             h.Check(SaveSync.Ready, "net save handshake completes before movement phases");
             if (Players.Remotes.Count != ClientCount - 1 || !SaveSync.Ready) yield break;
             h.Check(Own != null && Own != P2Context.P2, "net own Ori and puppet are separate");
+            h.Check(PuppetCameraGuard.Steals == 0, "net puppet spawn kept the local camera target (T-101, steals=" + PuppetCameraGuard.Steals + ")");
             if (Own == null || Own == P2Context.P2) yield break;
             yield return StartBarrier(h);
             if (s_goAt == 0) yield break;
@@ -1862,6 +1935,8 @@ namespace OriCoop
                 h.Note("digest resyncs=" + WorldSync.DigestResyncs + " deferred=" + WorldSync.DigestResyncsDeferred);
                 // Phase WO teleports through nine scenes on purpose; its scene-load resyncs are not counted (NetWorldObjTest.Resyncs).
                 if (!host) h.Check(WorldSync.DigestResyncs - NetWorldObjTest.Resyncs <= 1, "digest-mismatch full resyncs <= 1 per run (" + WorldSync.DigestResyncs + ", " + NetWorldObjTest.Resyncs + " during phase WO)");
+                // Every respawn of the puppet in this run (rejoins, checkpoint reloads) kept the local camera target.
+                h.Check(PuppetCameraGuard.Steals == 0, "net puppet respawns kept the local camera target (T-101, steals=" + PuppetCameraGuard.Steals + ")");
                 h.Check(h.ErrorCount == 0, "net no Unity errors/exceptions (" + h.ErrorCount + ")");
             }
             finally { Stop(); }

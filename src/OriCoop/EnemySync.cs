@@ -94,6 +94,7 @@ namespace OriCoop
             Services.Net.Forward(Snapshots, Life, Symbols, Shot);
             Services.Net.SessionStarted += Begin; Services.Net.SessionEnded += Reset;
             Services.Net.PlayerLeft += RemoveSeat;
+            Players.SeatsRenamed += RenameSeats;
             Services.Net.PlayerJoined += delegate(int seat)
             {
                 foreach (KeyValuePair<string, ushort> symbol in s_symbols)
@@ -455,6 +456,9 @@ namespace OriCoop
 
         static void Announce(Actor a)
         {
+            // Only the host reads presence reports (every other receiver dropped them after creating an entry, which made
+            // every guest track, and report, every enemy the host ever saw). (T-147)
+            if (Services.Net.IsHost) return;
             Send(Presence, true, delegate(BinaryWriter w) { WriteId(w, a); WriteVector(w, a.Origin); w.Write(a.Loaded); });
             a.PresenceSent(delegate { return Now; });
         }
@@ -462,9 +466,12 @@ namespace OriCoop
         {
             Actor a = ReadId(r); a.Origin = ReadVector(r); bool loaded = r.ReadBoolean();
             if (!Services.Net.IsHost) return;
-            a.Presence(Services.Net.Sender, loaded);
             // Position alone never grants authority: the chosen seat must report the scene loaded.
-            Scan(); Decide(a);
+            // T-147: no Scan per report (Tick scans every 0.25 s), and an unchanged owner is not re-granted to everyone.
+            int sender = Services.Net.Sender;
+            int action = a.OnPresence(sender, loaded, delegate { return PolicyDesiredOwner(a); });
+            if (action == 1) Grant(a, false, sender);
+            else if (action == 2) Decide(a);
         }
         static void Decide(Actor a)
         {
@@ -527,12 +534,12 @@ namespace OriCoop
                 if (a.LoadedSeats.Contains(remote.Key))
                     yield return new KeyValuePair<int, float>(remote.Key, Vector3.Distance(position, remote.Value));
         }
-        static void Grant(Actor a, bool transfer)
+        static void Grant(Actor a, bool transfer, int seat = 0)
         {
             State s = Mine(a) && a.Placeholder != null ? Capture(a, true) : a.Latest;
             Send(Authority, true, delegate(BinaryWriter w) {
                 WriteId(w, a); EnemyWire.WriteAuthority(w, 1, a.Epoch, a.OwnerSeat); WriteVector(w, a.Origin); WriteState(w, a, s, true);
-            });
+            }, seat);
         }
         static void ReadAuthority(BinaryReader r)
         {
@@ -564,6 +571,20 @@ namespace OriCoop
             if (Mine(a)) Resume(a); else { a.ExpectFirstSnapshot = true; FreezeBodies(a); }
             Grant(a, true);
             Trace("owner change", a, "ReadHandoff");
+        }
+        // T-133: a device's primary seat was renumbered (a guest added a local player into a lower free seat). The enemies
+        // it simulates, its presence and the symbols it sent follow it to the new number on every PC; before, it froze them
+        // (Mine compared the old owner with its new seat) and the host rejected its snapshots (sender != owner).
+        static void RenameSeats(int[] renamed)
+        {
+            foreach (Actor a in s_actors.Values) a.RenameSeats(renamed);
+            List<KeyValuePair<uint, string>> moved = new List<KeyValuePair<uint, string>>();
+            foreach (KeyValuePair<uint, string> symbol in s_remoteSymbols)
+                if (EnemyAuthority.RenamedSeat(renamed, (int)(symbol.Key >> 16)) != (int)(symbol.Key >> 16)) moved.Add(symbol);
+            foreach (KeyValuePair<uint, string> symbol in moved) s_remoteSymbols.Remove(symbol.Key);
+            foreach (KeyValuePair<uint, string> symbol in moved)
+                s_remoteSymbols[SymbolKey(EnemyAuthority.RenamedSeat(renamed, (int)(symbol.Key >> 16)), (ushort)(symbol.Key & 0xFFFF))] = symbol.Value;
+            Services.Log.Info("enemies: device seats renumbered; " + s_actors.Count + " enemies and " + moved.Count + " symbols follow");
         }
         static void RemoveSeat(int seat)
         {

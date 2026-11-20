@@ -242,6 +242,8 @@ namespace OriCoop.Rooms
             OpenRoom(room);
         }
 
+        static readonly bool s_oldNameMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ROOM_NAME_HASH") == "1";
+
         internal void BeginCreate()
         {
             int count = 0;
@@ -250,6 +252,8 @@ namespace OriCoop.Rooms
             while (true)
             {
                 roomName = L10n.F("rooms.auto_name", nick, number);
+                // Test-only mutation switch (T-136): the old "#N" name, which the game draws as yellow markup.
+                if (s_oldNameMutation) roomName = L10n.F("rooms.default_name", nick) + " #" + number;
                 bool collision = false;
                 foreach (RoomBackupInfo room in rooms) if (room.Name == roomName) { collision = true; break; }
                 if (!collision) break;

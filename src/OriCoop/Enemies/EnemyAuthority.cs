@@ -70,7 +70,7 @@ namespace OriCoop.Enemies
             return true;
         }
 
-        internal bool Known, Frozen, Loaded, SentLoaded, SentPresence, ExpectFirstSnapshot, PendingTakeover;
+        internal bool Known, Frozen, Loaded, SentLoaded, ExpectFirstSnapshot, PendingTakeover;
         internal int OwnerSeat = 1, PendingOwner;
         internal readonly HashSet<int> LoadedSeats = new HashSet<int>();
         internal float OwnerChangedAt, NextPresence;
@@ -79,8 +79,20 @@ namespace OriCoop.Enemies
 
         internal bool Mine(int localSeat) { return Known && !Frozen && OwnerSeat == localSeat; }
         internal void Presence(int seat, bool loaded) { if (loaded) LoadedSeats.Add(seat); else LoadedSeats.Remove(seat); }
-        internal bool PresenceDue(Func<float> now) { return !SentPresence || SentLoaded != Loaded || now() >= NextPresence; }
-        internal void PresenceSent(Func<float> now) { SentLoaded = Loaded; SentPresence = true; NextPresence = now() + 2f; }
+        // T-147: report a load or an unload once; refresh only enemies this PC has loaded. An enemy it only heard of
+        // (s_actors keeps every enemy anyone saw for the whole session) costs no traffic.
+        internal bool PresenceDue(Func<float> now) { return SentLoaded != Loaded || Loaded && now() >= NextPresence; }
+        internal void PresenceSent(Func<float> now) { SentLoaded = Loaded; NextPresence = now() + 2f; }
+        // Host: a guest reported whether it has this enemy loaded. (T-147)
+        // 0: nothing to send, 1: send the owner and state to that guest only, 2: run the owner decision.
+        // An unchanged owner is not re-broadcast: only a guest that just loaded the enemy needs the owner and state.
+        internal int OnPresence(int sender, bool loaded, Func<int> desired)
+        {
+            bool changed = LoadedSeats.Contains(sender) != loaded;
+            Presence(sender, loaded);
+            if (Policy.UsesLeases || !Known || PendingTakeover || OwnerSeat != desired()) return 2;
+            return changed && loaded ? 1 : 0;
+        }
 
         // 0: refresh, 1: await old owner, 2: transfer from local owner.
         internal int BeginDecision(int desired, int localSeat)
@@ -117,6 +129,19 @@ namespace OriCoop.Enemies
         }
         internal bool AcceptOwnerMessage(int localSeat, uint epoch, int sender, bool checkFrozen)
         { return Known && !Mine(localSeat) && (!checkFrozen || !Frozen) && Epoch == epoch && OwnerSeat == sender; }
+        // T-133: a device's primary seat was renumbered (renamed[old] = new, 0 = unchanged). The device keeps simulating
+        // its enemies: owner, pending owner and presence move to the new number together (applied at once, so a chain
+        // like 4->3 with 3->2 cannot mix them up).
+        internal void RenameSeats(int[] renamed)
+        {
+            OwnerSeat = RenamedSeat(renamed, OwnerSeat);
+            PendingOwner = RenamedSeat(renamed, PendingOwner);
+            List<int> loaded = new List<int>(LoadedSeats);
+            LoadedSeats.Clear();
+            foreach (int seat in loaded) LoadedSeats.Add(RenamedSeat(renamed, seat));
+        }
+        internal static int RenamedSeat(int[] renamed, int seat)
+        { return seat > 0 && seat < renamed.Length && renamed[seat] != 0 ? renamed[seat] : seat; }
     }
 
     internal struct EnemyTickPosition
@@ -205,7 +230,10 @@ namespace OriCoop.Enemies
             uint incomingEpoch, uint epoch, bool host)
         {
             if (incomingGeneration != generation || applied) return 0;
-            if (frozen || (!mine && incomingEpoch < epoch)) return 1;
+            // T-151: a hit aimed in the previous epoch is queued on every end, the new owner included (the host taking
+            // over used to drop it): FlushHits then applies it once on the owner (Applied set dedups it against the
+            // old owner's last state) or forwards it with the current epoch.
+            if (frozen || incomingEpoch < epoch) return 1;
             if (mine && incomingEpoch == epoch) return 2;
             if (host && incomingEpoch == epoch) return 3;
             return 0;

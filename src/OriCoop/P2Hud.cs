@@ -122,7 +122,7 @@ namespace OriCoop
             Object.DontDestroyOnLoad(hud.Go);
             hud.Text = hud.Go.AddComponent<TextMesh>();
             Font font = null;
-            try { font = Font.CreateDynamicFontFromOSFont(new string[] { "Arial", "Segoe UI Symbol", "Microsoft YaHei" }, 64); } catch (System.Exception) { }
+            font = OriCoop.Ui.OsFonts.Shared(new string[] { "Arial", "Segoe UI Symbol", "Microsoft YaHei" }, 64);   // T-153: one font, not one per tag
             if (font == null) font = Resources.GetBuiltinResource<Font>("Arial.ttf");
             if (font == null) return;
             hud.Text.font = font;

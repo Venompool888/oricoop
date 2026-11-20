@@ -37,7 +37,7 @@ namespace OriCoop
         public static string LastReviveEffect = "", LastReviveSound = "";
         public static float LastHurtPlayedAt = -1f, LastReviveAt = -1f;
         public static bool LastHurtStateOn, LastHurtAnimOn;
-        public static int SoulLinksSent, SoulLinksShown;
+        public static int SoulLinksSent, SoulLinksShown, SoulLinksReceived;
 
         static bool s_registered;
 
@@ -52,12 +52,22 @@ namespace OriCoop
             s_registered = true;
             Services.Net.On(MsgPuppetFx, OnNetPuppetFx);
             Services.Net.On(MsgSoulLink, OnNetSoulLink);
+            // T-115: guests only talk to the P2P host: it must relay a guest's soul link flame to the other guests.
+            if (!PushBlockSync.s_mutateNoForward) Services.Net.Forward(MsgSoulLink);
+        }
+        // T-115 net test: announce a soul link at our own position (the partners spawn the native flame on our puppet).
+        internal static void TestSendSoulLink()
+        {
+            if (Host.P1 == null) return;
+            int seat = Host.LocalSeat; Vector3 at = Host.P1.Position;
+            Services.Net.Send(MsgSoulLink, true, w => { w.Write((byte)seat); w.Write(at.x); w.Write(at.y); w.Write(at.z); });
         }
 
         // ---- soul link (T-029) -----------------------------------------------------------------------------------------
         // Saving with a soul link places the game's own flame (SeinSoulFlame.CheckpointMarker, with its appear flash). The
         // partner's game blocks the puppet's soul-flame logic online, so it never placed one: send where ours appeared and
         // that game spawns the same native flame on our puppet (replacing the previous one; it goes with the puppet).
+        // T-138: the same for this device's extra local players (T-059): their Oris are puppets here, but ours to report.
         [HarmonyPatch(typeof(SeinSoulFlame), "CastSoulFlame")]
         static class SoulLinkWatch
         {
@@ -65,22 +75,36 @@ namespace OriCoop
             {
                 try
                 {
-                    if (!Online || Host.P1 == null || Host.P1.SoulFlame != __instance || ___m_soulFlame == null) return;
-                    int seat = Host.LocalSeat; Vector3 at = ___m_soulFlame.Position;
+                    if (!Online || ___m_soulFlame == null) return;
+                    SeinCharacter caster = OwnedCaster(__instance);
+                    int seat = caster != null ? Host.SeatOf(caster) : 0;
+                    if (seat < 1) return;
+                    Vector3 at = ___m_soulFlame.Position;
                     Services.Net.Send(MsgSoulLink, true, w => { w.Write((byte)seat); w.Write(at.x); w.Write(at.y); w.Write(at.z); });
                     SoulLinksSent++;
-                    Log("soul link at " + at + " sent to the partner");
+                    Log("soul link of P" + seat + " at " + at + " sent to the other devices");
                 }
                 catch (Exception e) { Services.Log.Warn("soul link send: " + e.Message); }
             }
+        }
+
+        // The Ori this device owns that cast `flame`: its own, or one of its extra local players'; null for another device's.
+        static SeinCharacter OwnedCaster(SeinSoulFlame flame)
+        {
+            if (flame == null) return null;
+            if (Host.P1 != null && Host.P1.SoulFlame == flame) return Host.P1;
+            foreach (Puppet p in Players.Remotes)
+                if (p != null && p.IsLocal && p.Sein != null && p.Sein.SoulFlame == flame) return p.Sein;
+            return null;
         }
 
         static void OnNetSoulLink(BinaryReader r)
         {
             int seat = r.ReadByte();
             Vector3 at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+            SoulLinksReceived++;
             SeinCharacter s = Revive.SeinAt(seat);
-            if (s == null || s == Host.P1 || s.SoulFlame == null) { Log("got soul link for seat " + seat + " but no puppet"); return; }
+            if (s == null || s == Host.P1 || s.SoulFlame == null || OwnedLocalPuppet(s)) { Log("got soul link for seat " + seat + " but no puppet"); return; }
             s.SoulFlame.DestroySoulFlame();
             s.SoulFlame.SpawnSoulFlame(at);
             SoulLinksShown++;

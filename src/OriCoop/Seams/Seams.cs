@@ -12,6 +12,7 @@ namespace OriCoop.Seams
         bool Connected { get; }
         bool IsHost { get; }
         int Sender { get; }                      // seat of the peer whose message is being handled
+        int HostSeat { get; }                    // seat whose host-only messages count: 1 in P2P, the arbiter in server mode
         void On(byte type, Action<BinaryReader> handler);
         void Send(byte type, bool reliable, Action<BinaryWriter> body);
         void SendTo(int seat, byte type, bool reliable, Action<BinaryWriter> body);

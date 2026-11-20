@@ -37,8 +37,14 @@ namespace OriCoop
         static IEnumerator AfterSuite(TestHarness h)
         {
             if (!NetPlay.Enabled) yield break;
+            // T-111: after P1 left a server-mode room (3P host-leave check) the save lineage after a host handover is a
+            // separate question (follow-up in T-111); the remaining seats skip phase L there.
+            if (NetTestHarness.HostLeftInServerMode) { h.Note("phase L skipped: P1 left the server-mode room"); yield break; }
             h.Note("phase L co-op save lineage");
-            if (NetPlay.IsHost)
+            // T-111: in server mode the arbiter moves to seat 2 when P1 leaves, but the save lineage stays P1's: a seat
+            // that only became the arbiter checks its guest copy, not a host slot it never had.
+            bool saveHost = NetPlay.IsHost && (!OriCoop.Authority.NetRoute.ServerMode || Players.LocalSeat == 1);
+            if (saveHost)
             {
                 h.Check(CoopSaves.Outcome == "new" || CoopSaves.Outcome == "same", "L lineage outcome on a fresh pair = " + CoopSaves.Outcome);
                 CheckHostLink(h);

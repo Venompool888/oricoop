@@ -11,7 +11,8 @@ namespace OriCoop
 {
     // Local co-op downed / revive (the owner's design, 2026-11-14):
     // - An Ori that dies while its partner is alive is "downed" instead: a skull marker stays at its last solid ground.
-    // - The partner stands near the skull and holds the Spirit Flame button (the game's structure-interaction button:
+    // - A living teammate (with three or more players: any of them, see MultiRevive) stands near the skull and holds
+    //   the Spirit Flame button (the game's structure-interaction button:
     //   spirit wells, doors, map stones). Progress 0-100% over 1.5 s of holding; releasing pauses it, progress is kept.
     // - While holding, the saver's health drains at (health when the revive started) / 2 / 1.5 s; what was drained is
     //   the revived Ori's health (at least 1). Any accepted damage to the saver interrupts the hold (drained health and
@@ -63,7 +64,9 @@ namespace OriCoop
             return false;
         }
         static int PlayerOf(SeinCharacter s) { return Host.SeatOf(s); }
-        internal static bool MultiRevive { get { return Services.Net.Enabled && Host.PuppetCount > 1; } }
+        // Three or more players (online, or offline P3/P4 since T-057): any living player at the skull can revive, the
+        // nearest one holding wins (T-107). Two players keep the classic "the partner revives" path.
+        internal static bool MultiRevive { get { return Host.PuppetCount > 1; } }
         internal static SeinCharacter Partner(SeinCharacter s)
         {
             if (!MultiRevive)
@@ -246,6 +249,18 @@ namespace OriCoop
             }
         }
 
+        // A downed Ori that comes back without a rescuer (both down, a partner left, the checkpoint reload, leaving
+        // co-op). An extra local player (offline P2-P4, or an online extra on this PC) also gets full health back
+        // beside P1; un-hiding it alone left it at 0 health (T-109). This PC's own Ori and remote puppets are only un-hidden.
+        static void RestoreUnrescued(Downed d)
+        {
+            RestoreDowned(d, false);
+            if (d == null || d.Sein == null || d.Remote || d.Player == Host.LocalSeat || Host.P1 == null) return;
+            d.Sein.Mortality.Health.RestoreAllHealth();
+            Host.Teleport(d.Sein, Host.P1.Position + new Vector3(1f, 0f, 0f));
+            Host.ReturnCompanion(d.Sein, "back without a revive");
+        }
+
         // ---- every frame (local co-op only) ---------------------------------------------------------------------
         public static void Tick()
         {
@@ -291,7 +306,7 @@ namespace OriCoop
         {
             if (saver == null || d == null) return false;
             Vector3 at;
-            if (!MultiRevive || !Host.RemotePos(PlayerOf(saver), out at)) at = saver.Position;
+            if (!Services.Net.Enabled || !MultiRevive || !Host.RemotePos(PlayerOf(saver), out at)) at = saver.Position;
             Vector3 v = at - d.Marker;
             return Mathf.Abs(v.x) < Radius && Mathf.Abs(v.y) < Radius;
         }
@@ -363,22 +378,11 @@ namespace OriCoop
         static void OnPostRestore()
         {
             if (!AnyDowned) return;
-            SeinCharacter p1 = Host.P1;
             Downed[] down = (Downed[])s_down.Clone();
             Array.Clear(s_down, 0, s_down.Length);
             RestoreDowned(down[Host.LocalSeat], false);
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
-            {
-                if (seat == Host.LocalSeat) continue;
-                Downed d = down[seat];
-                RestoreDowned(d, false);
-                if (d != null && seat != Host.LocalSeat && !d.Remote && d.Sein != null && p1 != null)
-                {
-                    d.Sein.Mortality.Health.RestoreAllHealth();
-                    Host.Teleport(d.Sein, p1.Position + new Vector3(1f, 0f, 0f));
-                    Host.ReturnCompanion(d.Sein, "checkpoint reload");
-                }
-            }
+                if (seat != Host.LocalSeat) RestoreUnrescued(down[seat]);
             Services.Log.Info("checkpoint reload: both Oris back");
         }
 
@@ -398,7 +402,7 @@ namespace OriCoop
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
             {
                 Downed d = down[seat];
-                if (seat != Host.LocalSeat && d != null && d.Sein != null) RestoreDowned(d, false);
+                if (seat != Host.LocalSeat && d != null && d.Sein != null) RestoreUnrescued(d);
             }
             if (d1 != null && d1.Sein != null)
             {
@@ -433,19 +437,19 @@ namespace OriCoop
             static void Postfix(SeinHealthController __instance) { if (AnyDowned) OnHealthDamaged(__instance); }
         }
 
-        // Near a partner's skull, the Spirit Flame button revives instead of attacking.
+        // Near a teammate's skull, the Spirit Flame button revives instead of attacking; everyone else keeps the flame.
+        internal static bool FlameBlocked(SeinCharacter me)
+        {
+            if (!AnyDowned || me == null || IsDowned(me)) return false;
+            foreach (Downed d in s_down)
+                if (d != null && d.Sein != me && SaverNear(me, d)) return true;
+            return false;
+        }
+
         [HarmonyPatch(typeof(SeinStandardSpiritFlameAbility), "UpdateCharacterState")]
         static class NoFlameWhileReviving
         {
-            static bool Prefix()
-            {
-                if (!AnyDowned) return true;
-                SeinCharacter me = Characters.Sein; // P2 inside P2 context
-                if (me == null || IsDowned(me)) return true;
-                foreach (Downed d in s_down)
-                    if (d != null && d.Sein != me && SaverNear(me, d)) return false;
-                return true;
-            }
+            static bool Prefix() { return !FlameBlocked(Characters.Sein); } // P2/P3/P4 inside their own context
         }
 
         // A checkpoint created while P2 triggers it (soul link, spirit well, checkpoint zone) saves P2's spot: the game

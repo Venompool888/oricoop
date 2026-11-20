@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
@@ -930,11 +930,29 @@ namespace OriCoop
             yield return s_tHost.StartCoroutine(Back(1f));
         }
 
+        // T-153: the co-op menu resized five times and the P2 / revive text recreated five times must not leave a pile of OS
+        // fonts behind (at most one new font each: the menu's current size and the shared tag font).
+        static IEnumerator FontLeakCheck(Action<bool, string> check)
+        {
+            yield return null;
+            int before = Resources.FindObjectsOfTypeAll(typeof(Font)).Length;
+            foreach (int size in new[] { 21, 24, 27, 30, 21 }) CoopMenu.EnsureFont(size);
+            string[] tag = { "Arial", "Segoe UI Symbol", "Microsoft YaHei" };
+            Font first = OriCoop.Ui.OsFonts.Shared(tag, 64); bool same = true;
+            for (int i = 0; i < 4; i++) same &= OriCoop.Ui.OsFonts.Shared(tag, 64) == first;
+            yield return null; yield return null;   // Destroy takes effect at the end of the frame
+            int after = Resources.FindObjectsOfTypeAll(typeof(Font)).Length;
+            CoopMenu.EnsureFont(Mathf.Max(14, Screen.height / 42));   // back to the menu's own size
+            check(after - before <= 2 && same, "title menu: menu resizes and recreated HUD text leave no extra fonts (fonts "
+                + before + " -> " + after + ", shared tag font reused=" + same + ")");
+        }
+
         public static IEnumerator TitleChecks(MonoBehaviour host, Action<bool, string> check, Action<string> note, int slot)
         {
             s_tHost = host;
             string scaling = ModeSelectScaling();
             check(scaling.Length == 0, "title menu: how-to-play chooser scales with the resolution (720p to 4K) " + scaling);
+            yield return s_tHost.StartCoroutine(FontLeakCheck(check));
             note("--- title menu: Single Player / Co-op");
             yield return s_tHost.StartCoroutine(WaitFor(() => TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu && TitleItemsReady, 15f));
             check(TitleItemsReady && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu,

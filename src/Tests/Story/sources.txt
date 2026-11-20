@@ -7,3 +7,4 @@ OriCoop\Story\GateCore.cs
 OriCoop\Story\AnimCore.cs
 OriCoop\Story\SkillSplit.cs
 OriCoop\Story\PuppetRepairGate.cs
+OriCoop\Net\ProtocolVersion.cs

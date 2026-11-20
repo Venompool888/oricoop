@@ -90,6 +90,15 @@ static class UiTests
             }
             Check(count > 0, "empty table");
         });
+        // T-154: T-045 named local play 「本地同屏」 everywhere; the mode chooser's mode.local still said 「本地双人」.
+        Run("local play is called 本地同屏 everywhere (no 本地双人 / 双人同屏 left)", delegate {
+            Check(L10n.T("mode.local", true) == L10n.T("title.local", true), "mode.local zh = " + L10n.T("mode.local", true) + ", title.local zh = " + L10n.T("title.local", true));
+            foreach (string key in L10n.Keys)
+            {
+                string zh = L10n.T(key, true);
+                Check(zh.IndexOf("本地双人") < 0 && zh.IndexOf("双人同屏") < 0, key + " zh still says " + zh);
+            }
+        });
         Run("every translation has matching format arguments", delegate {
             object[] args = new object[32];
             for (int i = 0; i < args.Length; i++) args[i] = "arg" + i;
@@ -361,6 +370,33 @@ static class UiTests
             DigitDial r = DigitDial.Room(); r.Load("123456"); r.Right(); r.Right(); r.Right();
             Equal("123 [4]56", r.Render(true, delegate(string c) { return "[" + c + "]"; }));
             Equal("123 456", r.Render(false, delegate(string c) { return "[" + c + "]"; }));
+        });
+
+        // T-136: names shown in a MessageBox lose the characters the game parses as markup.
+        Run("markup: room and player names are drawn without colour markers", delegate {
+            Equal("Bob's room 2", MarkupText.Plain("Bob's room #2"));
+            Equal("a b c", MarkupText.Plain("*a* $b$ @c@"));
+            Equal("x", MarkupText.Plain("[x]"));
+            Equal("plain 名字", MarkupText.Plain("plain 名字"));
+            Equal("", MarkupText.Plain(null));
+            Check(MarkupText.HasMarkup("room #1") && MarkupText.HasMarkup("^small^") && !MarkupText.HasMarkup("room 1"), "HasMarkup");
+            foreach (bool zh in new[] { false, true })
+            {
+                string name = string.Format(L10n.T("rooms.auto_name", zh), "Bob", 3);
+                Check(!MarkupText.HasMarkup(name), "auto room name has no markup: " + name);
+            }
+        });
+
+        // T-135: a (zh, en) pair with one side empty shows the other side instead of a blank toast.
+        Run("toast text: the empty language falls back to the other", delegate {
+            Equal("中文", L10n.Pick("中文", "", false));
+            Equal("English", L10n.Pick("", "English", true));
+            Equal("English", L10n.Pick("中文", "English", false));
+            Equal("中文", L10n.Pick("中文", "English", true));
+            Equal("", L10n.Pick("", null, false));
+            s_language = "en"; Equal("only zh", L10n.Pick("only zh", ""));
+            s_language = "zh"; Equal("only en", L10n.Pick("", "only en"));
+            s_language = "en";
         });
 
         return s_failed == 0 ? 0 : 1;

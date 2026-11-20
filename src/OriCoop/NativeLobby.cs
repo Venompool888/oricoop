@@ -242,6 +242,8 @@ namespace OriCoop
         static string FriendlyError(string raw, bool timedOut)
         {
             string lower = (raw ?? "").ToLowerInvariant();
+            // T-148: a refused C-server join ends with its L10n key (server.err.noroom / full / version / token) as the reason.
+            if (lower.StartsWith("server.err.")) return raw;
             if (timedOut || lower.Contains("timeout") || lower.Contains("timed out")) return "lobby.error.timeout";
             if (lower.Contains("not found") || lower.Contains("no such room")) return "lobby.error.room";
             if (lower.Contains("full")) return "lobby.error.full";
