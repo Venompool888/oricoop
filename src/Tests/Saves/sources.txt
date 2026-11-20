@@ -4,4 +4,5 @@ OriCoop\Saves\ISavesHost.cs
 OriCoop\Saves\SeatReadiness.cs
 OriCoop\Saves\RoomSaveSelection.cs
 OriCoop\Saves\LineageMachine.cs
+OriCoop\Saves\HostPromotion.cs
 OriCoop\Saves\LoadRestart.cs

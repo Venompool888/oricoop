@@ -23,6 +23,7 @@ sealed class FakeNetwork
     readonly Dictionary<int, FakeBus> m_buses = new Dictionary<int, FakeBus>();
     readonly Queue<Packet> m_pending = new Queue<Packet>();
     public readonly List<Packet> Sent = new List<Packet>();
+    public int Host = 1;   // seat that is the host now (T-126: the server can hand the role to a guest)
 
     public FakeBus Add(int seat)
     {
@@ -55,7 +56,7 @@ sealed class FakeNetwork
     {
         List<int> seats = new List<int>(m_buses.Keys); seats.Sort();
         foreach (int seat in seats)
-            if (seat != from && (from == 1 || seat == 1)) Send(from, seat, type, body);
+            if (seat != from && (from == Host || seat == Host)) Send(from, seat, type, body);
     }
 
     public bool PumpOne()
@@ -77,7 +78,7 @@ sealed class FakeBus : INetBus
     public FakeBus(FakeNetwork network, int seat) { m_network = network; m_seat = seat; }
     public bool Enabled { get { return true; } }
     public bool Connected { get { return true; } }
-    public bool IsHost { get { return m_seat == 1; } }
+    public bool IsHost { get { return m_seat == m_network.Host; } }
     public int Sender { get; private set; }
     public int HostSeat { get { return m_hostSeat; } set { m_hostSeat = value; } } int m_hostSeat = 1;
     public void On(byte type, Action<BinaryReader> handler) { m_handlers[type] = handler; }

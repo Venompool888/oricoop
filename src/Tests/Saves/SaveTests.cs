@@ -84,6 +84,10 @@ partial class SaveTests
         Run("four seat checkpoint and loaded flow", CheckpointFlow);
         Run("T-129 seat joining after the lineage settled gets the commit", LateJoinerGetsCommit);
         Run("T-129 seat joining while the lineage is open gets the decision commit", OpenLineageJoinerGetsCommit);
+        Run("T-126 promotion only for a guest that joined", PromotionOnlyForJoinedGuest);
+        Run("T-126 promoted host never saves into its own slot", PromotedHostSaveSlot);
+        Run("T-126 promoted host does not offer its own slot", PromotedGuestDoesNotOffer);
+        Run("T-126 seats in the world are ready after promotion", PromotedHostSeatsReady);
         // T-157: after SaveSync disabled itself (failed load) a restart is a real quit to the title, not its load.
         Run("load restart: only while loading and not disabled", delegate {
             Check(LoadRestart.IsOwn(true, false), "a running load restart was taken for a quit");

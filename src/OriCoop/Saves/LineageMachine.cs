@@ -172,6 +172,10 @@ namespace OriCoop.Saves
             }
         }
 
+        // T-126: this guest became the host mid-session (server-mode arbiter change). The lineage was already settled
+        // with the old host; offering now would send this player's own slot as the "co-op save" to the next joiner.
+        public void Promote() { SetStage(LineageStage.Proceed); }
+
         void Offer()
         {
             try
