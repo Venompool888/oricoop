@@ -852,11 +852,12 @@ namespace OriCoop
             if (!Connected || WaitingForSeat) return;
 
             bool inGame = LocalInGameplay();
-            string scene = LocalScene(inGame);
-            if (inGame != s_sentInGameplay || scene != s_sentScene || s_statusDirty)
+            bool shown = inGame && !TestReportLoading;   // what the others are told
+            string scene = LocalScene(shown);
+            if (shown != s_sentInGameplay || scene != s_sentScene || s_statusDirty)
             {
-                s_sentInGameplay = inGame; s_sentScene = scene; s_statusDirty = false;
-                SendReliable(MsgStatus, w => { w.Write(inGame); w.Write(scene ?? ""); });
+                s_sentInGameplay = shown; s_sentScene = scene; s_statusDirty = false;
+                SendReliable(MsgStatus, w => { w.Write(shown); w.Write(scene ?? ""); });
             }
 
             foreach (RemoteState remote in s_remotes.Values)
@@ -894,6 +895,12 @@ namespace OriCoop
                 catch (Exception e) { Plugin.Log.LogWarning("net: bad message: " + e.Message); }
             }
         }
+
+        // Test only (T-131, the 4P wipe check): tell the others "not in gameplay", as while loading, without loading.
+        internal static bool TestReportLoading;
+
+        // T-131: a teammate in this session (it said hello), also while its Ori is away (loading, rejoining).
+        internal static bool RemoteInSession(int seat) { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello; }
 
         public static bool LocalInGameplay()
         {

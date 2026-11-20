@@ -115,9 +115,16 @@ namespace OriCoop
             }
             return nearest;
         }
+        // Who counts for "everyone else is down": every Ori in the game except the dying one, and (online) a teammate in
+        // the session that has no Ori here right now (loading, rejoining: its puppet is removed meanwhile). It is alive,
+        // so the host must not declare a wipe and kill it (T-131).
         static IEnumerable<int> OthersPresent(SeinCharacter dying)
         {
-            foreach (int seat in PresentSeats) if (SeinAt(seat) != dying) yield return seat;
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
+            {
+                SeinCharacter s = SeinAt(seat);
+                if (s != null ? s != dying : Host.SeatInSession(seat)) yield return seat;
+            }
         }
         static bool AllDown(SeinCharacter dying)
         {
