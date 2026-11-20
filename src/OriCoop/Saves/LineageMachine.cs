@@ -99,6 +99,7 @@ namespace OriCoop.Saves
         void ChoosingSent();
         void HostChosen(bool diverged);
         void Commit();
+        void CommitTo(int seat);
         void SetCancelOutcome();
         void Cancelled();
         bool ValidUpload(int length, byte[] bytes);
@@ -139,6 +140,16 @@ namespace OriCoop.Saves
             m_net.On(LineageWire.Request, ReceiveRequest);
             m_net.On(LineageWire.Upload, ReceiveUpload);
             m_net.SessionEnded += Reset;
+            m_net.PlayerJoined += SeatJoined;
+        }
+
+        // T-129: a seat that joins after the lineage was settled (3rd/4th player, server mode) never saw the offer or the
+        // commit broadcast. Give it the co-op save now, before its checkpoint (same reliable channel, so it arrives
+        // first): a guest joining from the title then keeps the copy in its linked/empty slot or is asked for one.
+        // While the lineage is still open (Offered..Adopting) the commit broadcast at the decision reaches it anyway.
+        void SeatJoined(int seat)
+        {
+            if (m_net.IsHost && m_stage == LineageStage.Proceed) m_actions.CommitTo(seat);
         }
 
         void Reset() { m_stage = LineageStage.Idle; m_actions.Reset(); }

@@ -114,7 +114,7 @@ sealed class FakeLineage : ILineageActions
     public LineageReply Reply = new LineageReply();
     public LineageCommit ReceivedCommit;
     public byte[] StoredBytes = new byte[] { 7, 8 }, UploadBytes;
-    public int Commits, Choosing, Cancellations, InvalidUploads, Adoptions, ReplyTimeouts, UploadTimeouts, Ends, Resets, OfferFailures;
+    public int CommitsTo, Commits, Choosing, Cancellations, InvalidUploads, Adoptions, ReplyTimeouts, UploadTimeouts, Ends, Resets, OfferFailures;
     public bool DivergedHost, NoFreeSlot, FailOffer;
     public FakeLineage(INetBus bus) { m_bus = bus; }
     public string PlayerId { get { return m_bus.IsHost ? "host-id" : "guest-id"; } }
@@ -135,6 +135,16 @@ sealed class FakeLineage : ILineageActions
     {
         Commits++;
         m_bus.Send(LineageWire.Commit, true, delegate(BinaryWriter w)
+        {
+            LineageCommit commit = new LineageCommit();
+            commit.Coop = "lineage"; commit.PlayerId = PlayerId; commit.Name = LocalName; commit.SaveId = "save"; commit.Bytes = StoredBytes;
+            LineageWire.WriteCommit(w, commit);
+        });
+    }
+    public void CommitTo(int seat)
+    {
+        CommitsTo++;
+        m_bus.SendTo(seat, LineageWire.Commit, true, delegate(BinaryWriter w)
         {
             LineageCommit commit = new LineageCommit();
             commit.Coop = "lineage"; commit.PlayerId = PlayerId; commit.Name = LocalName; commit.SaveId = "save"; commit.Bytes = StoredBytes;

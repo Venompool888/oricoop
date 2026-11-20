@@ -10,7 +10,11 @@ namespace OriCoop
         public static bool HostGate() { return s_machine.HostGate(); }
         public static void HostAdoptFinished() { s_machine.AdoptionFinished(); }
 
-        static void Commit()
+        static void Commit() { Commit(-1); }
+
+        // seat < 0: every guest (the decision, every host save). seat >= 0: only that seat, which joined after the
+        // lineage was settled (T-129); the slot file and its link are the same as at the last broadcast.
+        static void Commit(int seat)
         {
             if (!Services.Net.IsHost || !Services.Net.Connected || s_hostLink == null) return;
             try
@@ -22,15 +26,19 @@ namespace OriCoop
                 s_hostLink.Synced = hash;
                 s_hostLink.SyncedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
                 if (bytes != null) s_hostLink.Write(s_hostSlot);
-                s_hostHash = hash; LastCommitHash = hash; Commits++;
+                s_hostHash = hash; LastCommitHash = hash;
+                if (seat < 0) Commits++; else LateCommits++;
                 string coop = s_hostLink.Coop, saveId = s_hostLink.SaveId;
-                Services.Net.Send(LineageWire.Commit, true, delegate(BinaryWriter w)
+                Action<BinaryWriter> body = delegate(BinaryWriter w)
                 {
                     LineageCommit commit = new LineageCommit();
                     commit.Coop = coop; commit.PlayerId = PlayerId; commit.Name = LocalName; commit.SaveId = saveId; commit.Bytes = bytes;
                     LineageWire.WriteCommit(w, commit);
-                });
-                Services.Log.Info("coop save: commit " + (bytes == null ? "(no file yet)" : bytes.Length + " bytes hash " + Short(hash)) + " to " + s_hostLink.Partner);
+                };
+                if (seat < 0) Services.Net.Send(LineageWire.Commit, true, body);
+                else Services.Net.SendTo(seat, LineageWire.Commit, true, body);
+                Services.Log.Info("coop save: commit " + (bytes == null ? "(no file yet)" : bytes.Length + " bytes hash " + Short(hash))
+                    + (seat < 0 ? " to " + s_hostLink.Partner : " to seat " + seat + " (joined after the lineage was settled)"));
             }
             catch (Exception e) { Services.Log.Warn("coop save: commit failed: " + e); }
         }
@@ -127,6 +135,7 @@ namespace OriCoop
             }
             public void HostChosen(bool diverged) { if (diverged) Outcome = "diverged-host"; }
             public void Commit() { CoopSaves.Commit(); }
+            public void CommitTo(int seat) { CoopSaves.Commit(seat); }
             public void SetCancelOutcome() { Outcome = "cancel"; }
             public void Cancelled()
             {
@@ -167,6 +176,7 @@ namespace OriCoop
 
             public void CommitReceived(LineageCommit commit)
             {
+                CommitsReceived++;
                 string coop = commit.Coop, hostId = commit.PlayerId, hostName = PartnerName(commit.Name), saveId = commit.SaveId;
                 byte[] bytes = commit.Bytes;
                 CoopId = coop;
