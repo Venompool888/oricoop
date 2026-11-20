@@ -363,6 +363,15 @@ namespace OriCoop
                 }
                 if (guest)
                 {
+                    // Close the help popup the way the player's button press does (InteractiveMessageBox.EndMessageBox). Hiding
+                    // it alone left GameController.LockInput set for ~20 s: the guest could not move or take damage (T-156).
+                    foreach (UnityEngine.Object o in UnityEngine.Object.FindObjectsOfType(typeof(InteractiveMessageBox)))
+                    {
+                        InteractiveMessageBox box = o as InteractiveMessageBox;
+                        if (box != null && box.MessageBox != null
+                            && Traverse.Create(box).Field("m_state").GetValue<InteractiveMessageBox.State>() != InteractiveMessageBox.State.Inactive)
+                            box.EndMessageBox();
+                    }
                     SessionRules.HideSkippedPopups();
                     float end = Now + 4f;
                     while (SessionRules.PopupOpen && Now < end) yield return null;
@@ -381,7 +390,8 @@ namespace OriCoop
                 h.Check(mapOwn >= 0f && mapOwn < 0.3f, "S4 no pause: own Ori held while the map is open");
                 h.Check(popupShown && SessionRules.SkippedPopupSuspends > popups, "S4 no pause: an ability help popup opens without suspending");
                 h.Check(popupOwn >= 0f && popupOwn < 0.3f, "S4 no pause: own Ori held while the help popup is open");
-                h.Check(popupClosed && !SessionRules.LocalLocked, "S4 no pause: closing the popup frees own input");
+                h.Check(popupClosed && !SessionRules.LocalLocked && !GameController.Instance.LockInput,
+                    "S4 no pause: closing the popup frees own input (game input lock " + GameController.Instance.LockInput + ")");
                 h.Check(maxPuppet > 2f, "S4 no pause: the host keeps playing on the guest's screen");
             }
             else h.Check(hostTravel > 2f, "S4 no pause: the host keeps playing while the guest has the map / a popup open");
@@ -442,15 +452,30 @@ namespace OriCoop
         static IEnumerator GuestDeath(TestHarness h)
         {
             yield return Barrier(h, 21); int restores = TestHarness.RestoreCheckpointCalls;
-            float start = Now; if (!NetPlay.IsHost) Kill();
-            yield return Wait(0.1f);
-            while ((!Alive || (!NetPlay.IsHost && SessionRules.Respawning)) && Now - start < 3f) yield return null;
+            bool guest = !NetPlay.IsHost, died = false;
+            if (guest)
+            {
+                // T-156: the help popup of the step before locks input for a few seconds (LockPlayerInputAction), and an Ori
+                // that cannot move takes no damage (SeinDamageReciever.OnRecieveDamage): the kill did nothing and these
+                // checks passed without a death. Kill only once the guest can move, and require the death.
+                float ready = Now;
+                while (!Own.Controller.CanMove && Now - ready < 10f) yield return null;
+                GameController gc = GameController.Instance;
+                h.Check(Own.Controller.CanMove, "S4 guest can move before its death (waited " + F(Now - ready) + " s; lockInput="
+                    + gc.LockInput + " byAction=" + gc.LockInputByAction + " lever=" + (Own.Abilities.Lever && Own.Abilities.Lever.InputLocked)
+                    + " animation=" + Own.Controller.IsPlayingAnimation + " held=" + SessionRules.LocalLocked + " popup=" + SessionRules.PopupOpen + ")");
+            }
+            float start = Now;
+            if (guest) { Kill(); died = !Alive || SessionRules.Respawning; }
+            while (Now - start < 0.1f) { if (guest && (!Alive || SessionRules.Respawning)) died = true; yield return null; }
+            while ((!Alive || (guest && SessionRules.Respawning)) && Now - start < 3f) { died = true; yield return null; }
             yield return Wait(0.25f);
             float distance = Vector3.Distance(Own.Position, NetPlay.LatestRemotePos);
-            h.Note("S4 guest death elapsed=" + F(Now - start) + " restores=" + (TestHarness.RestoreCheckpointCalls - restores)
+            h.Note("S4 guest death elapsed=" + F(Now - start) + " died=" + died + " restores=" + (TestHarness.RestoreCheckpointCalls - restores)
                 + " health=" + Own.Mortality.Health.Amount + " distance=" + F(distance));
-            if (!NetPlay.IsHost)
+            if (guest)
             {
+                h.Check(died, "S4 guest died (the kill took effect)");
                 h.Check(TestHarness.RestoreCheckpointCalls == restores, "S4 guest death no restore");
                 h.Check(Alive && !SessionRules.Respawning && Now - start <= 3f && distance <= 3f, "S4 guest alive beside host within 3s");
                 h.Check(Own.Mortality.Health.Amount >= Own.Mortality.Health.MaxHealth, "S4 guest full health");
