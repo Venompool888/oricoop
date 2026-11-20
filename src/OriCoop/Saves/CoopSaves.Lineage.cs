@@ -14,9 +14,11 @@ namespace OriCoop
 
         // seat < 0: every guest (the decision, every host save). seat >= 0: only that seat, which joined after the
         // lineage was settled (T-129); the slot file and its link are the same as at the last broadcast.
+        static readonly bool s_mutateNoLateCommit = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_LATE_COMMIT") == "1";
         static void Commit(int seat)
         {
             if (!Services.Net.IsHost || !Services.Net.Connected || s_hostLink == null) return;
+            if (seat >= 0 && s_mutateNoLateCommit) return;   // test-only: the T-129 bug (a late joiner gets no commit)
             try
             {
                 byte[] bytes = ReadSlot(s_hostSlot);
@@ -82,6 +84,7 @@ namespace OriCoop
 
             public LineageReply PrepareReply(LineageOffer offer)
             {
+                OffersSeen++;
                 s_offerCoop = offer.Coop; s_offerHostId = offer.PlayerId; s_offerHostName = PartnerName(offer.Name);
                 CoopId = s_offerCoop;
                 s_guestMatch = -1;

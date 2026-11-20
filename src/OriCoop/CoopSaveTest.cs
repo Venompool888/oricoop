@@ -59,7 +59,29 @@ namespace OriCoop
                 float until = Time.realtimeSinceStartup + 10f;
                 while (CoopSaves.GuestWrites == 0 && Time.realtimeSinceStartup < until) yield return null;
                 CheckGuestCopy(h);
+                // T-129 (d194dd8) late-guest check backed out 2026-11-20: in net-3p the "late" guest still sees the offer
+                // (the host offers only once it is connected), so "joined after the lineage was settled" fails unmutated and
+                // the scenario is not exercised. Re-enable once the suite really joins a guest after the lineage settles.
+                // if (LateGuest) CheckLateGuest(h);
             }
+        }
+
+        // net-3p / net-4p: the last guest connects LateJoinSec after the others (run-nettest.ps1, ORICOOP_NET_CONNECT_AT).
+        static bool LateGuest
+        {
+            get { long at; return long.TryParse(Environment.GetEnvironmentVariable("ORICOOP_NET_CONNECT_AT"), out at) && at > 0; }
+        }
+
+        // T-129: the late guest joins after the host settled the lineage with the others, so it never sees the offer. It
+        // must still get the co-op save before its checkpoint and have kept it in its co-op slot by then (the bug: no
+        // commit until the host's next save; from the title that meant the first empty slot or slot 0).
+        static void CheckLateGuest(TestHarness h)
+        {
+            h.Check(CoopSaves.OffersSeen == 0,
+                "L late guest P" + Players.LocalSeat + " joined after the lineage was settled (offers seen " + CoopSaves.OffersSeen + "; else this check proves nothing)");
+            h.Check(SaveSync.CheckpointsBeforeCommit == 0 && SaveSync.CopySlotAtCheckpoint >= 0 && SaveSync.CopySlotAtCheckpoint == CoopSaves.GuestSlot,
+                "L late guest got the co-op save before its checkpoint and had kept it in its co-op slot " + CoopSaves.GuestSlot
+                + " (checkpoints first " + SaveSync.CheckpointsBeforeCommit + ", copy slot at checkpoint " + SaveSync.CopySlotAtCheckpoint + ")");
         }
 
         static void CheckHostLink(TestHarness h)

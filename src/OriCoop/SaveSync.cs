@@ -30,6 +30,7 @@ namespace OriCoop
         public static bool HaveCheckpointPosition;
         public static bool JoinedHost;
         public static int CheckpointsBeforeCommit;   // T-129 test: a checkpoint arrived before any co-op save commit
+        public static int CopySlotAtCheckpoint = -2;  // T-129 test: co-op copy slot when the first checkpoint arrived (-2 none yet)
         public static float GuestJoinDistance = float.PositiveInfinity, GuestJoinElapsed = float.PositiveInfinity;
         public static Vector3 HostJoinPosition;
 
@@ -277,6 +278,7 @@ namespace OriCoop
             HostCheckpointPosition = new Vector3(p.X, p.Y, p.Z);
             s_pending = SaveWire.ReadSaveBytes(r);
             if (CoopSaves.CommitsReceived == 0) CheckpointsBeforeCommit++;
+            if (CopySlotAtCheckpoint == -2) CopySlotAtCheckpoint = CoopSaves.SessionSlot;
             Ready = false; JoinedHost = false;
             Services.Log.Info("net: received checkpoint " + s_pending.Length + " bytes; waiting for gameplay load path");
         }

@@ -42,6 +42,7 @@
         @{ Switch = 'ORICOOP_MUTATE_GUARD_FIGHTS_SCENE'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }
         @{ Switch = 'ORICOOP_MUTATE_HOST_SEAT_ONE';  File = 'src\OriCoop\Authority\NetRoute.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_FX_FORWARD';  File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-3p';    Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_NO_LATE_COMMIT'; File = 'src\OriCoop\Saves\CoopSaves.Lineage.cs'; Suite = 'net-3p'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_STALE';     File = 'src\OriCoop\Authority\CServerLink.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_CREATOR_HOST';   File = 'src\OriCoop\NetPlay.cs';      Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_PUPPET_CAMERA';  File = 'src\OriCoop\PuppetCameraGuard.cs'; Suite = 'net';  Phase = '' }
