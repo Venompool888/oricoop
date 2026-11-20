@@ -7,21 +7,21 @@ namespace OriCoop
 {
     // Online lobby overlay: opened from the native "Online" page (NativeModeMenu) after a transport is picked.
     // Pages (bilingual Chinese + English):
-    //   Role     : 开房 Host / 加入 Join  (relay page also shows an editable relay server field)
-    //   JoinInput: 6-char room code (relay) or IP[:port] (direct) with controller grid and keyboard input
+    //   Role     : 开房 Host / 加入 Join
+    //   JoinInput: IP[:port] (direct, LAN host mode) with controller grid and keyboard input (T-159: the relay room-code page is gone)
     //   Hosting  : NetPlay.Begin(true, ...); shows RoomCode or local addresses; Start and Cancel buttons
     //   Joining  : NetPlay.Begin(false, ...); animated progress ring; auto-proceed on PartnerHere; friendly error on failure
     public static class OnlineLobby
     {
         public static bool IsOpen { get { return s_open; } }
-        public static string Transport = "relay";
+        public static string Transport = "direct";
 
         static bool s_open;
         static GameObject s_overlayObject;
 
         public static void Open(string transport)
         {
-            Transport = string.IsNullOrEmpty(transport) ? "relay" : transport.Trim().ToLowerInvariant();
+            Transport = string.IsNullOrEmpty(transport) ? "direct" : transport.Trim().ToLowerInvariant();
             s_open = true;
             if (s_overlayObject != null)
             {
@@ -53,10 +53,6 @@ namespace OriCoop
         const int PageHosting = 2;
         const int PageJoining = 3;
 
-        // The 8x4 key grid: new codes use 2-9 (T-046), older relay / room codes A-Z without I and O plus 2-9: exactly 32 keys.
-        // (It held 0 and 1, which no code uses, and lacked Y and Z, so about a third of the old codes could not be typed: T-120.)
-        internal const string RelayCodeAlphabet = "23456789ABCDEFGHJKLMNPQRSTUVWXYZ";
-
         // XInput button masks
         const int A = 0x1000, B = 0x2000, X = 0x4000, Y = 0x8000, START = 0x10, BACK = 0x20,
             DUP = 1, DDOWN = 2, DLEFT = 4, DRIGHT = 8;
@@ -66,11 +62,8 @@ namespace OriCoop
 
         // Role page state
         int m_roleFocus;
-        bool m_editingRelayServer;
-        string m_relayServerInput = "";
 
         // Join input state
-        string m_roomCodeInput = "";
         string m_directAddressInput = "";
         string m_inputError = "";
         int m_gridRow;
@@ -208,18 +201,12 @@ namespace OriCoop
             if (page == PageRole)
             {
                 m_roleFocus = 0;
-                m_editingRelayServer = false;
             }
             else if (page == PageJoinInput)
             {
                 m_gridRow = 0;
                 m_gridCol = 0;
-                if (OnlineLobby.Transport == "relay")
-                {
-                    m_roomCodeInput = (NetPlay.ConfigRoomCode ?? "").Trim().ToUpperInvariant();
-                    if (m_roomCodeInput.Length > 6) m_roomCodeInput = m_roomCodeInput.Substring(0, 6);
-                }
-                else if (OnlineLobby.Transport == "direct")
+                if (OnlineLobby.Transport == "direct")
                 {
                     m_directAddressInput = NetPlay.ConfigAddress ?? "";
                     if (NetPlay.ConfigPort > 0 && NetPlay.ConfigPort != 47011)
@@ -229,10 +216,7 @@ namespace OriCoop
             else if (page == PageHosting)
             {
                 m_hostFocus = 0;
-                string target = "";
-                if (OnlineLobby.Transport == "relay" && !string.IsNullOrEmpty(NetPlay.ConfigRelayServer))
-                    target = NetPlay.ConfigRelayServer.Trim() + "|";
-                NetPlay.Begin(true, OnlineLobby.Transport, target);
+                NetPlay.Begin(true, OnlineLobby.Transport, "");
             }
             else if (page == PageJoining)
             {
@@ -311,17 +295,7 @@ namespace OriCoop
 
         void UpdateRoleInput()
         {
-            if (m_editingRelayServer)
-            {
-                if (Input.GetKeyDown(KeyCode.Escape) || AnyPadPressed(B))
-                {
-                    m_editingRelayServer = false;
-                    m_ignoreInputUntil = Time.unscaledTime + 0.2f;
-                }
-                return;
-            }
-
-            int rows = OnlineLobby.Transport == "relay" ? 3 : 2;
+            const int rows = 2;
             if (Input.GetKeyDown(KeyCode.UpArrow) || AnyPadPressed(DUP))
                 m_roleFocus = (m_roleFocus + rows - 1) % rows;
             if (Input.GetKeyDown(KeyCode.DownArrow) || AnyPadPressed(DDOWN))
@@ -363,31 +337,6 @@ namespace OriCoop
                     GoTo(PageJoinInput);
                 }
             }
-            else if (row == 2) // Relay server edit
-            {
-                m_editingRelayServer = true;
-                m_relayServerInput = NetPlay.ConfigRelayServer ?? "";
-                m_ignoreInputUntil = Time.unscaledTime + 0.2f;
-            }
-        }
-
-        void SaveRelayServer()
-        {
-            string s = (m_relayServerInput ?? "").Trim();
-            try
-            {
-                if (Plugin.Instance != null && Plugin.Instance.Config != null)
-                {
-                    Plugin.Instance.Config.Bind("Net", "RelayServer", "").Value = s;
-                    Plugin.Instance.Config.Save();
-                }
-            }
-            catch (Exception ex)
-            {
-                Plugin.Log.LogError("Could not save relay server config: " + ex.Message);
-            }
-            m_editingRelayServer = false;
-            m_ignoreInputUntil = Time.unscaledTime + 0.2f;
         }
 
         void UpdateJoinInput()
@@ -399,53 +348,7 @@ namespace OriCoop
                 return;
             }
 
-            if (OnlineLobby.Transport == "relay")
-            {
-                // 4x8 letters grid + row 4: [Delete] [Connect]
-                if (Input.GetKeyDown(KeyCode.UpArrow) || AnyPadPressed(DUP))
-                    m_gridRow = (m_gridRow + 5 - 1) % 5;
-                if (Input.GetKeyDown(KeyCode.DownArrow) || AnyPadPressed(DDOWN))
-                    m_gridRow = (m_gridRow + 1) % 5;
-                if (Input.GetKeyDown(KeyCode.LeftArrow) || AnyPadPressed(DLEFT))
-                {
-                    if (m_gridRow == 4) m_gridCol = m_gridCol < 4 ? 4 : 0;
-                    else m_gridCol = (m_gridCol + 8 - 1) % 8;
-                }
-                if (Input.GetKeyDown(KeyCode.RightArrow) || AnyPadPressed(DRIGHT))
-                {
-                    if (m_gridRow == 4) m_gridCol = m_gridCol < 4 ? 4 : 0;
-                    else m_gridCol = (m_gridCol + 1) % 8;
-                }
-
-                if (AnyPadPressed(X) || Input.GetKeyDown(KeyCode.Backspace))
-                {
-                    if (m_roomCodeInput.Length > 0)
-                        m_roomCodeInput = m_roomCodeInput.Substring(0, m_roomCodeInput.Length - 1);
-                }
-
-                if (AnyPadPressed(A) || Input.GetKeyDown(KeyCode.Return) || Input.GetKeyDown(KeyCode.KeypadEnter))
-                {
-                    if (m_gridRow < 4)
-                    {
-                        int index = m_gridRow * 8 + m_gridCol;
-                        if (index >= 0 && index < RelayCodeAlphabet.Length && m_roomCodeInput.Length < 6)
-                            m_roomCodeInput += RelayCodeAlphabet[index];
-                    }
-                    else
-                    {
-                        if (m_gridCol < 4) // Delete
-                        {
-                            if (m_roomCodeInput.Length > 0)
-                                m_roomCodeInput = m_roomCodeInput.Substring(0, m_roomCodeInput.Length - 1);
-                        }
-                        else // Connect
-                        {
-                            TryConnectRelay();
-                        }
-                    }
-                }
-            }
-            else // direct IP
+            // direct IP
             {
                 // 2x6 keys (0-9 . :) + row 2: [Delete] [Connect]
                 if (Input.GetKeyDown(KeyCode.UpArrow) || AnyPadPressed(DUP))
@@ -494,24 +397,6 @@ namespace OriCoop
             }
         }
 
-        void TryConnectRelay()
-        {
-            if (string.IsNullOrEmpty(NetPlay.ConfigRelayServer))
-            {
-                m_inputError = L10n.T("lobby.set_relay_first");
-                return;
-            }
-            if (m_roomCodeInput.Length != 6)
-            {
-                m_inputError = L10n.T("lobby.enter_code");
-                return;
-            }
-            m_inputError = "";
-            m_lastJoinTarget = m_roomCodeInput.Trim().ToUpperInvariant();
-            GoTo(PageJoining);
-            NetPlay.Begin(false, "relay", m_lastJoinTarget);
-        }
-
         void TryConnectDirect()
         {
             string addr = (m_directAddressInput ?? "").Trim();
@@ -555,16 +440,7 @@ namespace OriCoop
         {
             if (idx == 0) // Copy code / Copy address / Invite
             {
-                if (OnlineLobby.Transport == "relay")
-                {
-                    if (!string.IsNullOrEmpty(NetPlay.RoomCode))
-                    {
-                        GUIUtility.systemCopyBuffer = NetPlay.RoomCode;
-                        m_copyToastMessage = L10n.T("lobby.code_copied");
-                        m_copyToastUntil = Time.realtimeSinceStartup + 2f;
-                    }
-                }
-                else if (OnlineLobby.Transport == "direct")
+                if (OnlineLobby.Transport == "direct")
                 {
                     string[] addrs = NetPlay.LocalAddresses();
                     string addr = addrs != null && addrs.Length > 0 ? addrs[0] : "127.0.0.1";
@@ -756,51 +632,9 @@ namespace OriCoop
             Event e = Event.current;
             if (e == null || e.type != EventType.KeyDown) return;
 
-            if (m_page == PageRole && m_editingRelayServer)
+            if (m_page == PageJoinInput)
             {
-                if (e.keyCode == KeyCode.Return || e.keyCode == KeyCode.KeypadEnter)
-                {
-                    SaveRelayServer();
-                    e.Use();
-                }
-                else if (e.keyCode == KeyCode.Escape)
-                {
-                    m_editingRelayServer = false;
-                    e.Use();
-                }
-                else if (e.keyCode == KeyCode.Backspace)
-                {
-                    if (m_relayServerInput.Length > 0)
-                        m_relayServerInput = m_relayServerInput.Substring(0, m_relayServerInput.Length - 1);
-                    e.Use();
-                }
-                else if (e.character != '\0' && !char.IsControl(e.character))
-                {
-                    m_relayServerInput += e.character;
-                    e.Use();
-                }
-            }
-            else if (m_page == PageJoinInput)
-            {
-                if (OnlineLobby.Transport == "relay")
-                {
-                    if (e.keyCode == KeyCode.Backspace)
-                    {
-                        if (m_roomCodeInput.Length > 0)
-                            m_roomCodeInput = m_roomCodeInput.Substring(0, m_roomCodeInput.Length - 1);
-                        e.Use();
-                    }
-                    else if (e.character != '\0')
-                    {
-                        char c = char.ToUpperInvariant(e.character);
-                        if (RelayCodeAlphabet.IndexOf(c) >= 0 && m_roomCodeInput.Length < 6)
-                        {
-                            m_roomCodeInput += c;
-                            e.Use();
-                        }
-                    }
-                }
-                else if (OnlineLobby.Transport == "direct")
+                if (OnlineLobby.Transport == "direct")
                 {
                     if (e.keyCode == KeyCode.Backspace)
                     {
@@ -823,17 +657,11 @@ namespace OriCoop
             float topY = 160f * scale;
 
             // Title
-            string transport = OnlineLobby.Transport == "relay" ? L10n.T("lobby.server_room") : OnlineLobby.Transport == "direct" ? L10n.T("lobby.direct") : L10n.T("lobby.steam");
+            string transport = OnlineLobby.Transport == "direct" ? L10n.T("lobby.direct") : L10n.T("lobby.steam");
 
             DrawShadowedText(new Rect(0, topY, Screen.width, 68f * scale), L10n.F("lobby.title", transport), s_titleZh, new Color(0.867f, 0.918f, 0.898f));
 
-            if (m_editingRelayServer)
-            {
-                DrawRelayServerEdit(scale, cx, topY + 160f * scale);
-                return;
-            }
-
-            // Options: Host, Join, (Relay Server)
+            // Options: Host, Join
             float startY = topY + 180f * scale;
             float rowHeight = 90f * scale;
 
@@ -843,44 +671,6 @@ namespace OriCoop
             // Row 1: 加入 Join / 等待邀请 Wait for an invite
             string joinText = OnlineLobby.Transport == "steam" ? L10n.T("lobby.wait_invite") : L10n.T("rooms.join");
             DrawMenuOption(1, cx, startY + rowHeight, joinText, scale, m_roleFocus == 1);
-
-            // Row 2 (Relay only): 中继服务器 Relay server
-            if (OnlineLobby.Transport == "relay")
-            {
-                string srv = string.IsNullOrEmpty(NetPlay.ConfigRelayServer) ? L10n.T("lobby.not_set") : NetPlay.ConfigRelayServer;
-                string serverText = L10n.F("lobby.relay_server", srv);
-                DrawMenuOption(2, cx, startY + rowHeight * 2f, serverText, scale, m_roleFocus == 2);
-            }
-        }
-
-        void DrawRelayServerEdit(float scale, float cx, float y)
-        {
-            DrawShadowedText(new Rect(0, y, Screen.width, 36f * scale), L10n.T("lobby.set_relay"), s_helperZh, new Color(0.867f, 0.918f, 0.898f));
-            DrawShadowedText(new Rect(0, y + 36f * scale, Screen.width, 28f * scale), L10n.T("lobby.relay_example"), s_helperEn, new Color(0.541f, 0.655f, 0.671f));
-
-            float boxW = 600f * scale;
-            float boxH = 56f * scale;
-            Rect boxR = new Rect(cx - boxW * 0.5f, y + 80f * scale, boxW, boxH);
-            DrawRectOutline(boxR, new Color(0.39f, 0.87f, 0.96f, 0.8f), 2f * scale);
-            GUI.Box(boxR, GUIContent.none, s_boxStyle);
-
-            string disp = m_relayServerInput + (Mathf.Repeat(Time.realtimeSinceStartup * 2f, 2f) < 1f ? "|" : "");
-            DrawShadowedText(boxR, disp, s_itemZh, Color.white);
-
-            // Buttons: 保存 Save / 取消 Cancel
-            float btnY = y + 160f * scale;
-            Rect saveR = new Rect(cx - 220f * scale, btnY, 180f * scale, 50f * scale);
-            Rect cancelR = new Rect(cx + 40f * scale, btnY, 180f * scale, 50f * scale);
-
-            if (GUI.Button(saveR,
-                L10n.T("lobby.save"), s_gridKeyStyle))
-                SaveRelayServer();
-            if (GUI.Button(cancelR,
-                L10n.T("lobby.cancel"), s_gridKeyStyle))
-            {
-                m_editingRelayServer = false;
-                m_ignoreInputUntil = Time.unscaledTime + 0.2f;
-            }
         }
 
         void DrawMenuOption(int index, float cx, float y, string text, float scale, bool selected)
@@ -920,118 +710,7 @@ namespace OriCoop
 
             DrawShadowedText(new Rect(0, topY, Screen.width, 68f * scale), L10n.T("lobby.join_room"), s_titleZh, new Color(0.867f, 0.918f, 0.898f));
 
-            if (OnlineLobby.Transport == "relay")
-            {
-                // 6 Code slots
-                float slotW = 100f * scale;
-                float slotH = 90f * scale;
-                float gap = 24f * scale;
-                float totalW = 6f * slotW + 5f * gap;
-                float startX = cx - totalW * 0.5f;
-                float slotY = topY + 120f * scale;
-
-                for (int i = 0; i < 6; i++)
-                {
-                    Rect slotR = new Rect(startX + i * (slotW + gap), slotY, slotW, slotH);
-                    bool activeSlot = (i == m_roomCodeInput.Length);
-                    Color borderColor = activeSlot ? new Color(0.39f, 0.87f, 0.96f, 0.95f) : new Color(0.2f, 0.35f, 0.42f, 0.6f);
-                    DrawRectOutline(slotR, borderColor, (activeSlot ? 2.5f : 1.5f) * scale);
-                    GUI.Box(slotR, GUIContent.none, s_boxStyle);
-
-                    string ch = i < m_roomCodeInput.Length ? m_roomCodeInput.Substring(i, 1) : (activeSlot ? "_" : "");
-                    if (ch.Length > 0)
-                        DrawShadowedText(slotR, ch, s_itemZh, activeSlot ? new Color(0.95f, 0.99f, 1f) : new Color(0.867f, 0.918f, 0.898f));
-                }
-
-                // 4x8 Alphabet Grid
-                float keyW = 76f * scale;
-                float keyH = 58f * scale;
-                float gridGapX = 14f * scale;
-                float gridGapY = 12f * scale;
-                float gridTotalW = 8f * keyW + 7f * gridGapX;
-                float gridStartX = cx - gridTotalW * 0.5f;
-                float gridStartY = slotY + slotH + 34f * scale;
-
-                for (int r = 0; r < 4; r++)
-                {
-                    for (int c = 0; c < 8; c++)
-                    {
-                        int idx = r * 8 + c;
-                        char letter = RelayCodeAlphabet[idx];
-                        Rect keyR = new Rect(gridStartX + c * (keyW + gridGapX), gridStartY + r * (keyH + gridGapY), keyW, keyH);
-                        bool focused = (m_gridRow == r && m_gridCol == c);
-
-                        if (focused)
-                        {
-                            DrawRectOutline(keyR, new Color(0.39f, 0.87f, 0.96f, 0.9f), 2f * scale);
-                            if (GUI.Button(keyR, letter.ToString(), s_gridKeyFocusStyle))
-                            {
-                                m_gridRow = r; m_gridCol = c;
-                                if (m_roomCodeInput.Length < 6) m_roomCodeInput += letter;
-                            }
-                        }
-                        else
-                        {
-                            if (GUI.Button(keyR, letter.ToString(), s_gridKeyStyle))
-                            {
-                                m_gridRow = r; m_gridCol = c;
-                                if (m_roomCodeInput.Length < 6) m_roomCodeInput += letter;
-                            }
-                        }
-                    }
-                }
-
-                // Bottom row: [Delete] and [Connect]
-                float actionY = gridStartY + 4f * (keyH + gridGapY) + 14f * scale;
-                Rect delR = new Rect(cx - 300f * scale, actionY, 260f * scale, 56f * scale);
-                Rect connR = new Rect(cx + 40f * scale, actionY, 260f * scale, 56f * scale);
-
-                bool delFocus = (m_gridRow == 4 && m_gridCol < 4);
-                bool connFocus = (m_gridRow == 4 && m_gridCol >= 4);
-
-                if (delFocus)
-                {
-                    DrawRectOutline(delR, new Color(0.39f, 0.87f, 0.96f, 0.9f), 2f * scale);
-                    if (GUI.Button(delR,
-                        L10n.T("lobby.delete"), s_gridKeyFocusStyle))
-                    {
-                        m_gridRow = 4; m_gridCol = 0;
-                        if (m_roomCodeInput.Length > 0)
-                            m_roomCodeInput = m_roomCodeInput.Substring(0, m_roomCodeInput.Length - 1);
-                    }
-                }
-                else
-                {
-                    if (GUI.Button(delR,
-                        L10n.T("lobby.delete"), s_gridKeyStyle))
-                    {
-                        m_gridRow = 4; m_gridCol = 0;
-                        if (m_roomCodeInput.Length > 0)
-                            m_roomCodeInput = m_roomCodeInput.Substring(0, m_roomCodeInput.Length - 1);
-                    }
-                }
-
-                if (connFocus)
-                {
-                    DrawRectOutline(connR, new Color(0.39f, 0.87f, 0.96f, 0.9f), 2f * scale);
-                    if (GUI.Button(connR,
-                        L10n.T("lobby.connect"), s_gridKeyFocusStyle))
-                    {
-                        m_gridRow = 4; m_gridCol = 4;
-                        TryConnectRelay();
-                    }
-                }
-                else
-                {
-                    if (GUI.Button(connR,
-                        L10n.T("lobby.connect"), s_gridKeyStyle))
-                    {
-                        m_gridRow = 4; m_gridCol = 4;
-                        TryConnectRelay();
-                    }
-                }
-            }
-            else // direct
+            // direct
             {
                 float boxW = 660f * scale;
                 float boxH = 64f * scale;
@@ -1149,22 +828,7 @@ namespace OriCoop
 
             float contentY = topY + 130f * scale;
 
-            if (OnlineLobby.Transport == "relay")
-            {
-                string code = NetPlay.RoomCode;
-                if (!string.IsNullOrEmpty(code))
-                {
-                    string spaced = code.Length >= 6 ? (code.Substring(0, 3) + " " + code.Substring(3)) : code;
-                    DrawShadowedText(new Rect(0, contentY, Screen.width, 130f * scale), spaced, s_codeStyle, new Color(0.945f, 0.988f, 1.0f));
-                    DrawShadowedText(new Rect(0, contentY + 125f * scale, Screen.width, 34f * scale), L10n.T("lobby.share_code"), s_helperZh, new Color(0.867f, 0.918f, 0.898f));
-                }
-                else
-                {
-                    DrawProgressRing(cx, contentY + 80f * scale, scale);
-                    DrawShadowedText(new Rect(0, contentY + 160f * scale, Screen.width, 34f * scale), L10n.T("lobby.creating"), s_helperZh, new Color(0.867f, 0.918f, 0.898f));
-                }
-            }
-            else if (OnlineLobby.Transport == "direct")
+            if (OnlineLobby.Transport == "direct")
             {
                 DrawShadowedText(new Rect(0, contentY, Screen.width, 36f * scale), L10n.T("lobby.direct_mode"), s_helperZh, new Color(0.57f, 0.88f, 0.96f));
                 DrawShadowedText(new Rect(0, contentY + 36f * scale, Screen.width, 32f * scale), L10n.T("lobby.your_address"), s_helperZh, new Color(0.867f, 0.918f, 0.898f));
@@ -1300,14 +964,7 @@ namespace OriCoop
                     }
                     else if (NetPlay.CurrentPhase == NetPlay.Phase.Connecting)
                     {
-                        if (OnlineLobby.Transport == "relay")
-                        {
-                            stage = L10n.T("lobby.opening_path");
-                        }
-                        else
-                        {
-                            stage = L10n.T("lobby.connecting_stage");
-                        }
+                        stage = L10n.T("lobby.connecting_stage");
                     }
                     else
                     {

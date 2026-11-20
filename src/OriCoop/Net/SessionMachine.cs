@@ -13,8 +13,6 @@ namespace OriCoop.Net
         bool HasPeer { get; }
         bool Connected { get; }
         bool PrimaryHello { get; }
-        bool RelayActive { get; }
-        bool RelayReady { get; }
         bool SteamReady { get; }
         string Problem { get; }
         int AssignedSeat { get; }
@@ -69,7 +67,6 @@ namespace OriCoop.Net
                 if (context.Problem.Length > 0) return Phase.Retrying;
                 if (context.IsHost)
                 {
-                    if (context.RelayActive) return context.RelayReady ? Phase.Waiting : Phase.Starting;
                     if (context.UsesSteam) return context.SteamReady ? Phase.Waiting : Phase.Starting;
                     return context.HasHub || context.HasPeer ? Phase.Waiting : Phase.Starting;
                 }

@@ -8,7 +8,7 @@
 #   -Parallel N run up to N suites at once (each takes its own test copy through test-launch.ps1's lock).
 # Exit 0 = everything that ran passed.
 #   -Files a,b  use these paths instead of git (relative to the repo root).   -All  every suite (nightly / release).   -Summary f  also write the summary to file f.
-# T-096: net-relay / net-newgame run only their own phases before a merge (src\test-selection.ps1 $TS_SuitePhases; -All
+# T-096: net-newgame runs only its own phases before a merge (src\test-selection.ps1 $TS_SuitePhases; -All
 # runs everything). A failed suite is rerun ONCE, with only the phases of its failed checks (2-player net suites) or
 # whole (the other suites, 30-250 s): passing the second time = FLAKY (counts as a pass, logged to
 # logs\flaky-checks.tsv with the checks that failed); failing again = FAIL. $env:ORICOOP_RERUN=0 turns reruns off.

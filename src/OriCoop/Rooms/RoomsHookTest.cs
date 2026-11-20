@@ -18,7 +18,7 @@ namespace OriCoop
             else
             {
                 yield return host.StartCoroutine(PressCoop());
-                yield return host.StartCoroutine(Row(Array.IndexOf(TitleTransports, "relay"), 0.5f));
+                yield return host.StartCoroutine(Row(Array.IndexOf(TitleTransports, "cserver"), 0.5f));
                 // Stop on server mode; Run checks and presses the actual My rooms row next.
             }
         }
@@ -228,12 +228,12 @@ namespace OriCoop.Rooms
 
         IEnumerator Run()
         {
-            string relay = Environment.GetEnvironmentVariable("ORICOOP_NET_RELAY") ?? "";
+            // T-159: rooms play through the C-server (ORICOOP_NET_CSERVER, read by CServerConfig.Address).
+            string cserver = Environment.GetEnvironmentVariable("ORICOOP_NET_CSERVER") ?? "";
             Uri url;
             string server = Environment.GetEnvironmentVariable("ORICOOP_ROOMS_SERVER");
             if (!Check(Uri.TryCreate(server, UriKind.Absolute, out url) && url.Scheme == "http"
-                && url.Host == "127.0.0.1" && relay.StartsWith("127.0.0.1:"), "localhost services")) yield break;
-            NetPlay.SetRelayServer(relay);
+                && url.Host == "127.0.0.1" && cserver.StartsWith("127.0.0.1:"), "localhost services")) yield break;
             yield return Wait(() => NativeModeMenu.TitleItemsReady
                 && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, 100);
             if (!Check(NativeModeMenu.TitleItemsReady
@@ -408,7 +408,7 @@ namespace OriCoop.Rooms
         IEnumerator Join()
         {
             yield return Wait(() => NetPlay.PartnerHere && NetPlay.LocalInGameplay(), 100);
-            string target = Environment.GetEnvironmentVariable("ORICOOP_NET_RELAY") + "|"
+            string target = Environment.GetEnvironmentVariable("ORICOOP_NET_CSERVER") + "|"
                 + Shared().GetString("live");
             if (!Check(joinedTarget == target && panel.Session.Active && !panel.Session.Holder && !NetPlay.IsHost
                 && NetPlay.PartnerHere && NetPlay.LocalInGameplay() && NetPlay.RoomCode == Shared().GetString("live"),

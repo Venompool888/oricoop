@@ -8,7 +8,7 @@ using UnityEngine;
 namespace OriCoop
 {
     // Real menu test of the title online flow (src\run-titlejoin.ps1; ORICOOP_TITLEJOIN = host|join, transport in
-    // ORICOOP_TITLEJOIN_TRANSPORT = direct|relay|cserver). Not the normal harness (ORICOOP_TEST stays off), so both games go
+    // ORICOOP_TITLEJOIN_TRANSPORT = direct|cserver). Not the normal harness (ORICOOP_TEST stays off), so both games go
     // through the menus exactly as a player does:
     //   host:  title -> 多人游玩 -> transport -> 开房 -> save slot -> host page -> 开始游戏 -> in game, waits for the guest
     //   guest: (appdata without any save) title -> 多人游玩 -> transport -> 加入 -> address / room code -> 连接 ->
@@ -84,8 +84,6 @@ namespace OriCoop
             {
                 Note("up: " + m_role + " via " + m_tr + ", saves in appdata: " + SaveFiles());
                 int savesAtStart = SaveFiles();
-                string relay = Environment.GetEnvironmentVariable("ORICOOP_NET_RELAY") ?? "";
-                if (m_tr == "relay" && relay.Length > 0) NetPlay.SetRelayServer(relay);
 
                 // Title main menu ("press any key" first).
                 float end = Time.realtimeSinceStartup + 120f; int lastPulse = -1;
@@ -112,19 +110,15 @@ namespace OriCoop
                 if (m_fails != 0) { Finish(); yield break; }
                 yield return StartCoroutine(TWait(1.5f));
                 yield return StartCoroutine(PressCoop());
-                int row = Array.IndexOf(TitleTransports, m_tr == "cserver" ? "relay" : m_tr);
+                int row = Array.IndexOf(TitleTransports, m_tr);
                 yield return StartCoroutine(Row(row, 1f));
-                if (m_tr == "relay" || m_tr == "cserver")
+                if (m_tr == "cserver")
                 {
                     Check(TitleOrbOpen && ServerModeLabelsMatch() && s_mgr.Index == 0,
                         m_tr + ": 自建服务器 page lists My rooms and Server management (" + Labels + ")");
-                    if (m_tr == "cserver")
-                    {
-                        yield return StartCoroutine(Row(ServerModeRoomsRow + 1, 0.5f));
-                        Check(ServerManageLabelsMatch(), m_tr + ": 服务器管理 lists Add / Remove / Server list (" + Labels + ")");
-                        yield return StartCoroutine(Row(2, 0.5f));
-                    }
-                    else { LobbyOpen("relay"); yield return StartCoroutine(TWait(1f)); }   // the relay host / join pages are no longer in the menu (T-045): tests open them directly
+                    yield return StartCoroutine(Row(ServerModeRoomsRow + 1, 0.5f));
+                    Check(ServerManageLabelsMatch(), m_tr + ": 服务器管理 lists Add / Remove / Server list (" + Labels + ")");
+                    yield return StartCoroutine(Row(2, 0.5f));
                 }
                 if (m_tr == "cserver") yield return StartCoroutine(CheckCServerEditor());
                 bool roleReady = TitleOrbOpen && LastPage == "role" && HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join");
@@ -236,7 +230,7 @@ namespace OriCoop
                 ui.UsedSaveSlotSelected();
                 float end = Time.realtimeSinceStartup + 20f;
                 while (Time.realtimeSinceStartup < end && !(LastPage == "hosting" && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected)
-                    && ((m_tr != "relay" && m_tr != "cserver") || !string.IsNullOrEmpty(NetPlay.RoomCode))))
+                    && (m_tr != "cserver" || !string.IsNullOrEmpty(NetPlay.RoomCode))))
                 {
                     if (m_tr == "cserver" && OriCoop.Authority.CServerLink.LastFailure.Length > 0) break;
                     yield return null;
@@ -247,7 +241,7 @@ namespace OriCoop
                     "host: server accepted the session (net=" + NetPlay.CurrentPhase + ", error=" +
                     (m_tr == "cserver" ? OriCoop.Authority.CServerLink.LastFailure : NetPlay.Problem) + ")");
                 if (m_tr == "cserver") Check(s_cserverBeginTarget == m_cserverAddress + "|", "host: Begin target " + s_cserverBeginTarget);
-                if (m_tr == "relay" || m_tr == "cserver")
+                if (m_tr == "cserver")
                 {
                     Check(!string.IsNullOrEmpty(NetPlay.RoomCode), "host: room code " + NetPlay.RoomCode);
                     if (string.IsNullOrEmpty(NetPlay.RoomCode)) yield break;   // Run writes RESULT FAIL, not a timeout.

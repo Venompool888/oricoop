@@ -12,9 +12,9 @@ this spec. Never write a real server address in code, docs or tests: tests use l
 | `src/OriCoop/Rooms/RoomClient.cs` | Synchronous HTTP client (one method per op). No Unity. Callers run it on a worker thread. |
 | `src/OriCoop/Rooms/RoomLocalStore.cs` | Per-PC backups under a folder the caller passes in. No Unity. |
 | `src/RoomServer/RoomServer.cs` | The service: `HttpListener`, single-threaded request loop, file storage. Compiles with Windows csc v4 (`/langversion:5`) and with net8.0. |
-| `src/RoomServer/RoomServer.csproj` | net8.0 build for Linux (like `src/RelayServer/RelayServer.csproj`); includes `RoomServer.cs` and `../OriCoop/Rooms/RoomWire.cs`. |
+| `src/RoomServer/RoomServer.csproj` | net8.0 build for Linux (like `src/CServer/CServer.csproj`); includes `RoomServer.cs` and `../OriCoop/Rooms/RoomWire.cs`. |
 | `src/RoomServer/RoomTest.cs` | Console test: starts the server in-process on a free localhost port with a temp data dir and runs every scenario below through `RoomClient` + `RoomLocalStore`. Exit code 0 = all pass; prints one line per check. |
-| `src/RoomServer/build-rooms.ps1` | Compiles RoomServer.exe and RoomTest.exe with `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /langversion:5`, then runs RoomTest.exe (same shape as `src/RelayServer/build-relay.ps1`). |
+| `src/RoomServer/build-rooms.ps1` | Compiles RoomServer.exe and RoomTest.exe with `C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe /langversion:5`, then runs RoomTest.exe (same shape as `src/CServer/build-cserver.ps1`). |
 | `src/RoomServer/oricoop-rooms.service` | systemd unit template: `dotnet /opt/oricoop-rooms/RoomServer.dll --port 47021 --data /var/lib/oricoop-rooms`, `Restart=always`, a dedicated user, no address anywhere. |
 | `src/RoomServer/DEPLOY.md` | Short deploy steps (publish, copy, unit, firewall TCP port, nightly `tar` of the data dir kept 14 days via a cron line). Placeholders like `<your-server>` only. |
 
@@ -77,7 +77,7 @@ verifier, proof, nonce, save bytes) are raw bytes. Lists use indexed names: `sav
   `SHA256(token)` hex, up to 4 per member (oldest dropped), so one player can use several PCs. Authenticated ops send
   `room`, `steam`, `token`.
 - Room id: `r` + 24 lowercase hex chars. Save id: `s` + 16 lowercase hex chars. Join code: 6 chars from
-  `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (same as the relay), unique across live rooms, case-insensitive on input.
+  `ABCDEFGHJKLMNPQRSTUVWXYZ23456789` (the alphabet the removed relay used), unique across live rooms, case-insensitive on input.
 - Comparisons of proofs/token hashes use a constant-time compare.
 
 ## Seats (up to 4 members; supersedes every "P1/P2" below)
@@ -117,7 +117,7 @@ Room: `id`, `name` (≤ 32 chars), `code` (empty when P2 is set), `salt`, `verif
 Save: `id`, `name` (≤ 32 chars), `version` (starts at 1 when created with bytes, 0 if created empty for a new game),
 `summary` (opaque client text ≤ 512 bytes), `by` (steam of last uploader), `at` (unix seconds of last upload),
 `secs.p1`, `secs.p2`, `secs.both` (played seconds), `origin` (text), and a lease: `holder` (steam or empty), `live`
-(relay join code text ≤ 16, may be empty), `beat` (unix seconds of the last enter/beat/live/upload by the holder),
+(live join code text ≤ 16, may be empty; since T-159 the host's C-server room code, before that a relay code), `beat` (unix seconds of the last enter/beat/live/upload by the holder),
 and `waiting` (steam + time, used when solo is off).
 
 Lease expiry: 90 s without a beat (server field `LeaseSeconds`, settable for tests). Clients beat every 30 s.
@@ -158,7 +158,7 @@ Lease expiry: 90 s without a beat (server field `LeaseSeconds`, settable for tes
 
 Let `me` = caller, `other` = the other member.
 
-1. Lease held by `other` and live → `mode=join`, `live` = the holder's relay code (may be empty: the client polls `beat`
+1. Lease held by `other` and live → `mode=join`, `live` = the holder's live code (C-server room code) (may be empty: the client polls `beat`
    until it is not).
 2. Lease free, expired, or held by `me` → if `solo`=1, or the room has no `other`, or `other` waited on this save
    within the last 15 s → `me` becomes holder, `mode=host`. Otherwise (`solo`=0 and nobody waiting) → `me` is recorded

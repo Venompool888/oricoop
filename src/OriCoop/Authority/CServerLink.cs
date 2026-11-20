@@ -50,7 +50,7 @@ namespace OriCoop.Authority
             string server = target ?? "", code = "";
             int bar = server.IndexOf('|');
             if (bar >= 0) { code = server.Substring(bar + 1).Trim().ToUpperInvariant(); server = server.Substring(0, bar); }
-            // Started from the environment (tests, no menu): server from CServerConfig, code like relay's test hooks.
+            // Started from the environment (tests, no menu): server from CServerConfig, code from the test hooks (ORICOOP_NET_ROOM / _FILE).
             if (server.Trim().Length == 0) server = CServerConfig.Address;
             if (!isHost && code.Length == 0)
             {

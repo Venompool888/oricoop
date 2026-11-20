@@ -28,7 +28,7 @@ static class NetCoreTests
 
     sealed class Rig : IMessageContext
     {
-        public bool EnabledValue = true, Host, Factory, Steam, Hub, Relay, RelayReadyValue, SteamReadyValue, NoForward;
+        public bool EnabledValue = true, Host, Factory, Steam, Hub, SteamReadyValue, NoForward;
         public string ProblemValue = "";
         public int Seat, Max = 4;
         public double Now = 100;
@@ -74,8 +74,6 @@ static class NetCoreTests
         public bool HasPeer { get { return Peer != null; } }
         public bool Connected { get { return Peer != null && Peer.Connected; } }
         public bool PrimaryHello { get { return Primary != null && Primary.Hello; } }
-        public bool RelayActive { get { return Relay; } }
-        public bool RelayReady { get { return RelayReadyValue; } }
         public bool SteamReady { get { return SteamReadyValue; } }
         public string Problem { get { return ProblemValue; } }
         public int AssignedSeat { get { return Seat; } }
@@ -350,9 +348,8 @@ static class NetCoreTests
             r.Hub = true; Equal(SessionMachine.Phase.Waiting, r.Session.CurrentPhase); r.ProblemValue = "bad"; Equal(SessionMachine.Phase.Retrying, r.Session.CurrentPhase);
             r.ProblemValue = ""; r.Host = false; r.Hub = false; r.Single = new FakePeer(); Equal(SessionMachine.Phase.Connecting, r.Session.CurrentPhase);
         });
-        Run("relay and steam readiness set host phase", delegate {
-            Rig r = new Rig(true, false, false); r.Single = null; r.Relay = true; Equal(SessionMachine.Phase.Starting, r.Session.CurrentPhase);
-            r.RelayReadyValue = true; Equal(SessionMachine.Phase.Waiting, r.Session.CurrentPhase); r.Relay = false; r.Steam = true;
+        Run("steam readiness sets host phase", delegate {
+            Rig r = new Rig(true, false, false); r.Single = null; r.Steam = true;
             Equal(SessionMachine.Phase.Starting, r.Session.CurrentPhase); r.SteamReadyValue = true; Equal(SessionMachine.Phase.Waiting, r.Session.CurrentPhase);
         });
         Run("connected peer silence reaches signal lost threshold", delegate {

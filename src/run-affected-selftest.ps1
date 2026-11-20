@@ -11,11 +11,11 @@ function Expect([bool]$ok, [string]$what) { if ($ok) { 'PASS ' + $what } else { 
 # T-160: the name holds EVERY argument (undeclared ones such as -Clients 3 or -LocalPlayers land in $args), so two suites
 # never share a call counter; the planted net behaviours apply only to the plain 'net' suite ($plain).
 $common = @'
-param([switch]$Relay, [switch]$GuestNewGame, [string]$Transport = '')
+param([switch]$GuestNewGame, [string]$Transport = '')
 $dir = Split-Path -Parent $MyInvocation.MyCommand.Path
 $extra = @($args) -join ' '
-$name = [IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Path) + $(if ($Relay) { ' -Relay' } elseif ($GuestNewGame) { ' -GuestNewGame' } elseif ($Transport) { ' -Transport ' + $Transport } else { '' }) + $(if ($extra) { ' ' + $extra } else { '' })
-$plain = -not $Relay -and -not $GuestNewGame -and -not $Transport -and -not $extra
+$name = [IO.Path]::GetFileNameWithoutExtension($MyInvocation.MyCommand.Path) + $(if ($GuestNewGame) { ' -GuestNewGame' } elseif ($Transport) { ' -Transport ' + $Transport } else { '' }) + $(if ($extra) { ' ' + $extra } else { '' })
+$plain = -not $GuestNewGame -and -not $Transport -and -not $extra
 $calls = Join-Path $dir 'calls'; New-Item -ItemType Directory -Force $calls | Out-Null   # one file per call: suites run in parallel
 $n = @(Get-ChildItem $calls -Filter *.txt | ForEach-Object { Get-Content $_.FullName } | Where-Object { $_ -like ($name + ' phases=*') }).Count + 1
 Set-Content (Join-Path $calls ([guid]::NewGuid().ToString() + '.txt')) ($name + ' phases=' + $env:ORICOOP_PHASES)
@@ -63,10 +63,9 @@ Remove-Item (Join-Path $fake 'calls') -Recurse -Force -ErrorAction SilentlyConti
 $c0 = @(Get-ChildItem (Join-Path $fake 'calls') -Filter *.txt | ForEach-Object { Get-Content $_.FullName })
 Expect ($c0 -contains 'run-nettest -Clients 3 phases=' -and $c0 -contains 'run-nettest phases=') ('fake suites are named by all their arguments (got: ' + ($c0 -join ' | ') + ')')
 
-# 1. local flaky, net fails twice in WO, net-relay capped, titlejoin passes.
+# 1. local flaky, net fails twice in WO, titlejoin passes.
 $r = Invoke-Fake @{ FAKE_LOCAL = 'flaky'; FAKE_NET = 'wo' } $files
-Expect ($r.Out -match 'PLAN: .*net \[WO\].*net-relay \[INTRO,MOVE,W\]') 'plan: net runs the selected phase WO, net-relay only its own phases INTRO,MOVE,W'
-Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest -Relay phases=INTRO,MOVE,W' }).Count -eq 1) 'net-relay started once with INTRO,MOVE,W'
+Expect ($r.Out -match 'PLAN: .*net \[WO\]') 'plan: net runs the selected phase WO'
 Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=WO' }).Count -eq 2) 'net failed in WO: rerun once with only WO, never a third time'
 Expect (@($r.Calls | Where-Object { $_ -like 'run-test phases=*' }).Count -eq 2) 'local failed once: rerun once'
 Expect (@($r.Calls | Where-Object { $_ -like 'run-titlejoin phases=*' }).Count -eq 1) 'titlejoin passed: not rerun'
@@ -95,9 +94,15 @@ Expect (@($r.Calls).Count -eq 1 -and $r.Out -match 'AFFECTED FAIL') 'ORICOOP_RER
 $r = Invoke-Fake @{ FAKE_NET = 'startup' } 'src/OriCoop/WorldObjSync.cs'
 Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=WO' }).Count -eq 2 -and $r.Out -match '(?m)^net: FLAKY') 'start-up failure: rerun with the same phases (WO); passing then = FLAKY'
 
-# 5. -All (nightly) runs every phase in every 2-player suite.
+# 5. A file whose module selects every phase (M7): net keeps them all, net-newgame only its own phases (T-096; net-relay,
+#    the other capped suite, went with the relay in T-159).
+$r = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run-affected.ps1') -DryRun -Files 'src/OriCoop/Rooms/RoomSession.cs' 2>&1 | ForEach-Object { '' + $_ }
+Expect (($r -join "`n") -match 'PLAN: .*net-newgame \[INTRO,MOVE,W\]') 'plan: net-newgame runs only its own phases INTRO,MOVE,W'
+Expect (($r -join "`n") -notmatch 'relay') 'plan: no relay suite any more'
+
+# 6. -All (nightly) runs every phase in every 2-player suite.
 $r = & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $PSScriptRoot 'run-affected.ps1') -DryRun -All -Files 'src/run-test.ps1' 2>&1 | ForEach-Object { '' + $_ }
-Expect (($r -join "`n") -match 'net-relay \[ALL\]' -and ($r -join "`n") -match 'net-newgame \[ALL\]') '-All: net-relay and net-newgame run every phase'
+Expect (($r -join "`n") -match 'net \[ALL\]' -and ($r -join "`n") -match 'net-newgame \[ALL\]') '-All: net and net-newgame run every phase'
 
 if (-not $env:KEEP_FAKE) { Remove-Item $fake -Recurse -Force }
 if ($fail) { "AFFECTED SELFTEST FAIL ($fail)"; exit 1 } else { 'AFFECTED SELFTEST PASS' }

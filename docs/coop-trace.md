@@ -16,8 +16,7 @@
   `clock: offset vs P2 = +12.3 ms (P2 clock minus ours; rtt 114.0 ms, 8 samples)`, also as trace event
   `net clock.offset seat= offset_ms= rtt_ms= n=`. A recording made on either PC can then be placed on UTC: note that
   PC's `utc_offset`, and the other PC's error from the offset line. Accuracy is about rtt/2 plus one frame per side.
-- Relay server players log (`src\RelayServer\RelayPlayerLog.cs`): already opens, appends and closes the file for
-  each line, so nothing is lost; unchanged.
+- (The relay server and its players log were removed in T-159.)
 
 ## Line format
 ```
@@ -27,9 +26,9 @@
 local time, UTC (ms), `f` frame, `ff` fixed-update count, `t` game time (s), `sid` session id, `role`, subsystem,
 event, then `key=value` fields (values with spaces are quoted with `\"` escapes).
 - `sid` is the NetPeer handshake session id: the same value on both ends of one connection, `-` when offline.
-  `net session.start` (transport, host?, versions, scene, relay name) and `net session.end` mark it.
+  `net session.start` (transport, host?, versions, scene; no relay field since T-159) and `net session.end` mark it.
 - `role` = `P1`..`P4` (`Roles.Mine`), or `local` when not online.
-- IPv4 addresses (except 127.x) are masked as `ip#NNNN`; the relay is named `relay#NNNN` (a hash), never its address.
+- IPv4 addresses (except 127.x) are masked as `ip#NNNN`, never the address.
 - Every BepInEx log line (mod, BepInEx, HarmonyX) is mirrored as `log <level> src=... msg=...`, so old messages get the
   same stamps. Unity errors/exceptions become `log unity.exception msg=... at=<top stack frame>`.
 

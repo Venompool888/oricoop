@@ -7,10 +7,10 @@ Fan-made co-op mod for *Ori and the Blind Forest: Definitive Edition* (BepInEx 5
 |---|---|
 | Version / 版本 | **0.2.0** |
 | Local co-op / 同屏双人 | Works: second Ori on a second controller, shared camera, revive. 可用 |
-| Online, 2 players / 双人联机 | Works (experimental): LAN / direct IP, room code through a relay, Steam friends. 可用（实验性） |
+| Online, 2 players / 双人联机 | Works (experimental): LAN play (host mode), your own server (C-server, room code), Steam friends. 可用（实验性） |
 | Online, 4 players / 四人联机 | **In progress.** 开发中 |
-| C-server (authority server) / 权威服务器 | **In progress**, not used by the game yet. 开发中，游戏还没有接入 |
-| Servers / 服务端 | [oricoop-relay](https://github.com/Venompool888/oricoop-relay) (tunnel relay, used today) · [oricoop-server](https://github.com/Venompool888/oricoop-server) (C-server prototype) |
+| C-server (authority server) / 权威服务器 | Used by server mode (experimental, still in development). 服务器模式在用（实验性，仍在开发） |
+| Servers / 服务端 | [oricoop-server](https://github.com/Venompool888/oricoop-server) (C-server). The old tunnel relay was removed in T-159. |
 | Chinese patch only / 只要中文补丁 | [ori-de-zh-patch](https://github.com/Venompool888/ori-de-zh-patch): standalone Simplified Chinese patch, no co-op, Definitive Edition only. 独立的简体中文补丁，不含联机，仅适用于终极版 |
 
 Not affiliated with or endorsed by Moon Studios, iam8bit or Microsoft. This repository contains **no game files, no
@@ -29,8 +29,8 @@ OriCoop 给单人游戏《奥日与黑暗森林：终极版》加上合作模式
 
 - **同屏双人**：第二个手柄控制第二个奥日（颜色不同），镜头跟随两人，倒下后可以被队友救起。
 - **双人联机**：主机的存档为准，访客加入后自动收到存档、出现在主机身边。同步位置、动画、能力、敌人、机关、剧情过场和进度。
-  连接方式：局域网 / IP 直连、服务器中继（6 位房间码，不用开端口）、Steam 好友邀请。
-- **四人联机** 和 **C-server（权威服务器）** 正在开发，还不能玩。
+  连接方式：局域网联机（主机模式，输入主机 IP）、自建服务器（C-server，房间码）、Steam 好友邀请。
+- **四人联机** 正在开发，还不能玩；C-server（权威服务器）仍在开发中。
 
 ### 安装（玩家）
 
@@ -41,10 +41,11 @@ OriCoop 给单人游戏《奥日与黑暗森林：终极版》加上合作模式
 
 ### 联机服务器
 
-- **局域网 / 直连**：不需要服务器，主机开放 UDP 47011（或用 Tailscale / ZeroTier 这类虚拟局域网）。
-- **服务器中继**：需要一台中继服务器。本仓库**不附带任何公共服务器地址**，请自己部署
-  [oricoop-relay](https://github.com/Venompool888/oricoop-relay)（一台小 VPS 就够，开放 UDP 47020），
-  然后在游戏里或用游戏目录里的 `OriCoop-Relays.html` 填上 `你的服务器IP:47020`。
+- **局域网联机（主机模式）**：不需要服务器。一人当主机（开放 UDP 47011），其他人输入主机的 IP 和端口加入。
+  面向同一局域网；不在同一网络的玩家可以自己搭隧道 / VPN（例如 Tailscale）。
+- **自建服务器（服务器模式）**：需要一台 C-server。本仓库**不附带任何公共服务器地址**，请自己部署
+  （见 [oricoop-server](https://github.com/Venompool888/oricoop-server)，默认 UDP 47022），在游戏里「自建服务器」→「服务器管理」添加地址，
+  然后用房间码创建或加入。
 - **Steam 好友**：两边都要通过 Steam 启动游戏。
 
 ### 自己编译
@@ -90,9 +91,9 @@ OriCoop adds co-op to the single-player game *Ori and the Blind Forest: Definiti
 
 - **Local co-op**: a second controller drives a second, recoloured Ori; shared camera; downed players can be revived.
 - **Online, 2 players**: the host's save is the truth. A guest who joins receives the save and appears next to the host.
-  Positions, animation, abilities, enemies, world objects, cutscenes and progress are synced. Transports: LAN / direct
-  IP, room code through a relay server (no port forwarding), Steam friend invites.
-- **4-player online** and the **C-server** (authority server) are **in progress** and not playable yet.
+  Positions, animation, abilities, enemies, world objects, cutscenes and progress are synced. Transports: LAN play
+  (host mode, join by IP), your own server (C-server, room code), Steam friend invites.
+- **4-player online** is **in progress** and not playable yet; the C-server (authority server) is still in development.
 
 ### Install (players)
 
@@ -104,10 +105,11 @@ OriCoop adds co-op to the single-player game *Ori and the Blind Forest: Definiti
 
 ### Servers
 
-- **LAN / direct**: no server; the host opens UDP 47011 (or use a virtual LAN such as Tailscale or ZeroTier).
-- **Relay (room codes)**: you need a relay server. **No public server address ships with this repo**: run your own
-  [oricoop-relay](https://github.com/Venompool888/oricoop-relay) (a small VPS is enough, open UDP 47020), then enter
-  `your-server-ip:47020` in the game or in `OriCoop-Relays.html` in the game folder.
+- **LAN play (host mode)**: no server; one player hosts (opens UDP 47011), the others join its IP address and port.
+  Meant for one LAN; players on different networks can set up their own tunnel or VPN (e.g. Tailscale).
+- **Server mode (C-server, room codes)**: **no public server address ships with this repo**: run your own C-server (see
+  [oricoop-server](https://github.com/Venompool888/oricoop-server), UDP 47022 by default), add it in the game under
+  Your Own Server → Manage servers, then host or join with a room code.
 - **Steam friends**: both players start the game through Steam.
 
 ### Build
