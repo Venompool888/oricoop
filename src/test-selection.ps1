@@ -31,24 +31,42 @@ $TS_SuitePhases = [ordered]@{
     'net-newgame' = @('INTRO', 'MOVE', 'W')
 }
 
+# T-165: the 3-4 player suites. Each runs checks no 2-player suite runs (they skip the 2-player phases):
+#   net-3p    seats 1/2/3, late guest loads the host save, world digests on three, pickup applied once / duplicate
+#             rejected (ProgressSync), guest-to-guest soul link (PartnerFx) and co-push, L lineage incl. the late guest
+#   net-3p-cs the same over the C-server, plus host handover (seat 2 arbitrates, gate count)
+#   net-4p    seats 1-4, revive / skull / spectate / menu pause / wipe and reload (Revive, SessionRules, SaveSync),
+#             enemy owner and duplicate hit (EnemySync), story once, L lineage
+#   net-lp2/3 extra local players online: seat view, cross-device revive, hurt / death effects, bottom bars, L lineage
+$TS_MultiSeat = @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3')
+
 # --- module -> suites (see docs\modules.md for what each module contains)
 $TS_ModuleSuites = @{
     'M0' = $TS_AllSuites
     'M1' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'coopsave')
-    'M2' = @('local', 'net', 'net-3p', 'coopsave')
-    'M3' = @('net', 'net-3p')   # T-115: guest-to-guest world messages ride the P2P host's forward table
-    'M4' = @('net', 'net-3p')
-    'M5' = @('net', 'net-3p-cs', 'net-4p', 'local')
-    'M6' = @('net', 'net-3p-cs', 'local')
-    'M7' = @('coopsave', 'titlejoin', 'net-newgame', 'rooms')
+    'M2' = @('local', 'net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'coopsave')   # seats / authority: every multi-seat suite (T-165)
+    'M3' = @('net', 'net-3p', 'net-3p-cs')   # T-115: guest-to-guest world messages ride the P2P host's forward table; T-165: digests on three over the C-server
+    'M4' = @('net', 'net-3p', 'net-4p')   # T-165: 4P enemy owner and duplicate hit
+    'M5' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'local')   # T-165: 3P pickup dedupe (ProgressSync)
+    'M6' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'local')   # T-165: 4P revive / spectate / menu / wipe, 3P soul link, cross-device revive
+    'M7' = @('coopsave', 'titlejoin', 'net-newgame', 'rooms')   # the save files below add every multi-seat suite (T-165); rooms files do not need them
     'M8' = @('local', 'titlejoin')
     'M9' = @()            # harness files map to their own suite below
 }
 # Harness / test files -> the suite that runs them (checked before the module table).
 $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
-    'NetIntroTest'     = @('net', 'net-4p');
-    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin')
+    'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
+    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin')
+    # T-165: the co-op save lineage (phase L) runs after every net suite: the late guest's commit and the promoted host's
+    # save only with 3-4 players, and SaveSync's reload in the 4P wipe. These save files (M7) select every multi-seat suite,
+    # and the direct 'net' suite: SaveSync / GuestJoin are shared core (every phase, src\phase-map.psd1), but M7's only
+    # 2-player suite is net-newgame, which runs just INTRO,MOVE,W before a merge (T-096), so R, S4, P, WO, CAM, CUT never ran.
+    'CoopSaveTest'     = @('coopsave') + $TS_MultiSeat; 'SaveSync' = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
+    'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
+    'LoadRestart'      = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
+    # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
+    'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')

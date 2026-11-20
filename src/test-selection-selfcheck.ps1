@@ -25,6 +25,44 @@ foreach ($m in $map.Mutations) {
     }
 }
 
+# T-165: a change to a file whose code a 3-4 player suite checks (and no 2-player suite does) selects that suite. The
+# checks: L lineage / late-guest commit / promoted host / 4P wipe reload (saves), 4P enemy owner + duplicate hit (enemies),
+# 4P revive / spectate / menu / wipe + 3P soul link + cross-device revive (rules), 3P pickup dedupe (progress), digests on
+# three (world), seats and handover (seats), extra local players' bars (BottomHud), multi-seat INTRO.
+$multiRows = @(
+    @('src\OriCoop\SaveSync.cs', @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'net')),
+    @('src\OriCoop\CoopSaves.cs', @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'net')),
+    @('src\OriCoop\CoopSaveTest.cs', @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'net', 'coopsave')),
+    @('src\OriCoop\GuestJoin.cs', @('net-3p', 'net-3p-cs', 'net-4p')),
+    @('src\OriCoop\Saves\LoadRestart.cs', @('net-4p')),
+    @('src\OriCoop\EnemySync.cs', @('net-4p')),
+    @('src\OriCoop\Revive.cs', @('net-3p', 'net-4p', 'net-lp2', 'net-lp3')),
+    @('src\OriCoop\SessionRules.cs', @('net-4p')),
+    @('src\OriCoop\PartnerFx.cs', @('net-3p', 'net-4p', 'net-lp2', 'net-lp3')),
+    @('src\OriCoop\ProgressSync.cs', @('net-3p', 'net-3p-cs')),
+    @('src\OriCoop\WorldSync.cs', @('net-3p', 'net-3p-cs')),
+    @('src\OriCoop\Players.cs', @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3')),
+    @('src\OriCoop\Seats\GameSeatView.cs', @('net-lp2', 'net-lp3')),
+    @('src\OriCoop\Authority\HostArbiter.cs', @('net-3p-cs')),
+    @('src\OriCoop\BottomHud.cs', @('net-lp2', 'net-lp3', 'local')),
+    @('src\OriCoop\NetIntroTest.cs', @('net-3p', 'net-3p-cs', 'net-4p'))
+)
+foreach ($row in $multiRows) {
+    $got = @((Get-Selection @($row[0])).Suites)
+    $missing = @($row[1] | Where-Object { $got -notcontains $_ })
+    Ok ($missing.Count -eq 0) ('a change to ' + $row[0] + ' runs ' + ($row[1] -join ',') + $(if ($missing.Count) { ' (missing: ' + ($missing -join ',') + ')' } else { '' }))
+}
+# A shared-core file (every phase, phase-map.psd1 Full) runs the direct 'net' suite, the one 2-player suite that is never
+# limited to a few phases (T-096): selecting only net-relay / net-newgame would run just INTRO,MOVE,W (T-165 found
+# SaveSync and GuestJoin like that).
+foreach ($leaf in $map.Full) {
+    $got = @((Get-Selection @('src\OriCoop\' + $leaf + '.cs')).Suites)
+    Ok ($got -contains 'net') ("shared-core file $leaf runs the direct 'net' suite (every phase)" + $(if ($got -notcontains 'net') { ' (selected: ' + ($got -join ',') + ')' } else { '' }))
+}
+# Rooms files (M7) do not drag in the multi-seat suites: their code never runs there.
+$rooms = @((Get-Selection @('src\OriCoop\Rooms\RoomsPanel.cs')).Suites)
+Ok (@($rooms | Where-Object { @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3') -contains $_ }).Count -eq 0) ('a rooms UI change does not run the multi-seat suites (selected: ' + ($rooms -join ',') + ')')
+
 # Every mutation switch in the mod source has a row.
 $listed = @($map.Mutations | ForEach-Object { $_.Switch })
 $inSource = @(Get-ChildItem (Join-Path $TS_Root 'src\OriCoop') -Recurse -Filter *.cs | Select-String -Pattern '"(ORICOOP_MUTATE_\w+)"' -AllMatches |
