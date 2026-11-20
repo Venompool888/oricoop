@@ -229,7 +229,7 @@ namespace OriCoop
         public static bool HostAdopting { get { return s_hostAdopt; } }
         // True while SaveSync itself restarts the game to load a checkpoint (guest transfer, host adopting the
         // partner's progress): RestartGame then is not a return to the title (TitleReturn, RoomGame, T-130).
-        public static bool RestartingForLoad { get { return s_loading; } }
+        public static bool RestartingForLoad { get { return OriCoop.Saves.LoadRestart.IsOwn(s_loading, s_disabled); } }   // T-157: not after a failed load
 
         public static void HostAdopt(byte[] bytes)
         {
