@@ -286,6 +286,10 @@ namespace OriCoop
         static IEnumerator Entry(TestHarness h, SweepEntry entry, RuntimeSceneMetaData meta, int step, float linger, SweepRecord record)
         {
             yield return NetCutsceneTest.Settle();
+            // T-163: the view checks count every guard repair from the start of the entry (arrival included: teleport,
+            // scene load, finding a spot), never the spirit orb, which the sweep's own teleports leave behind (T-102).
+            // Counting only after both stood (T-102) missed real arrival problems such as a puppet taking the camera (T-101).
+            int repairs = ViewRepairs();
             // Do not save an airborne/unsafe origin. Both ends must have a valid current checkpoint before teleport.
             float readyEnd = Now + 20f;
             while (Now < readyEnd && !Storm(h) && (!Grounded || GameController.Instance.IsLoadingGame)) yield return null;
@@ -350,9 +354,7 @@ namespace OriCoop
                 yield break;
             }
             Check(h, true, "loaded-found-both");
-            // T-102: the view checks count repairs from here on only, and never the spirit orb: the sweep teleports
-            // leave the orb behind, which is not a stuck view.
-            int repairs = ViewRepairs();
+            if (ViewRepairs() != repairs) h.Note("SWEEP arrival view repairs=" + (ViewRepairs() - repairs) + " in " + entry.Scene);
             int errors = h.ErrorCount;
             int restores = TestHarness.RestoreCheckpointCalls, loads = SaveSync.GuestLoads;
             s_restores = restores; s_loads = loads; s_unexpected = false; s_monitor = true;
