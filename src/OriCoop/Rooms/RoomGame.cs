@@ -146,10 +146,10 @@ namespace OriCoop.Rooms
             if (File.Exists(coop)) File.Delete(coop);
         }
 
-        public void Host(int slot, string relay)
+        public void Host(int slot, string server)
         {
             Starting();
-            NativeModeMenu.RoomHostSlot(slot, relay);
+            NativeModeMenu.RoomHostSlot(slot, server);
         }
 
         public void Join(string target)

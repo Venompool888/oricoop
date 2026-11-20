@@ -9,9 +9,9 @@ using UnityEngine;
 namespace OriCoop
 {
     // Screenshot probe for the online lobby and HUD (ORICOOP_LOBBY_PROBE=1, launched by src\run-lobbyprobe.ps1).
-    // Drives the real flow: save slot -> native "how to play" page -> Online -> Server room -> lobby pages
-    // (role, join input, join failure, direct host, relay host) -> Start -> in game: host chip, toast,
-    // disconnect dialog. Screenshots go next to ORICOOP_TEST_OUT. A relay server must run on ORICOOP_NET_RELAY.
+    // Drives the real flow: save slot -> native "how to play" page -> Online -> LAN host mode -> overlay lobby pages
+    // (role, join input, join failure, direct host) -> Start -> in game: host chip, toast, disconnect dialog.
+    // Screenshots go next to ORICOOP_TEST_OUT. (T-159: the relay pages and the relay server are gone.)
     public class LobbyProbe : MonoBehaviour
     {
         public static bool Enabled { get { return Environment.GetEnvironmentVariable("ORICOOP_LOBBY_PROBE") == "1"; } }
@@ -53,18 +53,17 @@ namespace OriCoop
             MethodInfo press = AccessTools.Method(typeof(NativeModeMenu), "OnPressed");
             press.Invoke(null, new object[] { 2 }); yield return StartCoroutine(Wait(1.2f));           // Online
             Shot("0_native_online"); yield return StartCoroutine(Wait(1.5f));
-            press.Invoke(null, new object[] { 0 }); yield return StartCoroutine(Wait(1.2f));           // Server room -> lobby
+            press.Invoke(null, new object[] { 1 }); yield return StartCoroutine(Wait(1.2f));           // LAN host mode -> lobby
             Component o = Overlay();
-            if (o == null) { Note("FAIL lobby overlay not open"); Quit(); yield break; }
-            s_origRelay = NetPlay.ConfigRelayServer; NetPlay.SetRelayServer("127.0.0.1:47020");
+            if (o == null) { Note("FAIL lobby overlay not open (needs [Start] NativeLobby = false)"); Quit(); yield break; }
             yield return StartCoroutine(Wait(0.5f));
             Shot("1_role"); yield return StartCoroutine(Wait(1.5f));
-            // 2. join input with a partly typed code
+            // 2. join input with a partly typed address
             Call(o, "GoTo", 1); yield return StartCoroutine(Wait(0.5f));
-            Set(o, "m_roomCodeInput", "K7FQ"); Set(o, "m_gridRow", 1); Set(o, "m_gridCol", 3); yield return StartCoroutine(Wait(0.8f));
+            Set(o, "m_directAddressInput", "192.168.1."); Set(o, "m_gridRow", 1); Set(o, "m_gridCol", 3); yield return StartCoroutine(Wait(0.8f));
             Shot("2_join_input"); yield return StartCoroutine(Wait(1.5f));
-            // 3. join a room that does not exist -> failure page
-            Set(o, "m_roomCodeInput", "ZZZZZZ"); Call(o, "TryConnectRelay"); yield return StartCoroutine(Wait(1.0f));
+            // 3. join an address where nobody listens -> failure page
+            Set(o, "m_directAddressInput", "127.0.0.1:1"); Call(o, "TryConnectDirect"); yield return StartCoroutine(Wait(1.0f));
             Shot("3_joining"); yield return StartCoroutine(Wait(1.5f));
             yield return StartCoroutine(Wait(6f));
             Note("phase after bad join: " + NetPlay.CurrentPhase + " problem='" + NetPlay.Problem + "'");
@@ -74,14 +73,6 @@ namespace OriCoop
             OnlineLobby.Transport = "direct"; Call(o, "GoTo", 2); yield return StartCoroutine(Wait(2.5f));
             Note("direct host phase " + NetPlay.CurrentPhase);
             Shot("5_host_direct"); yield return StartCoroutine(Wait(1.5f));
-            NetPlay.End("probe"); OnlineLobby.Transport = "relay"; Call(o, "GoTo", 0); yield return StartCoroutine(Wait(0.6f));
-            // 5. relay host page with a real room code
-            Call(o, "GoTo", 2);
-            float t1 = Time.realtimeSinceStartup;
-            while (NetPlay.RoomCode.Length == 0 && Time.realtimeSinceStartup - t1 < 15f) yield return null;
-            yield return StartCoroutine(Wait(1f));
-            Note("relay host phase " + NetPlay.CurrentPhase + " code " + NetPlay.RoomCode);
-            Shot("6_host_relay"); yield return StartCoroutine(Wait(1.5f));
             // 6. Start -> game loads; host chip + bars in game
             Call(o, "ActivateHostButton", 1);   // 0 Copy, 1 Start, 2 Cancel
             float t2 = Time.realtimeSinceStartup;
@@ -107,10 +98,8 @@ namespace OriCoop
             Quit();
         }
 
-        static string s_origRelay;
         static void Quit()
         {
-            if (s_origRelay != null) NetPlay.SetRelayServer(s_origRelay);
             try { NetPlay.End("probe done"); } catch { }
             Application.Quit();
         }

@@ -79,7 +79,6 @@ namespace OriCoop
         public static void Shutdown()
         {
             if (s_hub != null) { try { s_hub.Disconnect("partner quit the game"); } catch { } return; }
-            if (s_relayHub != null) { try { s_relayHub.Disconnect("partner quit the game"); } catch { } return; }
             if (Peer != null && Peer.State == PeerState.Connected) { try { Peer.Disconnect("partner quit the game"); Peer.Flush(); } catch { } }
         }
         const int Redundancy = 4;                 // frames per packet (current + 3 previous)
@@ -131,8 +130,6 @@ namespace OriCoop
             public bool HasPeer { get { return NetPlay.Peer != null; } }
             public bool Connected { get { return NetPlay.Connected; } }
             public bool PrimaryHello { get { return RemoteHello; } }
-            public bool RelayActive { get { return s_relay != null; } }
-            public bool RelayReady { get { return s_relay.Ready; } }
             public bool SteamReady { get { return NetPlay.SteamReady; } }
             public string Problem { get { return NetPlay.Problem; } }
             public int AssignedSeat { get { return Players.AssignedSeat; } }
@@ -212,9 +209,8 @@ namespace OriCoop
         }
         static NetPeer s_peer;
         static PeerHub s_hub;
-        static RelayHub s_relayHub;
         static bool s_factorySession;
-        static bool HasHub { get { return s_hub != null || s_relayHub != null; } }
+        static bool HasHub { get { return s_hub != null; } }
         static bool WaitingForSeat { get { return s_session.WaitingForSeat; } }
         public static NetPeer Peer { get { return !HasHub ? s_peer : Primary == null ? null : Primary.Peer; } }
         static IDatagramTransport s_transport;
@@ -281,18 +277,19 @@ namespace OriCoop
             s_statsKey = cfg.Bind("Net", "StatsKey", KeyCode.F6, "Shows/hides the network status line.");
             s_snapDist = cfg.Bind("Net", "SnapDistance", 4f, "Puppet farther than this from the owner's position jumps there at once; closer, it is pulled smoothly.");
             s_blend = cfg.Bind("Net", "CorrectionBlend", 0.2f, "Share of the position error removed per fixed step (0..1).");
-            s_transportKind = cfg.Bind("Net", "Transport", "direct", "direct = IP address and port (LAN, Tailscale, port forwarding). relay = through a relay server with a room code (no ports to open). steam = Steam friends: the host invites from the Steam overlay, both must own Ori and run Steam.");
+            s_transportKind = cfg.Bind("Net", "Transport", "direct", "direct = host mode on the local network: one player hosts, the others join its IP address and port (players on different networks can set up their own tunnel or VPN). steam = Steam friends: the host invites from the Steam overlay, both must own Ori and run Steam. An old 'relay' value falls back to direct.");
             s_inviteKey = cfg.Bind("Net", "InviteKey", KeyCode.F5, "Transport = steam, host: opens the Steam overlay to invite a friend.");
-            s_relayServer = cfg.Bind("Net", "RelayServer", "", "Relay server as host:port (Transport = relay). Run src\\RelayServer\\bin\\RelayServer.exe on any PC or VPS with a public UDP port.");
-            s_roomCode = cfg.Bind("Net", "RoomCode", "", "Room code the host's screen shows (Transport = relay, Mode = join).");
             s_menuAddress = cfg.Bind("OnlineMenu", "LastAddress", "", "Last address typed in the in-game online menu (prefill only).");
             s_menuRoom = cfg.Bind("OnlineMenu", "LastRoomCode", "", "Last room code typed in the in-game online menu (prefill only).");
             SteamTransport.Trace += m => Plugin.Log.LogInfo("net: Steam: " + m);
             NetPeer.Trace = m => Plugin.Log.LogInfo("net: peer: " + m);
-            // The relay server list (BepInEx\config\oricoop-relays.txt, edited live by OriCoop-Relays.html). While a
-            // relay session is live, changes to the file wait until it ends.
-            RelayList.InUse = () => Enabled && UsesRelay && s_relay != null;
-            try { RelayList.Init(s_relayServer.Value); } catch (Exception e) { Plugin.Log.LogWarning("relay list: " + e.Message); }
+            // T-159: the relay is gone. An old [Net] Transport = relay (its RelayServer / RoomCode keys stay in the file
+            // as orphans, BepInEx ignores them) falls back to direct (host mode on the local network).
+            if (s_transportKind.Value.Trim().ToLowerInvariant() == "relay")
+            {
+                Plugin.Log.LogWarning("online co-op: the relay transport was removed; [Net] Transport = relay falls back to direct (LAN host mode)");
+                s_transportKind.Value = "direct";
+            }
             string env = Environment.GetEnvironmentVariable("ORICOOP_NET");
             s_modeNow = (string.IsNullOrEmpty(env) ? s_mode.Value : env).Trim().ToLowerInvariant();
             if (!Enabled) return;
@@ -310,38 +307,28 @@ namespace OriCoop
         // The menu starts and stops online play while the game runs. Its choices live in runtime fields (s_rt*)
         // that win over env/config only for that session, so a menu session never changes how a config- or
         // env-driven launch behaves (tests, the [Net] file). The last address / room code are remembered in
-        // [OnlineMenu] for prefilling; the relay server the player types is a real setting ([Net] RelayServer).
-        static string s_rtTransport, s_rtAddress, s_rtRoom;
+        // [OnlineMenu] for prefilling.
+        static string s_rtTransport, s_rtAddress;
         static int s_rtPort;
         static ConfigEntry<string> s_menuAddress, s_menuRoom;
         static string TransportRaw { get { return s_rtTransport ?? Env("ORICOOP_NET_TRANSPORT", s_transportKind.Value); } }
-        public static string TransportName { get { return TransportRaw.Trim().ToLowerInvariant(); } }
+        // T-159: "relay" (an old setting, env or caller) means direct now.
+        public static string TransportName { get { string t = TransportRaw.Trim().ToLowerInvariant(); return t == "relay" ? "direct" : t; } }
         public static string ConfigAddress { get { return s_menuAddress.Value.Length > 0 ? s_menuAddress.Value : s_address.Value; } }
         public static string ConfigRoomCode { get { return s_menuRoom.Value; } }
-        // The relay in use: the selected entry of the relay list, else the old [Net] RelayServer setting.
-        public static string ConfigRelayServer { get { string c = RelayList.Current; return !string.IsNullOrEmpty(c) ? c : s_relayServer.Value; } }
         public static int ConfigPort { get { return s_port.Value; } }
-        // A relay typed or pasted in the game (host:port or an oricoop:// link): added to / selected in the list.
-        public static void SetRelayServer(string hostPort)
-        {
-            string text = (hostPort ?? "").Trim(), address, room, name;
-            if (text.Length == 0) return;
-            if (!RelayList.ParseLink(text, out address, out room, out name)) { Plugin.Log.LogWarning("relay list: not a relay address"); return; }
-            s_relayServer.Value = address;
-            RelayList.AddOrSelect(address, name);
-        }
         // Last problem worth showing to the player (room not found, cannot resolve, Steam error...). "" when fine.
         public static string Problem = "";
         public static float StartedAt;
         // True while End() reports the session end (the player chose to leave: no "connection lost" dialog).
         public static bool EndingByChoice;
 
-        // host: true = create a room / listen. transport: direct | relay | steam.
-        // target: direct join = "ip[:port]"; relay join = room code; relay host/join may pass "server|code" to
-        // also set the relay server; ignored otherwise.
+        // host: true = create a room / listen. transport: direct | steam | a TransportFactory name (cserver).
+        // target: direct join = "ip[:port]"; factory transports get it as is; ignored otherwise.
         public static void Begin(bool host, string transport, string target)
         {
             transport = (transport ?? "direct").Trim().ToLowerInvariant();
+            if (transport == "relay") transport = "direct";   // T-159: the relay is gone
             // Steam guest: a join started by an accepted invite (SteamInviteHook) may already be running when the
             // player opens Online -> Steam -> Join. Restarting it would leave the lobby and lose the invite.
             if (!host && transport == "steam" && SteamJoinHealthy)
@@ -355,16 +342,10 @@ namespace OriCoop
             s_steamLobby = rejoin;
             if (rejoin != 0) Plugin.Log.LogInfo("online co-op: retrying the Steam lobby " + rejoin);
             s_rtTransport = transport;
-            s_factorySession = TransportFactory != null && transport != "direct" && transport != "relay" && transport != "steam";
+            s_factorySession = TransportFactory != null && transport != "direct" && transport != "steam";
             target = (target ?? "").Trim();
             s_factoryTarget = target;
-            if (transport == "relay")
-            {
-                int bar = target.IndexOf('|');
-                if (bar >= 0) { SetRelayServer(target.Substring(0, bar)); target = target.Substring(bar + 1).Trim(); }
-                if (!host) { s_rtRoom = target.ToUpperInvariant(); s_menuRoom.Value = s_rtRoom; }
-            }
-            else if (transport == "direct" && !host && target.Length > 0)
+            if (transport == "direct" && !host && target.Length > 0)
             {
                 s_menuAddress.Value = target;
                 int colon = target.LastIndexOf(':'); int p;
@@ -384,7 +365,7 @@ namespace OriCoop
             // T-113: a deliberate end, before the goodbye below: transports that hold seats (C-server) release them.
             if (Enabled && Leaving != null) { try { Leaving(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: leaving hook: " + e.Message); } }
             OnlineRoomScreen.Reset();
-            s_rtTransport = s_rtAddress = s_rtRoom = null; s_rtPort = 0; RoomCodeOverride = null;
+            s_rtTransport = s_rtAddress = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;
             if (!Enabled) return;
             bool wasConnected = Connected || s_session.Started || s_remotes.Count > 0;
@@ -408,7 +389,7 @@ namespace OriCoop
         }
 
         public enum Phase { Off, Starting, Waiting, Connecting, Connected, Retrying }
-        // What the UI shows: Waiting = host ready for a partner (RoomCode set for relay); Retrying = Problem set.
+        // What the UI shows: Waiting = host ready for a partner (RoomCode set for C-server); Retrying = Problem set.
         public static Phase CurrentPhase { get { return (Phase)s_session.CurrentPhase; } }
         public static bool PartnerHere { get { return RemoteCount > 0; } }
         public static float RttMs { get { return Peer != null && Peer.State == PeerState.Connected ? Peer.Stats.RttMs : 0f; } }
@@ -418,7 +399,6 @@ namespace OriCoop
         public static float SilenceMs { get { return s_session.SilenceMs; } }
         public const float SilenceHintMs = 1000f;
         public static bool SignalLost { get { return s_session.SignalLost; } }
-        public static bool RelayDirect { get { return s_relay != null && s_relay.Direct; } }
         public static string SteamPartnerName { get { return s_steam != null ? s_steam.RemoteName : ""; } }
         public static bool SteamReady { get { return s_steam != null && s_steam.Ready; } }
         public static void OpenSteamInvite() { if (s_steam != null && s_steam.Ready) s_steam.OpenInviteOverlay(); }
@@ -507,12 +487,10 @@ namespace OriCoop
             return true;
         }
 
-        static ConfigEntry<string> s_transportKind, s_relayServer, s_roomCode;
-        static RelayTransport s_relay;
+        static ConfigEntry<string> s_transportKind;
         static bool s_pendingConnect;
         static string Env(string name, string fallback) { string e = Environment.GetEnvironmentVariable(name); return string.IsNullOrEmpty(e) ? fallback : e; }
-        public static bool UsesRelay { get { return TransportName == "relay"; } }
-        public static string RoomCode { get { return !string.IsNullOrEmpty(RoomCodeOverride) ? RoomCodeOverride : s_relay != null ? (s_relay.RoomCode ?? "") : ""; } }
+        public static string RoomCode { get { return RoomCodeOverride ?? ""; } }
 
         static IPEndPoint Resolve(string hostPort, int defaultPort)
         {
@@ -526,35 +504,6 @@ namespace OriCoop
             return new IPEndPoint(ip, port);
         }
 
-        // Relay: the room is created/joined first; NetPeer runs on top once the relay reports Ready.
-        static void OpenRelay()
-        {
-            IPEndPoint server = Resolve(Env("ORICOOP_NET_RELAY", ConfigRelayServer), 47020);
-            string code = Env("ORICOOP_NET_ROOM", s_rtRoom ?? s_roomCode.Value).Trim().ToUpperInvariant();
-            // Test hook: the room code can arrive later in a file (the test starts both games before the host has a room).
-            string codeFile = Environment.GetEnvironmentVariable("ORICOOP_NET_ROOM_FILE");
-            if (!IsHost && code.Length == 0 && !string.IsNullOrEmpty(codeFile))
-            {
-                try { if (File.Exists(codeFile)) code = File.ReadAllText(codeFile).Trim().ToUpperInvariant(); } catch { }
-                if (code.Length == 0) { s_retryAt = Time.realtimeSinceStartup + 0.5f; return; }
-            }
-            if (!IsHost && code.Length == 0) { Plugin.Log.LogWarning("net: relay join needs [Net] RoomCode"); Problem = "no room code"; s_retryAt = Time.realtimeSinceStartup + 5f; return; }
-            if (IsHost) s_relay = RelayTransport.Host(server);
-            else s_relay = RelayTransport.Join(server, code);
-            s_relay.Log += delegate(string message) { Plugin.Log.LogInfo("net: relay " + message); };
-            s_transport = s_relay;
-            if (IsHost)
-            {
-                s_relayHub = new RelayHub(s_relay);
-                s_relayHub.PeerCreated += p => ApplySimFromEnv(p.Sim);
-                s_relayHub.Connected += OnHubConnected;
-                s_relayHub.Disconnected += OnHubDisconnected;
-            }
-            else NewPeer();
-            s_pendingConnect = !IsHost;
-            Plugin.Log.LogInfo("net: relay " + server + (IsHost ? " (creating a room)" : " (joining room " + code + ")"));
-        }
-
         static void NewPeer()
         {
             s_peer = new NetPeer(s_transport);
@@ -563,29 +512,11 @@ namespace OriCoop
             Peer.Disconnected += OnDisconnected;
         }
 
-        // Called every frame before the peer is polled. Returns false while the relay room is not ready.
-        static bool PumpRelay()
-        {
-            if (s_relay == null) return true;
-            s_relay.Update();
-            if (!string.IsNullOrEmpty(s_relay.Error))
-            {
-                Plugin.Log.LogWarning("net: relay: " + s_relay.Error); Problem = "relay: " + s_relay.Error;
-                Close(); s_retryAt = Time.realtimeSinceStartup + 5f;
-                return false;
-            }
-            if (!s_relay.Ready) return false;
-            if (s_pendingConnect) { s_pendingConnect = false; Peer.Connect(s_relay.RemoteEndPoint); Plugin.Log.LogInfo("net: relay room joined; connecting"); }
-            if (IsHost && s_lastRoom != s_relay.RoomCode) { s_lastRoom = s_relay.RoomCode; Plugin.Log.LogInfo("net: relay room code " + s_lastRoom + " (give it to your friend)"); }
-            return true;
-        }
-        static string s_lastRoom = "";
-
         static int Port { get { int p; return int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_NET_PORT"), out p) ? p : s_rtPort > 0 ? s_rtPort : s_port.Value; } }
 
         static void Open()
         {
-            if (!IsHost && !UsesRelay && !UsesSteam && s_transport is UdpTransport && s_peer != null && s_peer.State == PeerState.Disconnected)
+            if (!IsHost && !UsesSteam && s_transport is UdpTransport && s_peer != null && s_peer.State == PeerState.Disconnected)
             {
                 EndPoint host = s_peer.Remote;
                 ResetSession(); NewPeer(); Peer.Connect(host);
@@ -608,7 +539,6 @@ namespace OriCoop
             Close();
             try
             {
-                if (UsesRelay) { OpenRelay(); return; }
                 if (UsesSteam) { OpenSteam(); return; }
                 if (TransportFactory != null && TransportName != "direct")
                 {
@@ -649,9 +579,8 @@ namespace OriCoop
         static void Close()
         {
             if (s_hub != null) { s_hub.Dispose(); s_hub = null; }
-            if (s_relayHub != null) { s_relayHub.Dispose(); s_relayHub = null; }
             if (s_transport != null) { try { s_transport.Dispose(); } catch { } }
-            s_transport = null; s_peer = null; s_relay = null; s_steam = null; s_pendingConnect = false; s_steamReadyLogged = false; s_lastRoom = "";
+            s_transport = null; s_peer = null; s_steam = null; s_pendingConnect = false; s_steamReadyLogged = false;
             s_factorySession = false; s_reListen = false;
             ResetSession();
         }
@@ -769,7 +698,7 @@ namespace OriCoop
         }
 
         // Factory (C-server) sessions: nobody relays earlier Hello/Status to a seat that joins later (the hub's
-        // OnHubConnected does that for direct/relay), so each client introduces itself to every newly online seat.
+        // OnHubConnected does that for direct), so each client introduces itself to every newly online seat.
         public static void IntroduceTo(int seat)
         {
             SendTo(seat, MsgHello, true, w => w.Write(ModVersion));
@@ -793,8 +722,8 @@ namespace OriCoop
             // T-030: a guest tries again after 1 s (was 3 s). Each connect attempt itself keeps asking for up to 10 s, so this
             // only shortens the gap after a timeout; the host listens again after 0.5 s.
             s_retryAt = Time.realtimeSinceStartup + (IsHost ? 0.5f : 1f);
-            // A relay host keeps its room (same code for the friend): new peer on the same relay transport.
-            if (IsHost && ((s_relay != null && s_relay.Ready) || (s_steam != null && s_steam.Ready))) { s_reListen = true; }
+            // A Steam host keeps its lobby (same lobby for the friend): new peer on the same Steam transport.
+            if (IsHost && s_steam != null && s_steam.Ready) { s_reListen = true; }
         }
         static bool s_reListen;
         static void ReListenIfNeeded()
@@ -802,7 +731,7 @@ namespace OriCoop
             if (!s_reListen) return;
             s_reListen = false;
             NewPeer(); Peer.Listen();
-            Plugin.Log.LogInfo("net: relay room " + RoomCode + " waiting for a new guest");
+            Plugin.Log.LogInfo("net: Steam lobby waiting for a new guest");
         }
 
         static void RemoveRemote(string why)
@@ -819,7 +748,7 @@ namespace OriCoop
             Send(type, true, body);
         }
 
-        static readonly Action s_inviteTick = SteamInviteHook.Tick, s_relayListTick = RelayList.Tick;
+        static readonly Action s_inviteTick = SteamInviteHook.Tick;
         static readonly Action s_inviteDraw = SteamInviteHook.DrawGUI;
         static readonly Action s_sendLocal = SendLocal, s_playRemote = PlayRemote;
         static readonly Action s_extraTick = OnlineLocalPlayers.Tick, s_extraSample = OnlineLocalPlayers.SampleExtras;
@@ -829,11 +758,9 @@ namespace OriCoop
         {
             // Before the Enabled check: Steam invites must be caught (and acted on) while online play is off.
             SubsystemGuard.Run("SteamInviteHook.Tick", s_inviteTick);
-            SubsystemGuard.Run("RelayList.Tick", s_relayListTick);
             if (!Enabled) return;
             if (Input.GetKeyDown(s_statsKey.Value)) s_showStats = !s_showStats;
             ReListenIfNeeded();
-            if (s_relay != null && !PumpRelay()) return;
             if (UsesSteam && !PumpSteam()) return;
             if (!HasHub && (Peer == null || Peer.State == PeerState.Disconnected || (Peer.State == PeerState.Idle && !s_pendingConnect)))
             {
@@ -843,10 +770,10 @@ namespace OriCoop
             SubsystemGuard.Run("OnlineLocalPlayers.Tick", s_extraTick);
             if (HasHub)
             {
-                if (s_hub != null) s_hub.Poll(); else s_relayHub.Poll();
+                s_hub.Poll();
                 foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
                     if (remote.Peer != null) ReadPeer(remote.Peer, remote, true);
-                if (s_hub != null) s_hub.Flush(); else s_relayHub.Flush();
+                s_hub.Flush();
             }
             else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
             if (!Connected || WaitingForSeat) return;
@@ -1054,7 +981,7 @@ namespace OriCoop
                 byte[] packet = Seats.FrameStreams.Encode(Players.LocalSeat, new int[] { seat }, new byte[][] { body });
                 Broadcast(packet, packet.Length, false);
             }
-            if (s_hub != null) s_hub.Flush(); else if (s_relayHub != null) s_relayHub.Flush(); else Peer.Flush();
+            if (s_hub != null) s_hub.Flush(); else Peer.Flush();
         }
 
         static void PlayRemote()
@@ -1171,9 +1098,6 @@ namespace OriCoop
             if (!Enabled) return "";
             string st = Peer == null ? (HasHub ? "listening" : "starting") : Peer.State.ToString().ToLowerInvariant();
             string s = "NET " + (IsHost ? "host P1" : "guest P" + Players.LocalSeat) + " " + st;
-            if (s_relay != null)
-                s += !s_relay.Ready ? " (relay: " + (IsHost ? "creating room" : "joining room") + ")"
-                    : "  ROOM " + s_relay.RoomCode + (s_relay.Direct ? " direct" : " via relay");
             if (UsesSteam)
                 s += s_steam == null ? (IsHost ? " (Steam: starting)" : " (Steam: waiting for an invite: accept it in Steam, or Join Game from your friends list)")
                     : !s_steam.Ready ? " (Steam: lobby starting)"

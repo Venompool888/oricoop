@@ -25,8 +25,6 @@ if (-not (Test-Path -LiteralPath $dll)) { throw "build of $commit failed: no DLL
 Copy-Item -LiteralPath $dll "$stage\BepInEx\plugins\OriCoop.dll"
 if ($WithGlyphs -and (Test-Path "$game\BepInEx\plugins\OriPSGlyphs.dll")) { Copy-Item "$game\BepInEx\plugins\OriPSGlyphs.dll" "$stage\BepInEx\plugins" }
 Copy-Item (Join-Path $root 'TWO-PC-TEST.md') "$stage\OriCoop-README-online.md"
-# Relay server manager, opened from the game folder; it edits BepInEx\config\oricoop-relays.txt (RelayList.cs).
-Copy-Item (Join-Path $PSScriptRoot 'assets\relay-manager\OriCoop-Relays.html') "$stage\OriCoop-Relays.html"
 # Licence notices for the bundled BepInEx / HarmonyX / MonoMod / Mono.Cecil (LGPL-2.1 and MIT require them).
 Copy-Item (Join-Path $PSScriptRoot 'assets\kit\THIRD-PARTY-LICENSES.txt') "$stage\THIRD-PARTY-LICENSES.txt"
 # The DLL embeds a few game-derived items (marker image, zh text); this notice says whose they are.

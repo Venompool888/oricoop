@@ -19,7 +19,7 @@ namespace OriCoop
         // lastRoom != null: the 上次游玩 row, open that room once the room service answers.
         internal static void OpenRooms(string lastRoom)
         {
-            s_transport = "relay";
+            s_transport = "cserver";   // T-159: rooms play through the C-server
             s_roomsList = false;
             RoomsPanel.Open(lastRoom);
             GoPage(PageRoomsMenu, 0);

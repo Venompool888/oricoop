@@ -7,7 +7,7 @@ using UnityEngine;
 namespace OriCoop
 {
     // In-game online HUD (only while NetPlay.Enabled):
-    //   - Signal bars top-right from NetPlay.RttMs / LossPercent, tiny "42 ms", "中继 relay" tag
+    //   - Signal bars top-right from NetPlay.RttMs / LossPercent, tiny "42 ms"
     //   - Status chips under signal bars (cutscene watching / partner in menu)
     //   - Host waiting chip top-left while host and not PartnerHere (room code / address / invite)
     //   - Bilingual toasts at top centre (fade in/out, ~3.5 s)
@@ -73,7 +73,6 @@ namespace OriCoop
         static GUIStyle s_toastZh;
         static GUIStyle s_signalText;
         static GUIStyle s_chipStyle;
-        static GUIStyle s_tagStyle;
         static GUIStyle s_arrowStyle;
         static GUIStyle s_modalTitleZh;
         static GUIStyle s_modalItemZh;
@@ -379,12 +378,6 @@ namespace OriCoop
             s_signalText.fontSize = Mathf.RoundToInt(20f * scale);
             s_signalText.normal.textColor = new Color(0.867f, 0.918f, 0.898f);
 
-            s_tagStyle = new GUIStyle(GUI.skin.label);
-            s_tagStyle.font = GUI.skin.font;
-            s_tagStyle.alignment = TextAnchor.MiddleRight;
-            s_tagStyle.fontSize = Mathf.RoundToInt(14f * scale);
-            s_tagStyle.normal.textColor = new Color(0.39f, 0.87f, 0.91f);
-
             s_chipStyle = new GUIStyle(GUI.skin.label);
             s_chipStyle.font = GUI.skin.font;
             s_chipStyle.alignment = TextAnchor.MiddleLeft;
@@ -536,13 +529,6 @@ namespace OriCoop
                     : L10n.F(me == 1 ? "hud.role.host" : "hud.role.partner", Roles.Tag(me));
                 DrawText("hud.signal.role", new Rect(roleRight - 160f * scale, topY, 160f * scale, 26f * scale), roleText,
                     s_signalText, new Color(mc.r, mc.g, mc.b, hudAlpha));
-
-                // Tiny "中继 relay" tag if relay-forwarded
-                if (sample || (NetPlay.UsesRelay && !NetPlay.RelayDirect && NetPlay.Connected))
-                {
-                    Rect tagR = new Rect(barsX - 110f * scale, topY + 24f * scale, 100f * scale, 20f * scale);
-                    DrawText("hud.signal.relay", tagR, L10n.T("hud.relay"), s_tagStyle, new Color(0.39f, 0.87f, 0.91f, hudAlpha));
-                }
             }
             finally { NativeGui.EndPage(); }
         }
@@ -602,18 +588,12 @@ namespace OriCoop
 
                 string line = "";
                 if (sample) line = L10n.F("hud.room", "K7F Q2M") + "\n" + L10n.F("hud.invite", "F5");
-                else if (NetPlay.UsesRelay)
-                {
-                    string code = NetPlay.RoomCode;
-                    string spaced = (!string.IsNullOrEmpty(code) && code.Length >= 6) ? (code.Substring(0, 3) + " " + code.Substring(3)) : (code ?? "");
-                    line = L10n.F("hud.room", string.IsNullOrEmpty(spaced) ? L10n.T("hud.room.loading") : spaced);
-                }
                 else if (NetPlay.UsesSteam)
                 {
                     line = L10n.F("hud.invite", "F5");
                 }
                 // LAN addresses belong only on the direct host lobby page, never on the gameplay HUD.
-                // C-server is not UsesRelay: it must not fall through to a local-address chip either.
+                // C-server must not fall through to a local-address chip either.
                 else return;
 
                 GUIContent c = new GUIContent(line);

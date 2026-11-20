@@ -27,7 +27,7 @@ namespace OriCoop.Rooms
         }
         int WriteRoomSlot(string room, string save, long version, byte[] data);
         void UpdateVersion(int slot, string room, string save, long version);
-        void Host(int slot, string relay);
+        void Host(int slot, string server);   // server: the C-server the room plays on (T-159; was the relay)
         void Join(string target);
         byte[] Snapshot(out string summary);
         void CopySingle(byte[] data);
@@ -41,7 +41,7 @@ namespace OriCoop.Rooms
         readonly RoomLocalStore store;
         readonly IRoomGame game;
         readonly RoomAuth auth;
-        readonly string relay;
+        readonly string server;
         public Action<Action<string>> Password;
         public Action<string> Error;
         public Action Copied;
@@ -82,14 +82,14 @@ namespace OriCoop.Rooms
         bool queuedTogether;
 
         public RoomSession(RoomClient client, RoomJobs jobs, RoomLocalStore store, IRoomGame game,
-            RoomAuth auth, string relay)
+            RoomAuth auth, string server)
         {
             this.client = client;
             this.jobs = jobs;
             this.store = store;
             this.game = game;
             this.auth = auth;
-            this.relay = relay;
+            this.server = server;
         }
 
         public void Call(Func<RoomReply> work, Action<RoomReply> done)
@@ -200,7 +200,7 @@ namespace OriCoop.Rooms
                     }
                     liveSent = false;
                     nextBeat = now + BeatSeconds;
-                    game.Host(slot, relay);
+                    game.Host(slot, server);
                     lastPlayed = game.PlayedSeconds;
                 });
             }
@@ -208,7 +208,7 @@ namespace OriCoop.Rooms
             {
                 waiting = false;
                 nextBackup = now + BackupSeconds;
-                game.Join(relay + "|" + r.Fields.GetString("live"));
+                game.Join(server + "|" + r.Fields.GetString("live"));
             }
             else
             {

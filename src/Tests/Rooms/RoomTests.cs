@@ -181,7 +181,7 @@ static class RoomTests
             return Slot;
         }
         public void UpdateVersion(int slot, string room, string save, long version) { SlotVersion = version; }
-        public void Host(int slot, string relay) { Hosted = slot; }
+        public void Host(int slot, string server) { Hosted = slot; }
         public void Join(string target) { Joined = target; }
         public byte[] Snapshot(out string summary) { summary = "snapshot"; return SnapshotData; }
         public void CopySingle(byte[] data) { Copied = data; }
@@ -205,7 +205,7 @@ static class RoomTests
         {
             Store = new RoomLocalStore(PathName);
             Client = new RoomClient(Http);
-            Session = new RoomSession(Client, Jobs, Store, Game, Auth, "relay");
+            Session = new RoomSession(Client, Jobs, Store, Game, Auth, "server");
             Session.Error = delegate(string error) { Error = error; };
         }
 
@@ -681,7 +681,7 @@ static class RoomTests
             x.Session.Online = true;
             x.Session.Enter("save");
             x.PumpUntil(delegate { return x.Game.Joined != null; });
-            Equal("relay|code", x.Game.Joined);
+            Equal("server|code", x.Game.Joined);
             Check(x.Session.Active && !x.Session.Holder, "join state incorrect");
             x.Http.Done();
         }
@@ -700,7 +700,7 @@ static class RoomTests
             Equal(1, x.Http.Ops.Count);
             x.Clock.Advance(x.Session, 0.1);
             x.PumpUntil(delegate { return x.Game.Joined != null; });
-            Equal("relay|code", x.Game.Joined);
+            Equal("server|code", x.Game.Joined);
             Equal("1", x.Http.Requests[1].GetString("waiting"));
             x.Http.Done();
         }

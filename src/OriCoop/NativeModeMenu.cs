@@ -582,7 +582,7 @@ namespace OriCoop
         // ---- diagnostics ------------------------------------------------------------------------------------
 
         // T-091: every page definition the title orb, the mode menu (single / local / online) and the server page draw
-        // from. None may list the host-mode row any more (T-045); returns the offending page names ("" = none).
+        // from. None may list the old relay host-mode row (T-045, removed with the relay in T-159); returns the offending page names ("" = none).
         internal static string PagesWithHostMode()
         {
             string bad = "";
@@ -659,7 +659,7 @@ namespace OriCoop
                 if (Probe) ProbeTick();
             }
 
-            // Self-driving check: walk every page (online lobby included, without a relay server: direct host and a
+            // Self-driving check: walk every page (online lobby included, without a server: direct host and a
             // join to a dead address), screenshot each, then pick Local co-op so the test run carries on.
             float m_nextAt;
             void ProbeTick()
@@ -702,20 +702,10 @@ namespace OriCoop
                         else
                         {
                             if (LastPage != "servermode") Plugin.Log.LogError("mode menu probe: expected rooms Back to server mode (" + Labels + ")");
-                            LobbyOpen("relay");
+                            m_probeStep = 16;   // T-159: the relay host / join steps (7-16) are gone; on to 服务器管理 (17)
                         }
                         if (++m_probeRoomsStep < 3) m_probeStep--;
                         break;
-                    case 7: Shot("lobby_role_relay"); break;
-                    case 8: s_mgr.SetCurrentItem(1); s_mgr.PressCurrentItem(); break;   // join -> room code entry
-                    case 9: Shot("lobby_entry"); break;
-                    case 10: s_mgr.SetCurrentItem(0); s_mgr.PressCurrentItem(); break;   // start editing
-                    case 11: Insert("k7fq2"); s_cursor = 4; RefreshTexts(true); break;
-                    case 12: Shot("lobby_entry_editing"); break;
-                    case 13: Cycle(+1); RefreshTexts(true); Plugin.Log.LogInfo("mode menu probe: entry '" + s_entry + "' cursor " + s_cursor); break;
-                    case 14: StopEdit(); break;
-                    case 15: s_mgr.OnBackPressed(); break;                        // -> role
-                    case 16: s_mgr.OnBackPressed(); break;                        // -> server mode
                     case 17:   // 自建服务器 -> 服务器管理 -> 服务器列表 -> back -> 添加服务器
                         if (m_probeSub == 0) { s_mgr.SetCurrentItem(ServerModeRoomsRow + 1); s_mgr.PressCurrentItem(); }
                         else if (m_probeSub == 1)

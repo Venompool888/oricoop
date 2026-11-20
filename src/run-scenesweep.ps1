@@ -7,10 +7,9 @@ param(
     [ValidateRange(0, 2147483647)][int]$HarnessSec = 0, [ValidateRange(0, 2147483647)][int]$TimeoutSec = 0,
     [ValidateRange(0, 1000)][int]$MaxRestarts = 40, [string]$Resume = '', [switch]$ReportOnly,
     [string]$Skip = $env:ORICOOP_SWEEP_SKIP, [string]$Catalog = '',
-    [switch]$Relay, [switch]$CServer
+    [switch]$CServer
 )
 $ErrorActionPreference = 'Stop'
-if ($Relay -and $CServer) { throw 'Choose either -Relay or -CServer.' }
 if (-not ('OriCoop.Sweep.SweepPlan' -as [type])) {
     Add-Type -Path @((Join-Path $PSScriptRoot 'OriCoop\Sweep\SweepPlan.cs'), (Join-Path $PSScriptRoot 'OriCoop\Sweep\SweepReport.cs'))
 }
@@ -147,7 +146,7 @@ if (-not $ReportOnly) {
                     Remove-Item -LiteralPath (Join-Path $run ($side + '.done')) -Force -ErrorAction SilentlyContinue
                 }
                 $args = '-NoProfile -ExecutionPolicy Bypass -File "' + (Join-Path $PSScriptRoot 'run-nettest.ps1') + '" -Clients 2 -HarnessSec ' + $hsec + ' -TimeoutSec ' + $tsec
-                if ($Relay) { $args += ' -Relay' }; if ($CServer) { $args += ' -CServer' }
+                if ($CServer) { $args += ' -CServer' }
                 $child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe') -ArgumentList $args -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $attemptDir 'launcher.log') -RedirectStandardError (Join-Path $attemptDir 'launcher-error.log')
                 $games = @{}; $oneExitedAt = $null
                 try {

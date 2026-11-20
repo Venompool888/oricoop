@@ -1,15 +1,15 @@
 # Two to four isolated Ori clients; none uses the owner's real LOCALAPPDATA save location.
 # -Clients 3|4: processes start together; only the LAST guest connects after LateJoinSec (default 20) and after the host settled the save lineage (T-129 marker file).
-# -Relay: all games go through a local RelayServer.exe with one room code (the "server version") instead of direct UDP;
-#   works with -Clients 2..4 (every guest joins the same room). $env:ORICOOP_TEST_RELAY = 'host:port' uses that
-#   relay server instead of starting a local one.
+# -CServer: all games go through a local CServer.exe with one room code (server mode) instead of direct UDP (LAN
+#   host mode); works with -Clients 2..4. $env:ORICOOP_TEST_CSERVER = 'host:port' uses that server instead.
+#   (T-159: the -Relay transport is gone.)
 # -TimeoutSec: whole run (default 1020). -HarnessSec: the in-game suite limit (ORICOOP_HARNESS_SEC, default 900; the
 #   harness needed ~360 s at HEAD 2026-11-16 and phase WO adds ~120 s, more under load; main reached ~655 s on 2026-11-18 and T-059's local-player checks need more; TestHarness defaults to 420).
 # -Width/-Height: window size of both games (default 640x360; larger for readable screenshots).
 # -GuestNewGame: the guest has NO saves (appdata2 emptied) and picks an empty slot -> Normal -> new game; it must skip
 #   the prologue, load the host's save from the title and join the host (GuestJoin.cs; "W empty slot" checks).
 # -GuestNoSlot: same empty guest, but it never picks a slot (title 加入 path): GuestJoin.BeginNoSlot once connected.
-param([int]$TimeoutSec = 1020, [int]$HarnessSec = 900, [string]$Sim = '', [switch]$Force, [switch]$Relay, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
+param([int]$TimeoutSec = 1020, [int]$HarnessSec = 900, [string]$Sim = '', [switch]$Force, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
     [switch]$LocalPlayers, [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0)
 $script:ExtraEnv = @{}
 if ($LocalPlayers) {
@@ -40,7 +40,7 @@ foreach ($resultPath in $results) {
 # (same as run-test.ps1), so positions and world state do not drift between runs.
 $pristine = 'C:\OriCoop\save-backup\20261114-150138'
 $appDataDirs = @($TL_AppData[0], $TL_AppData[1])
-if ($Clients -ge 3 -and -not $Relay -and -not $CServer) { $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'direct' }
+if ($Clients -ge 3 -and -not $CServer) { $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'direct' }
 for ($i = 2; $i -lt $Clients; $i++) {
     # Players 3 and 4 get their settings from player 2's folder the first time (saves come from the backup below).
     $saves = Join-Path $TL_AppData[$i] 'Ori and the Blind Forest DE'
@@ -111,19 +111,8 @@ function Compare-Tracks([string]$label, [object[]]$observer, [object[]]$owner) {
 
 $clientProcesses = @()
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
-$relayProc = $null
+$serverProc = $null
 try {
-    if ($Relay -and $env:ORICOOP_TEST_RELAY) {
-        # Remote relay (host:port from the local environment only; never put a real address in the repo).
-        'RELAY: remote relay from ORICOOP_TEST_RELAY (no local relay server)'
-        $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'relay'
-        $script:ExtraEnv['ORICOOP_NET_RELAY'] = $env:ORICOOP_TEST_RELAY
-    } elseif ($Relay) {
-        $relayPort = 47020 + $TL_PortOffset
-        $relayProc = Start-Process -FilePath (Get-TestServerExe 'RelayServer') -ArgumentList ([string]$relayPort) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'relay-server.log')
-        $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'relay'
-        $script:ExtraEnv['ORICOOP_NET_RELAY'] = '127.0.0.1:' + $relayPort
-    }
     if ($CServer -and $env:ORICOOP_TEST_CSERVER) {
         # Remote C-server (host:port from the local environment only; never put a real address in the repo).
         'CSERVER: remote C-server from ORICOOP_TEST_CSERVER (no local CServer.exe)'
@@ -132,15 +121,15 @@ try {
     } elseif ($CServer) {
         # C-server (equal mode, docs/c-server-design.md): every game connects to a local CServer.exe; seat 1 creates the room.
         $csPort = 47022 + $TL_PortOffset
-        # ORICOOP_CSERVER_EXE picks another CServer build (e.g. a protocol change under test), like ORICOOP_RELAY_EXE.
+        # ORICOOP_CSERVER_EXE picks another CServer build (e.g. a protocol change under test).
         $csExe = Get-TestServerExe 'CServer'   # this checkout's source, or ORICOOP_CSERVER_EXE (T-088)
-        $relayProc = Start-Process -FilePath $csExe -ArgumentList ('--port ' + $csPort) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'cserver.log')
+        $serverProc = Start-Process -FilePath $csExe -ArgumentList ('--port ' + $csPort) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'cserver.log')
         $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
         $script:ExtraEnv['ORICOOP_NET_CSERVER'] = '127.0.0.1:' + $csPort
     }
-    $roomFile = Join-Path $testDir 'relay-room.txt'
+    $roomFile = Join-Path $testDir 'room-code.txt'
     Remove-Item $roomFile -Force -ErrorAction SilentlyContinue
-    if ($Relay -or $CServer) { $script:ExtraEnv['ORICOOP_NET_ROOM_FILE'] = $roomFile }
+    if ($CServer) { $script:ExtraEnv['ORICOOP_NET_ROOM_FILE'] = $roomFile }
     # T-129: the last guest connects only after the host settled the save lineage with the others (the host writes this
     # marker at its first lineage commit; NetTestHarness.LateJoinGate). The games take ~30 s to start, so LateJoinSec
     # alone has already run out by then and the 'late' guest used to see the offer like everyone else.
@@ -159,15 +148,15 @@ try {
     }
     $clientProcesses = @(Start-TestClients $specs 60)
     for ($i = 0; $i -lt $clientProcesses.Count; $i++) { Add-Content -LiteralPath $launchLog -Value ('LAUNCH ' + [DateTime]::UtcNow.ToString('o') + ' tag=' + $specs[$i].Tag + ' pid=' + $clientProcesses[$i].Id) }
-    if ($Relay -or $CServer) {
+    if ($CServer) {
         # The host's game creates the room; use its private log.
         $code = $null; $log = Get-ClientLog 'host-1'
         for ($i = 0; $i -lt 180 -and -not $code; $i++) {
             Wait-TestSeconds 0.5
-            if (Test-Path $log) { $m = Select-String -Path $log -Pattern '(?:relay room code|cserver: seat P1, room code) ([A-Z0-9]{6})' | Select-Object -Last 1; if ($m) { $code = $m.Matches[0].Groups[1].Value } }
+            if (Test-Path $log) { $m = Select-String -Path $log -Pattern 'cserver: seat P1, room code ([A-Z0-9]{6})' | Select-Object -Last 1; if ($m) { $code = $m.Matches[0].Groups[1].Value } }
         }
-        if (-not $code) { 'RELAY: host never reported a room code'; throw 'no room code' }
-        'RELAY room code ' + $code
+        if (-not $code) { 'CSERVER: host never reported a room code'; throw 'no room code' }
+        'CSERVER room code ' + $code
         Set-Content -Path $roomFile -Value $code -Encoding ASCII
     }
     [void](Wait-TestGames $clientProcesses $TimeoutSec $watch $results)
@@ -184,10 +173,9 @@ try {
         if (-not $client.HasExited) { $client.Kill(); $client.WaitForExit() }
         Add-Content -LiteralPath $launchLog -Value ('EXIT ' + [DateTime]::UtcNow.ToString('o') + ' pid=' + $client.Id + ' exitCode=' + $client.ExitCode)
     }
-    if ($relayProc -and -not $relayProc.HasExited) { $relayProc.Kill() }
+    if ($serverProc -and -not $serverProc.HasExited) { $serverProc.Kill() }
     Complete-TestRun   # kills only this run's PIDs, unlinks the client junctions, releases the copy lock
 }
-if ($Relay -and (Test-Path (Join-Path $testDir 'relay-server.log'))) { '--- relay server ---'; Get-Content (Join-Path $testDir 'relay-server.log') | Select-Object -Last 10 }
 if ($CServer -and (Test-Path (Join-Path $testDir 'cserver.log'))) { '--- cserver ---'; Get-Content (Join-Path $testDir 'cserver.log') | Select-Object -Last 10 }
 $passed = $true
 foreach ($resultPath in $results) {

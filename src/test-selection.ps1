@@ -9,7 +9,6 @@ if (-not $TS_Root) { $TS_Root = Split-Path -Parent $PSScriptRoot }
 $TS_Suites = [ordered]@{
     'local'       = @('run-test.ps1')
     'net'         = @('run-nettest.ps1')
-    'net-relay'   = @('run-nettest.ps1', '-Relay')
     'net-3p'      = @('run-nettest.ps1', '-Clients', '3')
     'net-4p'      = @('run-nettest.ps1', '-Clients', '4')
     'net-3p-cs'   = @('run-nettest.ps1', '-Clients', '3', '-CServer')   # T-111: server mode, P1 leaves, seat 2 hosts
@@ -18,30 +17,26 @@ $TS_Suites = [ordered]@{
     'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
-    'titlejoin-relay' = @('run-titlejoin.ps1', '-Transport', 'relay')
     'rooms'       = @('run-rooms.ps1')
 }
 $TS_AllSuites = @($TS_Suites.Keys)
 # The 2-player net suites: they run NetTestHarness's phase list and take ORICOOP_PHASES.
-$TS_PhasedSuites = @('net', 'net-relay', 'net-newgame')
+$TS_PhasedSuites = @('net', 'net-newgame')
 $TS_AllPhases = @('INTRO', 'MOVE', 'W', 'E3', 'E5', 'R', 'S4', 'P', 'WO', 'CAM', 'CUT')
 # Before a merge (not -All / nightly), these 2-player suites run only the phases of their own risk, whatever the change
-# selected (T-096): they repeat the direct 'net' suite over another transport (relay) or another join path (guest new
-# game). Relay is a plain packet forwarder, so the session start, the movement stream (A..E: loss, blackout, snaps) and
-# the bulk world/save transfer (W) cover it; the guest new-game join is decided during the start and W. Everything else in
-# those suites tested the same code as 'net' again (measured: 578 / 573 s median, pass rate 31 % / 21 %, the same
-# CUT/CAM/R failures as 'net'). The 'net' suite keeps every selected phase; the nightly runs all phases everywhere.
+# selected (T-096): they repeat the direct 'net' suite over another join path (guest new game), which is decided during
+# the start and W. Everything else in the suite tested the same code as 'net' again. The 'net' suite keeps every selected
+# phase; the nightly runs all phases everywhere. (T-159: net-relay, the other entry here, went with the relay.)
 $TS_SuitePhases = [ordered]@{
-    'net-relay'   = @('INTRO', 'MOVE', 'W')
     'net-newgame' = @('INTRO', 'MOVE', 'W')
 }
 
 # --- module -> suites (see docs\modules.md for what each module contains)
 $TS_ModuleSuites = @{
     'M0' = $TS_AllSuites
-    'M1' = @('net', 'net-relay', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-relay', 'coopsave')
+    'M1' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'coopsave')
     'M2' = @('local', 'net', 'net-3p', 'coopsave')
-    'M3' = @('net', 'net-relay', 'net-3p')   # T-115: guest-to-guest world messages ride the P2P host's forward table
+    'M3' = @('net', 'net-3p')   # T-115: guest-to-guest world messages ride the P2P host's forward table
     'M4' = @('net', 'net-3p')
     'M5' = @('net', 'net-3p-cs', 'net-4p', 'local')
     'M6' = @('net', 'net-3p-cs', 'local')
@@ -53,7 +48,7 @@ $TS_ModuleSuites = @{
 $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-4p');
-    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-relay')
+    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'CoopSaveTest' = @('coopsave'); 'TitleJoinTest' = @('titlejoin')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
@@ -91,14 +86,13 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -eq 'src\phase-map.psd1' -or $p -eq 'src\test-selection.ps1') { return @{ Suites = $TS_AllSuites; Why = 'the test selection itself: everything' } }
     if ($p -like 'docs\*' -or $p -like '*.md') { return @{ Suites = @(); Why = 'docs' } }
     if ($p -like 'src\Tests\*') { return @{ Suites = @(); Why = 'unit tests only' } }
-    if ($p -like 'src\RelayServer\*') { return @{ Suites = @('net-relay', 'titlejoin-relay'); Why = 'relay server' } }
     if ($p -like 'src\RoomServer\*') { return @{ Suites = @('rooms'); Why = 'room server' } }
-    if ($p -like 'src\CServer\*') { return @{ Suites = @('net', 'net-3p-cs'); Why = 'C-server (net-3p-cs runs it)' } }
+    if ($p -like 'src\CServer\*') { return @{ Suites = @('net', 'net-3p-cs', 'rooms'); Why = 'C-server (net-3p-cs runs it; My rooms plays on it, T-159)' } }
     # T-118: every suite starts its games through the launcher and TestQuiet (Start-TestClients, copy locks, the run cap,
     # input block), not only local and net.
     if ($p -like 'src\TestQuiet\*' -or $p -eq 'src\test-launch.ps1') { return @{ Suites = $TS_AllSuites; Why = 'test launcher: every suite uses it' } }
-    # A suite's own script: every suite that runs it (run-nettest.ps1 -> all net-* suites, run-titlejoin.ps1 -> both
-    # titlejoin suites), from the suite table above, so a new suite is covered without another entry here (T-118).
+    # A suite's own script: every suite that runs it (run-nettest.ps1 -> all net-* suites, run-titlejoin.ps1 -> the
+    # titlejoin suite), from the suite table above, so a new suite is covered without another entry here (T-118).
     if ($p -match '^src\\(run-[\w-]+\.ps1)$') {
         $own = $Matches[1]
         $s = @($TS_Suites.Keys | Where-Object { $TS_Suites[$_][0] -eq $own })
@@ -119,7 +113,7 @@ function Get-PhasesFor([string]$path, $moduleMap, $phaseMap) {
     $p = $path -replace '/', '\'
     $leaf = [IO.Path]::GetFileNameWithoutExtension($p)
     if ($p -eq 'src\phase-map.psd1' -or $p -eq 'src\test-selection.ps1') { return 'FULL' }
-    if ($p -eq 'src\run-nettest.ps1' -or $p -eq 'src\test-launch.ps1' -or $p -like 'src\TestQuiet\*' -or $p -like 'src\CServer\*' -or $p -like 'src\RelayServer\*') { return 'FULL' }
+    if ($p -eq 'src\run-nettest.ps1' -or $p -eq 'src\test-launch.ps1' -or $p -like 'src\TestQuiet\*' -or $p -like 'src\CServer\*') { return 'FULL' }
     if ($p -notlike 'src\OriCoop\*') { return @() }
     if ($phaseMap.Full -contains $leaf) { return 'FULL' }
     if ($phaseMap.Files.ContainsKey($leaf)) { $v = $phaseMap.Files[$leaf] }

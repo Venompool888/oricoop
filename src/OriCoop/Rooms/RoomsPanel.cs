@@ -20,7 +20,7 @@ namespace OriCoop.Rooms
         List<RoomBackupInfo> rooms;
         RoomWire.Fields info;
         readonly Dictionary<string, RoomWire.Fields> refreshed = new Dictionary<string, RoomWire.Fields>();
-        string steam, nick, server, relay, serviceName;
+        string steam, nick, server, gameServer, serviceName;
         string screen = "list", message = "", roomName = "";
         Action<string> passwordDone;
         string passwordBack;
@@ -93,15 +93,14 @@ namespace OriCoop.Rooms
             p.store = new RoomLocalStore(RoomsDir);
             p.rooms = p.store.ListRooms();
             p.refreshed.Clear();
-            p.relay = TestValue("ORICOOP_NET_RELAY", RelayList.Current);
-            foreach (RelayList.Entry entry in RelayList.Entries)
-                if (entry.Address == p.relay && !string.IsNullOrEmpty(entry.Name)) p.serviceName = entry.Name;
-            p.server = Plugin.Instance.Config.Bind("Rooms", "Server", "", "Room service URL; empty uses relay host").Value.Trim();
+            // T-159: rooms play through the selected C-server (was the relay); the room service runs on the same host.
+            p.gameServer = (OriCoop.Authority.CServerConfig.Address ?? "").Trim();
+            p.server = Plugin.Instance.Config.Bind("Rooms", "Server", "", "Room service URL; empty uses the selected C-server's host, port 47021").Value.Trim();
             p.server = TestValue("ORICOOP_ROOMS_SERVER", p.server);
             if (p.server.Length == 0)
             {
                 Uri address;
-                if (!Uri.TryCreate("http://" + p.relay, UriKind.Absolute, out address))
+                if (p.gameServer.Length == 0 || !Uri.TryCreate("http://" + p.gameServer, UriKind.Absolute, out address))
                 { p.message = ErrorText("network"); return; }
                 p.server = "http://" + address.Host + ":47021/";
             }
@@ -142,7 +141,7 @@ namespace OriCoop.Rooms
         void SetRoom(string room)
         {
             auth = new RoomAuth { Room = room, Steam = steam, Token = store.LoadToken(room) };
-            Session = new RoomSession(client, jobs, store, Game, auth, relay);
+            Session = new RoomSession(client, jobs, store, Game, auth, gameServer);
             Session.Online = online;
             double poll;
             if (double.TryParse(TestValue("ORICOOP_ROOMS_POLL", ""),

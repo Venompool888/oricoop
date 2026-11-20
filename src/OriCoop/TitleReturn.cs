@@ -3,7 +3,7 @@ using HarmonyLib;
 namespace OriCoop
 {
     // Going back to the title screen ends the online session (pause menu -> quit, the disconnect dialog, any other
-    // GameController.RestartGame). Before this the Steam lobby / relay room / direct host stayed open at the title:
+    // GameController.RestartGame). Before this the Steam lobby / direct host stayed open at the title:
     // NetPlay.Enabled kept the native mode menu off (picking a slot went straight into single player) and every
     // later save load ran as an online session nobody had chosen (found 2026-11-15).
     // Exception: a guest's checkpoint transfer (SaveSync) restarts the game on purpose to load the host's save.

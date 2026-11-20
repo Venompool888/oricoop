@@ -18,7 +18,7 @@ namespace OriCoop
     //   <local HH:mm:ss.fff> <utc yyyy-MM-ddTHH:mm:ss.fffZ> f=<frame> ff=<fixed frame> t=<game s> sid=<session> role=<P1|P2|..> <subsys> <event> k=v ...
     // `sid` is the NetPeer handshake session id, the same on both ends of one connection ("-" when offline).
     // Every mod/BepInEx log line is mirrored as subsys "log", so old messages get the same stamps.
-    // Relay/peer IPv4 addresses are masked everywhere in the trace.
+    // Server/peer IPv4 addresses are masked everywhere in the trace.
     //
     // Use from any file:
     //   CoopTrace.Event("enemy", "death", "id", id, "x", pos.x);          // state change, level 1
@@ -311,17 +311,9 @@ namespace OriCoop
             s_sid = sid; s_role = role;
             if (sessionChanged && sid != "-")
                 Event("net", "session.start", "transport", NetPlay.TransportName, "host", NetPlay.IsHost, "mod", Plugin.Version,
-                    "proto", NetPlay.ModVersion, "remote_proto", NetPlay.RemoteVersion, "scene", scene, "relay", RelayName());
+                    "proto", NetPlay.ModVersion, "remote_proto", NetPlay.RemoteVersion, "scene", scene);
             if (Changed("trace.role", role)) Event("net", "role", "role", role, "mode", NetPlay.IsHost ? "host" : NetPlay.Enabled ? "join" : "off");
             if (scene != s_scene) { Event("scene", "current", "from", s_scene, "to", scene); s_scene = scene; }
-        }
-
-        // The relay is identified by a short hash, never by its address.
-        static string RelayName()
-        {
-            if (NetPlay.TransportName != "relay") return "-";
-            string a = NetPlay.ConfigRelayServer ?? "";
-            return a.Length == 0 ? "?" : "relay#" + ((uint)a.GetHashCode() % 10000).ToString("0000");
         }
 
         static void OnUnityLog(string condition, string stack, LogType type)

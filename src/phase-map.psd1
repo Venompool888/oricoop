@@ -7,7 +7,7 @@
 @{
     # Shared core: session, transport, seats, save handshake, the harness itself, the composition root.
     Full = @(
-        'Plugin', 'NetPlay', 'ProtocolVersion', 'NetPeer', 'Transport', 'ClockSync', 'PeerHub', 'RelayHub', 'RelayTransport', 'RelayList', 'SteamTransport',
+        'Plugin', 'NetPlay', 'ProtocolVersion', 'NetPeer', 'Transport', 'ClockSync', 'PeerHub', 'SteamTransport',
         'Players', 'Roles', 'P2Context', 'SaveSync', 'GuestJoin', 'WorldSync', 'Services', 'Seams',
         'NetRoute', 'INetRouteServer', 'CServerConfig', 'CServerClient', 'CServerLink', 'CsWire',
         'IAuthority', 'Arbiter', 'HostArbiter', 'AuthorityClient', 'AuthoritySource', 'DynamicLease',
@@ -37,7 +37,7 @@
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
     }
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
-    # Suite 'net' means the 2-player net suites (net, net-relay, net-newgame), which take ORICOOP_PHASES.
+    # Suite 'net' means the 2-player net suites (net, net-newgame), which take ORICOOP_PHASES.
     Mutations = @(
         @{ Switch = 'ORICOOP_MUTATE_GUARD_FIGHTS_SCENE'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }
         @{ Switch = 'ORICOOP_MUTATE_HOST_SEAT_ONE';  File = 'src\OriCoop\Authority\NetRoute.cs'; Suite = 'net-3p-cs'; Phase = '' }

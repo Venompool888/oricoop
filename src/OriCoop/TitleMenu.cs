@@ -60,7 +60,7 @@ namespace OriCoop
             {
                 if (s_titleItems == null && Plugin.Instance != null)
                     s_titleItems = Plugin.Instance.Config.Bind("Start", "TitleModeItems", true,
-                        "Title menu: Single Player / Co-op instead of Start Game (Co-op asks local / LAN / Steam / relay and host / join before the save slots). false = the game's Start Game, and the question comes after the save slot.");
+                        "Title menu: Single Player / Co-op instead of Start Game (Co-op asks local / LAN / Steam / server and host / join before the save slots). false = the game's Start Game, and the question comes after the save slot.");
                 return s_titleItems == null || s_titleItems.Value;
             }
         }
@@ -72,9 +72,10 @@ namespace OriCoop
             new[] { "mode.steam", "title.steam.desc" },
             new[] { "server.title", "server.title.desc" },
         };
-        static readonly string[] TitleTransports = { "", "direct", "steam", "relay" };
-        // T-045 (owner's choice B): the 自建服务器 page lists the server mode and 「我的房间」; the host-mode row is gone from the
-        // menu (the relay path stays in code behind My rooms and for the tests).
+        // Row 3 (自建服务器) opens the server-mode page, not a transport ("cserver" is chosen there).
+        static readonly string[] TitleTransports = { "", "direct", "steam", "cserver" };
+        // T-045 (owner's choice B): the 自建服务器 page lists the server mode and 「我的房间」.
+        // T-159: the relay is gone; 我的房间 plays through the selected C-server.
         // T-095 (owner's sketch): 自建服务器 = [上次游玩 (only with a room play record)] / 我的房间 / 服务器管理.
         static readonly string[][] ServerModePage = {
             new[] { "rooms.last", "rooms.last.desc" },
@@ -141,10 +142,11 @@ namespace OriCoop
                 return 1;
             }
             // Online host: the slot orb opens straight on the host page.
-            return BeginTitleHost(ui, TitleTransport, (NetPlay.ConfigRelayServer ?? "").Trim());
+            return BeginTitleHost(ui, TitleTransport, "");
         }
 
-        internal static int BeginTitleHost(SaveSlotsUI ui, string transport, string relay)
+        // server: the C-server for a 我的房间 host ("" = the selected one, CServerConfig.Address).
+        internal static int BeginTitleHost(SaveSlotsUI ui, string transport, string server)
         {
             if (!Open(ui)) { LastSlotPick = "orb failed"; return 0; }
             s_fromTitle = true;
@@ -152,8 +154,8 @@ namespace OriCoop
             LastSlotPick = "title-host-" + transport;
             Plugin.Log.LogInfo("title menu: slot picked, hosting via " + transport);
             GoPage(PageHost, 1);
-            if (s_transport == "cserver") BeginCServer(true, OriCoop.Authority.CServerConfig.Address + "|");
-            else NetPlay.Begin(true, s_transport, s_transport == "relay" ? relay + "|" : "");
+            if (s_transport == "cserver") BeginCServer(true, (string.IsNullOrEmpty(server) ? OriCoop.Authority.CServerConfig.Address : server) + "|");
+            else NetPlay.Begin(true, s_transport, "");
             return 2;
         }
 
@@ -181,7 +183,7 @@ namespace OriCoop
         }
 
         // Rooms already selected and wrote the slot; use the same host page and load action.
-        internal static void RoomHostSlot(int slot, string relay)
+        internal static void RoomHostSlot(int slot, string server)
         {
             Destroy();
             TitleScreenManager.SetScreen(TitleScreenManager.Screen.SaveSlots);
@@ -191,9 +193,9 @@ namespace OriCoop
             SaveSlotsManager.CurrentSlotIndex = slot;
             s_fromNewGame = false;
             TitleChoice = TitleOnline;
-            TitleTransport = "relay";
+            TitleTransport = "cserver";
             SaveSlotsManager.BackupIndex = -1;
-            BeginTitleHost(ui, "relay", relay);
+            BeginTitleHost(ui, "cserver", server);
             ui.Active = false;
         }
 
@@ -205,10 +207,10 @@ namespace OriCoop
                 TitleScreenManager.SetScreen(TitleScreenManager.Screen.MainMenu);
                 OpenTitleOrb();
             }
-            s_transport = "relay";
+            s_transport = "cserver";
             s_joinTarget = target;
             GoPage(PageJoin, 1);
-            NetPlay.Begin(false, "relay", target);
+            BeginCServer(false, target);
         }
 
         // What a slot pick would do now (harness checks).
@@ -282,7 +284,6 @@ namespace OriCoop
             if (s_onTitle && s_page == PageRole)
             {
                 if (s_transport == "cserver") { GoPage(PageServerList, 0); return true; }
-                if (UsesRoomCode) { GoPage(PageServerMode, ServerModeRoomsRow); return true; }
                 int row = Array.IndexOf(TitleTransports, s_transport);
                 GoPage(PageCoop, row < 1 ? 1 : row);
                 return true;
@@ -825,7 +826,7 @@ namespace OriCoop
         {
             return LastPage == "servermode" && LastLabels.Count == (ServerModeHasLast ? 3 : 2)
                 && HasKey(LastLabels, "lobby.rooms") && HasKey(LastLabels, "server.manage")
-                && !HasKey(LastLabels, "server.cserver") && !HasKey(LastLabels, "server.relay")
+                && !HasKey(LastLabels, "server.cserver")
                 && (!ServerModeHasLast || HasKey(LastLabels, "rooms.last"));
         }
 
@@ -900,8 +901,7 @@ namespace OriCoop
 
         // T-120: [Start] NativeLobby = false shows host / join as the overlay lobby over a hidden, locked native page. Online play
         // starting or ending (NetPlay.Begin / End reset the room screen) must not bring that page back and unlock it: it would
-        // then take the same controller presses as the overlay. Also the overlay's room-code grid must hold every character a
-        // room code can have: new codes use 2-9, older relay / room codes A-Z without I and O plus 2-9.
+        // then take the same controller presses as the overlay. (Its room-code grid went with the relay, T-159.)
         static IEnumerator OverlayLobbyChecks(Action<bool, string> check)
         {
             yield return s_tHost.StartCoroutine(PressCoop());
@@ -919,10 +919,6 @@ namespace OriCoop
             yield return s_tHost.StartCoroutine(TWait(0.6f));
             check(!s_mgr.IsVisible && s_mgr.IsLocked && !OnlineRoomScreen.Visible, "title menu: overlay lobby: ending online play keeps the native page hidden and locked (visible="
                 + s_mgr.IsVisible + ", locked=" + s_mgr.IsLocked + ", room screen=" + OnlineRoomScreen.Visible + ")");
-            string grid = OnlineLobbyOverlay.RelayCodeAlphabet, missing = "";
-            foreach (char c in "ABCDEFGHJKLMNPQRSTUVWXYZ23456789") if (grid.IndexOf(c) < 0) missing += c;
-            check(missing.Length == 0 && grid.Length == 32, "title menu: overlay lobby room-code grid has every old and new code character in its 8x4 keys (missing '"
-                + missing + "', " + grid.Length + " keys)");
             OnlineLobby.Close();
             RoomPanelVisible(false);                        // the lobby closed: the native page comes back (OnlineBack does the same)
             yield return s_tHost.StartCoroutine(TWait(0.6f));
@@ -1018,7 +1014,7 @@ namespace OriCoop
             // Online: transport -> 开房 / 加入 on the title.
             for (int row = 1; row <= 4; row++)
             {
-                if (row == 3) continue;   // the relay row is gone (T-045); the 自建服务器 page is checked below
+                if (row == 3) continue;   // row 3 is 自建服务器 (row 4 here), checked below
                 string tr = row == 4 ? "cserver" : TitleTransports[row];
                 yield return s_tHost.StartCoroutine(PressCoop());
                 if (!TitleOrbOpen) { check(false, "title menu: Co-op page opens again (" + tr + ")"); yield break; }
@@ -1091,7 +1087,7 @@ namespace OriCoop
                     continue;
                 }
                 yield return s_tHost.StartCoroutine(Back(1f));
-                if (tr == "relay" || tr == "cserver")
+                if (tr == "cserver")
                 {
                     if (tr == "cserver")
                     {

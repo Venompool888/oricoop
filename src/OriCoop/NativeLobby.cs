@@ -7,8 +7,8 @@ namespace OriCoop
 {
     // The online lobby as pages of the native "How do you want to play?" orb (same cloned difficulty screen, so the
     // game's font, glow, sounds and controller / keyboard / mouse navigation): after Online -> transport:
-    //   Role    : Host / Join / (relay) Relay server
-    //   Entry   : room code, IP[:port] or relay server, edited in place (arcade style: A to edit, up/down change the
+    //   Role    : Host / Join
+    //   Entry   : room code (C-server) or IP[:port] (LAN host mode), edited in place (arcade style: A to edit, up/down change the
     //             character, left/right move, X deletes, Y or Ctrl+V pastes, keyboard typing works) / Connect / Back
     //   Hosting : room code or local address (A copies; Steam: invite) / Start game / Cancel
     //   Joining : Connecting... / Cancel; on failure Retry / Back; proceeds by itself once the partner is there
@@ -23,13 +23,12 @@ namespace OriCoop
         static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots", "roomsmenu", "servermanage" };
         const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // legacy letter codes (text entry); new codes are digits 2-9 typed on the dial (T-046)
         const string IpAlphabet = "0123456789.:";
-        const string ServerAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-:";
         const string CServerHostAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-";
         const string CServerPortAlphabet = "0123456789";
 
         static BepInEx.Configuration.ConfigEntry<bool> s_nativeLobby;
-        static string s_transport = "relay";
-        static int s_entryKind;             // 0 room code, 1 IP, 2 relay server, 3 C-server host, 4 C-server port, 5 room password
+        static string s_transport = "direct";
+        static int s_entryKind;             // 0 room code, 1 IP, 3 C-server host, 4 C-server port, 5 room password (2 was the relay server, T-159)
         static string s_entry = "";
         static string s_cserverHost = "", s_cserverPort = "";
         static int s_cursor;
@@ -93,8 +92,8 @@ namespace OriCoop
         public static string LobbyEntry { get { return s_entry; } }
 
         static bool IsLobbyPage { get { return (s_page >= PageRole && s_page <= PageJoin) || s_page >= PageServerList; } }
-        static bool UsesRoomCode { get { return s_transport == "relay" || s_transport == "cserver"; } }
-        static string LobbyServer { get { return s_transport == "cserver" ? OriCoop.Authority.CServerConfig.Address : (NetPlay.ConfigRelayServer ?? "").Trim(); } }
+        static bool UsesRoomCode { get { return s_transport == "cserver"; } }
+        static string LobbyServer { get { return s_transport == "cserver" ? (OriCoop.Authority.CServerConfig.Address ?? "").Trim() : ""; } }
         static bool CServerEntry { get { return s_entryKind == 3 || s_entryKind == 4; } }
 
         // ---- rows -----------------------------------------------------------------------------------------
@@ -116,7 +115,7 @@ namespace OriCoop
         static string[][] LobbyRows(bool zh)
         {
             if (IsRoomsPage) return RoomRows(zh);
-            bool relay = UsesRoomCode, direct = s_transport == "direct";
+            bool roomCode = UsesRoomCode, direct = s_transport == "direct";
             var r = new List<string[]>();
             if (s_page == PageServerList || s_page == PageServerRemove)
             {
@@ -138,14 +137,8 @@ namespace OriCoop
             }
             else if (s_page == PageRole)
             {
-                r.Add(new[] { L10n.T("lobby.host", zh), L10n.T(relay ? "lobby.host.room.desc" : direct ? "lobby.host.direct.desc" : "lobby.host.steam.desc", zh) });
-                r.Add(new[] { L10n.T("lobby.join", zh), L10n.T(relay ? "lobby.join.room.desc" : direct ? "lobby.join.direct.desc" : "lobby.join.steam.desc", zh) });
-                if (s_transport == "relay")
-                {
-                    r.Add(new[] { L10n.T("lobby.rooms", zh), L10n.T("lobby.rooms.desc", zh) });
-                    string srv = (NetPlay.ConfigRelayServer ?? "").Trim();
-                    r.Add(new[] { L10n.T("lobby.relay.server", zh), srv.Length == 0 ? L10n.T("lobby.server.unset", zh) : string.Format(L10n.T("lobby.server.current", zh), srv) });
-                }
+                r.Add(new[] { L10n.T("lobby.host", zh), L10n.T(roomCode ? "lobby.host.room.desc" : direct ? "lobby.host.direct.desc" : "lobby.host.steam.desc", zh) });
+                r.Add(new[] { L10n.T("lobby.join", zh), L10n.T(roomCode ? "lobby.join.room.desc" : direct ? "lobby.join.direct.desc" : "lobby.join.steam.desc", zh) });
             }
             else if (s_page == PageEntry && IpMode)
             {
@@ -156,17 +149,17 @@ namespace OriCoop
             }
             else if (s_page == PageEntry)
             {
-                string titleKey = s_entryKind == 0 ? "lobby.room.code" : s_entryKind == 1 ? "lobby.ip" : s_entryKind == 3 ? "cserver.addr" : s_entryKind == 4 ? "cserver.port" : "lobby.relay.address";
+                string titleKey = s_entryKind == 0 ? "lobby.room.code" : s_entryKind == 1 ? "lobby.ip" : s_entryKind == 3 ? "cserver.addr" : "cserver.port";
                 string help = s_editing ? L10n.T(CServerEntry ? "cserver.typing.desc" : s_entryKind == 0 ? "lobby.dial.help" : "lobby.edit.chars", zh) : string.Format(L10n.T("lobby.entry.desc", zh), L10n.T(titleKey, zh));
                 if (s_entryKind == 0 && !s_editing && !s_legacyCode) help += "\n" + L10n.T("lobby.room.legacy", zh);   // T-046: older letter codes still work
                 r.Add(new[] { EntryDisplay(zh), help });
-                if (s_entryKind == 2 || CServerEntry) r.Add(new[] { L10n.T("common.save", zh), L10n.T(CServerEntry ? "cserver.save.desc" : "lobby.server.save.desc", zh) });
+                if (CServerEntry) r.Add(new[] { L10n.T("common.save", zh), L10n.T("cserver.save.desc", zh) });
                 else r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T("lobby.connect.desc", zh) + SaveNote(zh) });
                 r.Add(new[] { L10n.T("common.back", zh), L10n.T("common.back.desc", zh) });
             }
             else if (s_page == PageHost)
             {
-                if (relay)
+                if (roomCode)
                 {
                     string code = NetPlay.RoomCode ?? "";
                     if (code.Length == 0) r.Add(new[] { L10n.T("lobby.creating", zh), L10n.T("lobby.creating.desc", zh) });
@@ -215,7 +208,7 @@ namespace OriCoop
                     string status;
                     if (s_transport == "steam") status = L10n.T("lobby.steam.accept", zh);
                     else if (NetPlay.CurrentPhase == NetPlay.Phase.Connecting)
-                        status = relay ? L10n.T("lobby.room.found", zh) : string.Format(L10n.T("lobby.connecting.target", zh), s_joinTarget);
+                        status = roomCode ? L10n.T("lobby.room.found", zh) : string.Format(L10n.T("lobby.connecting.target", zh), s_joinTarget);
                     else status = L10n.T("lobby.preparing", zh);
                     r.Add(new[] { L10n.T("lobby.connecting_bare", zh) + dots, status + SaveNote(zh) });
                     r.Add(new[] { L10n.T("common.cancel", zh), L10n.T("lobby.join.cancel.desc", zh) });
@@ -307,8 +300,8 @@ namespace OriCoop
 
         static string Mark(string c) { return s_cursorStyle != null ? "<" + s_cursorStyle + ">" + c + "</>" : "[" + c + "]"; }
 
-        static string EntryAlphabet { get { return s_entryKind == 0 ? RoomAlphabet : s_entryKind == 1 ? IpAlphabet : s_entryKind == 3 ? CServerHostAlphabet : s_entryKind == 4 ? CServerPortAlphabet : ServerAlphabet; } }
-        static int EntryMax { get { return s_entryKind == 0 ? 6 : s_entryKind == 1 ? 21 : s_entryKind == 3 ? 253 : s_entryKind == 4 ? 10 : 48; } }
+        static string EntryAlphabet { get { return s_entryKind == 0 ? RoomAlphabet : s_entryKind == 1 ? IpAlphabet : s_entryKind == 3 ? CServerHostAlphabet : CServerPortAlphabet; } }
+        static int EntryMax { get { return s_entryKind == 0 ? 6 : s_entryKind == 1 ? 21 : s_entryKind == 3 ? 253 : 10; } }
 
         // ---- navigation -----------------------------------------------------------------------------------
 
@@ -404,7 +397,7 @@ namespace OriCoop
         static void LobbyPressed(int index)
         {
             if (IsRoomsPage) { RoomPressed(index); return; }
-            bool relay = UsesRoomCode;
+            bool roomCode = UsesRoomCode;
             if (s_page == PageServerManage)
             {
                 if (index == 0) { s_cserverHost = ""; s_cserverPort = ""; s_testState = 0; GoPage(PageServerAdd, 0); }
@@ -450,16 +443,16 @@ namespace OriCoop
                 if (index == 0)
                 {
                     string srv = LobbyServer;
-                    if (relay && srv.Length == 0) { ToastKey("lobby.server.required"); return; }
+                    if (roomCode && srv.Length == 0) { ToastKey("lobby.server.required"); return; }
                     GoPage(PageHost, 1);
                     if (s_transport == "cserver") BeginCServer(true, srv + "|");
-                    else NetPlay.Begin(true, s_transport, relay ? srv + "|" : "");
+                    else NetPlay.Begin(true, s_transport, "");
                 }
                 else if (index == 1)
                 {
                     if (s_transport == "steam") { s_joinTarget = ""; GoPage(PageJoin, 1); NetPlay.Begin(false, "steam", ""); return; }
-                    s_entryKind = relay ? 0 : 1;
-                    if (relay)
+                    s_entryKind = roomCode ? 0 : 1;
+                    if (roomCode)
                     {
                         s_legacyCode = HasLegacyLetter(NetPlay.ConfigRoomCode);   // a remembered older letter code stays a text entry
                         s_entry = Filter((NetPlay.ConfigRoomCode ?? "").Trim().ToUpperInvariant());
@@ -471,17 +464,6 @@ namespace OriCoop
                         LoadAddress(NetPlay.ConfigAddress ?? "", NetPlay.ConfigPort);
                         GoPage(PageEntry, IpComplete && ValidPort(s_port) ? 2 : 0);
                     }
-                }
-                else if (s_transport == "relay" && index == 2)
-                {
-                    OpenRooms();
-                }
-                else if (s_transport == "relay")
-                {
-                    s_entryKind = 2;
-                    s_entry = Filter((NetPlay.ConfigRelayServer ?? "").Trim().ToLowerInvariant());
-                    s_cursor = Math.Min(s_entry.Length, EntryMax - 1);
-                    GoPage(PageEntry, 0);
                 }
             }
             else if (s_page == PageEntry && IpMode)
@@ -500,7 +482,7 @@ namespace OriCoop
             {
                 if (index == 0)
                 {
-                    if (relay)
+                    if (roomCode)
                     {
                         if (!string.IsNullOrEmpty(NetPlay.RoomCode)) { GUIUtility.systemCopyBuffer = NetPlay.RoomCode; ToastKey("lobby.room.copied"); }
                     }
@@ -535,17 +517,9 @@ namespace OriCoop
         static void Submit()
         {
             if (CServerEntry) { SaveCServerEntry(); return; }
-            if (s_entryKind == 2)
-            {
-                NetPlay.SetRelayServer(s_entry);
-                try { if (Plugin.Instance != null) Plugin.Instance.Config.Save(); } catch (Exception e) { Plugin.Log.LogWarning("mode menu: could not save the relay server: " + e.Message); }
-                Plugin.Log.LogInfo("mode menu: relay server set to '" + s_entry + "'");
-                GoPage(PageRole, 0);
-                return;
-            }
             if (s_entryKind == 0)
             {
-                if (string.IsNullOrEmpty(s_transport == "cserver" ? OriCoop.Authority.CServerConfig.Address : NetPlay.ConfigRelayServer)) { ToastKey("lobby.server.required"); return; }
+                if (string.IsNullOrEmpty(LobbyServer)) { ToastKey("lobby.server.required"); return; }
                 if (s_entry.Length != 6) { ToastKey("lobby.room.required"); return; }
             }
             else
@@ -570,14 +544,13 @@ namespace OriCoop
             if (s_page == PageRole)
             {
                 if (s_transport == "cserver") { GoPage(PageServerList, 0); return; }
-                if (UsesRoomCode) { GoPage(PageServerMode, ServerModeRoomsRow); return; }
                 s_page = 1;
                 Relabel(s_transport == "direct" ? 1 : 2);
                 OnHighlightChanged();
                 Plugin.Log.LogInfo("mode menu: online page");
             }
             else if (s_page == PageEntry)
-                GoPage(CServerEntry ? PageServerAdd : PageRole, s_entryKind == 3 ? 0 : s_entryKind == 4 ? 1 : s_entryKind == 2 ? 3 : 1);
+                GoPage(CServerEntry ? PageServerAdd : PageRole, s_entryKind == 3 ? 0 : s_entryKind == 4 ? 1 : 1);
             else if (s_page == PageHost) { NetPlay.End("host cancelled"); GoPage(PageRole, 0); }
             else if (s_page == PageJoin) { NetPlay.End("join cancelled"); GoPage(s_transport == "steam" ? PageRole : PageEntry, 1); }
         }
@@ -731,7 +704,7 @@ namespace OriCoop
             var sb = new StringBuilder();
             foreach (char raw in s)
             {
-                char c = s_entryKind == 0 ? char.ToUpperInvariant(raw) : s_entryKind == 2 || s_entryKind == 3 ? char.ToLowerInvariant(raw) : raw;
+                char c = s_entryKind == 0 ? char.ToUpperInvariant(raw) : s_entryKind == 3 ? char.ToLowerInvariant(raw) : raw;
                 if (alpha.IndexOf(c) >= 0) sb.Append(c);
             }
             return sb.ToString();
@@ -1158,7 +1131,7 @@ namespace OriCoop
             LayoutServerRows(rows.Length);
         }
 
-        // Long labels (a full IP:port, a relay address) are wider than the orb. MessageBox scales its text by
+        // Long labels (a full IP:port, a server address) are wider than the orb. MessageBox scales its text by
         // ScaleOverLetterCount on every redraw, but it counts letters from the previous layout, so we give each
         // label box a flat curve worth the size this label needs. Width units: ASCII 1, CJK 2; the orb fits ~16.
         const float LabelFitUnits = 16f;
