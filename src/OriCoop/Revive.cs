@@ -249,6 +249,18 @@ namespace OriCoop
             }
         }
 
+        // A downed Ori that comes back without a rescuer (both down, a partner left, the checkpoint reload, leaving
+        // co-op). An extra local player (offline P2-P4, or an online extra on this PC) also gets full health back
+        // beside P1; un-hiding it alone left it at 0 health (T-109). This PC's own Ori and remote puppets are only un-hidden.
+        static void RestoreUnrescued(Downed d)
+        {
+            RestoreDowned(d, false);
+            if (d == null || d.Sein == null || d.Remote || d.Player == Host.LocalSeat || Host.P1 == null) return;
+            d.Sein.Mortality.Health.RestoreAllHealth();
+            Host.Teleport(d.Sein, Host.P1.Position + new Vector3(1f, 0f, 0f));
+            Host.ReturnCompanion(d.Sein, "back without a revive");
+        }
+
         // ---- every frame (local co-op only) ---------------------------------------------------------------------
         public static void Tick()
         {
@@ -366,22 +378,11 @@ namespace OriCoop
         static void OnPostRestore()
         {
             if (!AnyDowned) return;
-            SeinCharacter p1 = Host.P1;
             Downed[] down = (Downed[])s_down.Clone();
             Array.Clear(s_down, 0, s_down.Length);
             RestoreDowned(down[Host.LocalSeat], false);
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
-            {
-                if (seat == Host.LocalSeat) continue;
-                Downed d = down[seat];
-                RestoreDowned(d, false);
-                if (d != null && seat != Host.LocalSeat && !d.Remote && d.Sein != null && p1 != null)
-                {
-                    d.Sein.Mortality.Health.RestoreAllHealth();
-                    Host.Teleport(d.Sein, p1.Position + new Vector3(1f, 0f, 0f));
-                    Host.ReturnCompanion(d.Sein, "checkpoint reload");
-                }
-            }
+                if (seat != Host.LocalSeat) RestoreUnrescued(down[seat]);
             Services.Log.Info("checkpoint reload: both Oris back");
         }
 
@@ -401,7 +402,7 @@ namespace OriCoop
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
             {
                 Downed d = down[seat];
-                if (seat != Host.LocalSeat && d != null && d.Sein != null) RestoreDowned(d, false);
+                if (seat != Host.LocalSeat && d != null && d.Sein != null) RestoreUnrescued(d);
             }
             if (d1 != null && d1.Sein != null)
             {

@@ -25,6 +25,8 @@ namespace OriCoop
             public float InteractionUntil = -10f, GrabbedAt = -10f;
             // T-049 two-pusher speed-up: our push direction (-1/0/+1) and the partner's latest report.
             public int LocalPushDir, SentPushDir;
+            public readonly int[] SeatPushDir = new int[5];                     // T-114: each local Ori's own push
+            public readonly float[] SeatPushAt = { -10f, -10f, -10f, -10f, -10f };
             public float LocalPushAt = -10f, PushSentAt = -10f, BaseMultiplier = -1f;
             // T-115: one report per remote seat (3-4 players), not a single slot every sender overwrites.
             public readonly Dictionary<int, int> RemotePushDirs = new Dictionary<int, int>();
@@ -352,7 +354,8 @@ namespace OriCoop
             float now = Time.realtimeSinceStartup;
             if (what == "grab") st.GrabbedAt = now;
             if (Moving(pm) || now - st.GrabbedAt < 0.5f) st.InteractionUntil = now + 0.15f;
-            NoteOwnPush(st, PushDir(pm), now);
+            SeinCharacter me = LocalOri(pm);
+            NoteOwnPush(st, me == null ? 0 : Players.SeatOf(me), PushDir(pm), now);
             Simulates(st);
             LeaseStep(b, st);
             Rigidbody rb = s_body(b);
@@ -376,17 +379,31 @@ namespace OriCoop
         static readonly List<float> s_pushAges = new List<float>();
         // T-115 net test: a push report for a stone nobody has (id 0); receivers count it before the id lookup.
         internal static void TestSendCoPush() { NetPlay.Send(MsgCoPush, true, w => { w.Write(0); w.Write((sbyte)1); }); }
-        static int PushDir(PlatformMovement pm)
+        internal static int PushDir(PlatformMovement pm)
         {
-            SeinCharacter s = P2Context.P1;
-            if (s == null || s.PlatformBehaviour.PlatformMovement != pm || s.Abilities.GrabBlock == null || !s.Abilities.GrabBlock.IsGrabbing) return 0;
+            SeinCharacter s = LocalOri(pm);
+            if (s == null || s.Abilities.GrabBlock == null || !s.Abilities.GrabBlock.IsGrabbing) return 0;
             SeinGrabBlock.State state = s.Abilities.GrabBlock.CurrentState;
             int facing = s.FaceLeft ? -1 : 1;
             return state == SeinGrabBlock.State.Push ? facing : state == SeinGrabBlock.State.Pull ? -facing : 0;
         }
 
-        static void NoteOwnPush(St st, int dir, float now)
+        // T-114: the Ori on this PC (P1 or an extra local player) that this movement component belongs to; null otherwise.
+        static SeinCharacter LocalOri(PlatformMovement pm)
         {
+            if (pm == null) return null;
+            SeinCharacter p1 = P2Context.P1;
+            if (p1 != null && p1.PlatformBehaviour.PlatformMovement == pm) return p1;
+            foreach (Puppet p in Players.Remotes)
+                if (p.IsLocal && p.Sein != null && p.Sein.PlatformBehaviour.PlatformMovement == pm) return p.Sein;
+            return null;
+        }
+
+        // seat: whose call this is; this PC reports one direction for all its Oris on the stone (CoPushRule.DeviceDir).
+        internal static void NoteOwnPush(St st, int seat, int dir, float now)
+        {
+            if (seat >= 1 && seat < st.SeatPushDir.Length) { st.SeatPushDir[seat] = dir; st.SeatPushAt[seat] = now; }
+            dir = CoPushRule.DeviceDir(st.SeatPushDir, st.SeatPushAt, now, 0.15f);
             st.LocalPushDir = dir; st.LocalPushAt = now;
             if (dir == 0 && st.SentPushDir == 0) return;
             if (dir == st.SentPushDir && now - st.PushSentAt < 0.1f) return;
@@ -426,10 +443,10 @@ namespace OriCoop
             }
         }
 
-        static bool Moving(PlatformMovement pm)
+        internal static bool Moving(PlatformMovement pm)
         {
-            SeinCharacter s = P2Context.P1;
-            if (s == null || s.PlatformBehaviour.PlatformMovement != pm || s.Abilities.GrabBlock == null) return true;
+            SeinCharacter s = LocalOri(pm);
+            if (s == null || s.Abilities.GrabBlock == null) return true;
             SeinGrabBlock grab = s.Abilities.GrabBlock;
             return grab.IsGrabbing && (grab.CurrentState == SeinGrabBlock.State.Push || grab.CurrentState == SeinGrabBlock.State.Pull);
         }

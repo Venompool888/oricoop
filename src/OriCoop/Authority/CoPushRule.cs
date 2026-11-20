@@ -11,6 +11,21 @@ namespace OriCoop.Authority
             return localDir != 0 && localDir == remoteDir && remoteAge >= 0f && remoteAge <= Fresh ? Boost : 1f;
         }
 
+        // T-114: several Oris on one PC holding the same stone report one direction for that PC: the one its pushers
+        // agree on (an Ori that only holds does not cancel it); pushing against each other is 0. An entry older than
+        // `window` seconds (that Ori let go) is ignored. seatDir / seatAt are indexed by seat (1-4).
+        public static int DeviceDir(int[] seatDir, float[] seatAt, float now, float window)
+        {
+            int dir = 0;
+            for (int seat = 1; seat < seatDir.Length && seat < seatAt.Length; seat++)
+            {
+                if (seatDir[seat] == 0 || now - seatAt[seat] >= window) continue;
+                if (dir == 0) dir = seatDir[seat];
+                else if (dir != seatDir[seat]) return 0;
+            }
+            return dir;
+        }
+
         // T-115: 3-4 players keep one report per remote seat. Boosted when any fresh remote push goes our way, so a third
         // player pushing the other way no longer flips the single stored direction (and the boost) every report.
         public static float Multiplier(int localDir, System.Collections.Generic.IList<int> remoteDirs, System.Collections.Generic.IList<float> remoteAges)

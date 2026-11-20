@@ -35,6 +35,10 @@ namespace OriCoop
             }
         }
         public static bool IsLocal(int seat) { return System.Array.IndexOf(LocalSeats, seat) >= 0; }
+        // T-133: a device's primary seat got a new number (a guest added a local player into a lower free seat).
+        // renamed[old] = new, 0 = unchanged. Raised on every PC right after the seat table changed.
+        public static event System.Action<int[]> SeatsRenamed;
+        internal static void RaiseSeatsRenamed(int[] renamed) { if (SeatsRenamed != null) SeatsRenamed(renamed); }
         public static SeinCharacter OriOf(int seat)
         {
             if (seat == LocalSeat) return P2Context.P1 != null ? P2Context.P1 : Characters.Sein;

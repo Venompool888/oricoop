@@ -40,6 +40,62 @@ namespace OriCoop
         }
         static IEnumerator LocalWait(float seconds)
         { float until = Time.realtimeSinceStartup + seconds; while (Time.realtimeSinceStartup < until) yield return null; }
+
+        // End of the run, host only. While the guests are still connected the host adds an extra local player and it
+        // goes down (online downed). The guests then leave: the room stays open with the host's local seats.
+        static int s_hostExtra;
+        static IEnumerator HostExtraDownedAtLeave(TestHarness h)
+        {
+            s_hostExtra = 0;
+            GameSeatView view = new GameSeatView();
+            h.Check(view.AddLocalPlayer(new InputDevice(InputDevice.DeviceKind.Pad, 3)), "locals: host adds an extra local player before the guests leave");
+            float deadline = Time.realtimeSinceStartup + 12f;
+            while (s_hostExtra == 0 && Time.realtimeSinceStartup < deadline)
+            {
+                foreach (int seat in view.LocalSeats) if (seat != Players.LocalSeat && Players.OriOf(seat) != null) s_hostExtra = seat;
+                yield return null;
+            }
+            SeinCharacter extra = s_hostExtra == 0 ? null : Players.OriOf(s_hostExtra);
+            h.Check(extra != null, "locals: host's extra local player spawns (seat " + s_hostExtra + ")");
+            if (extra == null) { s_hostExtra = 0; yield break; }
+            Plugin.Teleport(extra, Own.Position + Vector3.right * 1.5f);
+            yield return TestClock.WaitGame(1f);
+            extra.Mortality.DamageReciever.OnKill(new Damage(1000, Vector2.zero, extra.Position, DamageType.Spikes, null));
+            yield return LocalWait(0.5f);
+            h.Check(Revive.DownedAtSeat(s_hostExtra) != null && !extra.gameObject.activeSelf,
+                "locals: host's extra is downed while the guests are connected");
+        }
+
+        static IEnumerator HostAloneExtra(TestHarness h)
+        {
+            float deadline = Time.realtimeSinceStartup + 45f;
+            while (NetPlay.RemoteCount > 0 && Time.realtimeSinceStartup < deadline) yield return null;
+            yield return LocalWait(1f);   // Revive notices the empty room on its next tick
+            h.Check(NetPlay.Enabled && NetPlay.IsHost && NetPlay.RemoteCount == 0 && !NetPlay.Connected,
+                "locals: host keeps its room open after every guest left (enabled=" + NetPlay.Enabled + ", remotes=" + NetPlay.RemoteCount + ")");
+            if (s_hostExtra == 0 || !NetPlay.Enabled) yield break;
+            SeinCharacter extra = Players.OriOf(s_hostExtra);
+            // T-109: the last guest leaving clears the downed state; the extra must come back with health beside P1.
+            h.Check(extra != null && extra.gameObject.activeInHierarchy && !Revive.IsDowned(extra) && extra.Mortality.Health.Amount > 0f
+                && Vector3.Distance(extra.Position, Own.Position) < 3f,
+                "locals: host's downed extra comes back with health beside P1 when the last guest leaves (health=" +
+                (extra == null ? "-" : extra.Mortality.Health.Amount.ToString("F1")) + ")");
+            if (extra == null) yield break;
+            // T-103: alone in the room, an extra local player's death must not run the game's own death (whole-game reload).
+            Plugin.Teleport(extra, Own.Position + Vector3.right * 1.5f);
+            yield return TestClock.WaitGame(1f);
+            int restores = TestHarness.RestoreCheckpointCalls;
+            extra.Mortality.DamageReciever.OnKill(new Damage(1000, Vector2.zero, extra.Position, DamageType.Spikes, null));
+            yield return TestClock.WaitGame(3f);
+            h.Check(TestHarness.RestoreCheckpointCalls == restores && NetPlay.LocalInGameplay(),
+                "locals: host-alone extra death does not reload the game (reloads=" + (TestHarness.RestoreCheckpointCalls - restores) + ")");
+            SeinCharacter after = Players.OriOf(s_hostExtra);
+            float health = after == null ? -1f : after.Mortality.Health.Amount;
+            h.Check(after == extra && after.gameObject.activeInHierarchy && !Revive.IsDowned(after)
+                && health >= after.Mortality.Health.MaxHealth - 0.01f && Vector3.Distance(after.Position, Own.Position) < 3f,
+                "locals: host-alone extra comes back beside P1 with full health (health=" + health.ToString("F1") + ")");
+            new GameSeatView().RemoveLocalPlayer(s_hostExtra);
+        }
         static IEnumerator LocalPlayersChecks(TestHarness h)
         {
             localFinishAcks.Clear();
@@ -282,6 +338,20 @@ namespace OriCoop
             }
             h.Check(BottomHud.Visible(localExtra) && BottomHud.Opacity(localExtra) < 0.6f,
                 "locals: the downed extra's bar stays, dimmed, on every device (opacity " + F(BottomHud.Opacity(localExtra)) + ")");
+            // T-109: a cutscene hands control to another character (P1 unavailable: puppets park) and back (they return
+            // beside P1). The downed extra must stay switched off at its skull, not reappear frozen next to P1.
+            if (Players.LocalSeat == 2 && localDown != null && Players.OriOf(1) != null)
+            {
+                ICharacter savedCurrent = Characters.Current;
+                Characters.Current = Players.OriOf(1);
+                yield return LocalWait(0.3f);
+                Characters.Current = savedCurrent;
+                yield return LocalWait(0.3f);
+                SeinCharacter parkedExtra = Players.OriOf(localExtra);
+                h.Check(parkedExtra != null && !parkedExtra.gameObject.activeSelf && Revive.DownedAtSeat(localExtra) == localDown,
+                    "locals: P1 parked and back leaves the downed extra switched off at its skull (active=" +
+                    (parkedExtra != null && parkedExtra.gameObject.activeSelf) + ")");
+            }
             yield return ThreeRound(h, 595, ClientCount);
             if (NetPlay.IsHost)
             {
@@ -303,6 +373,48 @@ namespace OriCoop
                     "locals: cross-device revive is acknowledged through the real revive protocol");
             Bot(0, 0);
             yield return ThreeRound(h, 596, ClientCount);
+            // T-114: stones see the extra local player as itself, not P1: standing without grabbing it is not "moving"
+            // (that kept the stone's lease forever), and two Oris of this PC on one stone (one pushing, one holding) send
+            // one push direction, not one flip per call.
+            if (Players.LocalSeat == 2)
+            {
+                PlatformMovement extraPm = PuppetAt(localExtra).Sein.PlatformBehaviour.PlatformMovement;
+                PushBlockSync.St stone = new PushBlockSync.St();
+                int sent = PushBlockSync.CoPushSent;
+                float t0 = Time.realtimeSinceStartup;
+                for (int i = 0; i < 10; i++)
+                {
+                    PushBlockSync.NoteOwnPush(stone, Players.LocalSeat, 1, t0 + i * 0.005f);
+                    PushBlockSync.NoteOwnPush(stone, localExtra, 0, t0 + i * 0.005f + 0.002f);
+                }
+                bool moving = PushBlockSync.Moving(extraPm);
+                int dir = PushBlockSync.PushDir(extraPm), sends = PushBlockSync.CoPushSent - sent;
+                h.Check(!moving && dir == 0 && stone.LocalPushDir == 1 && sends == 1,
+                    "locals: stones tell the extra local player from P1 (moving=" + moving + ", dir=" + dir +
+                    ", PC dir=" + stone.LocalPushDir + ", messages=" + sends + ")");
+            }
+            // T-108: this device's own Ori goes down while its extra local player is alive: no spectating, which starts
+            // only once every player on the PC is down (T-042). Then it comes back (the host revives it).
+            int restoresBeforeOwn = TestHarness.RestoreCheckpointCalls;
+            if (Players.LocalSeat == 2) Own.Mortality.DamageReciever.OnKill(new Damage(1000, Vector2.zero, Own.Position, DamageType.Spikes, null));
+            yield return LocalWait(1f);
+            h.Check(Revive.DownedAtSeat(2) != null, "locals: guest's own Ori is downed on every device");
+            if (Players.LocalSeat == 2)
+                h.Check(!Revive.SpectateActive && Revive.SpectateSein == null,
+                    "locals: own Ori down with a living local extra does not spectate (target P" + Revive.SpectateTarget + ")");
+            yield return ThreeRound(h, 601, ClientCount);
+            if (NetPlay.IsHost)
+            {
+                Revive.Downed ownDown = Revive.DownedAtSeat(2);
+                if (ownDown != null) { Plugin.Teleport(Own, ownDown.Marker); Own.Mortality.Health.RestoreAllHealth(); }
+                Bot(0, P2Input.BTN_X);
+            }
+            deadline = Time.realtimeSinceStartup + 12;
+            while (Revive.DownedAtSeat(2) != null && Time.realtimeSinceStartup < deadline) yield return null;
+            h.Check(Revive.DownedAtSeat(2) == null && TestHarness.RestoreCheckpointCalls == restoresBeforeOwn,
+                "locals: guest's own Ori comes back without a checkpoint reload");
+            Bot(0, 0);
+            yield return ThreeRound(h, 602, ClientCount);
             OnlineRoomScreen.Show(delegate { }); yield return LocalWait(0.5f);
             if (Players.LocalSeat == 2) h.Check(OnlineRoomScreen.Click("room.remove." + localExtra), "locals: guest clicks drawn remove button");
             deadline = Time.realtimeSinceStartup + 12f;
@@ -313,15 +425,18 @@ namespace OriCoop
             yield return ThreeRound(h, 597, ClientCount);
             // Seeing all samples locally is not proof that our final reliable sample was flushed to the host.
             // Keep guests alive until the host explicitly observes that round and acknowledges it.
-            deadline = Time.realtimeSinceStartup + 12f;
             if (NetPlay.IsHost)
             {
+                yield return HostExtraDownedAtLeave(h);
+                deadline = Time.realtimeSinceStartup + 12f;
                 NetPlay.SendTestSignal("done");
                 while (localFinishAcks.Count < ClientCount - 1 && Time.realtimeSinceStartup < deadline) yield return null;
                 h.Check(localFinishAcks.Count == ClientCount - 1, "locals: all devices acknowledge final observations");
+                yield return HostAloneExtra(h);
             }
             else
             {
+                deadline = Time.realtimeSinceStartup + 30f;   // the host first downs its own extra (HostExtraDownedAtLeave)
                 while (!s_done && Time.realtimeSinceStartup < deadline) yield return null;
                 h.Check(s_done, "locals: host acknowledges final observations before guest quits");
                 NetPlay.SendTestSignal("locals-finished");

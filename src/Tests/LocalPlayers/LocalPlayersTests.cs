@@ -49,6 +49,19 @@ static class LocalPlayersTests
             Check(!t.Accepts(2, 2, 4) && !t.Accepts(2, 2, 1), "foreign stream rejected");
             Check(!t.Accepts(0, 2, 2) && !t.Accepts(2, 2, 0) && !t.Accepts(2, 2, 5), "invalid seat rejected");
         });
+        // T-133: the rename map other modules use when a device's primary changes number.
+        Run("seat table reports a renumbered device primary", delegate {
+            SeatTable t = new SeatTable(); t.Add(1); t.Add(2); t.Add(3);   // host 1, A 2, B 3
+            t.RemoveDevice(2);                                              // A leaves
+            int[] before = new int[5]; t.CopyOwners(before);
+            Check(t.Add(3) == 2 && t.Owner(3) == 2, "B adds a local player: its primary becomes 2, seat 3 its extra");
+            int[] renamed = t.Renames(before);
+            Check(renamed[3] == 2 && renamed[1] == 0 && renamed[2] == 0 && renamed[4] == 0, "only B's old primary 3 -> 2");
+            t.CopyOwners(before);
+            Check(Array.TrueForAll(t.Renames(before), r => r == 0), "no change, no rename");
+            t.RemoveDevice(2);
+            Check(Array.TrueForAll(t.Renames(before), r => r == 0), "a device leaving is not a rename");
+        });
         Run("lower hole changes device primary to lowest local seat", delegate {
             SeatTable t = new SeatTable(); t.Add(1); t.Add(2); t.Add(3); t.Release(2, 2);
             Check(t.Add(3) == 2 && t.Owner(2) == 2 && t.Owner(3) == 2, "device primary follows lower hole");
