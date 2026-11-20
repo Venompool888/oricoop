@@ -701,7 +701,25 @@ namespace OriCoop
             // seat 3 must obey its host-only messages (a gate count here; intro and wipe use the same sender check).
             if (NetRoute.ServerMode)
             {
-                if (Players.LocalSeat == 1) { h.Note("3P server: P1 leaving; harness completion quits this client"); yield break; }
+                // T-158: the room creator without the arbiter role is not the host. P1 gives up its seat but stays connected,
+                // seat 2 arbitrates; P1 must stop acting as host and obey seat 2's host-only messages (a gate count here).
+                if (Players.LocalSeat == 1 && CServerLink.Client != null) { HostLeftInServerMode = true; CServerLink.Client.ReleaseAll(); }
+                by = Time.realtimeSinceStartup + 10f;
+                while ((Players.LocalSeat == 1 ? NetRoute.HostSeat != 2 : PuppetAt(1) != null) && Time.realtimeSinceStartup < by) yield return null;
+                yield return Wait(1f);
+                h.Check(NetPlay.IsHost == (Players.LocalSeat == 2), "3P server: only the arbiter is host, not the creator without the role (T-158, local P"
+                    + Players.LocalSeat + " IsHost " + NetPlay.IsHost + ", host seat " + NetRoute.HostSeat + ")");
+                if (Players.LocalSeat == 2) { yield return Wait(0.5f); ForcedSync.TestSendCount("t158-gate", 1, 2); }
+                if (Players.LocalSeat == 1)
+                {
+                    by = Time.realtimeSinceStartup + 6f;
+                    while (ForcedSync.TestCount("t158-gate") != 1 && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(ForcedSync.TestCount("t158-gate") == 1, "3P server: the creator obeys the arbiter's gate count (T-158)");
+                    ForcedSync.TestForget("t158-gate");
+                    h.Note("3P server: P1 leaving; harness completion quits this client"); yield break;
+                }
+                yield return Wait(1f);
+                ForcedSync.TestForget("t158-gate");
                 by = Time.realtimeSinceStartup + 30f;
                 while ((PuppetAt(1) != null || Players.LocalSeat == 2 && !NetPlay.IsHost) && Time.realtimeSinceStartup < by) yield return null;
                 yield return Wait(1f);   // the arbiter change reaches seat 3 with the same server state
