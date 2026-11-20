@@ -102,7 +102,8 @@ partial class SaveTests
         Check(s.HostMachine.Stage == LineageStage.Done && s.HostMachine.HostGate(), "cancel final state changed");
         EqualBytes(s.Network.Sent[3].Body, 2);
     }
-    static void FirstReplyWinsFourSeats()
+    // T-128: was "first reply wins" (only the first guest's answer counted, a diverged copy of a later guest was lost).
+    static void EveryReplyCountsFourSeats()
     {
         Scenario s = new Scenario();
         FakeBus bus3 = s.Network.Add(3), bus4 = s.Network.Add(4);
@@ -112,9 +113,11 @@ partial class SaveTests
         LineageMachine machine3 = new LineageMachine(bus3, s.Clock, guest3), machine4 = new LineageMachine(bus4, s.Clock, guest4);
         machine3.Init(); machine4.Init(); s.Guest.Reply.Found = true; s.Guest.Reply.Hash = "host";
         s.Offer();
-        Check(s.Host.Outcome == "same" && s.Host.Choosing == 0 && s.Host.Commits == 1, "later replies changed outcome");
+        Check(s.HostMachine.Stage == LineageStage.Choosing && s.Host.Choosing == 1 && s.Host.Commits == 0,
+            "a later guest's diverged copy did not reach the host's choice (stage " + s.HostMachine.Stage + ", commits " + s.Host.Commits + ")");
+        Check(s.Guest.Choosing == 1 && guest3.Choosing == 1 && guest4.Choosing == 1, "every guest is told the host is choosing");
+        s.HostMachine.Decide(false); s.Network.Pump();
         Check(s.Guest.ReceivedCommit != null && guest3.ReceivedCommit != null && guest4.ReceivedCommit != null, "commit not broadcast");
-        Check(s.Network.Sent.Count == 9, "unexpected multi-seat message count");
     }
     static void DepartureDuringOffer()
     {
