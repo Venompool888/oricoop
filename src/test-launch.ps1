@@ -353,7 +353,9 @@ function Read-LockInfo([string]$path) {
     ConvertFrom-LockText $text
 }
 function Remove-LockIfUnchanged([string]$path, [byte[]]$seen) {
-    if (-not $seen) { return $false }
+    # $null = nothing was read. An EMPTY array is a real lock too (a run that crashed between CreateNew and writing it,
+    # T-164): PowerShell treats an empty array as false, so test for $null, never for truth.
+    if ($null -eq $seen) { return $false }
     try { return [OriLockFile1]::DeleteIfUnchanged($path, $seen) } catch { return $false }
 }
 
@@ -396,7 +398,8 @@ function Enter-CopyLock($copy, [string]$script) {
             # meanwhile, that run holds the copy now.
             $seen = $null
             if ($attempt -eq 0) { try { $seen = [IO.File]::ReadAllBytes($copy.Lock) } catch { } }
-            if ($seen -and (Test-LockStale $copy.Lock)) {
+            # An empty lock (no pid=) goes stale by age like any hand-made lock (T-164: '$seen -and' skipped it forever).
+            if ($null -ne $seen -and (Test-LockStale $copy.Lock)) {
                 $old = ConvertFrom-LockText ([Text.Encoding]::UTF8.GetString($seen))
                 if (Remove-LockIfUnchanged $copy.Lock $seen) {
                     Write-Host ('stale lock on copy ' + $copy.Name + ' removed (session=' + $old['session'] + ' time=' + $old['time'] + ')')
