@@ -11,17 +11,21 @@ $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'test-launch.ps1')   # quiet launch + owner watchdog (docs\testing-rules.md)
 Start-TestRun -Force:$Force
 $pristine = 'C:\OriCoop\save-backup\20261114-150138'
-$hostSaves = Join-Path $TL_AppData[0] 'Ori and the Blind Forest DE'
-$guestSaves = Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE'
+$hostSaves = Join-Path $TL_AppData[0] 'Ori and the Blind Forest DE\OriCoop-coop'
+$guestSaves = Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE\OriCoop-coop'
 $testDir = $TL_TestDir
 New-Item -ItemType Directory -Force $testDir | Out-Null
 $cfg = Join-Path $TL_GameDir 'BepInEx\config\local.oricoop.cfg'
 $cfgBefore = if (Test-Path $cfg) { [IO.File]::ReadAllBytes($cfg) } else { $null }
 
 function Reset-Saves([string]$dir) {
-    Get-ChildItem $dir -File | Where-Object { $_.Name -like 'saveFile*' -or $_.Name -like '*.oricoop*' -or $_.Name -eq 'oricoop-player.txt' } | Remove-Item -Force
+    New-Item -ItemType Directory -Force $dir | Out-Null
+    Get-ChildItem $dir -File | Where-Object { $_.Name -like 'saveFile*' -or $_.Name -like '*.oricoop*' } | Remove-Item -Force
+    $player = Join-Path (Split-Path -Parent $dir) 'oricoop-player.txt'
+    if (Test-Path $player) { Remove-Item $player -Force }
     if (Test-Path "$dir\OriCoop-backups") { Remove-Item "$dir\OriCoop-backups" -Recurse -Force }
-    Copy-Item "$pristine\*" $dir -Force
+    Copy-Item "$pristine\*" (Split-Path -Parent $dir) -Exclude 'saveFile*' -Force
+    Copy-Item "$pristine\saveFile*.sav" $dir -Force
 }
 function Sha1([string]$path) {
     if (-not (Test-Path $path)) { return '' }

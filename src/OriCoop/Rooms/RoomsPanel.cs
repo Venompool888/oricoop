@@ -56,6 +56,7 @@ namespace OriCoop.Rooms
             {
                 Instance.copyBytes = bytes;
                 Instance.overwrite = -1;
+                Instance.ReadSinglePlayerSlots();
                 Instance.Show("slots");
             };
             NetPlay.SessionEnded += delegate { if (Instance.Session != null) Instance.Session.Leave(); };
@@ -241,6 +242,15 @@ namespace OriCoop.Rooms
             OpenRoom(room);
         }
 
+        internal readonly string[] SinglePlayerSummaries = new string[SaveGameController.MAX_SAVES];
+
+        void ReadSinglePlayerSlots()
+        {
+            Array.Clear(SinglePlayerSummaries, 0, SinglePlayerSummaries.Length);
+            foreach (int slot in Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves())
+                SinglePlayerSummaries[slot] = RoomGame.Summary(File.ReadAllBytes(Saves.CoopSaveFolder.SinglePlayerPath(slot)));
+        }
+
         static readonly bool s_oldNameMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ROOM_NAME_HASH") == "1";
 
         internal void BeginCreate()
@@ -258,6 +268,7 @@ namespace OriCoop.Rooms
                 if (!collision) break;
                 number++;
             }
+            ReadSinglePlayerSlots();
             Show("create");
         }
 
@@ -266,8 +277,8 @@ namespace OriCoop.Rooms
         internal void CreateWithSlot(int slot, string password)
         {
             if (!NumericPassword(password)) { message = ErrorText("bad_request"); return; }
-            byte[] bytes = File.ReadAllBytes(RoomGame.PathFor(slot));
-            string summary = RoomGame.Summary(slot);
+            byte[] bytes = File.ReadAllBytes(Saves.CoopSaveFolder.SinglePlayerPath(slot));
+            string summary = RoomGame.Summary(bytes);
             string enteredName = roomName;
             Request(delegate
             {

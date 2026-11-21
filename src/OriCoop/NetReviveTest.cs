@@ -16,8 +16,20 @@ namespace OriCoop
     public static class NetReviveTest
     {
         const byte MsgBarrier = 65;
-        static readonly HashSet<int> s_partnerSteps = new HashSet<int>();
-        static void OnBarrier(BinaryReader r) { s_partnerSteps.Add(r.ReadInt32()); }
+        // T-043: barriers also carry the partner's room-save counter and checkpoint fingerprint (step "R save").
+        sealed class SaveReport
+        {
+            public int Adoptions; public string Fingerprint;
+            public bool HasPosition; public Vector3 Position;
+        }
+        static readonly Dictionary<int, SaveReport> s_partnerSteps = new Dictionary<int, SaveReport>();
+        static void OnBarrier(BinaryReader r)
+        {
+            int step = r.ReadInt32();
+            SaveReport report = new SaveReport { Adoptions = r.ReadInt32(), Fingerprint = r.ReadString(), HasPosition = r.ReadBoolean() };
+            if (report.HasPosition) report.Position = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+            s_partnerSteps[step] = report;
+        }
 
         static SeinCharacter Own { get { return P2Context.P1; } }
         static SeinCharacter Puppet { get { return P2Context.P2; } }
@@ -54,12 +66,76 @@ namespace OriCoop
         // revive hold and glow); real seconds failed whenever a busy PC ran the game slower than real time.
         static IEnumerator Wait(float s) { return TestClock.WaitGame(s); }
 
-        static IEnumerator Barrier(TestHarness h, int step)
+        static IEnumerator Barrier(TestHarness h, int step, string fingerprint = "", SaveReport save = null)
         {
-            NetPlay.Send(MsgBarrier, true, w => w.Write(step));
+            NetPlay.Send(MsgBarrier, true, delegate(BinaryWriter w)
+            {
+                w.Write(step); w.Write(SaveSync.HostSavesAdopted); w.Write(fingerprint ?? "");
+                bool hasPosition = save != null && save.HasPosition;
+                w.Write(hasPosition);
+                if (hasPosition) { w.Write(save.Position.x); w.Write(save.Position.y); w.Write(save.Position.z); }
+            });
             float end = Time.realtimeSinceStartup + 30f;
-            while (NetPlay.Connected && !s_partnerSteps.Contains(step) && Time.realtimeSinceStartup < end) yield return null;
-            h.Check(s_partnerSteps.Contains(step), "R barrier " + step + " reached by both");
+            while (NetPlay.Connected && !s_partnerSteps.ContainsKey(step) && Time.realtimeSinceStartup < end) yield return null;
+            h.Check(s_partnerSteps.ContainsKey(step), "R barrier " + step + " reached by both");
+        }
+
+        static string CheckpointFingerprint()
+        {
+            using (MemoryStream stream = new MemoryStream())
+            {
+                Game.Checkpoint.SaveGameData.SaveToWriter(new BinaryWriter(stream));
+                return CoopSaves.Hash(stream.ToArray());
+            }
+        }
+
+        // T-043 "R save": the guest touches a save point. The host (the room's save authority) names it the saver,
+        // takes its save as the room's checkpoint and commits the file to the guest's local copy. Both checkpoints are
+        // then identical, and the both-down reload in R3 puts the host at the guest's save point.
+        static IEnumerator GuestSave(TestHarness h, SaveReport save)
+        {
+            bool host = NetPlay.IsHost;
+            if (host)
+            {
+                save.HasPosition = SaveSync.HaveCheckpointPosition;
+                save.Position = SaveSync.HostCheckpointPosition;
+                if (!save.HasPosition) h.Note("R save: host's previous checkpoint position unavailable before guest save");
+            }
+            h.Check(NetPlay.LocalInGameplay() && Own != null && Puppet != null && SaveSync.Ready,
+                "R save: both Oris in gameplay and SaveSync ready before the guest's save point");
+            int adopted0 = SaveSync.HostSavesAdopted, commits0 = CoopSaves.CommitsReceived, offered0 = SaveSync.GuestSavesOffered;
+            yield return Barrier(h, 200);
+            if (!s_partnerSteps.ContainsKey(200)) yield break;
+            if (!host)
+            {
+                // Saved at full health: the R3 reload restores this save on both PCs, and later phases (S4) expect full
+                // health as after the host's save.
+                Own.Mortality.Health.RestoreAllHealth();
+                save.Position = Own.Position; save.HasPosition = true;
+                GameController.Instance.CreateCheckpoint();
+                GameController.Instance.SaveGameController.PerformSave();
+                h.Check(SaveSync.GuestSavesOffered == offered0 + 1, "R save guest: save point offered to the room ("
+                    + offered0 + " -> " + SaveSync.GuestSavesOffered + ")");
+            }
+            float end = Time.realtimeSinceStartup + 10f;
+            while ((host ? SaveSync.HostSavesAdopted == adopted0 : CoopSaves.CommitsReceived == commits0)
+                && Time.realtimeSinceStartup < end) yield return null;
+            if (!host)
+                h.Check(CoopSaves.CommitsReceived > commits0, "R save guest: the room's new save came back as a commit ("
+                    + commits0 + " -> " + CoopSaves.CommitsReceived + ")");
+            string fingerprint = CheckpointFingerprint();
+            yield return Barrier(h, 201, fingerprint, save);
+            if (!s_partnerSteps.ContainsKey(201)) yield break;
+            int before = host ? adopted0 : s_partnerSteps[200].Adoptions;
+            int after = host ? SaveSync.HostSavesAdopted : s_partnerSteps[201].Adoptions;
+            h.Check(after == before + 1, "R save: the host named the guest the saver once (adoptions " + before + " -> " + after
+                + ", last verdict " + SaveSync.LastOfferVerdict + ")");
+            h.Check(fingerprint == s_partnerSteps[201].Fingerprint,
+                "R save: checkpoint fingerprints equal (local SaveGameData SHA1=" + fingerprint
+                + ", partner SaveGameData SHA1=" + s_partnerSteps[201].Fingerprint + ")");
+            if (host)
+                h.Check(CoopSaves.Timeline.Length > 0 && CoopSaves.Timeline == CoopSaves.LastCommitHash,
+                    "R save host: the guest's save is the room's committed timeline (" + CoopSaves.Timeline + ")");
         }
 
         static void Hurt(SeinCharacter s, float amount)
@@ -237,6 +313,9 @@ namespace OriCoop
                 h.Check(vis > 0, "R2 host: guest's puppet visible again");
             }
 
+            SaveReport save = new SaveReport();
+            yield return GuestSave(h, save);
+
             // R3: both down -> the host decides, both reload.
             Own.Mortality.Health.RestoreAllHealth();
             yield return Barrier(h, 8);
@@ -281,6 +360,29 @@ namespace OriCoop
             h.Check(!Revive.AnyDowned, "R3 nobody downed after the reload");
             h.Check(!WorldObjSync.TestHasFired(oneShotId), "R3 the reload forgets one-shot hazards that fired before it (T-144, resets=" + WorldObjSync.OneShotResets + ")");
             h.Check(Revive.NetBothDown >= 1, "R3 'both down' was decided once (host) and applied here");
+            if (host)
+            {
+                SaveReport guestSave;
+                if (!save.HasPosition)
+                    h.Note("R save: reload source undecidable: host's previous checkpoint position unavailable before guest save");
+                else if (!s_partnerSteps.TryGetValue(201, out guestSave) || !guestSave.HasPosition)
+                    h.Note("R save: reload source undecidable: guest save position not received");
+                else
+                {
+                    float previousDistance = Vector3.Distance(guestSave.Position, save.Position);
+                    if (previousDistance <= 3f)
+                        h.Note("R save: reload source undecidable: guest save position was " + F(previousDistance)
+                            + " units from host's previous checkpoint (<= 3 units)");
+                    else
+                    {
+                        float distance = Characters.Sein == null ? float.PositiveInfinity
+                            : Vector3.Distance(Characters.Sein.Position, guestSave.Position);
+                        h.Check(distance <= 3f,
+                            "R save: after both-down reload the host respawns at the guest's save (distance to guest save position="
+                            + F(distance) + " <= 3 units; was " + F(previousDistance) + " to the host's previous checkpoint)");
+                    }
+                }
+            }
             yield return Barrier(h, 10);
             yield return SoulLink(h, host);
             HoldSpiritFlame(false);

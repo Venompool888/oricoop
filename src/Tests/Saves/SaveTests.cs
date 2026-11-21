@@ -99,6 +99,9 @@ partial class SaveTests
             Check(!LoadRestart.IsOwn(true, true), "a quit after a failed (disabled) load was taken for the load restart");
             Check(!LoadRestart.IsOwn(false, false) && !LoadRestart.IsOwn(false, true), "no load running, yet taken for one");
         });
+        Run("co-op save paths", FolderPathTests);
+        Run("first empty co-op slot", EmptyCoopSlotTests);
+        RunRoomSaveTests();
         return failures == 0 ? 0 : 1;
     }
 }

@@ -5,8 +5,9 @@ namespace OriCoop.Net
     // net4: the intro snapshot (msg 54) carries the late-seat byte (T-105); cutscene animation keys are name|hash|count (T-121).
     // net5 (T-168): GameController / GameWorld sync item by item (arbiter event kind 0x57); the world snapshot end marker
     // (msg 12 kind 2) carries a u32 watermark. World sync refuses to run with a PC on another version.
+    // net6: SaveOffer (msg 87, guest -> host) carries a guest's save point to the room's save authority (T-043).
     internal static class ProtocolVersion
     {
-        public const string Mod = "0.2.0-net5";
+        public const string Mod = "0.2.0-net6";
     }
 }

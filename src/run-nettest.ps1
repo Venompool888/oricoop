@@ -48,7 +48,7 @@ for ($i = 2; $i -lt $Clients; $i++) {
     New-Item -ItemType Directory -Force -Path $saves | Out-Null
     if ($new) {
         Get-ChildItem -LiteralPath (Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE') |
-            Where-Object { $_.Name -notlike 'saveFile*' -and $_.Name -notlike '*.oricoop*' -and $_.Name -ne 'oricoop-player.txt' -and $_.Name -ne 'OriCoop-backups' } |
+            Where-Object { $_.Name -notlike 'saveFile*' -and $_.Name -notlike '*.oricoop*' -and $_.Name -ne 'oricoop-player.txt' -and $_.Name -ne 'OriCoop-backups' -and $_.Name -ne 'OriCoop-coop' } |
             Copy-Item -Destination $saves -Recurse -Force
     }
     $appDataDirs += $TL_AppData[$i]
@@ -60,14 +60,16 @@ if (Test-Path $pristine) {
         # Co-op save lineage (CoopSaves.cs) adds slots, *.oricoop links and OriCoop-backups: drop them too, so
         # every run starts as a fresh pair.
         Get-ChildItem $saves -File | Where-Object { $_.Name -like 'saveFile*' -or $_.Name -like '*.oricoop*' -or $_.Name -eq 'oricoop-player.txt' } | Remove-Item -Force
-        $backupPath = [IO.Path]::GetFullPath((Join-Path $saves 'OriCoop-backups'))
-        if (-not $backupPath.StartsWith(([IO.Path]::GetFullPath($saves) + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Backup path outside test save directory.' }
-        if (Test-Path -LiteralPath $backupPath) { Remove-Item -LiteralPath $backupPath -Recurse -Force }
+        $coopPath = [IO.Path]::GetFullPath((Join-Path $saves 'OriCoop-coop'))
+        if (-not $coopPath.StartsWith(([IO.Path]::GetFullPath($saves) + '\'), [StringComparison]::OrdinalIgnoreCase)) { throw 'Co-op path outside test save directory.' }
+        if (Test-Path -LiteralPath $coopPath) { Remove-Item -LiteralPath $coopPath -Recurse -Force }
         Copy-Item "$pristine\*" $saves -Force
+        New-Item -ItemType Directory -Force $coopPath | Out-Null
+        Copy-Item "$pristine\saveFile*.sav" $coopPath -Force
     }
 }
 if ($GuestNewGame -or $GuestNoSlot) {
-    Get-ChildItem (Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE') -File | Where-Object { $_.Name -like 'saveFile*' } | Remove-Item -Force
+    Get-ChildItem (Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE\OriCoop-coop') -File | Where-Object { $_.Name -like 'saveFile*' } | Remove-Item -Force
     'GUEST NEW GAME: appdata2 has no saves; the guest starts from an empty slot'
 }
 

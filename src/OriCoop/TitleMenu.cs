@@ -107,6 +107,8 @@ namespace OriCoop
                 if (screen == TitleScreenManager.Screen.MainMenu || screen == TitleScreenManager.Screen.PressStart)
                 {
                     if (TitleChoice != TitleNone) Plugin.Log.LogInfo("title menu: choice cleared (back on the " + screen + " screen)");
+                    if (NetPlay.Enabled) Saves.CoopSaveFolder.Enter();
+                    else Saves.CoopSaveFolder.Leave();
                     TitleChoice = TitleNone; TitleTransport = "";
                     if (s_guestPickSlot) { s_guestPickSlot = false; s_guestStarted = false; }
                 }
@@ -235,13 +237,14 @@ namespace OriCoop
             {
                 if (index == 0)
                 {
+                    if (!NetPlay.Enabled) Saves.CoopSaveFolder.Leave();
                     TitleChoice = TitleLocal; TitleTransport = "";
                     Plugin.Log.LogInfo("title menu: Co-op -> local, to the save slots");
                     Destroy();
                     GoToSlots();
                 }
-                else if (index == 3) GoPage(PageServerMode, 0);
-                else if (index < TitleTransports.Length) LobbyOpen(TitleTransports[index]);
+                else if (index == 3) { Saves.CoopSaveFolder.Enter(); GoPage(PageServerMode, 0); }
+                else if (index < TitleTransports.Length) { Saves.CoopSaveFolder.Enter(); LobbyOpen(TitleTransports[index]); }
                 return true;
             }
             if (s_page == PageServerMode)
@@ -668,6 +671,7 @@ namespace OriCoop
         static void OnTitleSinglePressed()
         {
             if (TitleOrbOpen) return;
+            if (!NetPlay.Enabled) Saves.CoopSaveFolder.Leave();
             TitleChoice = TitleSingle; TitleTransport = "";
             Plugin.Log.LogInfo("title menu: Single Player");
         }
@@ -716,6 +720,7 @@ namespace OriCoop
 
         static void RestoreTitleMain()
         {
+            if (!NetPlay.Enabled) Saves.CoopSaveFolder.Leave();
             if (s_tMain == null) return;
             s_tMain.SetVisible(true);
             s_tMain.IsActive = true;

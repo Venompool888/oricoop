@@ -416,7 +416,7 @@ namespace OriCoop
         public static void Draw()
         {
             bool sample = L10nProbe.On && !string.IsNullOrEmpty(s_testPage);
-            if (!NetPlay.Enabled && !sample) return;
+            if (!NetPlay.Enabled && !sample && !Saves.CoopSaveFolder.Active) return;
 
             try
             {
@@ -439,6 +439,7 @@ namespace OriCoop
                     return;
                 }
 
+                if (!NetPlay.Enabled) { DrawToast(scale); return; }
                 float hudOpacity = P2Hud.GameHudOpacity();
 
                 // Draw gameplay HUD elements only when HUD is visible
