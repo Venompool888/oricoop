@@ -6,8 +6,9 @@ namespace OriCoop.Net
     // net5 (T-168): GameController / GameWorld sync item by item (arbiter event kind 0x57); the world snapshot end marker
     // (msg 12 kind 2) carries a u32 watermark. World sync refuses to run with a PC on another version.
     // net6: SaveOffer (msg 87, guest -> host) carries a guest's save point to the room's save authority (T-043).
+    // net7: SeatSkills (msg 88) carries the per-seat skill record (T-043).
     internal static class ProtocolVersion
     {
-        public const string Mod = "0.2.0-net6";
+        public const string Mod = "0.2.0-net7";
     }
 }

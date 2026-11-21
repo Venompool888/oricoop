@@ -6,5 +6,6 @@ OriCoop\Story\ObjectCore.cs
 OriCoop\Story\GateCore.cs
 OriCoop\Story\AnimCore.cs
 OriCoop\Story\SkillSplit.cs
+OriCoop\Story\SeatSkills.cs
 OriCoop\Story\PuppetRepairGate.cs
 OriCoop\Net\ProtocolVersion.cs

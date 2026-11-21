@@ -69,7 +69,7 @@ namespace OriCoop.Saves
             if (File.Exists(target)) return false;
             try
             {
-                File.Copy(source, target, false);
+                File.WriteAllBytes(target, SeatSkillSync.ForLoad(File.ReadAllBytes(source), "single-player copy-in"));
                 // Keep the tracking ID so linked co-op copies still match.
                 string link = Path.Combine(OutputFolder.PlayerDataFolderPath, "saveFile" + singleSlot + ".oricoop");
                 if (File.Exists(link)) File.Copy(link, Path.Combine(Dir, "saveFile" + coopSlot + ".oricoop"), true);

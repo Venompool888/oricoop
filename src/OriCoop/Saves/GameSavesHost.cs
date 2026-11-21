@@ -23,7 +23,7 @@ namespace OriCoop.Saves
         public void End(string reason) { NetPlay.End(reason); }
         public void SendWorldSnapshot(int seat) { WorldSync.SendSnapshot(seat); }
         public void SendProgressSnapshot(int seat) { ProgressSync.SendSnapshot(seat); }
-        public void HoldOwnSkillTree() { ProgressSync.HoldOwnSkillTree(); }
+        public void HoldOwnSkillTree(bool joined) { ProgressSync.HoldOwnSkillTree(joined); }
         public string Translate(string key) { return L10n.T(key); }
         public string Format(string key, params object[] args) { return L10n.F(key, args); }
         public void Toast(string text, string secondary) { NetHud.Toast(text, secondary); }

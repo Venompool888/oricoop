@@ -39,6 +39,7 @@ namespace OriCoop
             s_hostSlot = slot;
             byte[] bytes = ReadSlot(slot);
             s_hostHash = Hash(bytes);
+            SeatSkillSync.SettleHostSlot(s_hostSlot, s_hostHash);
             s_hostLink = bytes == null ? null : ValidLink(slot, bytes);
             if (s_hostLink == null)
             {
@@ -66,6 +67,7 @@ namespace OriCoop
         // seat < 0: every guest (the decision, every host save). seat >= 0: only that seat, which joined after the
         // lineage was settled (T-129); the slot file and its link are the same as at the last broadcast.
         static readonly bool s_mutateNoLateCommit = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_LATE_COMMIT") == "1";
+        static bool s_checkpointCommit;   // T-043: this commit is a host save, a new checkpoint for the skill record
         static void Commit(int seat)
         {
             if (!Services.Net.IsHost || !Services.Net.Connected || s_hostLink == null) return;
@@ -74,6 +76,7 @@ namespace OriCoop
             {
                 byte[] bytes = ReadSlot(s_hostSlot);
                 string hash = Hash(bytes);
+                if (seat < 0 && s_checkpointCommit) SeatSkillSync.ForSave(s_hostSlot, hash);
                 SaveHeader h = ReadHeader(bytes);
                 if (h != null) s_hostLink.SaveId = h.Id;
                 s_hostLink.Synced = hash;
@@ -90,6 +93,7 @@ namespace OriCoop
                 };
                 if (seat < 0) Services.Net.Send(LineageWire.Commit, true, body);
                 else Services.Net.SendTo(seat, LineageWire.Commit, true, body);
+                SeatSkillSync.SendRecord(seat, hash);
                 Services.Log.Info("coop save: commit " + (bytes == null ? "(no file yet)" : bytes.Length + " bytes hash " + Short(hash))
                     + (seat < 0 ? " to " + s_hostLink.Partner : " to seat " + seat + " (joined after the lineage was settled)"));
             }
@@ -107,6 +111,7 @@ namespace OriCoop
                 s_hostSlot = SaveSlotsManager.CurrentSlotIndex;
                 byte[] bytes = ReadSlot(s_hostSlot);
                 s_hostHash = Hash(bytes);
+                SeatSkillSync.SettleHostSlot(s_hostSlot, s_hostHash);
                 s_hostSummary = bytes == null ? SavesHost.Current.Translate("saves.new_game") : Summary(bytes);
                 s_hostLink = bytes == null ? null : ValidLink(s_hostSlot, bytes);
                 if (s_hostLink == null)
@@ -208,6 +213,7 @@ namespace OriCoop
                 Backup(s_hostSlot);
                 WriteSlotFile(s_hostSlot, bytes);
                 s_hostHash = Hash(bytes);
+                SeatSkillSync.SettleHostSlot(s_hostSlot, s_hostHash);   // the partner's save has no record: seats keep their trees
                 SaveHeader h = ReadHeader(bytes);
                 s_hostLink.SaveId = h.Id;
                 Outcome = "diverged-partner";
@@ -232,7 +238,7 @@ namespace OriCoop
             {
                 CommitsReceived++;
                 string coop = commit.Coop, hostId = commit.PlayerId, hostName = PartnerName(commit.Name), saveId = commit.SaveId;
-                byte[] bytes = commit.Bytes;
+                byte[] bytes = SeatSkillSync.ForLoad(commit.Bytes, "LAN commit copy");
                 CoopId = coop;
                 s_timeline = Hash(bytes);
                 if (bytes == null || ReadHeader(bytes) == null)

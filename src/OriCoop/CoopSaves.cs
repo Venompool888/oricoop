@@ -337,7 +337,8 @@ namespace OriCoop
                 if (!Services.Net.Enabled || !Services.Net.IsHost || !Services.Net.Connected) return;
                 if (s_machine.Stage != LineageStage.Proceed && s_machine.Stage != LineageStage.Done) return;
                 if (SaveSlotsManager.CurrentSlotIndex != s_hostSlot) return;
-                Commit();
+                s_checkpointCommit = true;
+                try { Commit(); } finally { s_checkpointCommit = false; }
             }
         }
 
