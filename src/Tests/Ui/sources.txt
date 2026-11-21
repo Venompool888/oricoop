@@ -7,3 +7,4 @@ OriCoop\Ui\ControlsGuide.cs
 OriCoop\Ui\SignalLevels.cs
 OriCoop\Ui\ModeSelectLayout.cs
 OriCoop\Ui\MarkupText.cs
+OriCoop\Ui\RoomScreenModel.cs

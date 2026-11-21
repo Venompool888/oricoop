@@ -16,6 +16,11 @@ namespace OriCoop
         static float ignoreUntil;
         static Vector2 memberScroll, saveScroll;
         static string[] addresses = new string[0];
+        // T-174: the rows are read once per frame on Layout and drawn unchanged on Repaint / input events.
+        static readonly Ui.LayoutSnapshot<Ui.RoomScreenModel> frame = new Ui.LayoutSnapshot<Ui.RoomScreenModel>();
+        static readonly Func<Ui.RoomScreenModel> s_buildModel = BuildModel;
+        static readonly Func<int, int> s_seatOwner = NetPlay.SeatOwner;
+        static readonly Func<int, bool> s_isLocal = Players.IsLocal;
         public static bool Visible { get; private set; }
         public static bool Confirmed { get; private set; }
         internal static int DrawnSeatMask;
@@ -25,7 +30,7 @@ namespace OriCoop
         public static void Reset()
         {
             bool wasVisible = Visible;
-            Visible = Confirmed = false; proceed = null; buttons.Clear(); drawn.Clear();
+            Visible = Confirmed = false; proceed = null; buttons.Clear(); drawn.Clear(); frame.Clear();
             if (wasVisible || NativeModeMenu.OverlayUnlockMutated) NativeModeMenu.RoomPanelVisible(false);
         }
         public static bool BeforeProceed(Action next)
@@ -37,7 +42,7 @@ namespace OriCoop
         {
             if (Visible) return;
             proceed = next; Visible = true; focus = 0; ignoreUntil = Time.unscaledTime + 0.3f;
-            drawn.Clear(); buttons.Clear();
+            drawn.Clear(); buttons.Clear(); frame.Clear();
             addresses = NetPlay.IsHost && NetPlay.TransportName == "direct" ? NetPlay.LocalAddresses() : new string[0];
             NativeModeMenu.RoomPanelVisible(true);
         }
@@ -98,11 +103,32 @@ namespace OriCoop
             if (Core.Input.MenuUp.OnPressed || Input.GetKeyDown(KeyCode.UpArrow)) focus = (focus + buttons.Count - 1) % buttons.Count;
             if (Core.Input.ActionButtonA.OnPressed || Input.GetKeyDown(KeyCode.Return)) buttons[Mathf.Clamp(focus, 0, buttons.Count - 1)]();
         }
+        // Everything that decides how many controls the page has. Only text (labels, input names) is read live.
+        static Ui.RoomScreenModel BuildModel()
+        {
+            Ui.RoomScreenModel m = new Ui.RoomScreenModel();
+            m.IsHost = NetPlay.IsHost;
+            m.RoomCode = NetPlay.RoomCode ?? "";
+            m.Addresses = addresses;
+            m.ShowInvite = NetPlay.IsHost && NetPlay.UsesSteam;
+            if (m.IsHost)
+                for (int slot = 0; slot < SaveSlotsManager.SaveSlotCount; slot++)
+                {
+                    if (slot != SaveSlotsManager.CurrentSlotIndex && !System.IO.File.Exists(Rooms.RoomGame.PathFor(slot))) continue;
+                    m.Saves.Add(new Ui.RoomSaveRow { Slot = slot, Current = slot == SaveSlotsManager.CurrentSlotIndex, Summary = Rooms.RoomGame.Summary(slot) });
+                }
+            Ui.RoomScreenRows.Members(m.Members, s_seatOwner, NetPlay.MultiSeatSupported, Players.LocalSeat, NetPlay.RemoteSeats, s_isLocal);
+            m.AddEnabled = NetPlay.CanAddLocal;
+            m.ServerNote = !NetPlay.MultiSeatSupported;
+            return m;
+        }
         public static void Draw()
         {
             if (!Visible) return;
             if (!NetPlay.Enabled) { Reset(); return; }
             NativeModeMenu.RoomPanelVisible(true);
+            Ui.RoomScreenModel model = frame.Get(Event.current.type == EventType.Layout, s_buildModel);
+            if (model == null) return;      // opened after this frame's Layout: draw from the next frame on
             NativeGui.BeginPage("online.room");
             try
             {
@@ -117,55 +143,48 @@ namespace OriCoop
                 GUILayout.BeginVertical(GUILayout.Width(area.width * 0.48f));
                 Label("room.saves", L10n.T("room.saves"));
                 saveScroll = GUILayout.BeginScrollView(saveScroll, GUILayout.Height(Mathf.Max(60, area.height - 145)));
-                if (NetPlay.RoomCode.Length > 0) Label("room.code", L10n.T("lobby.room.code") + ": " + NetPlay.RoomCode);
-                foreach (string address in addresses) Label("room.address." + address, L10n.T("lobby.your_address") + ": " + address + ":" + NetPlay.ConfigPort);
-                if (NetPlay.IsHost && NetPlay.UsesSteam) Button("room.invite", L10n.T("room.invite"), NetPlay.OpenSteamInvite);
-                if (NetPlay.IsHost)
+                if (model.RoomCode.Length > 0) Label("room.code", L10n.T("lobby.room.code") + ": " + model.RoomCode);
+                foreach (string address in model.Addresses) Label("room.address." + address, L10n.T("lobby.your_address") + ": " + address + ":" + NetPlay.ConfigPort);
+                if (model.ShowInvite) Button("room.invite", L10n.T("room.invite"), NetPlay.OpenSteamInvite);
+                if (model.IsHost)
                 {
-                    for (int slot = 0; slot < SaveSlotsManager.SaveSlotCount; slot++)
+                    foreach (Ui.RoomSaveRow row in model.Saves)
                     {
-                        if (slot != SaveSlotsManager.CurrentSlotIndex && !System.IO.File.Exists(Rooms.RoomGame.PathFor(slot))) continue;
-                        int selected = slot;
+                        int selected = row.Slot;
                         bool saveEnabled = GUI.enabled;
                         GUI.enabled = saveEnabled && NativeModeMenu.CanSelectRoomSave;
-                        Button("room.save." + slot, (slot == SaveSlotsManager.CurrentSlotIndex ? "* " : "") + L10n.F("rooms.slot_summary", slot + 1, Rooms.RoomGame.Summary(slot)),
+                        Button("room.save." + row.Slot, (row.Current ? "* " : "") + L10n.F("rooms.slot_summary", row.Slot + 1, row.Summary),
                             delegate { NativeModeMenu.SelectRoomSave(selected); });
                         GUI.enabled = saveEnabled;
                     }
                 }
                 else Label("room.hostsave", L10n.T("room.host_save"));
                 GUILayout.EndScrollView();
-                Button("room.continue", L10n.T(NetPlay.IsHost ? "lobby.start" : "rooms.continue"), Continue);
+                Button("room.continue", L10n.T(model.IsHost ? "lobby.start" : "rooms.continue"), Continue);
                 GUILayout.EndVertical();
                 GUILayout.BeginVertical();
                 Label("room.members", L10n.T("room.members"));
                 memberScroll = GUILayout.BeginScrollView(memberScroll, GUILayout.Height(Mathf.Max(60, area.height - 145)));
-                DrawnSeatMask = 0;
-                for (int seat = 1; seat <= 4; seat++)
+                DrawnSeatMask = model.SeatMask;
+                foreach (Ui.RoomMemberRow row in model.Members)
                 {
-                    int owner = NetPlay.SeatOwner(seat);
-                    if (owner == 0 && NetPlay.MultiSeatSupported) continue;
-                    if (owner == 0 && seat != Players.LocalSeat && Array.IndexOf(NetPlay.RemoteSeats, seat) < 0) continue;
-                    if (owner == 0) owner = seat;
-                    DrawnSeatMask |= 1 << seat;
-                    bool local = Players.IsLocal(seat);
+                    int seat = row.Seat;
                     Color old = GUI.contentColor; GUI.contentColor = Roles.ColorOf(seat);
-                    Label("room.member." + seat, L10n.F("room.member", seat, owner, L10n.T(local ? "room.local" : "room.remote")));
+                    Label("room.member." + seat, L10n.F("room.member", seat, row.Owner, L10n.T(row.Local ? "room.local" : "room.remote")));
                     GUI.contentColor = old;
-                    if (!local) continue;
+                    if (!row.Local) continue;
                     GUILayout.BeginHorizontal();
-                    int localSeat = seat;
-                    Button("room.input." + seat, InputText(seat), delegate { NextInput(localSeat); });
-                    if (seat != Players.LocalSeat) Button("room.remove." + seat, L10n.F("coop.remove_local", seat), delegate { seats.RemoveLocalPlayer(localSeat); });
+                    Button("room.input." + seat, InputText(seat), delegate { NextInput(seat); });
+                    if (row.Removable) Button("room.remove." + seat, L10n.F("coop.remove_local", seat), delegate { seats.RemoveLocalPlayer(seat); });
                     GUILayout.EndHorizontal();
                 }
                 GUILayout.EndScrollView();
                 bool enabled = GUI.enabled;
-                DrawnAddEnabled = NetPlay.CanAddLocal;
+                DrawnAddEnabled = model.AddEnabled;
                 GUI.enabled = enabled && DrawnAddEnabled;
                 Button("room.add", L10n.T("room.add_local"), delegate { Add(); });
                 GUI.enabled = enabled;
-                if (!NetPlay.MultiSeatSupported) Label("room.server_note", L10n.T("room.server_pending"));
+                if (model.ServerNote) Label("room.server_note", L10n.T("room.server_pending"));
                 GUILayout.EndVertical(); GUILayout.EndHorizontal();
                 Button("room.leave", L10n.T("common.cancel"), delegate { Reset(); NetPlay.End("left room"); });
                 GUILayout.EndArea();

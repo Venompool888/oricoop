@@ -69,7 +69,7 @@ $TS_FileSuites = [ordered]@{
     # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
     'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
-    'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
+    'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
     'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local'); 'EscapeProbe' = @('local')   # T-169 run-test.ps1 -Scenarios escapeprobe
