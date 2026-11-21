@@ -73,6 +73,10 @@ $Mutations = @(
     @{ Name = 'MUTATE_WOBJ_KEEP_FIRED (R3)'; Env = @{ ORICOOP_MUTATE_WOBJ_KEEP_FIRED = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R3 the reload forgets one-shot' }   # T-144
     @{ Name = 'MUTATE_NO_SAVEOFFER (R save)'; Env = @{ ORICOOP_MUTATE_NO_SAVEOFFER = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R save' }   # T-043
     @{ Name = 'MUTATE_NO_SEAT_SKILLS (R)'; Env = @{ ORICOOP_MUTATE_NO_SEAT_SKILLS = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R skills|4P skills' }   # T-043
+    @{ Name = 'MUTATE_NO_DEATH_SAVE (R5)'; Env = @{ ORICOOP_MUTATE_NO_DEATH_SAVE = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R5 host: soul link with the guest down costs half' }   # T-041
+    @{ Name = 'MUTATE_SELF_REVIVE_IN_PLACE (R5)'; Env = @{ ORICOOP_MUTATE_SELF_REVIVE_IN_PLACE = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R5 guest: (back at the soul link|health equals)' }   # T-041
+    @{ Name = 'MUTATE_LINK_HOST_ONLY (R5b)'; Env = @{ ORICOOP_MUTATE_LINK_HOST_ONLY = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R5b host: the guest''s offered save point' }   # T-041
+    @{ Name = 'MUTATE_LINK_HOST_ONLY (4P)'; Env = @{ ORICOOP_MUTATE_LINK_HOST_ONLY = '1' }; Script = @('run-nettest.ps1', '-Clients', '4'); Expect = '^4P P\d learns that P4''s offered save point' }   # T-041
     @{ Name = 'MUTATE_NO_SEAT_SKILLS (4P)'; Env = @{ ORICOOP_MUTATE_NO_SEAT_SKILLS = '1' }; Script = @('run-nettest.ps1', '-Clients', '4'); Expect = '^R skills|4P skills' }   # T-043
     @{ Name = 'MUTATE_WORLD_NO_REBROADCAST (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_NO_REBROADCAST = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d has guest P2''s world event change' }   # T-141
     @{ Name = 'MUTATE_WORLD_WHOLE_BLOB (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_WHOLE_BLOB = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d keeps every seat''s same-RTT world event' }   # T-168

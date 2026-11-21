@@ -39,6 +39,9 @@ namespace OriCoop
         public static int GuestSavesOffered, HostSavesAdopted, OffersRejected;
         public static string LastOfferVerdict = "";
         static bool s_adoptingOffer;
+        // T-041: while the host adopts a guest's save offer, the offering device's seat (0 otherwise): the room's
+        // latest save point is that guest's (Revive.SoulLink).
+        public static int AdoptingOfferSeat { get; private set; }
         static readonly bool s_mutateNoSaveOffer = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_SAVEOFFER") == "1";
 
         public static void Init()
@@ -345,7 +348,7 @@ namespace OriCoop
             try
             {
                 SaveGameController save = GameController.Instance.SaveGameController;
-                s_adoptingOffer = true;
+                s_adoptingOffer = true; AdoptingOfferSeat = seat;
                 try
                 {
                     SaveSlotBackupsManager.CreateCurrentBackup();   // time travel: the room's previous save stays a backup
@@ -353,7 +356,7 @@ namespace OriCoop
                     SeatSkillSync.Capture("seat " + seat + "'s save");   // the guest reported its tree before offering
                     save.PerformSave();   // writes the room slot; CoopSaves commits it to every seat, RoomGame uploads it
                 }
-                finally { s_adoptingOffer = false; }
+                finally { s_adoptingOffer = false; AdoptingOfferSeat = 0; }
                 HostSavesAdopted++;
                 Services.Log.Info("net: seat " + seat + " is the saver; its save is the room's checkpoint now (room "
                     + Short(CoopSaves.Timeline) + ")");

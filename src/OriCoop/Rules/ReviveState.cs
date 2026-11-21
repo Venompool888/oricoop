@@ -10,6 +10,8 @@ namespace OriCoop.Rules
         public int Rescuer;
         public float ProgressSendAt;
         public float RespawnLeft = 30f;
+        // T-041: the health of the soul link made while this player was down (0 = none) and the hold-Y timer.
+        public float LinkHealth, SelfHold;
     }
 
     public sealed class DownedRoster<T> where T : DownedState

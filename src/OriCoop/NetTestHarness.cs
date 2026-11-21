@@ -469,6 +469,53 @@ namespace OriCoop
             ThreePacket p4 = Three(412, 4), baseline = Three(410, 4);
             h.Check(p4.Glows == baseline.Glows + 1 && p4.GlowEffects == baseline.GlowEffects + 1 && p4.RevivedMessages == baseline.RevivedMessages + 1,
                 "4P P4 plays P2 revive glow once from MsgRevived");
+            yield return FourSoulLinkRevive(h);
+        }
+
+        // T-041 (#15): P2 goes down again; P4 (a guest) makes a soul link while P2 is down (death save), which the host
+        // adopts as the room's save. Everyone learns P4's link is the latest; P2 holds Y and comes back alone at it with
+        // P4's health after saving. Nobody reloads, nobody else is touched.
+        static IEnumerator FourSoulLinkRevive(TestHarness h)
+        {
+            yield return ThreeRound(h, 414, 4);
+            int links0 = Revive.LinksNoted;
+            if (Players.LocalSeat == 2) FourKill();
+            yield return FourAwait(h, delegate { return Revive.DownedAtSeat(2) != null; }, 8f, "P2 down again");
+            yield return ThreeRound(h, 415, 4);
+            if (Players.LocalSeat == 4)
+            {
+                int saves0 = Revive.DeathSaves;
+                Own.Mortality.Health.RestoreAllHealth(); Own.Energy.Gain(Own.Energy.Max);
+                float before = Own.Mortality.Health.Amount;
+                typeof(SeinSoulFlame).GetMethod("CastSoulFlame", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic).Invoke(Own.SoulFlame, null);
+                float after = Own.Mortality.Health.Amount;
+                h.Check(Revive.DeathSaves == saves0 + 1 && after < before - 0.5f,
+                    "4P P4: soul link with P2 down costs half its health (" + before.ToString("F2") + " -> " + after.ToString("F2") + ")");
+            }
+            yield return FourAwait(h, delegate { return Revive.LinkSeat == 4 && Revive.LinksNoted > links0; }, 10f, "P4's soul link is the latest");
+            Vector3 p4 = Players.LocalSeat == 4 ? Own.Position : PuppetAt(4) != null ? PuppetAt(4).Sein.Position : Vector3.zero;
+            h.Check(Revive.LinkSeat == 4 && Vector3.Distance(Revive.LinkPosition, p4) < 1.5f,
+                "4P P" + Players.LocalSeat + " learns that P4's offered save point is the latest soul link (seat " + Revive.LinkSeat
+                + ", d=" + Vector3.Distance(Revive.LinkPosition, p4).ToString("F2") + ")");
+            if (Players.LocalSeat == 2)
+            {
+                Revive.Downed d = Revive.DownedAtSeat(2);
+                float linkHealth = d != null ? d.LinkHealth : -1f;
+                h.Check(linkHealth > 0f && linkHealth < Own.Mortality.Health.MaxHealth, "4P P2: P4's link counts for this down (" + linkHealth.ToString("F2") + ")");
+                Revive.TestHoldSelf = true;
+                float end = Time.realtimeSinceStartup + 6f;
+                while (Revive.DownedAtSeat(2) != null && Time.realtimeSinceStartup < end) yield return null;   // no HoldFour: it would pin P2
+                Revive.TestHoldSelf = false;
+                float atLink = Vector3.Distance(Own.Position, Revive.LinkPosition);
+                h.Check(Revive.DownedAtSeat(2) == null && atLink < 1.5f && Mathf.Abs(Own.Mortality.Health.Amount - linkHealth) < 0.01f,
+                    "4P P2: holding Y revives alone at P4's link with P4's health (d=" + atLink.ToString("F2") + ", health "
+                    + Own.Mortality.Health.Amount.ToString("F2") + " vs " + linkHealth.ToString("F2") + ")");
+            }
+            yield return FourAwait(h, delegate { return Revive.DownedAtSeat(2) == null && !FourSkull(2); }, 8f, "P2 back at the link everywhere");
+            yield return ThreeRound(h, 416, 4);
+            h.Check(Three(416, 2).Alive && AllFour(416, p => (p.DownMask & 4) == 0 && (p.Skulls & 4) == 0
+                && p.Restores == Three(414, p.Seat).Restores && p.Wipes == Three(414, p.Seat).Wipes),
+                "4P P2's soul link revive clears its skull on all four with no reload or wipe anywhere");
         }
         static IEnumerator FourPause(TestHarness h)
         {
