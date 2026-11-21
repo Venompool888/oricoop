@@ -1,0 +1,2 @@
+OriCoop\Rules\ReviveState.cs
+OriCoop\Rules\EscapeRules.cs

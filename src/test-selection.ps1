@@ -22,7 +22,7 @@ $TS_Suites = [ordered]@{
 $TS_AllSuites = @($TS_Suites.Keys)
 # The 2-player net suites: they run NetTestHarness's phase list and take ORICOOP_PHASES.
 $TS_PhasedSuites = @('net', 'net-newgame')
-$TS_AllPhases = @('INTRO', 'MOVE', 'W', 'E3', 'E5', 'R', 'S4', 'P', 'WO', 'CAM', 'CUT')
+$TS_AllPhases = @('INTRO', 'MOVE', 'W', 'E3', 'E5', 'R', 'S4', 'P', 'WO', 'CAM', 'CUT', 'ESC')
 # Before a merge (not -All / nightly), these 2-player suites run only the phases of their own risk, whatever the change
 # selected (T-096): they repeat the direct 'net' suite over another join path (guest new game), which is decided during
 # the start and W. Everything else in the suite tested the same code as 'net' again. The 'net' suite keeps every selected
@@ -57,6 +57,7 @@ $TS_ModuleSuites = @{
 $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
+    'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
     'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin')
     # T-165: the co-op save lineage (phase L) runs after every net suite: the late guest's commit and the promoted host's
     # save only with 3-4 players, and SaveSync's reload in the 4P wipe. These save files (M7) select every multi-seat suite,
@@ -71,7 +72,7 @@ $TS_FileSuites = [ordered]@{
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
     'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
-    'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local')
+    'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local'); 'EscapeProbe' = @('local')   # T-169 run-test.ps1 -Scenarios escapeprobe
 }
 
 function Get-TSModuleMap {
@@ -88,7 +89,7 @@ function Get-TSModuleMap {
         $files = [regex]::Replace($files, '\s*\([^)]*\)', '')
         foreach ($f in $files -split ',') {
             $name = ($f.Trim() -replace '`', '' -replace '\.cs$', '')
-            if ($name -match '^[A-Za-z][\w\\]*$') { $map[(Split-Path -Leaf $name)] = $module }
+            if ($name -match '^[A-Za-z][\w\\.]*$') { $map[(Split-Path -Leaf $name)] = $module }   # dotted partial-class files too (Revive.SoulLink, Revive.Escape)
         }
     }
     $map
@@ -177,7 +178,7 @@ function Get-SuitePhaseEnv([string]$suite, $selection, [switch]$All) {
 # outside a phase (start-up, closing, an unknown name): then the whole suite is rerun }.
 function Get-CheckPhase([string]$check) {
     $w = ($check.Trim() -split '\s+')[0]
-    if ($w -match '^(INTRO|CAM|CUT|WO|E3|E5|S4)') { return $Matches[1] }
+    if ($w -match '^(INTRO|CAM|CUT|WO|ESC|E3|E5|S4)') { return $Matches[1] }
     if ($w -eq 'W' -or $w -match '^W\d') { return 'W' }
     if ($w -match '^R\d*$') { return 'R' }
     if ($w -match '^(Kuro|KURO)$') { return 'CUT' }
