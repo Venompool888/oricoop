@@ -14,6 +14,8 @@ namespace OriCoop
     //   62 Revived   owner -> saver     "I'm back" (clears the skull there too)     reliable
     //   63 BothDown  host  -> guest     "we're both down: reload"                   reliable
     //   64 Progress  saver -> others    downed seat, rescuer seat, progress 0..1     unreliable
+    //   69 RoomLink  host  -> all       the room's latest save point + saver health  reliable (T-041, Revive.SoulLink.cs)
+    //                guest -> host      where the save point it is offering is       reliable (just before its SaveOffer)
     //   91 DownedState owner -> all     each local seat: down (skull x,y,z) or up    reliable (T-166, SendDownedState)
     // Both down is decided by the host only, so simultaneous deaths can't trigger two different reloads. The host
     // runs the normal death/checkpoint reload; the guest runs its own normal death too, and SaveSync brings its
@@ -99,13 +101,18 @@ namespace OriCoop
                 ResetSpectate();
                 s_seenRemote = 0;   // back online: tell everyone our seats' state again (T-166)
                 if (AnyDowned && Services.Net.Enabled && !Services.Net.Connected) ClearAll("partner disconnected", Host.P1 != null);
+                HideStaleSelfHints();
                 return;
             }
             RegisterNet(); Subscribe();
             TrackSafeGround();
             int seen = 0;
             foreach (int seat in PresentSeats) if (!Players.IsLocal(seat)) seen |= 1 << seat;
-            if ((seen & ~s_seenRemote) != 0) SendDownedState();
+            if ((seen & ~s_seenRemote) != 0)
+            {
+                SendDownedState();
+                if (Services.Net.IsHost) SendRoomLink();   // T-041: a PC that joined or reloaded learns the latest soul link
+            }
             s_seenRemote = seen;
             foreach (int localSeat in Players.LocalSeats)
             {
@@ -114,19 +121,11 @@ namespace OriCoop
                 if (own.Sein == Host.P1) KeepPinned(own);
                 Step(own);
                 if (s_down[localSeat] != own) continue;
-                if (Host.PuppetCount > 1 && !GameController.Instance.GameplaySuspended && !SessionRules.LocalPaused && !SessionRules.PausedByPartner)
-                {
-                    SeinCharacter teammate = ReviveLogic.RespawnDue(own, Time.deltaTime) ? NearestLiving(own.Marker, own.Sein) : null;
-                    if (teammate != null)
-                    {
-                        s_down[own.Player] = null;
-                        RestoreDowned(own, true, teammate, own.Sein.Mortality.Health.MaxHealth);
-                        PartnerFx.PlayRevive(own.Sein, own.Sein.Position);
-                        SendRevived(own.Player, own.Sein.Position);
-                        Services.Log.Info("online: P" + own.Player + " respawned beside P" + PlayerOf(teammate));
-                    }
-                }
+                // T-041: hold Y at the latest soul link. The 3-4 player 30 s respawn beside a teammate is gone (#15:
+                // a timed comeback belongs to escape levels only, which the escape ticket handles).
+                TickSelf(own);
             }
+            HideStaleSelfHints();
             foreach (int seat in PresentSeats)
             {
                 Downed d = s_down[seat];

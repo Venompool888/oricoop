@@ -7,8 +7,9 @@ namespace OriCoop.Net
     // (msg 12 kind 2) carries a u32 watermark. World sync refuses to run with a PC on another version.
     // net6: SaveOffer (msg 87, guest -> host) carries a guest's save point to the room's save authority (T-043).
     // net7: SeatSkills (msg 88) carries the per-seat skill record (T-043).
+    // net8: RoomLink (msg 69) carries the room's latest save point and the saver's health (T-041).
     internal static class ProtocolVersion
     {
-        public const string Mod = "0.2.0-net7";
+        public const string Mod = "0.2.0-net8";
     }
 }

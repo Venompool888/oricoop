@@ -161,7 +161,7 @@ namespace OriCoop
             Seams.GameServices.Install();
             NativeGui.PageChanged = L10nProbe.Where;   // test-side hooks wired here so production code never reads test flags
             NativeModeMenu.SuppressAutomaticMenu = delegate { return TestHarness.Enabled; };
-            SaveSync.Init(); WorldSync.Init(); ProgressSync.Init(); Saves.SeatSkillSync.Init(); EnemySync.Init();
+            SaveSync.Init(); Revive.Init(); WorldSync.Init(); ProgressSync.Init(); Saves.SeatSkillSync.Init(); EnemySync.Init();
             NetPlay.DevicePrimaryChanged += SaveSync.RebindDevice;
             SessionRules.Init(); NetHud.Init(); OriCoop.Authority.CServerLink.Install();
             P2Context.PatchProximityTypes(H);

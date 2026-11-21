@@ -19,6 +19,8 @@ namespace OriCoop
     //   progress are kept; press again to continue).
     // - The revived Ori appears next to the saver, briefly invincible.
     // - If both are down, the game's normal death runs once (checkpoint reload; game over on One Life) and both come back.
+    // - T-041: a downed Ori can also hold Y / Q for 2 s to come back alone at the latest soul link, and a soul link made
+    //   while someone is down costs half the creator's health (Revive.SoulLink.cs).
     // Online mode: same rules over the network, see ReviveNet.cs (each PC decides only for its own Ori).
     public static partial class Revive
     {
@@ -271,11 +273,13 @@ namespace OriCoop
         // ---- every frame (local co-op only) ---------------------------------------------------------------------
         public static void Tick()
         {
-            if (!Local) { if (AnyDowned) ClearAll("left local co-op", Host.P1 != null); return; }
+            if (!Local) { if (AnyDowned) ClearAll("left local co-op", Host.P1 != null); HideStaleSelfHints(); return; }
             Subscribe();
             TrackSafeGround();
             if (s_down[Host.LocalSeat] != null) KeepPinned(s_down[Host.LocalSeat]);
             foreach (int seat in PresentSeats) Step(s_down[seat]);
+            foreach (int seat in PresentSeats) TickSelf(s_down[seat]);   // T-041: hold Y at the latest soul link
+            HideStaleSelfHints();
         }
 
         static void TrackSafeGround()
@@ -384,6 +388,7 @@ namespace OriCoop
 
         static void OnPostRestore()
         {
+            NoteRestoredLink();
             if (!AnyDowned) return;
             Downed[] down = (Downed[])s_down.Clone();
             Array.Clear(s_down, 0, s_down.Length);

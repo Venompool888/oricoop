@@ -47,9 +47,13 @@ namespace OriCoop
             if (Own == null || Puppet == null) { h.Check(false, "R4 needs both Oris"); yield break; }
             if (!host)
             {
-                typeof(SeinSoulFlame).GetMethod("CastSoulFlame", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(Own.SoulFlame, null);
+                int saves0 = Revive.DeathSaves; float hp0 = Own.Mortality.Health.Amount;
+                CastSoulLink(Own);
                 SoulFlame mine = FlameOf(Own);
                 h.Check(mine != null && mine != before && Vector3.Distance(mine.Position, Own.Position) < 0.5f, "R4 guest: soul link cast at own position");
+                // T-041: with nobody down a soul link saves as it always did.
+                h.Check(Revive.DeathSaves == saves0 && Mathf.Abs(Own.Mortality.Health.Amount - hp0) < 0.01f,
+                    "R4 guest: nobody down, so the soul link costs no health (" + F(hp0) + " -> " + F(Own.Mortality.Health.Amount) + ")");
             }
             else
             {
@@ -61,6 +65,177 @@ namespace OriCoop
                     "R4 host: the guest's soul link flame appears on this screen beside the guest (" + (appeared ? F(d) : "none") + ")");
             }
             yield return Barrier(h, 12);
+        }
+
+        static void CastSoulLink(SeinCharacter s)
+        {
+            typeof(SeinSoulFlame).GetMethod("CastSoulFlame", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(s.SoulFlame, null);
+        }
+
+        static float Parse(string text) { float v; return float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out v) ? v : -1f; }
+        static string Send(float v) { return v.ToString("R", System.Globalization.CultureInfo.InvariantCulture); }
+
+        // Hold Y (test hook) until this PC's downed Ori is back, or `seconds` (game) pass.
+        static IEnumerator HoldSelfUntilUp(float seconds)
+        {
+            Revive.TestHoldSelf = true;
+            TestClock.Window hold = new TestClock.Window(seconds);
+            while (Revive.DownedOf(1) != null && hold.Open) yield return null;
+            Revive.TestHoldSelf = false;
+        }
+
+        // T-041 (#15) rules 2 and 3 on T-043 room saves.
+        //   R5  the guest is down; the host makes a soul link (death save: half its health). The room's latest link is
+        //       the host's; the guest holds Y: still down after 1 s, back after 2 s, alone at the link with the host's
+        //       health after saving. Nobody's world reloads.
+        //   R5b the host is down; the guest makes a soul link (its own death save), offered to the room (SaveOffer).
+        //       The host adopts it, so the latest link is the guest's; the host holds Y and comes back there.
+        //   R5c the host goes down again: the latest link is older than this down, so holding Y gives full health.
+        static IEnumerator DeathRules(TestHarness h, bool host)
+        {
+            Own.Mortality.Health.RestoreAllHealth();
+            Own.Energy.Gain(Own.Energy.Max);
+            yield return Wait(1.2f);
+            yield return Barrier(h, 13);
+            int restores0 = TestHarness.RestoreCheckpointCalls;
+            int links0 = Revive.LinksNoted, self0 = Revive.SelfRevives, saves0 = Revive.DeathSaves, sent0 = Revive.RoomLinksSent;
+            if (!host)
+            {
+                Hurt(Own, 1000f);
+                yield return Wait(0.6f);
+                h.Check(Revive.DownedOf(1) != null, "R5 guest: own Ori downed");
+            }
+            yield return Barrier(h, 14);
+            float hostAfter = -1f;
+            if (host)
+            {
+                float end = Time.realtimeSinceStartup + 5f;
+                while (Revive.DownedOf(2) == null && Time.realtimeSinceStartup < end) yield return null;
+                float before = Own.Mortality.Health.Amount;
+                CastSoulLink(Own);
+                hostAfter = Own.Mortality.Health.Amount;
+                float expected = Mathf.Max(before / 2f, Mathf.Min(before, 4f));
+                h.Check(Revive.DeathSaves == saves0 + 1 && Mathf.Abs(hostAfter - expected) < 0.01f,
+                    "R5 host: soul link with the guest down costs half its health (" + F(before) + " -> " + F(hostAfter) + ", expected " + F(expected) + ")");
+                h.Check(Revive.HaveLink && Revive.LinkSeat == 1 && Vector3.Distance(Revive.LinkPosition, Own.Position) < 1f && Revive.RoomLinksSent > sent0,
+                    "R5 host: its soul link is the room's latest link and was announced (seat " + Revive.LinkSeat + ", d="
+                    + F(Vector3.Distance(Revive.LinkPosition, Own.Position)) + ", sent " + sent0 + " -> " + Revive.RoomLinksSent + ")");
+            }
+            yield return Barrier(h, 15, host ? Send(hostAfter) : "");
+            if (!host)
+            {
+                float creator = s_partnerSteps.ContainsKey(15) ? Parse(s_partnerSteps[15].Fingerprint) : -1f;
+                float end = Time.realtimeSinceStartup + 5f;
+                while (Revive.LinksNoted == links0 && Time.realtimeSinceStartup < end) yield return null;
+                Revive.Downed d = Revive.DownedOf(1);
+                h.Check(Revive.LinksNoted > links0 && Revive.LinkSeat == 1 && Vector3.Distance(Revive.LinkPosition, Puppet.Position) < 1.5f,
+                    "R5 guest: told that the host's soul link is the latest (seat " + Revive.LinkSeat + ", d=" + F(Vector3.Distance(Revive.LinkPosition, Puppet.Position)) + ")");
+                h.Check(d != null && Mathf.Abs(d.LinkHealth - creator) < 0.01f,
+                    "R5 guest: the link counts for this down with the host's health after saving (" + (d != null ? F(d.LinkHealth) : "-") + " vs " + F(creator) + ")");
+                h.Check(Revive.LastSelfHint != null && Revive.LastSelfHint.Contains("<icon>"), "R5 guest: hold-Y hint uses the game's button icon (" + Revive.LastSelfHint + ")");
+                // T-169 hook: while an escape suppresses the give-up, holding Y does nothing.
+                int suppressed0 = Revive.GiveUpsSuppressedFrames;
+                System.Func<bool> hook = Revive.GiveUpSuppressed;
+                Revive.GiveUpSuppressed = delegate { return true; };
+                Revive.TestHoldSelf = true;
+                yield return Wait(2.5f);
+                Revive.TestHoldSelf = false;
+                Revive.GiveUpSuppressed = hook;
+                h.Check(Revive.DownedOf(1) != null && Revive.SelfRevives == self0 && Revive.GiveUpsSuppressedFrames > suppressed0,
+                    "R5 guest: holding Y 2.5 s while GiveUpSuppressed returns true does not revive (frames " + (Revive.GiveUpsSuppressedFrames - suppressed0) + ")");
+                Revive.TestHoldSelf = true;
+                yield return Wait(1f);
+                h.Check(Revive.DownedOf(1) != null, "R5 guest: still down after holding Y for 1 s");
+                yield return HoldSelfUntilUp(3f);
+                h.Check(Revive.SelfRevives == self0 + 1 && Revive.DownedOf(1) == null, "R5 guest: holding Y revives at the latest soul link");
+                float atLink = Vector3.Distance(Own.Position, Revive.LinkPosition);
+                h.Check(atLink < 1.5f, "R5 guest: back at the soul link, not at its skull (d=" + F(atLink) + ")");
+                h.Check(Mathf.Abs(Own.Mortality.Health.Amount - creator) < 0.01f, "R5 guest: health equals the host's after saving ("
+                    + F(Own.Mortality.Health.Amount) + " vs " + F(creator) + ")");
+            }
+            yield return Barrier(h, 16);
+            yield return Wait(0.5f);
+            if (host)
+            {
+                h.Check(Revive.DownedOf(2) == null && !ReviveHud.SkullShown(2), "R5 host: the guest's skull is gone after it revived at the link");
+                h.Check(Vector3.Distance(Puppet.Position, Revive.LinkPosition) < 2f, "R5 host: the guest's Ori is shown at the link (d="
+                    + F(Vector3.Distance(Puppet.Position, Revive.LinkPosition)) + ")");
+            }
+            h.Check(TestHarness.RestoreCheckpointCalls == restores0, "R5 " + (host ? "host" : "guest") + ": no checkpoint reload on this PC");
+
+            // R5b: the guest's soul link (through its save offer) is the room's latest link.
+            Own.Mortality.Health.RestoreAllHealth();
+            Own.Energy.Gain(Own.Energy.Max);
+            yield return Wait(1.6f);   // the revive's invincibility runs out
+            yield return Barrier(h, 17);
+            links0 = Revive.LinksNoted; self0 = Revive.SelfRevives; saves0 = Revive.DeathSaves;
+            int adopted0 = SaveSync.HostSavesAdopted;
+            if (host)
+            {
+                Hurt(Own, 1000f);
+                yield return Wait(0.6f);
+                h.Check(Revive.DownedOf(1) != null, "R5b host: own Ori downed");
+            }
+            yield return Barrier(h, 18);
+            float guestAfter = -1f;
+            if (!host)
+            {
+                float end = Time.realtimeSinceStartup + 5f;
+                while (Revive.DownedOf(2) == null && Time.realtimeSinceStartup < end) yield return null;
+                float before = Own.Mortality.Health.Amount;
+                CastSoulLink(Own);
+                guestAfter = Own.Mortality.Health.Amount;
+                h.Check(Revive.DeathSaves == saves0 + 1 && guestAfter < before - 0.5f,
+                    "R5b guest: soul link with the host down costs half its health (" + F(before) + " -> " + F(guestAfter) + ")");
+            }
+            yield return Barrier(h, 19, host ? "" : Send(guestAfter));
+            if (host)
+            {
+                float creator = s_partnerSteps.ContainsKey(19) ? Parse(s_partnerSteps[19].Fingerprint) : -1f;
+                float end = Time.realtimeSinceStartup + 8f;
+                while (Revive.LinkSeat != 2 && Time.realtimeSinceStartup < end) yield return null;
+                Revive.Downed d = Revive.DownedOf(1);
+                h.Check(SaveSync.HostSavesAdopted > adopted0, "R5b host: adopted the guest's save offer as the room's save");
+                h.Check(Revive.LinkSeat == 2 && Vector3.Distance(Revive.LinkPosition, Puppet.Position) < 1.5f,
+                    "R5b host: the guest's offered save point is the latest soul link (seat " + Revive.LinkSeat + ", d="
+                    + F(Vector3.Distance(Revive.LinkPosition, Puppet.Position)) + ")");
+                h.Check(d != null && Mathf.Abs(d.LinkHealth - creator) < 0.01f,
+                    "R5b host: revive health is the guest's after saving (" + (d != null ? F(d.LinkHealth) : "-") + " vs " + F(creator) + ")");
+                yield return HoldSelfUntilUp(4f);
+                h.Check(Revive.SelfRevives == self0 + 1 && Revive.DownedOf(1) == null, "R5b host: holding Y revives at the guest's soul link");
+                h.Check(Vector3.Distance(Own.Position, Revive.LinkPosition) < 1.5f && Mathf.Abs(Own.Mortality.Health.Amount - creator) < 0.01f,
+                    "R5b host: back at the guest's link with its health (d=" + F(Vector3.Distance(Own.Position, Revive.LinkPosition))
+                    + ", health " + F(Own.Mortality.Health.Amount) + " vs " + F(creator) + ")");
+            }
+            yield return Barrier(h, 20);
+            yield return Wait(0.5f);
+            if (!host) h.Check(Revive.DownedOf(2) == null && !ReviveHud.SkullShown(2), "R5b guest: the host's skull is gone after it revived at the link");
+            h.Check(TestHarness.RestoreCheckpointCalls == restores0, "R5b " + (host ? "host" : "guest") + ": no checkpoint reload on this PC");
+
+            // R5c: a link made before this down gives full health.
+            Own.Mortality.Health.RestoreAllHealth();
+            yield return Wait(1.6f);
+            yield return Barrier(h, 21);
+            if (host)
+            {
+                Hurt(Own, 1000f);
+                yield return Wait(0.6f);
+                Revive.Downed d = Revive.DownedOf(1);
+                h.Check(d != null && d.LinkHealth == 0f, "R5c host: downed again; the latest link is older than this down");
+                yield return HoldSelfUntilUp(4f);
+                h.Check(Revive.DownedOf(1) == null && Mathf.Abs(Own.Mortality.Health.Amount - Own.Mortality.Health.MaxHealth) < 0.01f,
+                    "R5c host: revived at the link with full health (" + F(Own.Mortality.Health.Amount) + "/" + F(Own.Mortality.Health.MaxHealth) + ")");
+            }
+            yield return Barrier(h, 22);
+            // Later phases reload the room's save and expect full health: the host saves again with nobody down.
+            Own.Mortality.Health.RestoreAllHealth();
+            if (host)
+            {
+                GameController.Instance.CreateCheckpoint();
+                GameController.Instance.SaveGameController.PerformSave();
+            }
+            yield return Wait(0.5f);
+            yield return Barrier(h, 23);
         }
 
         // Game seconds (T-071): every wait here is for something the game times (hurt flash, invincibility, death, the
@@ -414,6 +589,7 @@ namespace OriCoop
                 checkpointTree, checkpointPoints, loads0);
             yield return Barrier(h, 10);
             yield return SoulLink(h, host);
+            yield return DeathRules(h, host);
             HoldSpiritFlame(false);
             PartnerFx.ReviveHook = null;
         }

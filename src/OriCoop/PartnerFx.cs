@@ -103,6 +103,8 @@ namespace OriCoop
             int seat = r.ReadByte();
             Vector3 at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
             SoulLinksReceived++;
+            // T-041 (#15): everyone else is told; the creator sees only the game's own "soul link made".
+            if (seat >= 1 && !Players.IsLocal(seat)) NetHud.Toast(L10n.F("revive.link_made", Roles.Tag(seat)));
             SeinCharacter s = Revive.SeinAt(seat);
             if (s == null || s == Host.P1 || s.SoulFlame == null || OwnedLocalPuppet(s)) { Log("got soul link for seat " + seat + " but no puppet"); return; }
             s.SoulFlame.DestroySoulFlame();

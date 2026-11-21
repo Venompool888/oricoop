@@ -74,6 +74,10 @@
         @{ Switch = 'ORICOOP_MUTATE_NO_SAVEOFFER';   File = 'src\OriCoop\SaveSync.cs'; Suite = 'net';       Phase = 'R' }   # T-043 a guest's save point becomes the room's save
         @{ Switch = 'ORICOOP_MUTATE_NO_SEAT_SKILLS'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net';     Phase = 'R' }   # T-043 checkpoint skill rollback
         @{ Switch = 'ORICOOP_MUTATE_NO_SEAT_SKILLS'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net-4p';  Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_NO_DEATH_SAVE';  File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net'; Phase = 'R' }   # T-041 a soul link while someone is down costs half the creator's health
+        @{ Switch = 'ORICOOP_MUTATE_SELF_REVIVE_IN_PLACE'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net'; Phase = 'R' }   # T-041 hold Y revives at the latest soul link
+        @{ Switch = 'ORICOOP_MUTATE_LINK_HOST_ONLY'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net'; Phase = 'R' }   # T-041 a guest's adopted save offer is the latest soul link
+        @{ Switch = 'ORICOOP_MUTATE_LINK_HOST_ONLY'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net-4p'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_CAM_NO_MATES';   File = 'src\OriCoop\OnlineCamera.cs';   Suite = 'net';       Phase = 'CAM' }
         @{ Switch = 'ORICOOP_MUTATE_CAM_NO_UNPARK';  File = 'src\OriCoop\CutsceneGuard.cs';  Suite = 'net';       Phase = 'CAM' }
         @{ Switch = 'ORICOOP_NET_NO_FORWARD';        File = 'src\OriCoop\NetPlay.cs';        Suite = 'net-4p';    Phase = '' }

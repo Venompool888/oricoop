@@ -7,6 +7,17 @@ namespace OriCoop.Rules
         public struct Position { public int Seat; public float X, Y, Z; }
         public struct Revive { public int Seat; public float Health; }
         public struct Progress { public int Seat, Rescuer; public float Value, Given; }
+        // T-041 msg 69 RoomLink: the room's latest save point (saver seat, position) and the saver's health right after
+        // saving. Host -> all: the room's save changed. Guest -> host: where the save point it is offering is.
+        public struct Link { public int Seat; public float X, Y, Z, Health; }
+        public const int LinkBytes = 17;
+
+        public static void WriteLink(BinaryWriter w, int seat, float x, float y, float z, float health)
+        { w.Write((byte)seat); w.Write(x); w.Write(y); w.Write(z); w.Write(health); }
+        public static Link ReadLink(BinaryReader r)
+        {
+            Link l; l.Seat = r.ReadByte(); l.X = r.ReadSingle(); l.Y = r.ReadSingle(); l.Z = r.ReadSingle(); l.Health = r.ReadSingle(); return l;
+        }
 
         public static void WritePosition(BinaryWriter w, int seat, float x, float y, float z)
         { w.Write((byte)seat); w.Write(x); w.Write(y); w.Write(z); }

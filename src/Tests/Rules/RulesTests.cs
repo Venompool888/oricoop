@@ -246,6 +246,12 @@ static class RulesTests
             Check(bytes.Length == 10 && bytes[0] == 2 && bytes[1] == 4, "progress layout");
             ReviveWire.Progress p = ReviveWire.ReadProgress(Read(bytes)); Check(p.Seat == 2 && p.Rescuer == 4, "seats"); Near(p.Value, 0.75f); Near(p.Given, 1.5f);
         });
+        Run("room link message (T-041 msg 69) round trip", delegate {
+            byte[] bytes = Write(delegate(BinaryWriter w) { ReviveWire.WriteLink(w, 3, 10.5f, -4f, 0f, 6.5f); });
+            Check(bytes.Length == ReviveWire.LinkBytes && bytes.Length == 17 && bytes[0] == 3, "room link layout (" + bytes.Length + " bytes)");
+            ReviveWire.Link l = ReviveWire.ReadLink(Read(bytes));
+            Check(l.Seat == 3, "seat"); Near(l.X, 10.5f); Near(l.Y, -4f); Near(l.Z, 0f); Near(l.Health, 6.5f);
+        });
         Run("both down has empty body", delegate { Check(Write(delegate(BinaryWriter w) { }).Length == 0, "nonempty body"); });
         Run("partner pause and resume over bus", delegate {
             Bus[] b = Network(2); MenuPresence[] m = Menus(b); Pause(b[1], true);
@@ -381,6 +387,7 @@ static class RulesTests
             Check(l.Close("gone"), "pruned owner still swallowed its resume");
         });
         SpectateTests.Run(Run);
+        SoulLinkTests.Run(Run);
         Console.WriteLine("RULES" + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
         return failed == 0 ? 0 : 1;
     }
