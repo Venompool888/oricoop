@@ -53,6 +53,51 @@ static class UiTests
     {
         L10n.LanguageCode = delegate { return s_language; };
 
+        // T-174: the room page must draw the same rows on Layout and on the Repaint after it, even when the seats
+        // change in between (the Steam lobby landing mid-frame made Repaint draw member row 1 that Layout never had).
+        Run("room page: rows built on Layout stay the same through Repaint when seats change", delegate {
+            int[] owners = new int[5];
+            Func<RoomScreenModel> build = delegate {
+                RoomScreenModel m = new RoomScreenModel();
+                RoomScreenRows.Members(m.Members, delegate(int s) { return owners[s]; }, true, 1, new int[0], delegate(int s) { return s == 1; });
+                return m;
+            };
+            LayoutSnapshot<RoomScreenModel> frame = new LayoutSnapshot<RoomScreenModel>();
+            int layoutRows = frame.Get(true, build).Members.Count;      // Layout: nobody seated yet
+            owners[1] = 1; owners[2] = 7;                               // lobby ready between Layout and Repaint
+            int repaintRows = frame.Get(false, build).Members.Count;    // Repaint of the same frame
+            Equal(0, layoutRows);
+            Equal(layoutRows, repaintRows);
+            RoomScreenModel next = frame.Get(true, build);              // next frame's Layout sees both seats
+            Equal(2, next.Members.Count);
+            Equal(6, next.SeatMask);
+            Check(object.ReferenceEquals(next, frame.Get(false, build)), "mouse / key events of a frame reuse its Layout rows");
+        });
+        Run("room page: opened after Layout draws nothing until the next Layout", delegate {
+            LayoutSnapshot<RoomScreenModel> frame = new LayoutSnapshot<RoomScreenModel>();
+            Func<RoomScreenModel> build = delegate { return new RoomScreenModel(); };
+            Check(frame.Get(false, build) == null, "no Layout yet: nothing to draw");
+            Check(frame.Get(true, build) != null, "Layout builds the rows");
+            frame.Clear();
+            Check(frame.Get(false, build) == null, "Show / Reset mid-frame: nothing to draw until Layout");
+        });
+        Run("room page: member rows keep the old seat rules", delegate {
+            List<RoomMemberRow> rows = new List<RoomMemberRow>();
+            // Multi-seat: only owned seats; local extras (not the own seat) are removable.
+            int[] owners = { 0, 1, 1, 0, 9 };
+            RoomScreenRows.Members(rows, delegate(int s) { return owners[s]; }, true, 1, new[] { 4 }, delegate(int s) { return s <= 2; });
+            Equal(3, rows.Count);
+            Check(rows[0].Seat == 1 && rows[0].Local && !rows[0].Removable, "own seat is local, not removable");
+            Check(rows[1].Seat == 2 && rows[1].Owner == 1 && rows[1].Removable, "local extra removable");
+            Check(rows[2].Seat == 4 && rows[2].Owner == 9 && !rows[2].Local && !rows[2].Removable, "remote seat");
+            // No multi-seat (factory session): own seat and remote seats, each its own owner.
+            RoomScreenRows.Members(rows, delegate(int s) { return 0; }, false, 2, new[] { 1, 3 }, delegate(int s) { return s == 2; });
+            Equal(3, rows.Count);
+            Check(rows[0].Seat == 1 && rows[0].Owner == 1 && !rows[0].Local, "remote seat 1");
+            Check(rows[1].Seat == 2 && rows[1].Local && !rows[1].Removable, "own seat 2");
+            Check(rows[2].Seat == 3 && rows[2].Owner == 3, "remote seat 3");
+        });
+
         // T-093: the how-to-play chooser must stay readable and proportional from 720p to 4K and on other aspect ratios.
         Run("mode select: text and panel scale with the screen height", delegate {
             int[][] screens = { new[] { 1280, 720 }, new[] { 1920, 1080 }, new[] { 2560, 1440 }, new[] { 3840, 2160 } };
