@@ -14,7 +14,7 @@ namespace OriCoop.Saves
         void End(string reason);
         void SendWorldSnapshot(int seat);
         void SendProgressSnapshot(int seat);
-        void HoldOwnSkillTree();                 // T-142: guest, before loading a mid-session host checkpoint
+        void HoldOwnSkillTree(bool joined);      // T-043: guest, before loading a room checkpoint
         string Translate(string key);
         string Format(string key, params object[] args);
         void Toast(string text, string secondary);

@@ -8,6 +8,7 @@ using HarmonyLib;
 using OriCoop.Net;
 using OriCoop.Authority;
 using OriCoop.Enemies;
+using OriCoop.Saves;
 using UnityEngine;
 
 namespace OriCoop
@@ -647,7 +648,25 @@ namespace OriCoop
 
         static IEnumerator FourWipe(TestHarness h)
         {
-            Bot(0, 0); yield return ThreeRound(h, 450, 4);
+            Bot(0, 0);
+            int records0 = SeatSkillSync.RecordsReceived;
+            yield return ThreeRound(h, 450, 4);
+            if (NetPlay.IsHost)
+            {
+                GameController.Instance.CreateCheckpoint();
+                GameController.Instance.SaveGameController.PerformSave();
+            }
+            yield return FourAwait(h, delegate { return NetPlay.IsHost || SeatSkillSync.RecordsReceived > records0; }, 5f, "arena checkpoint record");
+            h.Check(SeatSkillSync.Current != null && SeatSkillSync.Current.Count == 4
+                && (NetPlay.IsHost || SeatSkillSync.RecordsReceived > records0), "4P skills: the room record has all four seats");
+            yield return ThreeRound(h, 457, 4);
+            ulong checkpointTree = ProgressSync.OwnTreeBits;
+            int checkpointPoints = Own.Level.SkillPoints;
+            yield return ThreeRound(h, 458, 4);
+            if (NetPlay.IsHost) Own.Level.SkillPoints += 20;
+            yield return BuyCheckpointSkill(h, "4P skills", Players.LocalSeat, true);
+            if (!NetPlay.IsHost) GameController.Instance.CreateCheckpoint();   // see NetReviveTest "R skills": only the record rolls it back
+            yield return ThreeRound(h, 459, 4);
             ThreePacket baseline = Three(450, Players.LocalSeat);
             if (Players.LocalSeat != 1) FourKill();
             yield return FourAwait(h, delegate { return FourDownMask() == 28; }, 8f, "P2/P3/P4 all down with host alive");
@@ -694,6 +713,8 @@ namespace OriCoop
                 && p.Wipes == Three(450, p.Seat).Wipes + 1 && p.Restores == Three(450, p.Seat).Restores + 1
                 && (p.Seat == 1 || p.Joined && p.Loads == Three(450, p.Seat).Loads + 1)),
                 "4P all down causes one wipe and reload on all four");
+            yield return CheckCheckpointSkills(h, "4P skills: seat back to its checkpoint tree and points",
+                checkpointTree, checkpointPoints, baseline.Loads);
             NetPlay.TestReportLoading = false;
         }
 
@@ -1390,6 +1411,58 @@ namespace OriCoop
                     "W skills: the " + who + "'s purchase leaves the " + (host ? "host" : "guest") + "'s tree and points alone (tree [" + treeBefore + "] -> ["
                     + treeNow + "], points " + pointsBefore + " -> " + Own.Level.SkillPoints + ")");
             }
+        }
+
+        internal static IEnumerator BuyCheckpointSkill(TestHarness h, string label, int rank, bool fourSeats = false)
+        {
+            SkillTreeManager m = SkillTreeManager.Instance;
+            List<SkillItem> picks = new List<SkillItem>();
+            if (m != null)
+                foreach (SkillItem item in m.GetComponentsInChildren<SkillItem>(true))
+                    if (!Own.PlayerAbilities.HasAbility(item.Ability)) picks.Add(item);
+            picks.Sort(delegate(SkillItem a, SkillItem b) {
+                int cost = a.ActualRequiredSkillPoints.CompareTo(b.ActualRequiredSkillPoints);
+                return cost != 0 ? cost : ((int)a.Ability).CompareTo((int)b.Ability);
+            });
+            SkillItem pick = null;
+            float end = Time.realtimeSinceStartup + 5f;
+            while (pick == null && Time.realtimeSinceStartup < end)
+            {
+                int n = 0;
+                foreach (SkillItem item in picks)
+                    if ((fourSeats ? item.SoulRequirementMet : item.CanEarnSkill) && ++n == rank) { pick = item; break; }
+                if (pick == null) yield return null;
+            }
+            h.Check(pick != null, label + ": can buy skill " + rank + " (points=" + Own.Level.SkillPoints + ")");
+            if (pick == null) yield break;
+            SkillItem previous = m.CurrentSkillItem;
+            List<SkillItem> items = pick.RequiredItems;
+            List<AbilityType> abilities = pick.RequiredAbilities;
+            // Four distinct purchases may span more than the three lane heads.
+            if (fourSeats) { pick.RequiredItems = new List<SkillItem>(); pick.RequiredAbilities = new List<AbilityType>(); }
+            pick.HasSkillItem = false;
+            m.CurrentSkillItem = pick;
+            SaveSync.TestSkipPurchaseSave = true;   // an offer that was not taken: no save point
+            try { m.OnMenuItemPressed(); }
+            finally { SaveSync.TestSkipPurchaseSave = false; m.CurrentSkillItem = previous; pick.RequiredItems = items; pick.RequiredAbilities = abilities; }
+            yield return Wait(2f);
+            h.Check(Own.PlayerAbilities.HasAbility(pick.Ability), label + ": kept purchase " + pick.Ability);
+        }
+
+        static bool CheckpointSkillsReady(int loads)
+        {
+            return ProgressSync.Ready && !GameController.Instance.IsLoadingGame && (NetPlay.IsHost
+                || SaveSync.Ready && SaveSync.GuestLoads > loads && ProgressSync.SnapshotGuestLoad == SaveSync.GuestLoads);
+        }
+
+        internal static IEnumerator CheckCheckpointSkills(TestHarness h, string label, ulong tree, int points, int loads)
+        {
+            float end = Time.realtimeSinceStartup + 5f;
+            while (!CheckpointSkillsReady(loads) && Time.realtimeSinceStartup < end) yield return null;
+            ulong now = ProgressSync.OwnTreeBits;
+            int pointsNow = ProgressSync.Ready ? Own.Level.SkillPoints : -1;
+            h.Check(CheckpointSkillsReady(loads) && now == tree && pointsNow == points, label
+                + " (tree " + tree.ToString("X") + " -> " + now.ToString("X") + ", points " + points + " -> " + pointsNow + ")");
         }
 
         // The skill-tree abilities this player owns, read from the game's own skill items (independent of ProgressSync).

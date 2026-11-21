@@ -2,6 +2,7 @@
 using System.IO;
 using HarmonyLib;
 using OriCoop.Saves;
+using OriCoop.Story;
 using UnityEngine;
 
 namespace OriCoop.Rooms
@@ -95,7 +96,10 @@ namespace OriCoop.Rooms
             }
             if (chosen < 0) chosen = CoopSaveFolder.FirstEmptyCoopSlot();
             if (chosen < 0) return -1;
+            SkillRecord record;
+            data = SeatSkillSync.ForLoad(data, "room save", out record);
             RoomWire.AtomicWrite(PathFor(chosen), data);
+            SeatSkillSync.WriteSidecar(chosen, CoopSaves.Hash(data), record);
             RefreshSlot(chosen, data);
             UpdateVersion(chosen, room, save, version);
             Slot = chosen;
@@ -151,6 +155,7 @@ namespace OriCoop.Rooms
 
         public static void WriteSingle(int slot, byte[] bytes)
         {
+            bytes = SeatSkillSync.ForLoad(bytes, "room save to single player");
             string path = CoopSaveFolder.SinglePlayerPath(slot);
             if (File.Exists(path)) BackupSingle(path);
             RoomWire.AtomicWrite(path, bytes);
@@ -175,7 +180,7 @@ namespace OriCoop.Rooms
         {
             SaveSlotsManager.CurrentSaveSlot.FillData();
             summary = Summary(SaveSlotsManager.CurrentSlotIndex);
-            return GameController.Instance.SaveGameController.SaveToBytes();
+            return SkillTrailer.Append(GameController.Instance.SaveGameController.SaveToBytes(), SeatSkillSync.ReadSidecar(Slot));
         }
 
         public void CopySingle(byte[] data)
@@ -205,7 +210,9 @@ namespace OriCoop.Rooms
                     || !panel.Session.Holder || panel.Game.Slot < 0) return;
                 if (!string.Equals(Path.GetFullPath(__0), Path.GetFullPath(PathFor(panel.Game.Slot)),
                     StringComparison.OrdinalIgnoreCase)) return;
-                panel.Session.Saved(File.ReadAllBytes(__0), Summary(panel.Game.Slot));
+                byte[] bytes = File.ReadAllBytes(__0);
+                panel.Session.Saved(SkillTrailer.Append(bytes, SeatSkillSync.ForSave(panel.Game.Slot, CoopSaves.Hash(bytes))),
+                    Summary(panel.Game.Slot));
             }
         }
 

@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using Game;
+using OriCoop.Saves;
 using UnityEngine;
 
 namespace OriCoop
@@ -313,8 +314,34 @@ namespace OriCoop
                 h.Check(vis > 0, "R2 host: guest's puppet visible again");
             }
 
+            // Make the saver's checkpoint tree different even when running R on its own.
+            string tree = ProgressSync.OwnTreeBits.ToString("X");
+            yield return Barrier(h, 202, tree);
+            SaveReport peer;
+            if (s_partnerSteps.TryGetValue(202, out peer) && peer.Fingerprint == tree)
+            {
+                if (host) Own.Level.SkillPoints += 20;
+                else yield return NetTestHarness.BuyCheckpointSkill(h, "R skills setup", 1);
+            }
+            yield return Barrier(h, 203);
+            int records0 = SeatSkillSync.RecordsReceived;
             SaveReport save = new SaveReport();
             yield return GuestSave(h, save);
+
+            float recordBy = Time.realtimeSinceStartup + 5f;
+            while ((SeatSkillSync.Current == null || SeatSkillSync.Current.Count != 2
+                || !host && SeatSkillSync.RecordsReceived == records0) && Time.realtimeSinceStartup < recordBy) yield return null;
+            h.Check(SeatSkillSync.Current != null && SeatSkillSync.Current.Count == 2 && (host || SeatSkillSync.RecordsReceived > records0),
+                "R skills: the room record has both seats");
+            ulong checkpointTree = ProgressSync.OwnTreeBits;
+            int checkpointPoints = Own.Level.SkillPoints;
+            yield return Barrier(h, 204);
+            if (host) Own.Level.SkillPoints += 20;
+            yield return NetTestHarness.BuyCheckpointSkill(h, "R skills", host ? 1 : 2);
+            // An auto checkpoint on the guest after its purchase: its own native reload would now keep the skill, only
+            // the room record rolls it back. (On the host a checkpoint IS the room's: it would record the purchase.)
+            if (!host) GameController.Instance.CreateCheckpoint();
+            int loads0 = SaveSync.GuestLoads;
 
             // R3: both down -> the host decides, both reload.
             Own.Mortality.Health.RestoreAllHealth();
@@ -383,6 +410,8 @@ namespace OriCoop
                     }
                 }
             }
+            yield return NetTestHarness.CheckCheckpointSkills(h, "R skills: back to the checkpoint tree and points",
+                checkpointTree, checkpointPoints, loads0);
             yield return Barrier(h, 10);
             yield return SoulLink(h, host);
             HoldSpiritFlame(false);

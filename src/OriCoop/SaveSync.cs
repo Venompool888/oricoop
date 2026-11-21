@@ -84,7 +84,12 @@ namespace OriCoop
             Ready = false;
         }
 
-        internal static void RebindDevice(int previous, int primary) { s_guests.Rebind(previous, primary); CoopSaves.RebindDevice(previous, primary); }
+        internal static void RebindDevice(int previous, int primary)
+        {
+            s_guests.Rebind(previous, primary);
+            CoopSaves.RebindDevice(previous, primary);
+            SeatSkillSync.RebindDevice(previous, primary);
+        }
 
         public static bool ReadyForSeat(int seat)
         {
@@ -153,9 +158,7 @@ namespace OriCoop
                 s_restartFinished = s_restoreFinished = false;
                 s_joinStartedAt = Services.Clock.RealTime;
                 s_loadWatch = Stopwatch.StartNew();
-                // T-142: a mid-session host checkpoint (wipe / host reload) carries the host's skill tree; keep ours.
-                // The join load is left alone (T-047: a joining guest starts from the host's save).
-                if (s_joined && !Services.Net.IsHost) SavesHost.Current.HoldOwnSkillTree();
+                if (!Services.Net.IsHost) SavesHost.Current.HoldOwnSkillTree(s_joined);
                 try
                 {
                     Plugin.DespawnNow(s_hostAdopt ? "adopting partner progress" : "online checkpoint transfer");
@@ -234,7 +237,12 @@ namespace OriCoop
         static void FinishJoin()
         {
             s_loading = s_restoreFinished = false; Ready = true;
-            if (!Services.Net.IsHost) s_joined = true;
+            if (!Services.Net.IsHost)
+            {
+                s_joined = true;
+                ProgressSync.GuestLoaded();
+                SeatSkillSync.Loaded();
+            }
             s_promotion.Joined();
             Services.Log.Info("net: guest join liveHost=" + HostJoinPosition + " distance=" + GuestJoinDistance
                 + " elapsedAfterLoadMs=" + (GuestJoinElapsed * 1000f) + " placed=" + JoinedHost);
@@ -251,7 +259,7 @@ namespace OriCoop
         public static void HostAdopt(byte[] bytes)
         {
             if (!Services.Net.IsHost || s_loading || s_disabled || bytes == null) return;
-            s_hostAdopt = true; s_pending = bytes; ResetGuests();
+            s_hostAdopt = true; s_pending = SeatSkillSync.ForLoad(bytes, "partner progress"); ResetGuests();
         }
 
         // A host restore uses exactly the join transfer / native teardown / live placement path.
@@ -259,6 +267,7 @@ namespace OriCoop
         public static void PushCheckpointNow()
         {
             if (!Services.Net.Enabled || !Services.Net.Connected || !Services.Net.IsHost || !s_started || s_disabled) return;
+            ProgressSync.RestoreHostSkills();
             ResetGuests();
             foreach (int seat in s_guests.Seats) SendCheckpoint(seat);
         }
@@ -274,6 +283,7 @@ namespace OriCoop
                 // before base Position (decomp PlatformMovementRigidbodyMoonCharacterControllerPenetrate:463).
                 // Never infer a checkpoint position by reading the first twelve bytes of that archive.
                 HostCheckpointPosition = Characters.Sein.Position; HaveCheckpointPosition = true;
+                SeatSkillSync.SendPushRecord(seat);
                 Services.Net.SendTo(seat, SaveWire.SaveMessage, true, delegate(BinaryWriter w)
                 {
                     SaveWire.WriteSave(w, HaveCheckpointPosition, HostCheckpointPosition.x, HostCheckpointPosition.y, HostCheckpointPosition.z, bytes);
@@ -305,6 +315,7 @@ namespace OriCoop
                 byte[] bytes = save.SaveToBytes();
                 if (bytes.Length > SaveWire.MaximumSaveBytes) throw new InvalidDataException("save exceeds NetPeer's 4 MB limit");
                 string timeline = CoopSaves.Timeline;
+                SeatSkillSync.Report();
                 Services.Net.Send(SaveWire.SaveOffer, true, delegate(BinaryWriter w) { SaveWire.WriteSaveOffer(w, timeline, bytes); });
                 GuestSavesOffered++;
                 Services.Log.Info("net: guest save offered to the room (" + bytes.Length + " bytes, base " + Short(timeline) + ")");
@@ -317,7 +328,7 @@ namespace OriCoop
             int seat = Services.Net.Sender;
             string timeline;
             byte[] bytes;
-            try { bytes = SaveWire.ReadSaveOffer(r, out timeline); }
+            try { bytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveOffer(r, out timeline), "save offer"); }
             catch (Exception e) { Services.Log.Warn("net: bad save offer from seat " + seat + ": " + e.Message); return; }
             bool host = Services.Net.IsHost;
             OfferVerdict verdict = SaverPick.Judge(host, !Ready || s_loading || s_hostAdopt || s_disabled || s_adoptingOffer,
@@ -339,6 +350,7 @@ namespace OriCoop
                 {
                     SaveSlotBackupsManager.CreateCurrentBackup();   // time travel: the room's previous save stays a backup
                     if (!save.LoadFromBytes(bytes)) throw new InvalidDataException("LoadFromBytes returned false");
+                    SeatSkillSync.Capture("seat " + seat + "'s save");   // the guest reported its tree before offering
                     save.PerformSave();   // writes the room slot; CoopSaves commits it to every seat, RoomGame uploads it
                 }
                 finally { s_adoptingOffer = false; }
@@ -357,7 +369,7 @@ namespace OriCoop
             HaveCheckpointPosition = SaveWire.ReadHasPosition(r);
             SavePosition p = SaveWire.ReadCoordinates(r);
             HostCheckpointPosition = new Vector3(p.X, p.Y, p.Z);
-            s_pending = SaveWire.ReadSaveBytes(r);
+            s_pending = SeatSkillSync.ForLoad(SaveWire.ReadSaveBytes(r), "checkpoint transfer");
             if (CoopSaves.CommitsReceived == 0) CheckpointsBeforeCommit++;
             if (CopySlotAtCheckpoint == -2) CopySlotAtCheckpoint = CoopSaves.SessionSlot;
             Ready = false; JoinedHost = false;
@@ -372,6 +384,7 @@ namespace OriCoop
         public static bool BeginTitleLoad()
         {
             if (!HavePendingCheckpoint) return false;
+            SavesHost.Current.HoldOwnSkillTree(s_joined);
             s_titleLoadBytes = s_pending; s_pending = null;
             s_loading = true;
             s_restartFinished = s_restoreFinished = false;
@@ -525,6 +538,29 @@ namespace OriCoop
                     Services.Log.Warn("net: missing teardown subscription " + act.Method.DeclaringType.FullName
                         + "." + act.Method.Name + " target=" + act.Target + " @ " + new StackTrace(1, true));
                 // Keep the original error if a different lifecycle defect remains.
+            }
+        }
+
+        // Buying a skill calls CreateCheckpoint + PerformSave natively, online too (coordinator, 2026-11-21: a purchase
+        // is a save point; a guest's becomes a SaveOffer). Test-only: TestSkipPurchaseSave buys without that save, the
+        // stand-in for a purchase whose offer was not taken (the per-seat record must roll it back).
+        public static bool TestSkipPurchaseSave;
+        [HarmonyPatch(typeof(SkillTreeManager), "OnMenuItemPressed")]
+        static class SkillPurchaseSavePatch
+        {
+            static void Checkpoint(GameController game) { if (!TestSkipPurchaseSave) game.CreateCheckpoint(); }
+            static void Save(SaveGameController save) { if (!TestSkipPurchaseSave) save.PerformSave(); }
+
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
+            {
+                MethodInfo checkpoint = AccessTools.Method(typeof(GameController), "CreateCheckpoint");
+                MethodInfo save = AccessTools.Method(typeof(SaveGameController), "PerformSave");
+                foreach (CodeInstruction code in instructions)
+                {
+                    string method = code.Calls(checkpoint) ? "Checkpoint" : code.Calls(save) ? "Save" : null;
+                    if (method != null) { code.opcode = OpCodes.Call; code.operand = AccessTools.Method(typeof(SkillPurchaseSavePatch), method); }
+                    yield return code;
+                }
             }
         }
 

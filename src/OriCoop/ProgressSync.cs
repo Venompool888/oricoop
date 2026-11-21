@@ -4,6 +4,7 @@ using System.IO;
 using System.Reflection;
 using Game;
 using HarmonyLib;
+using OriCoop.Saves;
 using OriCoop.Seams;
 using OriCoop.Story;
 using UnityEngine;
@@ -27,7 +28,10 @@ namespace OriCoop
         static int s_loggedCollector, s_ignoredActions;
         static float s_ignoredLogAt;
         static float s_collectorWarningAt;
+        static readonly bool s_mutateNoSeatSkills = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_SEAT_SKILLS") == "1";
+        static bool s_loggedMissingTree;
         public static int ActionsApplied, ActionsRejected;
+        internal static int SnapshotGuestLoad;
         public static bool SkillPurchaseForwardingEnabled = true;
 
         static SeinCharacter Own { get { return StoryHost.Current.P1 != null ? StoryHost.Current.P1 : Characters.Sein; } }
@@ -92,8 +96,9 @@ namespace OriCoop
         static bool LocalPickupShortcut() { return !Services.Net.Enabled; }
         static void Reset()
         {
-            s_pending.Reset(); s_inbox.Snapshot = null; s_ownTree.Clear();
-            s_sequence = 0; s_sent = false; s_next = 0; ActionsApplied = ActionsRejected = 0;
+            s_pending.Reset(); s_inbox.Take(); s_ownTree.Clear();
+            s_sequence = 0; s_sent = false; s_next = 0; ActionsApplied = ActionsRejected = SnapshotGuestLoad = 0;
+            s_loggedMissingTree = false;
             s_loggedCollector = 0; s_collectorWarningAt = 0; s_ignoredActions = 0; s_ignoredLogAt = 0;
             SkillPurchaseForwardingEnabled = true;
         }
@@ -125,6 +130,10 @@ namespace OriCoop
         static readonly int[] s_cost = new int[64];
         static bool s_treeKnown;
         public static ulong SkillTreeMask { get { return s_tree; } }
+        public static ulong OwnTreeBits
+        {
+            get { if (!Ready) return 0; EnsureSkillTree(Own); return OwnedBits(Own) & s_tree; }
+        }
 
         static void EnsureSkillTree(SeinCharacter p)
         {
@@ -170,8 +179,18 @@ namespace OriCoop
             // and the guest never got the host's WallJump=false (CUT reset). The host's pickup-action queue still
             // needs a live local player.
             ReportStall();
-            if (!Services.Net.Connected || !Services.Session.Ready || !Ready) return;
-            if (!Services.Net.IsHost && s_inbox.Snapshot != null) { ProgressSnapshot s = s_inbox.Take(); Apply(s); }
+            if (!Services.Net.Connected || !Ready) return;
+            EnsureSkillTree(Own);
+            if (!s_mutateNoSeatSkills && Services.Net.IsHost && SeatSkillSync.HostRestorePending
+                && !SaveSync.HostAdopting && !GameController.Instance.IsLoadingGame)
+                RestoreHostSkills();
+            if (!Services.Session.Ready) return;
+            if (!Services.Net.IsHost)
+            {
+                if (s_ownTree.Held && s_tree == 0) return;
+                if (s_inbox.Snapshot != null) { Apply(s_inbox.Take()); SnapshotGuestLoad = SaveSync.GuestLoads; }
+                if (!s_ownTree.Held) SeatSkillSync.Report();
+            }
             if (Services.Net.IsHost && Services.Session.LocalInGameplay)
             {
                 while (s_pending.Count > 0)
@@ -229,17 +248,13 @@ namespace OriCoop
         }
         static void Apply(ProgressSnapshot s)
         {
-            SeinCharacter p = Own; bool changed = false; s_applying = true;
+            SeinCharacter p = Own; s_applying = true;
             try
             {
                 EnsureSkillTree(p);
-                // Keep this player's own skill tree (T-142: the tree held before a host checkpoint load, see HoldOwnSkillTree).
+                // Keep this seat's tree (T-043: the recorded tree held before a checkpoint load, see HoldOwnSkillTree).
                 ulong merged = SkillSplit.Merge(s_ownTree.Local(OwnedBits(p)), s.Abilities, s_tree);
-                for (int i = 0; i < 43; i++)
-                {
-                    bool value = (merged & (1UL << i)) != 0;
-                    if (p.PlayerAbilities.Abilities[i].HasAbility != value) { p.PlayerAbilities.Abilities[i].HasAbility = value; changed = true; }
-                }
+                bool changed = SetOwnedBits(p, merged);
                 p.Mortality.Health.MaxHealth = s.MaxHealth; p.Energy.Max = s.MaxEnergy;
                 p.Inventory.Keystones = s.Keys; p.Inventory.MapStones = s.Maps; p.Inventory.SkillPointsCollected = s.Collected;
                 p.Level.Experience = s.Experience; p.Level.Current = s.Level;
@@ -251,16 +266,58 @@ namespace OriCoop
             }
             finally { s_applying = false; }
         }
-        // T-142: a guest about to load a mid-session host checkpoint (wipe / host reload) keeps its own skill tree; the
-        // loaded save carries the host's. The next Apply merges with the held abilities (Story\SkillSplit.cs OwnSkillTree).
-        public static void HoldOwnSkillTree()
+        static bool SetOwnedBits(SeinCharacter p, ulong bits)
         {
-            if (Services.Net.IsHost) return;
-            if (!Ready) { Services.Log.Warn("net: own skill tree not held before the host checkpoint (progress not ready)"); return; }
-            if (s_ownTree.Held) return;
-            ulong owned = OwnedBits(Own);
-            s_ownTree.Hold(owned);
-            Services.Log.Info("net: holding own skill tree across the host checkpoint (abilities " + owned.ToString("X") + ")");
+            bool changed = false;
+            for (int i = 0; i < 43; i++)
+            {
+                bool value = (bits & (1UL << i)) != 0;
+                if (p.PlayerAbilities.Abilities[i].HasAbility != value) { p.PlayerAbilities.Abilities[i].HasAbility = value; changed = true; }
+            }
+            return changed;
+        }
+
+        internal static void GuestLoaded() { s_inbox.Take(); }
+
+        // T-043: both host and guest roll back to their own recorded tree. T-142's live hold is for unrecorded seats.
+        public static void HoldOwnSkillTree(bool joined)
+        {
+            if (Services.Net.IsHost || s_ownTree.Held) return;
+            ulong bits = 0;
+            SkillRecord record = SeatSkillSync.ForLoadingCheckpoint();
+            bool recorded = !s_mutateNoSeatSkills && record != null && record.TryGet(CoopSaves.PlayerId, out bits);
+            bool liveReady = Ready;
+            if (!recorded && !liveReady)
+            {
+                if (!s_loggedMissingTree) Services.Log.Warn("net: own skill tree not held before checkpoint (no record and progress not ready)");
+                s_loggedMissingTree = true;
+                return;
+            }
+            ulong hold;
+            if (!SkillRestore.GuestHold(recorded, bits, joined, liveReady ? OwnedBits(Own) : 0, out hold)) return;
+            s_ownTree.Hold(hold);
+            if (recorded) SeatSkillSync.Restores++;
+            Services.Log.Info("net: holding " + (recorded ? "recorded" : "live") + " skill tree across checkpoint (abilities " + hold.ToString("X") + ")");
+        }
+
+        internal static void RestoreHostSkills()
+        {
+            if (s_mutateNoSeatSkills || !Ready) return;
+            SeinCharacter p = Own;
+            EnsureSkillTree(p);
+            if (s_tree == 0) return;
+            SeatSkillSync.HostRestorePending = false;
+            SkillRecord record = SeatSkillSync.Current;
+            ulong recorded;
+            if (record == null || !record.TryGet(CoopSaves.PlayerId, out recorded)) return;
+            ulong owned; int points;
+            SkillRestore.Restore(p.Level.SkillPoints, OwnedBits(p), recorded, s_tree, s_cost, out owned, out points);
+            bool changed = SetOwnedBits(p, owned);
+            p.Level.SkillPoints = points;
+            if (changed && p.Prefabs != null) p.Prefabs.EnsureRightPrefabsAreThereForAbilities();
+            RefreshSkills();
+            SeatSkillSync.Restores++;
+            Services.Log.Info("net: restored host checkpoint skill tree (abilities " + recorded.ToString("X") + ", points " + points + ")");
         }
         static void RefreshSkills()
         {
@@ -435,8 +492,8 @@ namespace OriCoop
         {
             static bool Prefix(SeinLevel __instance) { return !(Guest && Ready && __instance == Own.Level); }
         }
-        // T-047: no SkillTreeManager.OnMenuItemPressed patch any more. Every player buys in their own tree with their own
-        // points, through the game's own code: the buyer sees the flash and hears the sound, nobody else (#9 / T-028).
+        // T-047: no purchase forwarding. Every player buys with their own points through the game's code, and only
+        // the buyer sees the flash and hears the sound (#9 / T-028). A purchase is a save point online too (T-043, SaveSync).
         [HarmonyPatch(typeof(GetAbilityPedestal), "ActivatePedestal")]
         static class PedestalPatch
         {
