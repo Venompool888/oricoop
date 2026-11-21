@@ -398,6 +398,8 @@ namespace OriCoop
             "revive.self_hold", "按住 {0} 在最近的灵魂连接复活", "Hold {0} to revive at the latest soul link",
             "revive.link_made", "{0} 建立了新的灵魂连接", "{0} made a new soul link",
             "revive.death_save", "你在有伙伴死亡时创建了存档，生命值已自动减半", "You saved while a partner was down: half your health was taken",
+            "escape.mash", "连按 {0} 到伙伴身边复活", "Mash {0} to come back beside a teammate",
+            "escape.through", "伙伴通过了，全员前进", "A teammate made it through - the team moves on",
             "gate.force", "长按 {0} 强制触发", "Hold {0} to force it",
             "gate.wait", "需全员都到才能推进（{0}/{1}）", "Everyone must be here to continue ({0}/{1})",
             "pause.by", "{0} 暂停了", "{0} paused the game",

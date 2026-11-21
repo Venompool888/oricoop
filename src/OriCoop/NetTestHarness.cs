@@ -837,6 +837,7 @@ namespace OriCoop
                     "3P guest 3 receives guest 2's soul link (80) and co-push (89) (T-115; " + (PartnerFx.SoulLinksReceived - soulBefore) + "/" + (PushBlockSync.CoPushHeard - pushBefore) + ")");
             }
             yield return ThreeRound(h, 41);
+            yield return Safely(h, "3P ESC", NetEscapeTest.Run3P(h));   // T-169: mash back beside a teammate in the escape
             yield return ThreeRound(h, 6);
             // T-111: in server mode the room outlives P1, so P1 is the one who leaves. The arbiter moves to seat 2 and
             // seat 3 must obey its host-only messages (a gate count here; intro and wipe use the same sender check).
@@ -2025,10 +2026,10 @@ namespace OriCoop
         }
 
         // ORICOOP_PHASES=E3,R (T-078): run only these net phases of the 2-player suite; unset = all. Phases:
-        //   INTRO MOVE(A-F) W(shared world) E3 E5 R S4 P WO CAM CUT. Start-up (session, save handshake, start barrier,
+        //   INTRO MOVE(A-F) W(shared world) E3 E5 R S4 P WO CAM CUT ESC. Start-up (session, save handshake, start barrier,
         //   roles) and the closing G checks always run. src\phase-map.psd1 maps source files to phases (run-affected).
         // The older ORICOOP_NET_ONLY=P3|WO|CAM|S4 still works (P3 = CUT; WO = WO,CAM,CUT; CAM = CAM,CUT; S4 = S4, as before).
-        public static readonly string[] AllPhases = { "INTRO", "MOVE", "W", "E3", "E5", "R", "S4", "P", "WO", "CAM", "CUT" };
+        public static readonly string[] AllPhases = { "INTRO", "MOVE", "W", "E3", "E5", "R", "S4", "P", "WO", "CAM", "CUT", "ESC" };
         static HashSet<string> s_phases;
         internal static bool PhaseOn(string phase)
         {
@@ -2239,6 +2240,7 @@ namespace OriCoop
                 if (PhaseOn("WO") && Mark(h, "WO")) yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
                 if (PhaseOn("CAM") && Mark(h, "CAM")) yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
                 if (PhaseOn("CUT") && Mark(h, "CUT")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64); yield return Safely(h, "P3", NetCutsceneTest.Run(h)); }
+                if (PhaseOn("ESC") && Mark(h, "ESC")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 66); yield return Safely(h, "ESC", NetEscapeTest.Run(h)); yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 68); }   // escape rules (NetEscapeTest.cs, T-169)
                 h.Note("=== phase END");
                 // With selected phases the last one is followed by G at once: the end that finished first left the
                 // session while the other still waited for that phase's last barrier (E5 alone: "E5L barrier 44").

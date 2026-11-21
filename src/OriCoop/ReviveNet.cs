@@ -161,9 +161,16 @@ namespace OriCoop
             void Update()
             {
                 if (!AnyDowned) return;
-                bool partnerGone = Host.PuppetCount == 0 || (Services.Net.Enabled && !Services.Net.Connected);
+                // T-169: a teammate loading scenes (no puppet for a moment, e.g. at an escape's exit) is still in the
+                // session (T-131): not gone.
+                bool partnerGone = Host.PuppetCount == 0 && !TeammateInSession() || (Services.Net.Enabled && !Services.Net.Connected);
                 if (partnerGone) ClearAll("partner gone while someone was downed", Host.P1 != null || Characters.Sein != null);
             }
+        }
+        static bool TeammateInSession()
+        {
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++) if (seat != Host.LocalSeat && Host.SeatInSession(seat)) return true;
+            return false;
         }
         static GameObject s_watchdog;
         static void EnsureWatchdog()
