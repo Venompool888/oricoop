@@ -40,6 +40,8 @@ try {
     foreach ($i in 0, 1) {
         $saves = Join-Path $TL_AppData[$i] 'Ori and the Blind Forest DE'
         New-Item -ItemType Directory -Path $saves -Force | Out-Null
+        $coop = Join-Path $saves 'OriCoop-coop'
+        if (Test-Path -LiteralPath $coop) { Remove-Item -LiteralPath $coop -Recurse -Force }
         Get-ChildItem -LiteralPath $saves -File | Where-Object {
             $_.Name -like 'saveFile*' -or $_.Name -like '*.oricoop*' -or $_.Name -eq 'oricoop-player.txt'
         } | Remove-Item -Force

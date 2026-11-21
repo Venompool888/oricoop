@@ -1,6 +1,5 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.IO;
 using UnityEngine;
 using OriCoop.Rooms;
 using OriCoop.Ui;
@@ -171,11 +170,11 @@ namespace OriCoop
                     {
                         RoomRow(rows, L10n.T("rooms.name", zh) + ": " + MarkupText.Plain(p.AutoName), L10n.T("rooms.auto_name.desc", zh), null);
                         RoomDialRow(rows, false, zh);
-                        for (int i = 0; i < SaveSlotsManager.SaveSlotCount; i++)
+                        for (int i = 0; i < p.SinglePlayerSummaries.Length; i++)
                         {
                             int slot = i;
-                            if (!File.Exists(RoomGame.PathFor(slot))) continue;
-                            RoomRow(rows, RF("rooms.create_slot", zh, slot + 1, ""), RoomsPanel.FormatSummary(RoomGame.Summary(slot), zh),
+                            if (p.SinglePlayerSummaries[slot] == null) continue;
+                            RoomRow(rows, RF("rooms.create_slot", zh, slot + 1, ""), RoomsPanel.FormatSummary(p.SinglePlayerSummaries[slot], zh),
                                 delegate { p.CreateWithSlot(slot, s_roomsPassword); });
                         }
                     }
@@ -194,11 +193,11 @@ namespace OriCoop
                     }
                     else if (s_page == PageRoomSlots)
                     {
-                        for (int i = 0; i < SaveSlotsManager.SaveSlotCount; i++)
+                        for (int i = 0; i < p.SinglePlayerSummaries.Length; i++)
                         {
                             int slot = i;
                             RoomRow(rows, p.Overwrite == slot ? RF("rooms.overwrite", zh, slot + 1) : RF("rooms.slot_name", zh, slot + 1),
-                                RoomsPanel.FormatSummary(RoomGame.Summary(slot), zh), delegate { p.PickSlot(slot); });
+                                RoomsPanel.FormatSummary(p.SinglePlayerSummaries[slot] ?? "", zh), delegate { p.PickSlot(slot); });
                         }
                     }
                 }

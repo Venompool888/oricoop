@@ -17,14 +17,17 @@ $guestOut = Join-Path $testDir 'titlejoin-guest.txt'
 $pristine = 'C:\OriCoop\save-backup\20261114-150138'
 foreach ($ad in $TL_AppData[0], $TL_AppData[1]) {
     $saves = Join-Path $ad 'Ori and the Blind Forest DE'
-    New-Item -ItemType Directory -Force $saves | Out-Null
+    $coop = Join-Path $saves 'OriCoop-coop'
+    if (Test-Path $coop) { Remove-Item $coop -Recurse -Force }
+    New-Item -ItemType Directory -Force $coop | Out-Null
     Get-ChildItem $saves -File | Where-Object { $_.Name -like 'saveFile*' -or $_.Name -like '*.oricoop*' -or $_.Name -eq 'oricoop-player.txt' } | Remove-Item -Force
     if (Test-Path "$saves\OriCoop-backups") { Remove-Item "$saves\OriCoop-backups" -Recurse -Force }
-    if ($ad -eq $TL_AppData[0] -and (Test-Path $pristine)) { Copy-Item "$pristine\*" $saves -Force }
+    if ($ad -eq $TL_AppData[0] -and (Test-Path $pristine)) { Copy-Item "$pristine\*" $saves -Force; Copy-Item "$pristine\saveFile*.sav" $coop -Force }
     if ($ad -eq $TL_AppData[1] -and (Test-Path $pristine)) { Copy-Item "$pristine\*" $saves -Force; Get-ChildItem $saves -File | Where-Object { $_.Name -like 'saveFile*' } | Remove-Item -Force }
 }
-if ($FullSlots) { $g = Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE'; for ($i = 0; $i -lt 10; $i++) { Copy-Item "$pristine\saveFile$($i % 2).sav" "$g\saveFile$i.sav" -Force } }
-'GUEST appdata2 save files: ' + @(Get-ChildItem (Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE') -Filter 'saveFile*' -ErrorAction SilentlyContinue).Count
+$g = Join-Path $TL_AppData[1] 'Ori and the Blind Forest DE\OriCoop-coop'
+if ($FullSlots) { for ($i = 0; $i -lt 10; $i++) { Copy-Item "$pristine\saveFile$($i % 2).sav" "$g\saveFile$i.sav" -Force } }
+'GUEST appdata2 save files: ' + @(Get-ChildItem $g -Filter 'saveFile*' -ErrorAction SilentlyContinue).Count
 
 function Client-Spec([string]$role, [string]$appData, [string]$resultPath) {
     $vars = @{ LOCALAPPDATA = $appData; ORICOOP_TEST = ''; ORICOOP_TITLEJOIN = $role; ORICOOP_TITLEJOIN_TRANSPORT = $Transport

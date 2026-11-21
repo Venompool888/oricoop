@@ -51,10 +51,51 @@ namespace OriCoop
                 StartCoroutine(Run());
             }
 
-            static string SavesDir { get { return Path.Combine(Environment.GetEnvironmentVariable("LOCALAPPDATA") ?? "", "Ori and the Blind Forest DE"); } }
+            static string SavesDir { get { return Saves.CoopSaveFolder.Dir; } }
             static int SaveFiles()
             {
                 try { return Directory.Exists(SavesDir) ? Directory.GetFiles(SavesDir, "saveFile*.sav").Length : -1; } catch (Exception) { return -1; }
+            }
+
+            // T-043 rule 5: online saves live in OriCoop-coop; the single-player files are never touched online.
+            readonly Dictionary<string, string> m_singleSaves = new Dictionary<string, string>();
+            void SnapshotSinglePlayerSaves()
+            {
+                foreach (int slot in Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves())
+                {
+                    string path = Saves.CoopSaveFolder.SinglePlayerPath(slot);
+                    m_singleSaves[path] = CoopSaves.Hash(File.ReadAllBytes(path));
+                }
+                Note(m_role + ": single-player saves before going online: " + m_singleSaves.Count);
+            }
+
+            void CheckSaveIsolation(int slot)
+            {
+                string path = GameController.Instance.SaveGameController.GetSaveFilePath(slot);
+                Check(Saves.CoopSaveFolder.Active && File.Exists(path) && string.Equals(Path.GetDirectoryName(Path.GetFullPath(path)),
+                    Path.GetFullPath(Saves.CoopSaveFolder.Dir), StringComparison.OrdinalIgnoreCase),
+                    m_role + ": online save file is inside OriCoop-coop (" + path + ")");
+                Check(Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves().Length == m_singleSaves.Count,
+                    m_role + ": no single-player save file created or removed (" + m_singleSaves.Count + " -> "
+                    + Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves().Length + ")");
+                foreach (KeyValuePair<string, string> before in m_singleSaves)
+                    Check(File.Exists(before.Key) && before.Value == CoopSaves.Hash(File.ReadAllBytes(before.Key)),
+                        m_role + ": single-player save byte-identical: " + Path.GetFileName(before.Key));
+            }
+
+            // T-043 rule 6: a single-player save copied in becomes a co-op slot (and the starting save of the room).
+            void CheckCopyIn()
+            {
+                int[] singles = Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves();
+                int target = Saves.CoopSaveFolder.FirstEmptyCoopSlot();
+                if (singles.Length == 0 || target < 0) { Note("host: copy-in check skipped (single saves " + singles.Length + ", empty co-op slot " + target + ")"); return; }
+                string source = Saves.CoopSaveFolder.SinglePlayerPath(singles[0]);
+                string copy = GameController.Instance.SaveGameController.GetSaveFilePath(target);
+                Check(Saves.CoopSaveFolder.CopyFromSinglePlayer(singles[0], target), "host: copy single-player slot " + singles[0] + " to co-op slot " + target);
+                Check(File.Exists(copy) && CoopSaves.Hash(File.ReadAllBytes(copy)) == CoopSaves.Hash(File.ReadAllBytes(source)),
+                    "host: the co-op copy is byte-identical to the single-player save (" + copy + ")");
+                Check(SaveSlotsManager.SlotExists(target), "host: the slot list shows the copied co-op slot " + target);
+                Check(!Saves.CoopSaveFolder.CopyFromSinglePlayer(singles[0], target), "host: copy-in never overwrites a co-op slot");
             }
 
             string RoomFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-room.txt"); } }
@@ -84,6 +125,7 @@ namespace OriCoop
             {
                 Note("up: " + m_role + " via " + m_tr + ", saves in appdata: " + SaveFiles());
                 int savesAtStart = SaveFiles();
+                SnapshotSinglePlayerSaves();
 
                 // Title main menu ("press any key" first).
                 float end = Time.realtimeSinceStartup + 120f; int lastPulse = -1;
@@ -226,6 +268,7 @@ namespace OriCoop
                 SaveSlotsUI ui = SaveSlotsUI.Instance;
                 if (ui == null || !SlotsReady) yield break;
                 int slot = 1; int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_SLOT") ?? "1", out slot);
+                CheckCopyIn();
                 ui.SetCurrentItem(slot);
                 ui.UsedSaveSlotSelected();
                 float end = Time.realtimeSinceStartup + 20f;
@@ -263,6 +306,8 @@ namespace OriCoop
                 Vector3 me = Characters.Sein != null ? Characters.Sein.Position : Vector3.zero;
                 Check(NetPlay.HaveRemotePos && Vector3.Distance(NetPlay.LatestRemotePos, me) < 4f,
                     "host: guest Ori beside the host (distance " + (NetPlay.HaveRemotePos ? Vector3.Distance(NetPlay.LatestRemotePos, me).ToString("F2") : "?") + ")");
+                GameController.Instance.SaveGameController.PerformSave();   // a host save online writes the co-op slot only
+                CheckSaveIsolation(slot);
                 Shot("in_game");
                 yield return StartCoroutine(TWait(8f));                             // let the guest finish its checks
                 if (m_tr == "cserver")
@@ -386,6 +431,10 @@ namespace OriCoop
                 // Paused = timeScale 0; the game's own slow-motion moments (0.5) still count as running.
                 Check(ControlsGuideHud.LastTimeScale > 0.01f && Time.timeScale > 0.01f && NetPlay.LocalInGameplay(),
                     "guest: guide does not pause the game (timeScale " + ControlsGuideHud.LastTimeScale.ToString("F2") + ")");
+                Check(Saves.CoopSaveFolder.Active, "guest: online play uses the co-op save folder");
+                Check(Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves().Length == m_singleSaves.Count,
+                    "guest: no single-player save file created online (" + m_singleSaves.Count + " -> "
+                    + Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves().Length + ")");
                 Shot("in_game");
             }
 

@@ -35,11 +35,17 @@ namespace OriCoop
         public static int CopySlotAtCheckpoint = -2;  // T-129 test: co-op copy slot when the first checkpoint arrived (-2 none yet)
         public static float GuestJoinDistance = float.PositiveInfinity, GuestJoinElapsed = float.PositiveInfinity;
         public static Vector3 HostJoinPosition;
+        // T-043 (room-owned saves): a guest's save point offered to the host / adopted by the host as the room's save.
+        public static int GuestSavesOffered, HostSavesAdopted, OffersRejected;
+        public static string LastOfferVerdict = "";
+        static bool s_adoptingOffer;
+        static readonly bool s_mutateNoSaveOffer = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_SAVEOFFER") == "1";
 
         public static void Init()
         {
             SavesHost.Current = new GameSavesHost();
             Services.Net.On(SaveWire.SaveMessage, Receive);
+            Services.Net.On(SaveWire.SaveOffer, ReceiveOffer);
             Services.Net.On(SaveWire.LoadedMessage, delegate(BinaryReader r)
             {
                 int seat = Services.Net.Sender;
@@ -279,6 +285,72 @@ namespace OriCoop
             catch (Exception e) { Disable("checkpoint transfer", e); }
         }
 
+        // ---- T-043: a guest's save point becomes the room's save --------------------------------------------------
+        // The host is the room's save authority (server mode: the seat holding the room, which uploads it). A guest's
+        // save point is offered with the timeline it is based on; the host names it the saver only when that base is
+        // the room's current timeline (SaverPick), adopts the bytes as its checkpoint and writes the room's slot. The
+        // normal host save path then runs: CoopSaves commits the file to every seat's local copy and RoomGame uploads
+        // it to the room. A team wipe restores this checkpoint on everyone (SessionRules -> PushCheckpointNow).
+
+        static void OfferSave(SaveGameController save)
+        {
+            if (s_mutateNoSaveOffer) return;   // test-only: the T-021 bug (a guest's save point is swallowed)
+            if (!Ready || s_loading || s_disabled || s_pending != null)
+            {
+                Services.Log.Info("net: guest save not offered: ready=" + Ready + " loading=" + s_loading + " pending=" + (s_pending != null));
+                return;
+            }
+            try
+            {
+                byte[] bytes = save.SaveToBytes();
+                if (bytes.Length > SaveWire.MaximumSaveBytes) throw new InvalidDataException("save exceeds NetPeer's 4 MB limit");
+                string timeline = CoopSaves.Timeline;
+                Services.Net.Send(SaveWire.SaveOffer, true, delegate(BinaryWriter w) { SaveWire.WriteSaveOffer(w, timeline, bytes); });
+                GuestSavesOffered++;
+                Services.Log.Info("net: guest save offered to the room (" + bytes.Length + " bytes, base " + Short(timeline) + ")");
+            }
+            catch (Exception e) { Services.Log.Warn("net: offering the guest save failed: " + e.Message); }
+        }
+
+        static void ReceiveOffer(BinaryReader r)
+        {
+            int seat = Services.Net.Sender;
+            string timeline;
+            byte[] bytes;
+            try { bytes = SaveWire.ReadSaveOffer(r, out timeline); }
+            catch (Exception e) { Services.Log.Warn("net: bad save offer from seat " + seat + ": " + e.Message); return; }
+            bool host = Services.Net.IsHost;
+            OfferVerdict verdict = SaverPick.Judge(host, !Ready || s_loading || s_hostAdopt || s_disabled || s_adoptingOffer,
+                host && s_guests.ReadyForSeat(seat, true, Ready),
+                CoopSaves.RoomSlotLive, CoopSaves.Timeline, timeline);
+            LastOfferVerdict = verdict.ToString();
+            if (verdict != OfferVerdict.Accept)
+            {
+                OffersRejected++;
+                Services.Log.Info("net: save offer from seat " + seat + " not taken: " + verdict + " (base " + Short(timeline)
+                    + ", room " + Short(CoopSaves.Timeline) + ")");
+                return;
+            }
+            try
+            {
+                SaveGameController save = GameController.Instance.SaveGameController;
+                s_adoptingOffer = true;
+                try
+                {
+                    SaveSlotBackupsManager.CreateCurrentBackup();   // time travel: the room's previous save stays a backup
+                    if (!save.LoadFromBytes(bytes)) throw new InvalidDataException("LoadFromBytes returned false");
+                    save.PerformSave();   // writes the room slot; CoopSaves commits it to every seat, RoomGame uploads it
+                }
+                finally { s_adoptingOffer = false; }
+                HostSavesAdopted++;
+                Services.Log.Info("net: seat " + seat + " is the saver; its save is the room's checkpoint now (room "
+                    + Short(CoopSaves.Timeline) + ")");
+            }
+            catch (Exception e) { Disable("room save adoption", e); }
+        }
+
+        static string Short(string hash) { return string.IsNullOrEmpty(hash) ? "-" : hash.Length > 8 ? hash.Substring(0, 8) : hash; }
+
         static void Receive(BinaryReader r)
         {
             if (Services.Net.IsHost || s_loading || s_pending != null || s_disabled) return;
@@ -459,13 +531,14 @@ namespace OriCoop
         [HarmonyPatch(typeof(SaveGameController), "PerformSave")]
         static class GuestSavePatch
         {
-            static bool Prefix()
+            static bool Prefix(SaveGameController __instance)
             {
                 if (!Services.Net.Enabled) return true;
                 if (PromotedSaveBlocked("PerformSave")) return false;
                 if (Services.Net.IsHost) return true;
                 GuestSaveAttempts++;
-                Services.Log.Info("net: guest PerformSave suppressed (attempt " + GuestSaveAttempts + ")");
+                Services.Log.Info("net: guest PerformSave suppressed (attempt " + GuestSaveAttempts + "); offering it to the room");
+                if (Services.Net.Connected) OfferSave(__instance);
                 return false;
             }
         }

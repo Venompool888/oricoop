@@ -379,7 +379,7 @@ namespace OriCoop
             else if (IsLobbyPage) LobbyPressed(index);
             else
             {
-                if (index == 0) { GoPage(PageServerMode, 0); return; }
+                if (index == 0) { Saves.CoopSaveFolder.Enter(); GoPage(PageServerMode, 0); return; }
                 string transport = index == 1 ? "direct" : "steam";
                 Plugin.Log.LogInfo("mode menu: online option " + transport);
                 if (UseNativeLobby) { LobbyOpen(transport); return; }
@@ -405,6 +405,7 @@ namespace OriCoop
         static void BackToSlots()
         {
             Plugin.Log.LogInfo("mode menu: back to the save slots");
+            if (!NetPlay.Enabled && TitleChoice != TitleOnline) Saves.CoopSaveFolder.Leave();
             SaveSlotsUI ui = SaveSlotsUI.Instance;
             Destroy();
             if (ui == null) return;
@@ -443,6 +444,19 @@ namespace OriCoop
             if (s_root == null) return;
             if (OnlineRoomScreen.BeforeProceed(OnlineProceed)) return;
             if (s_onTitle) { TitleGuestProceed(); return; }   // a guest joined from the title: no save slot
+            if (NetPlay.Enabled && !s_fromTitle)
+            {
+                SaveSlotsUI ui = SaveSlotsUI.Instance;
+                if (ui != null && s_fromNewGame == SaveSlotsManager.SlotExists(ui.CurrentSlotIndex))
+                {
+                    // The slot picked before the lobby now belongs to the co-op folder.
+                    if (s_fromNewGame) ui.CancelDifficultyScreen();
+                    s_fromNewGame = false;
+                    if (NetPlay.IsHost) { BackToSlots(); return; }
+                    TitleGuestProceed();
+                    return;
+                }
+            }
             Choose(PlayMode.Single);   // locally one Ori; the partner's Ori comes from the network
         }
         // Called by OnlineLobby: Back from its first page: show the native online page again.
@@ -459,6 +473,7 @@ namespace OriCoop
         static void Choose(int mode)
         {
             Plugin.Log.LogInfo("mode menu: chose " + PlayMode.Name(mode));
+            if (!NetPlay.Enabled) Saves.CoopSaveFolder.Leave();
             Pending = mode;
             PlayMode.LastChoice = mode;
             SaveSlotsUI ui = SaveSlotsUI.Instance;

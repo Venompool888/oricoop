@@ -55,6 +55,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_BOTTOMHUD_P1VALUES'; Env = @{ ORICOOP_MUTATE_BOTTOMHUD_P1VALUES = '1' }; Script = @('run-test.ps1', '-Scenarios', 'bottomhud'); Expect = '^bottomhud: ' }
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
+    @{ Name = 'MUTATE_NO_COOP_FOLDER';  Env = @{ ORICOOP_MUTATE_NO_COOP_FOLDER = '1' }; Script = @('run-titlejoin.ps1'); Expect = 'inside OriCoop-coop|single-player save' }   # T-043
     @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^native rooms page has rows$' }
     @{ Name = 'MUTATE_ROOM_NAME_HASH';  Env = @{ ORICOOP_MUTATE_ROOM_NAME_HASH = '1' };  Script = @('run-rooms.ps1'); Expect = 'generated room name' }
     @{ Name = 'MUTATE_TOAST_NO_FALLBACK'; Env = @{ ORICOOP_MUTATE_TOAST_NO_FALLBACK = '1' }; Script = @('run-test.ps1', '-Scenarios', 'move'); Expect = '^toast: English falls back' }
@@ -70,6 +71,7 @@ $Mutations = @(
     @{ Name = 'WORLDOBJ_OFF (WO)';      Env = @{ ORICOOP_WORLDOBJ_OFF = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');        Expect = '^WO' }
     @{ Name = 'WOBJ_NO_DEFER (WO5D)';   Env = @{ ORICOOP_WOBJ_NO_DEFER = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');       Expect = '^WO5D ' }
     @{ Name = 'MUTATE_WOBJ_KEEP_FIRED (R3)'; Env = @{ ORICOOP_MUTATE_WOBJ_KEEP_FIRED = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R3 the reload forgets one-shot' }   # T-144
+    @{ Name = 'MUTATE_NO_SAVEOFFER (R save)'; Env = @{ ORICOOP_MUTATE_NO_SAVEOFFER = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R save' }   # T-043
     @{ Name = 'MUTATE_WORLD_NO_REBROADCAST (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_NO_REBROADCAST = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d has guest P2''s world event change' }   # T-141
     @{ Name = 'MUTATE_WORLD_WHOLE_BLOB (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_WHOLE_BLOB = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d keeps every seat''s same-RTT world event' }   # T-168
 )

@@ -62,6 +62,7 @@ namespace OriCoop
         {
             s_machine = new LineageMachine(Services.Net, Services.Clock, new LineageActions());
             s_machine.Init();
+            CoopSaveFolder.OnlineFromLaunch();   // T-043: online from launch -> co-op folder before any slot is read
         }
 
         static void Reset()
@@ -71,11 +72,27 @@ namespace OriCoop
             s_lastWrittenHash = null; s_noSlotToldOnce = s_savedToldOnce = false;
             GuestJoiningEmpty = false; GuestPickedSlot = -1; SessionSlot = -1; NoSlotForCopy = false; SavesBlocked = false; PromotedFrom = -1;
             s_commitBytes = null; s_commitCoop = s_commitHostId = s_commitHostName = s_commitSaveId = null;
+            s_timeline = "";
+        }
+
+        // T-043 (room-owned saves): the room's save timeline is the last commit. Host: the hash it last committed;
+        // guest: the hash of the last commit it received (kept even when no slot could hold the copy). A promoted guest
+        // (T-126) keeps the one it received, so the others' offers still match until its first own commit.
+        static string s_timeline = "";
+        public static string Timeline { get { return s_timeline; } }
+        // Host: the lineage is decided and the live game plays the room's slot, so a save lands there and commits.
+        public static bool RoomSlotLive
+        {
+            get
+            {
+                return s_machine != null && (s_machine.Stage == LineageStage.Proceed || s_machine.Stage == LineageStage.Done)
+                    && s_hostLink != null && s_hostSlot >= 0 && SafeCurrentSlot() == s_hostSlot;
+            }
         }
 
         // ---------------------------------------------------------------- files
 
-        public static string Folder { get { return OutputFolder.PlayerDataFolderPath; } }
+        public static string Folder { get { return CoopSaveFolder.Active ? CoopSaveFolder.Dir : OutputFolder.PlayerDataFolderPath; } }
         static string SavePath(int slot) { return GameController.Instance.SaveGameController.GetSaveFilePath(slot); }
         static string LinkPath(int slot) { return Path.Combine(Folder, "saveFile" + slot + ".oricoop"); }
 
@@ -149,7 +166,7 @@ namespace OriCoop
             return area;
         }
 
-        static string Summary(byte[] bytes)
+        internal static string Summary(byte[] bytes)
         {
             SaveHeader h = ReadHeader(bytes);
             if (h == null) return "?";
@@ -263,7 +280,7 @@ namespace OriCoop
             get
             {
                 if (s_playerId != null) return s_playerId;
-                string p = Path.Combine(Folder, "oricoop-player.txt");
+                string p = Path.Combine(OutputFolder.PlayerDataFolderPath, "oricoop-player.txt");
                 try
                 {
                     if (File.Exists(p)) foreach (string line in File.ReadAllLines(p))

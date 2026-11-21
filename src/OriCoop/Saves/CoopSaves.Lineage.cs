@@ -79,7 +79,7 @@ namespace OriCoop
                 s_hostLink.Synced = hash;
                 s_hostLink.SyncedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
                 if (bytes != null) s_hostLink.Write(s_hostSlot);
-                s_hostHash = hash; LastCommitHash = hash;
+                s_hostHash = hash; LastCommitHash = hash; s_timeline = hash;
                 if (seat < 0) Commits++; else LateCommits++;
                 string coop = s_hostLink.Coop, saveId = s_hostLink.SaveId;
                 Action<BinaryWriter> body = delegate(BinaryWriter w)
@@ -234,6 +234,7 @@ namespace OriCoop
                 string coop = commit.Coop, hostId = commit.PlayerId, hostName = PartnerName(commit.Name), saveId = commit.SaveId;
                 byte[] bytes = commit.Bytes;
                 CoopId = coop;
+                s_timeline = Hash(bytes);
                 if (bytes == null || ReadHeader(bytes) == null)
                 {
                     Services.Log.Info("coop save: host has no save file yet; nothing to keep");

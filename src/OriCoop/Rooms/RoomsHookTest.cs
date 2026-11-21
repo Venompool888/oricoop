@@ -209,9 +209,11 @@ namespace OriCoop.Rooms
             if (done) yield break;
             string detail = "native page '" + page + "' row '" + L10n.T(key) + "'";
             if (!pressed)
+            {
+                string path = page == "roomcreate" ? Saves.CoopSaveFolder.SinglePlayerPath(0) : RoomGame.PathFor(0);
                 detail = "timeout waiting for " + detail + "; " + NativeModeMenu.TestRoomState()
-                    + "; slot 0 path=" + RoomGame.PathFor(0)
-                    + ", exists=" + File.Exists(RoomGame.PathFor(0)) + ", slots=" + SaveSlotsManager.SaveSlotCount;
+                    + "; slot 0 path=" + path + ", exists=" + File.Exists(path) + ", slots=" + SaveSlotsManager.SaveSlotCount;
+            }
             Check(pressed, detail);
         }
 

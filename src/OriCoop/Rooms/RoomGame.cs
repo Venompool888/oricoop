@@ -1,6 +1,7 @@
 ﻿using System;
 using System.IO;
 using HarmonyLib;
+using OriCoop.Saves;
 using UnityEngine;
 
 namespace OriCoop.Rooms
@@ -56,20 +57,31 @@ namespace OriCoop.Rooms
         {
             SaveSlotInfo info = SaveSlotsManager.SlotByIndex(slot);
             if (info == null) return "";
-            string area = info.AreaName ?? "";
+            return FormatSummary(info.Completion, info.AreaName ?? "", info.TotalSeconds);
+        }
+
+        internal static string Summary(byte[] bytes)
+        {
+            CoopSaves.SaveHeader info = CoopSaves.ReadHeader(bytes);
+            return info == null ? "" : FormatSummary(info.Completion, info.Area, info.Hours * 3600 + info.Minutes * 60 + info.Seconds);
+        }
+
+        static string FormatSummary(int completion, string area, int seconds)
+        {
             if (area.Length > 100) area = area.Substring(0, 100);
-            return "pct=" + info.Completion + ";area=" + area + ";secs=" + info.TotalSeconds;
+            return "pct=" + completion + ";area=" + area + ";secs=" + seconds;
         }
 
         public static int EmptySlot()
         {
-            for (int i = 0; i < SaveSlotsManager.SaveSlotCount; i++)
-                if (!File.Exists(PathFor(i))) return i;
+            for (int i = 0; i < SaveGameController.MAX_SAVES; i++)
+                if (!File.Exists(CoopSaveFolder.SinglePlayerPath(i))) return i;
             return -1;
         }
 
         public int WriteRoomSlot(string room, string save, long version, byte[] data)
         {
+            CoopSaveFolder.Enter();
             int chosen = -1;
             for (int i = 0; i < SaveSlotsManager.SaveSlotCount; i++)
             {
@@ -81,9 +93,10 @@ namespace OriCoop.Rooms
                     break;
                 }
             }
-            if (chosen < 0) chosen = EmptySlot();
+            if (chosen < 0) chosen = CoopSaveFolder.FirstEmptyCoopSlot();
             if (chosen < 0) return -1;
-            Write(chosen, data, false);
+            RoomWire.AtomicWrite(PathFor(chosen), data);
+            RefreshSlot(chosen, data);
             UpdateVersion(chosen, room, save, version);
             Slot = chosen;
             return chosen;
@@ -99,32 +112,30 @@ namespace OriCoop.Rooms
             RoomWire.AtomicWrite(Sidecar(slot), f.Encode());
         }
 
-        public static void Write(int slot, byte[] bytes, bool backup)
+        static void BackupSingle(string path)
         {
-            string path = PathFor(slot);
-            if (backup && File.Exists(path))
+            string dir = Path.Combine(Path.GetDirectoryName(path), "OriCoop-backups");
+            Directory.CreateDirectory(dir);
+            string name = Path.GetFileNameWithoutExtension(path);
+            string dest = Path.Combine(dir, name + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff") + ".sav");
+            File.Copy(path, dest, true);
+            foreach (string ext in new[] { ".oricoop", ".oriroom" })
             {
-                string dir = Path.Combine(CoopSaves.Folder, "OriCoop-backups");
-                Directory.CreateDirectory(dir);
-                string name = "saveFile" + slot + "-" + DateTime.Now.ToString("yyyyMMdd-HHmmss-fff");
-                string dest = Path.Combine(dir, name + ".sav");
-                File.Copy(path, dest, true);
-                string coop = Path.Combine(CoopSaves.Folder, "saveFile" + slot + ".oricoop");
-                if (File.Exists(coop)) File.Copy(coop, Path.ChangeExtension(dest, ".oricoop"), true);
-                if (File.Exists(Sidecar(slot)))
-                    File.Copy(Sidecar(slot), Path.ChangeExtension(dest, ".oriroom"), true);
-                string[] old = Directory.GetFiles(dir, "saveFile" + slot + "-*.sav");
-                Array.Sort(old, StringComparer.Ordinal);
-                for (int i = 0; i < old.Length - 5; i++)
-                {
-                    File.Delete(old[i]);
-                    string coopLink = Path.ChangeExtension(old[i], ".oricoop");
-                    string roomLink = Path.ChangeExtension(old[i], ".oriroom");
-                    if (File.Exists(coopLink)) File.Delete(coopLink);
-                    if (File.Exists(roomLink)) File.Delete(roomLink);
-                }
+                string link = Path.ChangeExtension(path, ext);
+                if (File.Exists(link)) File.Copy(link, Path.ChangeExtension(dest, ext), true);
             }
-            RoomWire.AtomicWrite(path, bytes);
+            string[] old = Directory.GetFiles(dir, name + "-*.sav");
+            Array.Sort(old, StringComparer.Ordinal);
+            for (int i = 0; i < old.Length - 5; i++)
+            {
+                File.Delete(old[i]);
+                File.Delete(Path.ChangeExtension(old[i], ".oricoop"));
+                File.Delete(Path.ChangeExtension(old[i], ".oriroom"));
+            }
+        }
+
+        static void RefreshSlot(int slot, byte[] bytes)
+        {
             int previous = SaveSlotInfo.CurrentInfoVersion;
             try
             {
@@ -140,10 +151,12 @@ namespace OriCoop.Rooms
 
         public static void WriteSingle(int slot, byte[] bytes)
         {
-            Write(slot, bytes, true);
-            if (File.Exists(Sidecar(slot))) File.Delete(Sidecar(slot));
-            string coop = Path.Combine(CoopSaves.Folder, "saveFile" + slot + ".oricoop");
-            if (File.Exists(coop)) File.Delete(coop);
+            string path = CoopSaveFolder.SinglePlayerPath(slot);
+            if (File.Exists(path)) BackupSingle(path);
+            RoomWire.AtomicWrite(path, bytes);
+            File.Delete(Path.ChangeExtension(path, ".oriroom"));
+            File.Delete(Path.ChangeExtension(path, ".oricoop"));
+            if (!CoopSaveFolder.Active) RefreshSlot(slot, bytes);
         }
 
         public void Host(int slot, string server)

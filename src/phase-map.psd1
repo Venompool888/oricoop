@@ -70,6 +70,8 @@
         @{ Switch = 'ORICOOP_WORLDOBJ_OFF';          File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
         @{ Switch = 'ORICOOP_WOBJ_NO_DEFER';         File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
         @{ Switch = 'ORICOOP_MUTATE_WOBJ_KEEP_FIRED'; File = 'src\OriCoop\WorldObjSync.cs'; Suite = 'net';       Phase = 'R' }   # T-144 R3 reload re-arms one-shots
+        @{ Switch = 'ORICOOP_MUTATE_NO_COOP_FOLDER'; File = 'src\OriCoop\Saves\CoopSaveFolder.cs'; Suite = 'titlejoin'; Phase = '' }   # T-043 online saves stay in OriCoop-coop
+        @{ Switch = 'ORICOOP_MUTATE_NO_SAVEOFFER';   File = 'src\OriCoop\SaveSync.cs'; Suite = 'net';       Phase = 'R' }   # T-043 a guest's save point becomes the room's save
         @{ Switch = 'ORICOOP_MUTATE_CAM_NO_MATES';   File = 'src\OriCoop\OnlineCamera.cs';   Suite = 'net';       Phase = 'CAM' }
         @{ Switch = 'ORICOOP_MUTATE_CAM_NO_UNPARK';  File = 'src\OriCoop\CutsceneGuard.cs';  Suite = 'net';       Phase = 'CAM' }
         @{ Switch = 'ORICOOP_NET_NO_FORWARD';        File = 'src\OriCoop\NetPlay.cs';        Suite = 'net-4p';    Phase = '' }
