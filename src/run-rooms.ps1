@@ -1,44 +1,29 @@
-# Two real clients exercise 我的房间 (T-173) over a localhost room service and C-server (T-159: rooms play through the
-# C-server; the relay is gone), all through the real title menu and pages (src\OriCoop\Rooms\RoomsHookTest.cs):
+# Two real clients exercise 我的房间 (T-173) using the remote room service and C-server, all through the real title
+# menu and pages (src\OriCoop\Rooms\RoomsHookTest.cs):
 # fresh 我的房间 menu (新建房间 / 加入房间, no 房间列表); host: 新建房间 -> save slots -> co-op slot 1 -> pending open room
 # (invite code, English name, 4 seats, ROOM >= 1001) on the room page; guest: 加入房间 page -> server + invite code ->
 # the same room's page; ready + the creator's 开始 confirms the room and closes the code; the guest reopens the code
 # (5 minutes). Then gameplay: PerformSave upload, guest backup, host adopt, return-to-title snapshot and lease release;
 # last the guest's 房间列表 shows the room (name, ROOM <no>, 2/4). No Steam, no passwords.
-# Uses the caller's ORICOOP_TEST_DLL; builds only RoomServer and CServer (Get-TestServerExe) when needed.
+# Uses the caller's ORICOOP_TEST_DLL; fresh test SteamIDs isolate parallel runs on the shared room server.
 param([switch]$Force)
 $ErrorActionPreference = 'Stop'
 . (Join-Path $PSScriptRoot 'test-launch.ps1')
 # Like the other suites: without ORICOOP_TEST_DLL it tests the DLL installed in the copy it gets (T-084: the throw
 # here made run-affected's rooms suite end in 10 s having tested nothing).
 if (-not $env:ORICOOP_TEST_DLL) { 'NOTE: ORICOOP_TEST_DLL not set; testing the DLL installed in the test copy' }
+$rooms = [uri]('http://' + (Get-RemoteTestServer 'rooms') + '/')
+$cserver = Get-RemoteTestServer 'cserver'
+Assert-TestServerCurrent 'rooms', 'cserver'
+$steamBase = [long]76561198000000000 + 2 * (Get-Random -Minimum 1000 -Maximum 400000000)   # 17 digits, like a real SteamID64
+$steamIds = @([string]$steamBase, [string]($steamBase + 1))
 Start-TestRun -Force:$Force
-$serverProc = $null
-$cserverProc = $null
 $ok = $false
 try {
     $run = Join-Path $TL_TestDir ('rooms-' + [Guid]::NewGuid().ToString('N'))
     New-Item -ItemType Directory -Path $run -Force | Out-Null
     $share = Join-Path $run 'share.dat'
-    $roomPort = 47021 + $TL_PortOffset
-    $url = "http://127.0.0.1:$roomPort/"
-    $cserver = $env:ORICOOP_NET_CSERVER
-    if ($cserver -and $cserver -notmatch '^127\.0\.0\.1:([0-9]+)$') {
-        throw 'ORICOOP_NET_CSERVER must be 127.0.0.1:port'
-    }
-    $exe = Get-TestServerExe 'RoomServer'   # built from this checkout, not written into the shared src\RoomServer (T-088)
-    $serverProc = Start-Process -FilePath $exe -PassThru -WindowStyle Hidden `
-        -ArgumentList @('--prefix', $url, '--data', ('"' + (Join-Path $run 'server') + '"')) `
-        -RedirectStandardOutput (Join-Path $run 'server.log') `
-        -RedirectStandardError (Join-Path $run 'server-error.log')
-    if (-not $cserver) {
-        $csPort = 47022 + $TL_PortOffset
-        $cserver = "127.0.0.1:$csPort"
-        $cserverProc = Start-Process -FilePath (Get-TestServerExe 'CServer') -ArgumentList ('--port ' + $csPort) -PassThru -WindowStyle Hidden `
-            -RedirectStandardOutput (Join-Path $run 'cserver.log') `
-            -RedirectStandardError (Join-Path $run 'cserver-error.log')
-    }
-    "ROOMS services: $url cserver=$cserver"
+    'ROOMS services: remote room server and C-server'
     $fixture = 'C:\OriCoop\save-backup\20261114-150138'
     if (-not (Test-Path (Join-Path $fixture 'saveFile0.sav'))) { throw 'Missing host slot 0 fixture' }
     foreach ($i in 0, 1) {
@@ -58,16 +43,14 @@ try {
         }
     }
     $ready = $false
-    for ($attempt = 0; $attempt -lt 30; $attempt++) {
+    for ($attempt = 0; $attempt -lt 10; $attempt++) {
         Invoke-TestWatch
-        if ($serverProc.HasExited) { throw 'Room server exited; inspect server-error.log' }
-        if ($cserverProc -and $cserverProc.HasExited) { throw 'C-server exited; inspect cserver-error.log' }
         $tcp = New-Object Net.Sockets.TcpClient
-        try { $tcp.Connect('127.0.0.1', $roomPort); $ready = $true } catch { } finally { $tcp.Close() }
+        try { $tcp.Connect($rooms.DnsSafeHost, $rooms.Port); $ready = $true } catch { } finally { $tcp.Close() }
         if ($ready) { break }
         Wait-TestSeconds 1
     }
-    if (-not $ready) { throw 'Room server did not listen on localhost' }
+    if (-not $ready) { throw 'Remote test room server is not reachable (see src\test-servers\README.md).' }
     $specs = @(foreach ($i in 0, 1) {
         $role = if ($i -eq 0) { 'host' } else { 'join' }
         @{
@@ -75,9 +58,9 @@ try {
             Arguments = '-screen-fullscreen 0 -screen-width 640 -screen-height 360'
             Vars = @{
                 LOCALAPPDATA = $TL_AppData[$i]; ORICOOP_TEST = '1'; ORICOOP_NO_STEAM = '1'
-                ORICOOP_ROOMS_TEST = $role; ORICOOP_ROOMS_SERVER = $url; ORICOOP_ROOMS_SHARE = $share
+                ORICOOP_ROOMS_TEST = $role; ORICOOP_ROOMS_SERVER = $rooms.AbsoluteUri; ORICOOP_ROOMS_SHARE = $share
                 ORICOOP_ROOMS_DIR = (Join-Path $run "store-$role"); ORICOOP_ROOMS_POLL = '1'
-                ORICOOP_TEST_STEAMID = $(if ($i -eq 0) { '76561198000000001' } else { '76561198000000002' })
+                ORICOOP_TEST_STEAMID = $steamIds[$i]
                 ORICOOP_TEST_NICK = "Rooms-$role"; ORICOOP_PLAYER_NAME = "Rooms-$role"
                 ORICOOP_NET = 'off'; ORICOOP_NET_CSERVER = $cserver; ORICOOP_NET_ROOM = ''
                 ORICOOP_TITLEJOIN = ''; ORICOOP_COOPSAVE_TEST = ''; ORICOOP_NET_SIM = ''
@@ -104,8 +87,6 @@ try {
         if (-not ($lines -match 'ROOMS DONE ok') -or ($lines -match 'ROOMS (FAIL|DONE fail)')) { $ok = $false }
     }
 } finally {
-    if ($serverProc -and -not $serverProc.HasExited) { $serverProc.Kill(); $serverProc.WaitForExit() }
-    if ($cserverProc -and -not $cserverProc.HasExited) { $cserverProc.Kill(); $cserverProc.WaitForExit() }
     Complete-TestRun
 }
 # One verdict line for callers (run-affected): the per-step "ROOMS PASS n" lines are no verdict (T-082).
