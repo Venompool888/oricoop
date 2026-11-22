@@ -83,6 +83,47 @@ namespace OriCoop
         // Test only (NetKuroTest chain): mirror cleanups that found takeover state left over from an earlier cutscene.
         public static int LeftoverCleanups;
         public static bool StoryActive { get { return Local.Count + Remote.Count + Pending.Count > 0; } }
+        // Test only (NetKuroTest, T-183): stories this PC runs or mirrors, without the unclassified candidates in Pending
+        // (the spirit tree's plants start a shootProjectile sequence every second or so; each sits in Pending briefly).
+        public static int RealStories { get { return Local.Count + Remote.Count; } }
+        // T-183: a mirror's start of a sequence consumes the string trigger that would start it here (Story/MirrorStarts.cs).
+        static readonly MirrorStarts MirrorStartsLog = new MirrorStarts();
+        // Test-only mutation: the string trigger runs its sequence again on the mirror PC (before T-183).
+        static readonly bool MutateMirrorTriggerRuns = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_MIRROR_TRIGGER_RUNS") == "1";
+        public static int MirrorTriggersSkipped { get { return MirrorStartsLog.Skipped; } }
+        public static int OvertakenRetired;
+        // T-183: a mirrored sequence still on its way to registering the string that starts `started` was overtaken by
+        // the original (Story/MirrorStarts.Overtaken). Stop it; of its remaining actions only ActivateAction runs (world
+        // objects end as in the original), not its waits, fades, registrations or scene loads.
+        static void RetireOvertaken(ActionSequence started)
+        {
+            if (MutateMirrorTriggerRuns || started == null) return;
+            List<string> strings = new List<string>();
+            foreach (TriggerByString t in Resources.FindObjectsOfTypeAll<TriggerByString>())
+                if (t != null && t.ActionToRun == started && t.Data != null && !string.IsNullOrEmpty(t.Data.String)) strings.Add(t.Data.String);
+            if (strings.Count == 0) return;
+            foreach (ActionSequence p in new List<ActionSequence>(OwnedSequences))
+            {
+                if (p == null || p == started || !p.IsRunning || p.Actions == null) continue;
+                List<string> ahead = new List<string>();
+                for (int i = Math.Max(0, p.Index); i < p.Actions.Count; i++)
+                {
+                    RegisterStringTriggerAction r = p.Actions[i] as RegisterStringTriggerAction;
+                    if (r != null) ahead.Add(r.String);
+                }
+                if (!MirrorStarts.Overtaken(ahead, strings)) continue;
+                int at = p.Index;
+                for (int i = at + 1; i < p.Actions.Count; i++)
+                {
+                    ActivateAction a = p.Actions[i] as ActivateAction;
+                    if (a != null && a.Target != null) a.Perform(null);
+                }
+                p.Stop();
+                OvertakenRetired++;
+                Services.Log.Info("net: mirrored " + p.name + " overtaken at action " + at + " by " + started.name + "; retired");
+                StoryHost.Current.Trace("story", "mirror.overtaken", "sequence", p.name, "index", at, "by", started.name);
+            }
+        }
         public static float LastStoryActivity = -1f;
         // Test only (NetCutsceneTest): start mirrors this late, like a slow resolve / scene load on a real link.
         public static float TestResolveDelay;
@@ -298,6 +339,7 @@ namespace OriCoop
             RestoreVisible(); Seen.Clear(); Performed.Clear(); Local.Clear(); Remote.Clear(); Accepted.Clear(); Mirrored.Clear(); Starting.Clear();
             Pending.Clear();
             StoryTexts.Clear();
+            MirrorStartsLog.Clear();
             LocalOnly.Clear(); LocalOnlyControllers.Clear();
             s_mirroring = false;
             // Tokens remain monotonic so a delayed end can never release a new story in this process.
@@ -548,6 +590,8 @@ namespace OriCoop
                     }
                     CaptureNative(); OwnedSequences.Add(story.Sequence);
                     Mirrored.Add(story.Sequence); if (!alreadyPerformed) story.Sequence.Perform(null);
+                    MirrorStartsLog.MirrorPerformed(story.Sequence.GetInstanceID(), Time.realtimeSinceStartup);   // T-183
+                    RetireOvertaken(story.Sequence);
                 }
                 else
                 {
@@ -886,6 +930,66 @@ namespace OriCoop
         {
             static void Prefix(PauseGameAction __instance)
             { if (s_native != null && (s_mirroring || s_replayActionDepth > 0) && !PuppetCall && !__instance.IsPerforming) OwnedPauses.Add(__instance); }
+        }
+        // T-183: TriggerByString.DoTrigger() deregisters its string and runs its action. On a PC that already started the
+        // target sequence as a mirror, the firing is consumed instead (Story/MirrorStarts.cs): no second 03 / 04.
+        [HarmonyPatch(typeof(TriggerByString), "DoTrigger", new Type[0])]
+        static class MirrorConsumesStringTrigger
+        {
+            static bool Prefix(TriggerByString __instance)
+            {
+                if (!Services.Net.Enabled || __instance == null || __instance.Data == null || MutateMirrorTriggerRuns) return true;
+                ActionSequence target = __instance.ActionToRun as ActionSequence;
+                if (target == null || !MirrorStartsLog.SkipTrigger(target.GetInstanceID(), Time.realtimeSinceStartup)) return true;
+                TriggerByString.Deregister(__instance.Data.String);
+                Services.Log.Info("net: string trigger " + __instance.Data.String + " consumed by the mirror's start of " + target.name);
+                StoryHost.Current.Trace("story", "mirror.trigger.consumed", "string", __instance.Data.String, "sequence", target.name);
+                return false;
+            }
+        }
+        // T-183: ActionSequence.Serialize (no ActionSequenceSerializer) reads nothing (ActionMethod.Serialize is empty) and
+        // only calls Stop(). SceneRoot.LateStart loads a scene's saved data whenever the checkpoint already has that scene,
+        // which WorldSync's partner blobs make true for a scene this PC has never visited (StoreCheckpoint). So a sequence
+        // started right after the scene loaded (a mirror's Resolve, or this PC's own chain) was stopped one frame later
+        // (runs K/L: "actionSequence index=3 stopped from ActionSequence.Serialize < SaveSceneManager.Load <
+        // SceneRoot.LateStart"; run I-3: the host's own world-map sequence ended at index 0 and 04 never started).
+        // Online, such a read leaves a running sequence alone. A real checkpoint restore still stops it
+        // (ActionSequence.OnRestoreCheckpoint, a separate path). Test-only mutation ORICOOP_MUTATE_SERIALIZE_STOPS.
+        static readonly bool MutateSerializeStops = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SERIALIZE_STOPS") == "1";
+        public static int SerializeStopsKept;
+        [HarmonyPatch(typeof(ActionSequence), "Serialize")]
+        static class KeepRunningOnSceneLoad
+        {
+            static bool Prefix(ActionSequence __instance, Archive ar)
+            {
+                if (MutateSerializeStops || !Services.Net.Enabled || __instance == null || ar == null || !ar.Reading || !__instance.IsRunning) return true;
+                if (__instance.GetComponent<ActionSequenceSerializer>() != null) return true;
+                SerializeStopsKept++;
+                StoryHost.Current.Trace("story", "sequence.kept", "id", __instance.name, "index", __instance.Index);
+                return false;
+            }
+        }
+        // T-183: who stopped a running story sequence (ActionSequence.Stop, also called by Serialize when reading and
+        // by a checkpoint restore). Run I-3: the host's own world-map sequence ended at index 0 one frame after it started.
+        [HarmonyPatch(typeof(ActionSequence), "Stop")]
+        static class TraceStop
+        {
+            static void Prefix(ActionSequence __instance)
+            {
+                if (__instance == null || !__instance.IsRunning || !Services.Net.Enabled) return;
+                try
+                {
+                    System.Diagnostics.StackTrace st = new System.Diagnostics.StackTrace(2, false);
+                    string from = "";
+                    for (int i = 0; i < st.FrameCount && i < 5; i++)
+                    {
+                        System.Reflection.MethodBase m = st.GetFrame(i).GetMethod();
+                        if (m != null) from += (from.Length > 0 ? " < " : "") + (m.DeclaringType != null ? m.DeclaringType.Name + "." : "") + m.Name;
+                    }
+                    StoryHost.Current.Trace("story", "sequence.stopped", "id", __instance.name, "index", __instance.Index, "from", from);
+                }
+                catch { }
+            }
         }
         [HarmonyPatch(typeof(CutsceneTrigger), "OnTriggerEnter")]
         static class PuppetTrigger

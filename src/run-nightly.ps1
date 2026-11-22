@@ -83,6 +83,9 @@ $Mutations = @(
     @{ Name = 'MUTATE_NO_SEAT_SKILLS (4P)'; Env = @{ ORICOOP_MUTATE_NO_SEAT_SKILLS = '1' }; Script = @('run-nettest.ps1', '-Clients', '4'); Expect = '^R skills|4P skills' }   # T-043
     @{ Name = 'MUTATE_WORLD_NO_REBROADCAST (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_NO_REBROADCAST = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d has guest P2''s world object change' }   # T-141, T-192: whole-blob fixture (world events go via the arbiter since T-168)
     @{ Name = 'MUTATE_WORLD_WHOLE_BLOB (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_WHOLE_BLOB = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d keeps every seat''s same-RTT world event' }   # T-168
+    @{ Name = 'MUTATE_SHARE_TRIGGERS (KURO)'; Env = @{ ORICOOP_MUTATE_SHARE_TRIGGERS = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_KURO = '1' }; Script = @('run-nettest.ps1'); Expect = '^KURO chain: (stories ended|no letterbox|own Ori walks|own Ori back at the spirit tree|03 and 04 each ran once)' }   # T-183
+    @{ Name = 'MUTATE_MIRROR_TRIGGER_RUNS (KURO)'; Env = @{ ORICOOP_MUTATE_MIRROR_TRIGGER_RUNS = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_KURO = '1' }; Script = @('run-nettest.ps1'); Expect = '^KURO chain: 03 and 04 each ran once' }   # T-183
+    @{ Name = 'MUTATE_STREAM_IN_STORY (KURO)'; Env = @{ ORICOOP_MUTATE_STREAM_IN_STORY = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_KURO = '1' }; Script = @('run-nettest.ps1'); Expect = '^KURO chain: (03 and 04 each ran once|own Ori back at the spirit tree|no letterbox)' }   # T-183 (KURO=1 holds the host's 03 2 s so it is behind)
 )
 if (-not $NoMutations) {
     $mdir = Join-Path $env:TEMP ('oricoop-mutations-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))

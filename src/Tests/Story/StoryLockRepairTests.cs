@@ -22,6 +22,14 @@ static partial class StoryTests
             Equal(true, StoryLockRepair.Due(60f, true));
             Equal(true, StoryLockRepair.Due(61f, true));
         });
+        Check("lock repair: T-183 H-1 — the frame between the world-map sequence and 04 (nothing running for 0.02 s) keeps the lock", delegate {
+            Equal(false, StoryLockRepair.Due(20f, false, 0.02f));
+            Equal(false, StoryLockRepair.Due(20f, false, 1.99f));
+            Equal(true, StoryLockRepair.Due(20f, false, 2f));       // boundary: nothing ran for the whole gap
+            Equal(true, StoryLockRepair.Due(20f, false, float.MaxValue));
+            Equal(false, StoryLockRepair.Due(20f, true, 30f));
+            Equal(true, StoryLockRepair.Due(60f, false, 0.02f));   // the 60 s cap still applies
+        });
         Check("lock repair: fresh lock is never repaired", delegate {
             Equal(false, StoryLockRepair.Due(0f, false));
             Equal(false, StoryLockRepair.Due(0f, true));

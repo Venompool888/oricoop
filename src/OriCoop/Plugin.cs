@@ -13,7 +13,7 @@ namespace OriCoop
     [BepInPlugin("local.oricoop", "Ori Local Co-op", Version)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Version = "0.2.4";   // one place: the BepInEx id, the startup log line
+        public const string Version = "0.2.5";   // one place: the BepInEx id, the startup log line
         public static BepInEx.Logging.ManualLogSource Log;
         public static Plugin Instance;
         public static Harmony H;

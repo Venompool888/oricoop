@@ -17,5 +17,15 @@ namespace OriCoop.Story
         {
             return heldSeconds >= Longest || !storySequenceRunning && heldSeconds >= Stale;
         }
+
+        // T-183 (run H-1): a chain hands over from one sequence to the next across a frame (the world-map sequence ends,
+        // 04 starts on the next frame). The repair fired in exactly that frame (lock held 20 s, "story running=False"),
+        // cleared 03's lock, and StorySync ended the stories while 04 then waited for its world-map objective.
+        // A story sequence that ran within the last Gap seconds still counts as running.
+        public const float Gap = 2f;
+        public static bool Due(float heldSeconds, bool storySequenceRunning, float secondsSinceStoryRan)
+        {
+            return Due(heldSeconds, storySequenceRunning || secondsSinceStoryRan < Gap);
+        }
     }
 }

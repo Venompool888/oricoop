@@ -9,7 +9,7 @@ namespace OriCoop.World
     // different things in the same RTT no longer overwrite each other (before, the whole object was sent and replaced).
     //  - GameController (decomp GameController.Serialize:426-443): WorldEventsManager GUID -> int, the string-trigger list,
     //    a local tail (0f, GameTime, 0, 0, RequireInitialValues: 17 bytes, never shared), the objective index list.
-    //    Items: "e:<guid hex>" -> int (4 bytes), "t:<trigger>" -> count, "o:<index>" -> count.
+    //    Items: "e:<guid hex>" -> int (4 bytes), "o:<index>" -> count. The string-trigger list is NOT an item (T-183).
     //  - GameWorld (decomp GameWorld.Serialize:157 + RuntimeGameWorldArea.Serialize:217): per area a state dict int -> int
     //    and an icon list GUID -> int, then the revealed icon GUIDs, then one int.
     //    Items: "a<i>.s<key>" -> int, "a<i>.i<guid hex>" -> int, "r:<guid hex>" -> count, "z" -> int.
@@ -21,6 +21,19 @@ namespace OriCoop.World
         const int TailBytes = 17, MaxCount = 200000;
 
         public static bool IsAggregate(byte schema) { return schema == SchemaController || schema == SchemaMap; }
+
+        // T-183: the string-trigger list (TriggerByString.Register / Deregister) stays on each PC. It is the continuation
+        // of a sequence chain across a scene load (spirit tree: 03 registers "spiritTreeWorldMap" and loads the world map,
+        // whose sequence registers "returnFromWorldMap" and loads the tree again, where 04's TriggerByString consumes it).
+        // Every PC runs its own copy of such a chain (the starter natively, the others as StorySync mirrors), so each one
+        // registers and consumes the same strings itself. Shared, one PC's register / consume reached the other at the
+        // wrong moment: the guest's consumed "returnFromWorldMap" removed the host's before the host got back, so the
+        // host's 04 never started (Ori left in a character animation); the guest's late "kuroAttackCutsceneFinished"
+        // came back after the host's 03 had consumed it, and the host ran 03 and the world map a second time.
+        // So: no "t:" items, a rewrite keeps the template's (this PC's) list, a whole object from a partner keeps the
+        // receiver's list (KeepLocalTriggers), and the digest ignores it. A joining PC gets the list with the host's save.
+        // Test-only mutation ORICOOP_MUTATE_SHARE_TRIGGERS=1 (WorldSync.InitDelta): shared again, as before T-183.
+        public static bool MutateShareTriggers;
 
         // Monotonic items: a revealed map icon never becomes hidden again through a live change (only a full snapshot,
         // e.g. the host's checkpoint rollback, can do that).
@@ -135,7 +148,7 @@ namespace OriCoop.World
             {
                 Controller c = ReadController(bytes);
                 foreach (KeyValuePair<string, int> e in c.Events) items["e:" + e.Key] = Int(e.Value);
-                foreach (string t in c.Triggers) AddCount(items, "t:" + t);
+                if (MutateShareTriggers) foreach (string t in c.Triggers) AddCount(items, "t:" + t);
                 foreach (int o in c.Objectives) AddCount(items, "o:" + o);
             }
             else if (schema == SchemaMap)
@@ -188,15 +201,46 @@ namespace OriCoop.World
             List<string> events = Ordered(t.Events.ConvertAll(e => e.Key), items, "e:");
             w.Write(events.Count);
             foreach (string id in events) { w.Write(FromHex(id)); w.Write(ToInt(items["e:" + id])); }
-            List<string> triggers = Ordered(t.Triggers, items, "t:");
-            List<string> expanded = new List<string>();
-            foreach (string s in triggers) for (int n = ToInt(items["t:" + s]); n > 0; n--) expanded.Add(s);
+            List<string> expanded = t.Triggers;   // T-183: this PC's own list
+            if (MutateShareTriggers)
+            {
+                expanded = new List<string>();
+                foreach (string s in Ordered(t.Triggers, items, "t:")) for (int n = ToInt(items["t:" + s]); n > 0; n--) expanded.Add(s);
+            }
             w.Write(expanded.Count); foreach (string s in expanded) w.Write(s);
             w.Write(t.Tail);
             List<string> objectives = Ordered(t.Objectives.ConvertAll(o => o.ToString()), items, "o:");
             List<int> list = new List<int>();
             foreach (string o in objectives) for (int n = ToInt(items["o:" + o]); n > 0; n--) list.Add(int.Parse(o));
             w.Write(list.Count); foreach (int o in list) w.Write(o);
+        }
+
+        // T-183: the string-trigger list in GameController bytes, in the game's order.
+        public static List<string> Triggers(byte[] controller) { return new List<string>(ReadController(controller).Triggers); }
+
+        // T-183: `controller` with its string-trigger list replaced by `triggers` (everything else unchanged).
+        public static byte[] WithTriggers(byte[] controller, IList<string> triggers)
+        {
+            Controller c = ReadController(controller);
+            c.Triggers.Clear(); c.Triggers.AddRange(triggers);
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter w = new BinaryWriter(stream))
+            {
+                w.Write(c.Events.Count);
+                foreach (KeyValuePair<string, int> e in c.Events) { w.Write(FromHex(e.Key)); w.Write(e.Value); }
+                w.Write(c.Triggers.Count); foreach (string s in c.Triggers) w.Write(s);
+                w.Write(c.Tail);
+                w.Write(c.Objectives.Count); foreach (int o in c.Objectives) w.Write(o);
+                w.Flush(); return stream.ToArray();
+            }
+        }
+
+        // T-183: a partner's whole GameController (snapshot, whole-object sync) as this PC applies it: the partner's
+        // world events and objectives, this PC's own string-trigger list.
+        public static byte[] KeepLocalTriggers(byte[] incoming, byte[] local)
+        {
+            if (MutateShareTriggers || local == null) return incoming;
+            return WithTriggers(incoming, ReadController(local).Triggers);
         }
 
         static void WriteMap(BinaryWriter w, Map t, IDictionary<string, byte[]> items)

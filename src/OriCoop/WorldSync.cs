@@ -319,7 +319,10 @@ namespace OriCoop
                 if (schema == Meaning.Controller)
                 {
                     // GameController.cs:426-443: GUID/value dictionary, trigger multiset, clock/bootstrap, objectives.
-                    SortedGuidValues(r, w); SortedStrings(r, w);
+                    // T-183: the string-trigger list is each PC's own (World/WorldItems.cs); it is not compared.
+                    SortedGuidValues(r, w);
+                    if (World.WorldItems.MutateShareTriggers) SortedStrings(r, w);
+                    else using (BinaryWriter skip = new BinaryWriter(new MemoryStream())) SortedStrings(r, skip);
                     r.ReadSingle(); r.ReadSingle(); r.ReadInt32(); r.ReadInt32(); r.ReadBoolean();
                     SortedInts(r, w, false);
                 }
@@ -412,6 +415,9 @@ namespace OriCoop
                 if (CanonicalHash(Meaning.Controller, first) != CanonicalHash(Meaning.Controller, reordered)) return false;
                 CanonicalSelfTestFailure = "world event value must change controller meaning";
                 if (CanonicalHash(Meaning.Controller, first) == CanonicalHash(Meaning.Controller, ControllerFixture(false, 1f, 8))) return false;
+                CanonicalSelfTestFailure = "the string-trigger list must not change controller meaning (T-183: each PC's own)";
+                if (!World.WorldItems.MutateShareTriggers && CanonicalHash(Meaning.Controller, first)
+                    != CanonicalHash(Meaning.Controller, World.WorldItems.WithTriggers(first, new string[] { "returnFromWorldMap" }))) return false;
                 CanonicalSelfTestFailure = ""; return true;
             }
             catch (Exception e) { CanonicalSelfTestFailure += ": " + e.Message; return false; }
@@ -697,6 +703,8 @@ namespace OriCoop
             // still on their way to the arbiter stay on top of it.
             else if (DeltaActive && World.WorldItems.IsAggregate((byte)schema))
                 bytes = SnapshotAggregate(scene, id, schema, type, bytes);
+            // T-183: a partner's GameController never replaces this PC's string-trigger list (World/WorldItems.cs).
+            if (schema == Meaning.Controller) bytes = LocalTriggers(live, key, bytes);
             StoreCheckpoint(scene, id, bytes);
             if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay()) ApplyLive(scene, id, bytes);
             else if (live != null && !s_bad.Contains(key))
@@ -738,11 +746,20 @@ namespace OriCoop
             ISerializable live = Find(scene, id);
             if (live == null || Excluded(live) || s_bad.Contains(key)) return;
             if (!CanApplyDoor(live, bytes)) return;
+            // T-183: a deferred or item-rewritten GameController carries the trigger list of when it was made.
+            if (live is GameController) bytes = LocalTriggers(live, key, bytes);
             Archive archive = ReadArchive(bytes); Applying = true;
             try { live.Serialize(archive); }
             catch (Exception e) { Disable(key, live, e); }
             finally { Applying = false; archive.MemoryStream.Close(); }
             s_known[key] = CanonicalHash(live, bytes);
+        }
+
+        static byte[] LocalTriggers(ISerializable live, string key, byte[] bytes)
+        {
+            if (live == null || s_bad.Contains(key) || World.WorldItems.MutateShareTriggers) return bytes;
+            try { return World.WorldItems.KeepLocalTriggers(bytes, CaptureBytes(live)); }
+            catch (Exception e) { Plugin.Log.LogWarning("net: world trigger list kept as received " + key + ": " + e.Message); return bytes; }
         }
 
         static bool CanApplyDoor(ISerializable live, byte[] bytes)

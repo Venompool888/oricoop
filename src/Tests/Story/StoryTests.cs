@@ -52,6 +52,7 @@ static partial class StoryTests
         PuppetGateCases();
         MirrorBaselineCases();   // T-175
         StoryLockRepairCases();   // T-177
+        MirrorStartsCases();   // T-183
         return failures == 0 ? 0 : 1;
     }
 }

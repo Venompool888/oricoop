@@ -193,6 +193,12 @@ static class DeltaSyncTests
 
     static byte[] Start() { return Controller(new int[] { 1, 2, 3, 4, 5 }, new int[] { 0, 0, 0, 0, 0 }, new string[] { "intro" }, 3f, new int[] { 2 }); }
     static Action<SortedDictionary<string, byte[]>> SetEvent(int n, int value) { return items => items[EKey(n)] = BitConverter.GetBytes(value); }
+    static int Count(Peer p, string trigger) { return WorldItems.Triggers(p.Game.Bytes).FindAll(t => t == trigger).Count; }
+    // TriggerByString.Register / Deregister on this PC (List.Add / List.Remove), then WorldSync's scan.
+    static void AddTrigger(Peer p, string trigger)
+    { List<string> l = WorldItems.Triggers(p.Game.Bytes); l.Add(trigger); p.Game.Bytes = WorldItems.WithTriggers(p.Game.Bytes, l); p.Scan(); }
+    static void RemoveTrigger(Peer p, string trigger)
+    { List<string> l = WorldItems.Triggers(p.Game.Bytes); l.Remove(trigger); p.Game.Bytes = WorldItems.WithTriggers(p.Game.Bytes, l); p.Scan(); }
     static int EventOf(Peer p, int n) { byte[] v; return p.Items.TryGetValue(EKey(n), out v) ? BitConverter.ToInt32(v, 0) : -1; }
 
     // Everyone in `editors` changes its own event (seat s sets event s to 10+s), all within `spreadMs` (< one RTT).
@@ -220,6 +226,7 @@ static class DeltaSyncTests
     {
         Run = run;
         if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_WHOLE_BLOB") == "1") DeltaObject.MutateWholeBlob = true;
+        if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SHARE_TRIGGERS") == "1") WorldItems.MutateShareTriggers = true;
 
         // ----- item split / rebuild -----
         Run("controller items: compose(template, decompose(template)) is byte-identical", delegate {
@@ -227,18 +234,27 @@ static class DeltaSyncTests
             byte[] again = WorldItems.Compose(Ctl, c, WorldItems.Decompose(Ctl, c));
             Check(DeltaObject.Same(c, again), "rebuilt " + again.Length + " bytes vs " + c.Length);
         });
-        Run("controller items: events, trigger counts and objectives are items; the local clock tail is not", delegate {
+        // T-183 changed these two (T-168 had the string triggers as items): the trigger list is each PC's own now.
+        Run("controller items: events and objectives are items; the string-trigger list (T-183) and the local clock tail are not", delegate {
             SortedDictionary<string, byte[]> a = WorldItems.Decompose(Ctl, Controller(new int[] { 1 }, new int[] { 7 }, new string[] { "x", "x" }, 1f, new int[] { 3 }));
-            SortedDictionary<string, byte[]> b = WorldItems.Decompose(Ctl, Controller(new int[] { 1 }, new int[] { 7 }, new string[] { "x", "x" }, 999f, new int[] { 3 }));
-            Check(Dump(a) == Dump(b), "GameTime changed the items");
-            Check(a.Count == 3 && BitConverter.ToInt32(a["t:x"], 0) == 2 && BitConverter.ToInt32(a[EKey(1)], 0) == 7 && a.ContainsKey("o:3"), "items " + Dump(a));
+            SortedDictionary<string, byte[]> b = WorldItems.Decompose(Ctl, Controller(new int[] { 1 }, new int[] { 7 }, new string[] { "y" }, 999f, new int[] { 3 }));
+            Check(Dump(a) == Dump(b), "GameTime or the trigger list changed the items: {" + Dump(a) + "} vs {" + Dump(b) + "}");
+            Check(a.Count == 2 && !a.ContainsKey("t:x") && BitConverter.ToInt32(a[EKey(1)], 0) == 7 && a.ContainsKey("o:3"), "items " + Dump(a));
         });
-        Run("controller compose keeps THIS PC's clock tail and applies the items", delegate {
-            byte[] mine = Controller(new int[] { 1 }, new int[] { 0 }, new string[0], 42f, new int[0]);
+        Run("controller compose keeps THIS PC's clock tail and trigger list and applies the items", delegate {
+            byte[] mine = Controller(new int[] { 1 }, new int[] { 0 }, new string[] { "mine", "mine" }, 42f, new int[0]);
             SortedDictionary<string, byte[]> items = WorldItems.Decompose(Ctl, mine);
-            items[EKey(2)] = BitConverter.GetBytes(5); items["t:door"] = BitConverter.GetBytes(1);
+            items[EKey(2)] = BitConverter.GetBytes(5); items["t:door"] = BitConverter.GetBytes(1); items.Remove("t:mine");
             byte[] rebuilt = WorldItems.Compose(Ctl, mine, items);
-            Check(DeltaObject.Same(rebuilt, Controller(new int[] { 1, 2 }, new int[] { 0, 5 }, new string[] { "door" }, 42f, new int[0])), "rebuilt bytes differ");
+            Check(DeltaObject.Same(rebuilt, Controller(new int[] { 1, 2 }, new int[] { 0, 5 }, new string[] { "mine", "mine" }, 42f, new int[0])),
+                "rebuilt triggers " + string.Join(",", WorldItems.Triggers(rebuilt).ToArray()));
+        });
+        Run("T-183: a partner's whole GameController keeps the receiver's own trigger list, takes the partner's events", delegate {
+            byte[] incoming = Controller(new int[] { 1, 2 }, new int[] { 5, 6 }, new string[] { "kuroAttackCutsceneFinished" }, 7f, new int[] { 4 });
+            byte[] local = Controller(new int[] { 1 }, new int[] { 0 }, new string[] { "returnFromWorldMap" }, 9f, new int[0]);
+            byte[] applied = WorldItems.KeepLocalTriggers(incoming, local);
+            Check(DeltaObject.Same(applied, Controller(new int[] { 1, 2 }, new int[] { 5, 6 }, new string[] { "returnFromWorldMap" }, 7f, new int[] { 4 })),
+                "applied triggers " + string.Join(",", WorldItems.Triggers(applied).ToArray()) + ", items " + Dump(WorldItems.Decompose(Ctl, applied)));
         });
         Run("map items: byte-identical rebuild; revealed icons are monotonic", delegate {
             byte[] m = MapBytes(2, new int[] { 31, 30 }, 6);
@@ -292,14 +308,40 @@ static class DeltaSyncTests
             int v = EventOf(room[1], 1);
             Check(v == 21 || v == 31, "value " + v);
         });
-        Run("C-server 3P: trigger added on one PC and another trigger removed on another, same RTT: both", delegate {
-            Room room = new Room(3, true, Controller(new int[] { 1 }, new int[] { 0 }, new string[] { "old" }, 0f, new int[0]));
-            room.Net.Delay = (a, b) => 100;
-            room[2].Edit(items => items["t:lever"] = BitConverter.GetBytes(1), true);
-            room[3].Edit(items => items.Remove("t:old"), true);
-            room.Net.Drain(); room.AssertConverged("triggers");
-            Check(room[1].Items.ContainsKey("t:lever") && !room[1].Items.ContainsKey("t:old"), "triggers " + Dump(room[1].Items));
-        });
+        // T-183 (replaces T-168's "trigger added on one PC and removed on another: both"): every PC runs its own copy of a
+        // sequence chain (the starter natively, the others as StorySync mirrors), and the chain's string triggers are
+        // its continuation across a scene load. Oracle (ticket): the host's own chain still continues (04 starts) when
+        // the guest's mirror registered and consumed the same trigger first; a consumed trigger never comes back.
+        foreach (bool server in new bool[] { false, true })
+        {
+            bool s = server; string m = s ? "C-server" : "P2P";
+            Run("T-183 " + m + ": the guest's mirror registers and consumes returnFromWorldMap first; the host's own registration survives", delegate {
+                Room room = new Room(2, s, Controller(new int[] { 1 }, new int[] { 0 }, new string[0], 0f, new int[0]));
+                room.Net.Delay = (a, b) => 100;
+                double t0 = room.Net.Now;
+                AddTrigger(room[2], "returnFromWorldMap"); room.Net.RunUntil(t0 + 20);      // guest's world-map sequence, step 27
+                RemoveTrigger(room[2], "returnFromWorldMap"); room.Net.RunUntil(t0 + 40);   // guest's 04 TriggerByString fires
+                AddTrigger(room[1], "returnFromWorldMap");                                   // host's own world-map sequence, later
+                room[1].Edit(SetEvent(1, 3), true);                                          // a real world event still travels
+                room.Net.Drain();
+                Check(Count(room[1], "returnFromWorldMap") == 1, "host's trigger count " + Count(room[1], "returnFromWorldMap") + ": its 04 would not start");
+                Check(Count(room[2], "returnFromWorldMap") == 0, "guest got its consumed trigger back: " + Count(room[2], "returnFromWorldMap"));
+                Check(EventOf(room[2], 1) == 3, "the host's world event did not reach the guest: " + EventOf(room[2], 1));
+            });
+            Run("T-183 " + m + ": the host consumed kuroAttackCutsceneFinished; the guest's later registration never re-arms it on the host", delegate {
+                Room room = new Room(2, s, Controller(new int[0], new int[0], new string[0], 0f, new int[0]));
+                room.Net.Delay = (a, b) => 100;
+                double t0 = room.Net.Now;
+                AddTrigger(room[1], "kuroAttackCutsceneFinished"); room.Net.RunUntil(t0 + 20);    // host: Kuro scene onFinish
+                RemoveTrigger(room[1], "kuroAttackCutsceneFinished"); room.Net.RunUntil(t0 + 40); // host: 03's TriggerByString
+                AddTrigger(room[2], "kuroAttackCutsceneFinished");                                // guest's mirror, later
+                int worst = 0;
+                for (int i = 0; i < 40; i++)
+                { room.Net.RunUntil(room.Net.Now + 25); worst = Math.Max(worst, Count(room[1], "kuroAttackCutsceneFinished")); }
+                Check(worst == 0, "host had kuroAttackCutsceneFinished re-registered (" + worst + "): 03 would run again on its next tree load");
+                Check(Count(room[2], "kuroAttackCutsceneFinished") == 1, "guest lost its own registration: " + Count(room[2], "kuroAttackCutsceneFinished"));
+            });
+        }
         Run("a change not yet scanned is not undone by an incoming batch for the same item; it wins after the scan", delegate {
             Room room = new Room(2, false, Start()); room.Net.Delay = (a, b) => 100;
             room[1].Edit(SetEvent(4, 1), true);          // host proposes 1 (committed at once)

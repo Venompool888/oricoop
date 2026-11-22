@@ -1252,6 +1252,7 @@ namespace OriCoop
             foreach (KeyValuePair<SceneManagerScene, bool> pair in s_pins) if (pair.Key != null) pair.Key.PreventUnloading = pair.Value;
             s_pins.Clear(); s_pinPositions.Clear(); KeptScenes = 0;
         }
+        static readonly bool s_mutateStreamInStory = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STREAM_IN_STORY") == "1";   // T-183 test-only
         static void StreamPartner()
         {
             if (!Services.Net.IsHost || Scenes.Manager == null) return;
@@ -1293,7 +1294,10 @@ namespace OriCoop
         {
             static void Postfix(List<Vector3> ___m_cameraPositions)
             {
-                if (Active && Services.Net.IsHost && (Local != null || CutsceneRespawn.Off))   // no local Ori (cutscene): stream like single player
+                // T-183: not while this PC runs or mirrors a story (see Tick): the game would load the partner's world-map
+                // scene before this PC's own 03 registered "spiritTreeWorldMap" (run G-1: host loaded it in the frame the
+                // guest reported worldMapSpiritTree, 1.3 s before its own 03 got there).
+                if (Active && Services.Net.IsHost && (Local != null || CutsceneRespawn.Off) && (s_mutateStreamInStory || StorySync.RealStories == 0))   // no local Ori (cutscene): stream like single player
                     foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) ___m_cameraPositions.Add(remote.Value);
             }
         }
@@ -1313,7 +1317,12 @@ namespace OriCoop
             { s_difficulty = DifficultyController.Instance.Difficulty; Services.Log.Info("E3T difficulty=" + s_difficulty); }
             if (Local == null && s_pins.Count > 0 && !CutsceneRespawn.Off) ReleasePins();
             if (!Services.Session.Ready || Local == null) return;
-            if (Now >= s_streamAt) { s_streamAt = Now + 0.5f; StreamPartner(); }
+            // T-183: not while this PC runs or mirrors a story. The partner's position then comes from that same story
+            // (the spirit tree's 03 moves Ori to the world map); streaming its scene enabled worldMapSpiritTree before
+            // this PC's own 03 registered "spiritTreeWorldMap", so the scene's TriggerByString (SceneEnabledAfterSerialize)
+            // found nothing and this PC's own load had nothing left to enable: the world-map sequence never started here
+            // (host 0.1-0.8 s behind the guest; Ori left in 03's character animation). The story loads its scenes itself.
+            if (Now >= s_streamAt) { s_streamAt = Now + 0.5f; if (s_mutateStreamInStory || StorySync.RealStories == 0) StreamPartner(); }
             if (Now >= s_scanAt)
             {
                 s_scanAt = Now + 0.25f; Scan();

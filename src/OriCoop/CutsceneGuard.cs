@@ -18,7 +18,7 @@ namespace OriCoop
         static float s_freeSince = -1f;
         static Transform s_traceTarget;
         static bool s_traceTargetKnown;
-        static float s_spiritAt = -2f, s_uiAt = -2f, s_letterboxAt = -2f, s_puppetAt = -2f, s_targetAt = -2f, s_fadeAt = -2f, s_actionLockSince = -1f, s_blackSince = -1f;
+        static float s_spiritAt = -2f, s_uiAt = -2f, s_letterboxAt = -2f, s_puppetAt = -2f, s_targetAt = -2f, s_fadeAt = -2f, s_actionLockSince = -1f, s_blackSince = -1f, s_storyRanAt = -1f;
         public static bool ReplayingPedestal;
         static float s_pedestalUntil = -1f;
         // Since when the gameplay camera has been in straight-line Move motion (-1 = it is chasing). Only the sequence that
@@ -205,7 +205,9 @@ namespace OriCoop
             else s_actionLockSince = -1f;
             bool parked = ParkedInMove(UI.Cameras.Current);
             if (!parked) s_moveSince = -1f; else if (s_moveSince < 0) s_moveSince = now;
-            if (!Off && s_actionLockSince >= 0 && StoryLockRepair.Due(now - s_actionLockSince, StorySync.StorySequenceRunning()))
+            bool storyRunning = StorySync.StorySequenceRunning();
+            if (storyRunning) s_storyRanAt = now;
+            if (!Off && s_actionLockSince >= 0 && StoryLockRepair.Due(now - s_actionLockSince, storyRunning, s_storyRanAt < 0f ? float.MaxValue : now - s_storyRanAt))
             {
                 Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + StorySync.StorySequenceRunning() + ")");
                 gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++;

@@ -11,3 +11,4 @@ OriCoop\Story\PuppetRepairGate.cs
 OriCoop\Net\ProtocolVersion.cs
 OriCoop\Story\MirrorBaseline.cs
 OriCoop\Story\StoryLockRepair.cs
+OriCoop\Story\MirrorStarts.cs

@@ -92,18 +92,32 @@ namespace OriCoop
         static int s_kuroStarts;
         static bool s_watchKuro;
         static ActionSequence s_kuro;
+        // T-183: runs of 03 and 04 that started here (a Perform while the sequence was not running). The game runs each
+        // once; a leftover string trigger ran 03 (and its world-map trip) a second time on the host or on the mirror PC.
+        // Matched by path, not instance: the tree scene may be reloaded around the world-map trip.
+        static int s_worldMapRuns, s_returnCameraRuns;
         [HarmonyPatch(typeof(ActionSequence), "Perform")]
         static class CountKuro
         {
             static bool Prepare() { return TestHarness.Enabled; }
-            static void Postfix(ActionSequence __instance)
-            { if (s_watchKuro && s_kuro != null && __instance == s_kuro && __instance.IsRunning) s_kuroStarts++; }
+            static void Prefix(ActionSequence __instance, out bool __state) { __state = __instance != null && __instance.IsRunning; }
+            static void Postfix(ActionSequence __instance, bool __state)
+            {
+                if (!s_watchKuro || __instance == null) return;
+                if (s_kuro != null && __instance == s_kuro && __instance.IsRunning) s_kuroStarts++;
+                if (__state || !__instance.IsRunning) return;
+                string name = __instance.name;
+                if (name != ChainPaths[2] && name != ChainPaths[3]) return;
+                if (!PathOf(__instance).EndsWith(name, StringComparison.Ordinal) || !InScene(__instance)) return;
+                if (name == ChainPaths[2]) s_worldMapRuns++; else s_returnCameraRuns++;
+            }
         }
         // Both stand in the trigger, the gate fires, the host runs 01 natively and the guest mirrors it; 01 starts 02.
         // T-172 (playtest 3), ORICOOP_P3_KURO=chain: the host holds its own 01 for a few seconds so the guest's mirror
         // reaches "18. Run 02 (RunActionOnce)" first, as in the playtest (there the host was 1.3 s behind).
         static bool Chain { get { return Environment.GetEnvironmentVariable("ORICOOP_P3_KURO") == "chain"; } }
         const float HostDelay = 4f;
+        const float HostWorldMapDelay = 2f;   // T-183 (KURO=1)
         static IEnumerator NativeChain(TestHarness h, Action kuroStarted)
         {
             ActionSequence reach = FindSeq(TriggerPath), kuro = FindKuro();
@@ -189,7 +203,10 @@ namespace OriCoop
             bool removed = false; float playableAt = -1f, backAt = -1f;
             int heldBase = WorldSync.MirrorHeldTotal, leftoverBase = StorySync.LeftoverCleanups;
             bool hostKuro = false;
-            s_kuroStarts = 0; s_kuro = FindKuro(); s_watchKuro = true;
+            s_kuroStarts = 0; s_kuro = FindKuro();
+            s_worldMapRuns = 0; s_returnCameraRuns = 0;
+            int consumedBase = StorySync.MirrorTriggersSkipped;
+            s_watchKuro = true;
             yield return NativeChain(h, delegate { hostKuro = true; });
             if (!Chain && NetPlay.IsHost) Check(h, hostKuro, "the host's own 01 started 02 (the game's chain, no direct Perform)");
             if (Chain)
@@ -203,8 +220,16 @@ namespace OriCoop
                 else Check(h, WorldSync.MirrorHeldTotal > heldBase, "chain: the guest's mirror changed story state and held it back (race reproduced)");
             }
             float end = Now + (NetPlay.IsHost ? 240f : 420f);
+            // T-183, KURO=1: the host holds its own 03 for 2 s once it starts, so the guest's mirror reaches the world map
+            // first (in the bug the host's 03 ended 0.8 s after the guest's mirror; the host then streamed the guest's
+            // world-map scene before its own 03 registered "spiritTreeWorldMap").
+            ActionSequence worldMap = !Chain && NetPlay.IsHost ? FindSeq(ChainPaths[2]) : null;
+            float releaseWorldMap = -1f; bool heldWorldMap = false;
             while (Now < end)
             {
+                if (worldMap != null && !heldWorldMap && worldMap.IsRunning)
+                { worldMap.IsSuspended = true; heldWorldMap = true; releaseWorldMap = Now + HostWorldMapDelay; h.Note("KURO: host holds its 03 for " + HostWorldMapDelay + " s"); }
+                if (releaseWorldMap >= 0f && Now >= releaseWorldMap) { worldMap.IsSuspended = false; releaseWorldMap = -1f; }
                 // Story texts, skipped native popups (T-172) and 04's world-map objective (T-177) wait for the player's press.
                 Answer();
                 if (!OriHere() || CutsceneRespawn.Removed > removedBase) removed = true;
@@ -215,37 +240,50 @@ namespace OriCoop
                 if (!NetPlay.IsHost && NetCutsceneTest.Remote.ContainsKey(512) && OriHere() && Playable()) break;
                 yield return null;
             }
+            if (releaseWorldMap >= 0f) worldMap.IsSuspended = false;
             NetTestHarness.BotButtons = 0;
             if (NetPlay.IsHost) Check(h, removed, "Kuro cutscene removed the host's Ori (DestroyGameplayElementsAction ran)");
             Check(h, OriHere() && (backAt < 0f ? !removed : playableAt < 0f || backAt - playableAt <= 5f), "own Ori present (back within 5 s of the game being playable)");
             Check(h, UI.Cameras.Current != null && UI.Cameras.Current.Target != null, "camera has a target");
-            if (Chain)
+            // T-183: the post-story checks run in both modes. KURO=1 found the host's own 03 ending after the guest's
+            // mirror and 04 never starting on the host (Ori left in a character animation); chain hits the same thing
+            // when the story ends late. Only the race preconditions (T-172 held, T-175 leftovers) stay chain-only.
             {
                 // T-175: once every story is over nothing of a cutscene is left. The host mirrored the guest's 03/04
                 // while it still had its own spirit-tree letterbox and animation; cleanup used to put those back.
                 // T-177: the bot keeps answering like a player while the stories run (04 waits for the world-map
                 // objective to be pressed through before it stops the character animation and unlocks input).
                 float over = Now + 60f;
-                while (StorySync.StoryActive && Now < over) { Answer(); yield return null; }
+                // T-183: real stories only (StorySync.RealStories); the tree's plants keep putting shootProjectile
+                // candidates into Pending, which StoryActive also counts.
+                while (StorySync.RealStories > 0 && Now < over) { Answer(); yield return null; }
                 NetTestHarness.BotButtons = 0;
                 // T-177: when StorySync says every story is over, the spirit-tree sequences really are over here. The
                 // guest's stories used to be ended by CutsceneGuard's 20 s LockInputByAction repair while 04 still waited
                 // for its world-map objective (03 locks input, 04 unlocks it).
                 string stillRunning = RunningChain();
-                h.Note("KURO chain stories over: story=" + StorySync.StoryActive + " running=" + stillRunning + " objective=" + ObjectiveShowing());
-                Check(h, !StorySync.StoryActive && stillRunning.Length == 0,
+                h.Note("KURO chain stories over: stories=" + StorySync.RealStories + " storyActive=" + StorySync.StoryActive + " running=" + stillRunning + " objective=" + ObjectiveShowing());
+                Check(h, StorySync.RealStories == 0 && stillRunning.Length == 0,
                     "chain: stories ended only once the spirit-tree sequences had finished here (none still running)");
                 float settle = Now + 1f;
                 while (Now < settle) yield return null;
                 SeinCharacter own = NetCutsceneTest.Own;
                 bool animating = own != null && own.Controller != null && own.Controller.IsPlayingAnimation;
-                h.Note("KURO chain end: story=" + StorySync.StoryActive + " letterbox=" + Letterbox.ShowLetterboxes + " animation=" + animating
-                    + " leftoverCleanups=" + (StorySync.LeftoverCleanups - leftoverBase));
+                h.Note("KURO chain end: stories=" + StorySync.RealStories + " storyActive=" + StorySync.StoryActive + " letterbox=" + Letterbox.ShowLetterboxes + " animation=" + animating
+                    + " leftoverCleanups=" + (StorySync.LeftoverCleanups - leftoverBase) + " pos=" + (own != null ? own.Position.ToString() : "no-ori")
+                    + " 03runs=" + s_worldMapRuns + " 04runs=" + s_returnCameraRuns + " mirrorTriggersConsumed=" + (StorySync.MirrorTriggersSkipped - consumedBase));
                 // The case really happened: the host mirrored the guest's 03/04 with its own Kuro leftovers still on.
-                if (NetPlay.IsHost) Check(h, StorySync.LeftoverCleanups > leftoverBase,
+                if (NetPlay.IsHost && Chain) Check(h, StorySync.LeftoverCleanups > leftoverBase,
                     "chain: the host's mirror cleanup met leftover cutscene state (T-175 case reproduced)");
-                Check(h, !StorySync.StoryActive && !Letterbox.ShowLetterboxes && !animating,
+                Check(h, StorySync.RealStories == 0 && !Letterbox.ShowLetterboxes && !animating,
                     "chain: no letterbox or character animation left once the stories ended");
+                // T-183 / T-185: the chain ends with Ori back at the spirit tree (04 sets the character position there),
+                // not left at the world-map spot (-207, 4) after a second 03 or at the Kuro drop spot (-152, -130).
+                float fromTree = own != null ? Vector2.Distance(own.Position, s_rect.center) : 999f;
+                Check(h, own != null && fromTree < 30f, "chain: own Ori back at the spirit tree once the stories ended (" + fromTree.ToString("0.0") + " from the trigger)");
+                // T-183: 03 (world map) and 04 ran once each on this PC (host and mirror alike).
+                Check(h, s_worldMapRuns == 1 && s_returnCameraRuns == 1,
+                    "chain: 03 and 04 each ran once here (03 " + s_worldMapRuns + ", 04 " + s_returnCameraRuns + ")");
                 // T-177 movement probe: the own Ori can really move. A player first presses through whatever is still
                 // open (text, popup, world-map objective), then walks: the bot pushes right for 1 s.
                 float answer = Now + 10f; bool wasOpen = false;
