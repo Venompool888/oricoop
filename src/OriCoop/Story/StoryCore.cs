@@ -233,6 +233,7 @@ namespace OriCoop.Story
         public float Began, NextResolve, EndAt = -1f, NextSceneLoad;
         public int SceneLoads;
         public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
+        public bool TripWait;   // T-185: its mirror start waits for this PC's own scene trip (SceneTripRule)
     }
 
     internal enum StoryResolution { Retry, Drop, Watch }
@@ -277,7 +278,11 @@ namespace OriCoop.Story
         public int LiveRemotes
         { get { int count = 0; foreach (T item in Remote.Values) if (item.EndAt < 0) count++; return count; } }
         public bool Watching
-        { get { foreach (T item in Remote.Values) if ((!item.Resolved && item.Classified) || item.Watch) return true; return false; } }
+        {
+            // T-185: a start that only waits for this PC's own scene trip is not "watching" (own Ori stays as the
+            // trip leaves it; natively nothing hides it there).
+            get { foreach (T item in Remote.Values) if ((!item.Resolved && item.Classified && !item.TripWait) || item.Watch) return true; return false; }
+        }
         static List<ulong> SeatTokens(Dictionary<ulong, T> items, int seat)
         {
             List<ulong> result = new List<ulong>();

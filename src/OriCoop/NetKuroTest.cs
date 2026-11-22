@@ -116,8 +116,9 @@ namespace OriCoop
         // T-172 (playtest 3), ORICOOP_P3_KURO=chain: the host holds its own 01 for a few seconds so the guest's mirror
         // reaches "18. Run 02 (RunActionOnce)" first, as in the playtest (there the host was 1.3 s behind).
         static bool Chain { get { return Environment.GetEnvironmentVariable("ORICOOP_P3_KURO") == "chain"; } }
-        const float HostDelay = 4f;
+        const float HostDelay = 4f, HostDelayMax = 40f;   // 200 +- 150 ms with 8 % loss needed up to 19.5 s
         const float HostWorldMapDelay = 2f;   // T-183 (KURO=1)
+        const int KuroLagMs = 90, KuroJitterMs = 8;   // T-185 (KURO=1)
         static IEnumerator NativeChain(TestHarness h, Action kuroStarted)
         {
             ActionSequence reach = FindSeq(TriggerPath), kuro = FindKuro();
@@ -130,11 +131,15 @@ namespace OriCoop
             h.Note("KURO chain: 01 running (" + (NetPlay.IsHost ? "host, original" : "guest, mirror") + ")");
             if (NetPlay.IsHost && Chain)
             {
+                // T-185: at least HostDelay, and until the guest reports that its mirror of 01 has ended (step 513).
+                // With network lag (90 ms +- 8 each way) a fixed 4 s did not always let the guest's mirror reach
+                // "18. Run 02" first: the T-172 race was not there and its precondition check failed for no bug.
                 reach.IsSuspended = true;
-                float resume = Now + HostDelay;
-                while (Now < resume) yield return null;
+                float start = Now, cap = Now + HostDelayMax;
+                while (Now < cap && (Now < start + HostDelay || !NetCutsceneTest.Remote.ContainsKey(513))) yield return null;
                 reach.IsSuspended = false;
-                h.Note("KURO chain: host resumed its 01 after " + HostDelay + " s");
+                h.Note("KURO chain: host resumed its 01 after " + (Now - start).ToString("0.0") + " s (guest's mirror of 01 ended: "
+                    + NetCutsceneTest.Remote.ContainsKey(513) + ")");
             }
             end = Now + 60f;
             bool started = false;
@@ -143,6 +148,7 @@ namespace OriCoop
             float grace = Now + 1f;
             while (!started && Now < grace) { if (kuro.IsRunning) started = true; yield return null; }
             h.Note("KURO chain: 01 ended, 02 started here=" + started + " held=" + WorldSync.MirrorHeldTotal);
+            if (!NetPlay.IsHost && Chain) NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = 513, Found = started });
             if (started) kuroStarted();
         }
         static string Diag()
@@ -205,7 +211,13 @@ namespace OriCoop
             bool hostKuro = false;
             s_kuroStarts = 0; s_kuro = FindKuro();
             s_worldMapRuns = 0; s_returnCameraRuns = 0;
-            int consumedBase = StorySync.MirrorTriggersSkipped;
+            int consumedBase = StorySync.MirrorTriggersSkipped, tripBase = StorySync.StartsHeldForTrip, tripsBase = StorySync.SceneTripsAsked;
+            // T-185, KURO=1: the story runs over a link with 90 +- 8 ms each way (NetPlay's own simulator, outgoing
+            // packets on both PCs). With that lag the partner's start of 04 reaches a PC while its own trip back from
+            // the world map is still pending (asked for, scenes not enabled yet): the mirror's 04 placed Ori at the
+            // tree, the trip then put it at the scene's placeholder (Kuro's drop spot) and nothing placed it again;
+            // or the wait ran into the 2 s "unavailable" clock and the stories ended with 04 still running.
+            if (!Chain) NetPlay.SetSim(KuroLagMs, KuroJitterMs, 0f, 0f);
             s_watchKuro = true;
             yield return NativeChain(h, delegate { hostKuro = true; });
             if (!Chain && NetPlay.IsHost) Check(h, hostKuro, "the host's own 01 started 02 (the game's chain, no direct Perform)");
@@ -271,7 +283,12 @@ namespace OriCoop
                 bool animating = own != null && own.Controller != null && own.Controller.IsPlayingAnimation;
                 h.Note("KURO chain end: stories=" + StorySync.RealStories + " storyActive=" + StorySync.StoryActive + " letterbox=" + Letterbox.ShowLetterboxes + " animation=" + animating
                     + " leftoverCleanups=" + (StorySync.LeftoverCleanups - leftoverBase) + " pos=" + (own != null ? own.Position.ToString() : "no-ori")
-                    + " 03runs=" + s_worldMapRuns + " 04runs=" + s_returnCameraRuns + " mirrorTriggersConsumed=" + (StorySync.MirrorTriggersSkipped - consumedBase));
+                    + " 03runs=" + s_worldMapRuns + " 04runs=" + s_returnCameraRuns + " mirrorTriggersConsumed=" + (StorySync.MirrorTriggersSkipped - consumedBase)
+                    + " tripWaits=" + (StorySync.StartsHeldForTrip - tripBase) + " trips=" + (StorySync.SceneTripsAsked - tripsBase));
+                // T-185: the host runs its own 03 to the world map and back (KURO=1: it is the original), so the scene-trip
+                // hook must have seen those trips; without the hook the wait never happens.
+                if (!Chain && NetPlay.IsHost) Check(h, StorySync.SceneTripsAsked > tripsBase,
+                    "chain: the host's world-map detour was seen as scene trips (" + (StorySync.SceneTripsAsked - tripsBase) + ")");
                 // The case really happened: the host mirrored the guest's 03/04 with its own Kuro leftovers still on.
                 if (NetPlay.IsHost && Chain) Check(h, StorySync.LeftoverCleanups > leftoverBase,
                     "chain: the host's mirror cleanup met leftover cutscene state (T-175 case reproduced)");
@@ -325,7 +342,7 @@ namespace OriCoop
                 if (s_trigger == null || !NetCutsceneTest.Remote.ContainsKey(501) || !NetCutsceneTest.Remote[501].Found) yield break;
                 yield return NetCutsceneTest.Step(h, 510, Play(h));
             }
-            finally { s_watchKuro = false; NetTestHarness.BotLX = 0; NetTestHarness.BotButtons = 0; }
+            finally { s_watchKuro = false; NetTestHarness.BotLX = 0; NetTestHarness.BotButtons = 0; NetPlay.SetSim(0, 0, 0, 0); }
         }
     }
 }

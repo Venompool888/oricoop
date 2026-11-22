@@ -124,6 +124,28 @@ namespace OriCoop
                 StoryHost.Current.Trace("story", "mirror.overtaken", "sequence", p.name, "index", at, "by", started.name);
             }
         }
+        // T-185: no mirrored start while this PC's own scene trip is pending (Story/SceneTripRule.cs).
+        // m_useAfterSceneLoad: set by GoToSceneController.GoToScene, cleared when the scenes are enabled and the
+        // character has been put at the placeholder (CompleteGoingToAScene).
+        static readonly FieldInfo s_tripFlag = typeof(GoToSceneController).GetField("m_useAfterSceneLoad", BindingFlags.Instance | BindingFlags.NonPublic);
+        // Test-only mutation: mirror starts ignore the trip (before T-185).
+        static readonly bool MutateStartInTrip = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_START_IN_SCENE_TRIP") == "1";
+        public static int StartsHeldForTrip;
+        static float s_tripAsked = -1f;   // when the game last asked for a scene trip (GoToScene)
+        static bool s_resolveWaitsForTrip;
+        public static bool SceneTripFlag
+        {
+            get { GoToSceneController go = GoToSceneController.Instance; return s_tripFlag != null && go != null && (bool)s_tripFlag.GetValue(go); }
+        }
+        // Every trip that sets the flag goes through this private overload; the wait is bounded from this moment.
+        [HarmonyPatch(typeof(GoToSceneController), "GoToScene", new Type[] { typeof(MoonGuid), typeof(Vector3), typeof(string), typeof(Action), typeof(bool), typeof(bool) })]
+        static class SceneTripAsked { static void Postfix() { s_tripAsked = Time.realtimeSinceStartup; SceneTripsAsked++; } }
+        public static int SceneTripsAsked;   // tests: the hook really sees the game's trips
+        static bool SceneTripHolds()
+        {
+            if (MutateStartInTrip || s_tripAsked < 0f) return false;
+            return SceneTripRule.Holds(SceneTripFlag, Time.realtimeSinceStartup - s_tripAsked);
+        }
         public static float LastStoryActivity = -1f;
         // Test only (NetCutsceneTest): start mirrors this late, like a slow resolve / scene load on a real link.
         public static float TestResolveDelay;
@@ -564,6 +586,17 @@ namespace OriCoop
         {
             if (LocalOnlyStory(story)) { story.Resolved = true; story.Watch = false; return true; }
             if (Own == null || GameController.Instance == null || GameController.Instance.IsLoadingGame) return false;
+            if (SceneTripHolds())
+            {
+                s_resolveWaitsForTrip = true;
+                if (!story.TripWait)
+                {
+                    story.TripWait = true; StartsHeldForTrip++;
+                    Services.Log.Info("net: story " + story.Token + " waits for this PC's scene trip " + story.Key);
+                    StoryHost.Current.Trace("story", "mirror.trip.wait", "token", story.Token, "key", story.Key);
+                }
+                return false;
+            }
             bool previous = s_mirroring; s_mirroring = true;
             try
             {
@@ -747,6 +780,14 @@ namespace OriCoop
                     if (story.Skipped && !story.Watch) SkipRemote(story);
                     continue;
                 }
+                // T-185: while it waits for this PC's scene trip the 2 s "unavailable" clock does not run (a trip that
+                // reloads the scene takes about 3 s; "watching" hid Ori at the placeholder). The clock starts again
+                // once, when the wait ends.
+                if (story.TripWait)
+                {
+                    if (SceneTripHolds()) continue;
+                    story.TripWait = false; story.Began = now; story.NextResolve = now;
+                }
                 StoryResolution resolution = StoryLedger<Story>.Resolution(story, now, CutsceneGuard.Off);
                 if (resolution == StoryResolution.Drop)
                 {
@@ -765,7 +806,9 @@ namespace OriCoop
                 if (StoryLedger<Story>.ResolveDue(story, now, TestResolveDelay))
                 {
                     StoryLedger<Story>.ScheduleResolve(story, now);
-                    if (!Resolve(story) && Core.Scenes.Manager != null && StoryLedger<Story>.SceneLoadDue(story, now))
+                    s_resolveWaitsForTrip = false;
+                    // Waiting for the trip: no extra scene loads, the trip is loading this PC's scenes itself (T-185).
+                    if (!Resolve(story) && !s_resolveWaitsForTrip && Core.Scenes.Manager != null && StoryLedger<Story>.SceneLoadDue(story, now))
                     {
                         StoryHost.Current.Trace("story", "scene.load", "key", story.Key, "n", story.SceneLoads);
                         Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(new Rect(story.Position.x - 16, story.Position.y - 16, 32, 32), true, false, false);
