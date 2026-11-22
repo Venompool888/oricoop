@@ -6,6 +6,7 @@ using System.Reflection;
 using CatlikeCoding.TextBox;
 using Game;
 using HarmonyLib;
+using OriCoop.Ui;
 using UnityEngine;
 
 namespace OriCoop
@@ -109,7 +110,7 @@ namespace OriCoop
                     if (TitleChoice != TitleNone) Plugin.Log.LogInfo("title menu: choice cleared (back on the " + screen + " screen)");
                     if (NetPlay.Enabled) Saves.CoopSaveFolder.Enter();
                     else Saves.CoopSaveFolder.Leave();
-                    TitleChoice = TitleNone; TitleTransport = "";
+                    TitleChoice = TitleNone; TitleTransport = ""; s_myRoomCreate = false;
                     if (s_guestPickSlot) { s_guestPickSlot = false; s_guestStarted = false; }
                 }
                 if (screen != TitleScreenManager.Screen.MainMenu && TitleOrbOpen) Destroy();
@@ -134,6 +135,7 @@ namespace OriCoop
                 return 3;
             }
             if (TitleChoice == TitleNone || NetPlay.Enabled) { LastSlotPick = TitleChoice == TitleNone ? "no title choice" : "online already"; return 0; }
+            if (s_myRoomCreate && TitleChoice == TitleOnline) return MyRoomCreatePick(ui);   // T-173: 我的房间 -> 新建房间
             if (TitleChoice == TitleSingle || TitleChoice == TitleLocal)
             {
                 int mode = TitleChoice == TitleSingle ? PlayMode.Single : PlayMode.Coop;
@@ -153,6 +155,7 @@ namespace OriCoop
             if (!Open(ui)) { LastSlotPick = "orb failed"; return 0; }
             s_fromTitle = true;
             s_transport = transport;
+            s_roomEntry = transport == "cserver" ? RoomEntryKind.TitleHost : RoomEntryKind.None;
             LastSlotPick = "title-host-" + transport;
             Plugin.Log.LogInfo("title menu: slot picked, hosting via " + transport);
             GoPage(PageHost, 1);
@@ -172,6 +175,17 @@ namespace OriCoop
             s_mgr.IsActive = !visible;
             s_mgr.IsLocked = visible;
             if (s_tooltip != null) s_tooltip.gameObject.SetActive(!visible);
+        }
+
+        // T-173 review: a NativeGui page drawn over the hidden page (the 我的房间 join / list pages) closed. The page comes
+        // back, but locked for a moment: the Esc / B that closed it is still down (and not marked used), and the menu would
+        // otherwise take the same Cancel and back out of 我的房间 too. The Driver unlocks it at s_unlockAt.
+        internal static void RoomPanelShowLocked(float delay)
+        {
+            RoomPanelVisible(false);
+            if (s_mgr == null || !s_mgr.IsVisible) return;
+            s_mgr.IsLocked = true;
+            s_unlockAt = Math.Max(s_unlockAt, Time.realtimeSinceStartup + delay);
         }
 
         // Test-only mutation (T-120): the old behaviour, the room screen's reset shows and unlocks the native page under the overlay.
@@ -201,7 +215,7 @@ namespace OriCoop
             ui.Active = false;
         }
 
-        internal static void RoomJoin(string target)
+        internal static void RoomJoin(string target, MyRoomsPages.Page fromPage)
         {
             if (!TitleOrbOpen)
             {
@@ -211,6 +225,8 @@ namespace OriCoop
             }
             s_transport = "cserver";
             s_joinTarget = target;
+            s_roomEntry = RoomEntryKind.MyRoomsJoin;
+            s_myRoomsJoinPage = fromPage;
             GoPage(PageJoin, 1);
             BeginCServer(false, target);
         }
@@ -753,6 +769,7 @@ namespace OriCoop
                     bool zh = Zh;
                     if (zh != s_tLastZh) { s_tLastZh = zh; RelabelTitleItems(); if (IsOpen) RefreshTexts(true); }
                     if (!IsOpen) TitleTick();                // with the orb open, NativeModeMenu.Driver ticks it
+                    SlotRecoveryTick();                      // T-173: the slot list after a failed 新建房间 (NativeRooms.cs)
                 }
                 catch (Exception e) { Plugin.Log.LogError("title menu: tick failed: " + e); }
             }
@@ -813,6 +830,13 @@ namespace OriCoop
             yield return s_tHost.StartCoroutine(TWait(wait));
         }
 
+        // T-171: one row of the C-server room list under 创建房间 / 加入房间: loading, no rooms, failed, or a room ("name  n/4").
+        static bool CsListRow(string label)
+        {
+            List<string> one = new List<string> { label };
+            return HasKey(one, "csroom.list.loading") || HasKey(one, "csroom.list.none") || HasKey(one, "csroom.list.failed")
+                || System.Text.RegularExpressions.Regex.IsMatch(label, @"\s[0-4]/4$");
+        }
         static bool HasKey(List<string> labels, string key) { return labels.Contains(L10n.T(key, true)) || labels.Contains(L10n.T(key, false)) || labels.Contains(L10n.T(key, false).ToUpperInvariant()); }
         static string Labels { get { return LastPage + ": " + string.Join(" | ", LastLabels.ToArray()); } }
 
@@ -886,8 +910,8 @@ namespace OriCoop
             RefreshTexts(true);
             yield return s_tHost.StartCoroutine(Row(3, 0.5f));
             yield return s_tHost.StartCoroutine(Row(before, 0.5f));
-            check(LastPage == "role" && LastLabels.Count == 2 && OriCoop.Authority.CServerConfig.Address == added,
-                "title menu: picking a saved server selects it and opens Host / Join");
+            check(LastPage == "role" && LastLabels.Count >= 3 && HasKey(LastLabels.GetRange(0, 2), "csroom.list.create") && OriCoop.Authority.CServerConfig.Address == added,
+                "title menu: picking a saved server selects it and opens the room list (T-171)");
         }
 
         // T-093: the how-to-play chooser (CoopMenu) is laid out from the screen size: readable and proportional at 720p..4K.
@@ -1033,10 +1057,15 @@ namespace OriCoop
                         "title menu: own-server page lists My rooms and Server management (and Last played only with a record), no host mode, default focus on the first row (" + Labels + ")");
                     yield return s_tHost.StartCoroutine(CheckCServerList(check));
                 }
-                check(TitleOrbOpen && LastPage == "role" && s_transport == tr && HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join")
-                    && !SlotsReady,
+                // T-171: the C-server role page is 创建房间 / 加入房间 (rows 0 and 1, the same rows as host / join elsewhere),
+                // then the server's room list (loading / no rooms / failed / one row per listed room).
+                bool csList = tr == "cserver";
+                check(TitleOrbOpen && LastPage == "role" && s_transport == tr && !SlotsReady && (csList
+                    ? LastLabels.Count >= 2 && HasKey(LastLabels.GetRange(0, 1), "csroom.list.create") && HasKey(LastLabels.GetRange(1, 1), "csroom.list.join")
+                    : HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join")),
                     "title menu: " + tr + " asks host / join before any save slot (" + Labels + ")");
-                if (tr == "cserver") check(LastLabels.Count == 2, "title menu: selected C-server has only Host / Join (" + Labels + ")");
+                if (csList) check(LastLabels.Count >= 3 && LastLabels.GetRange(2, LastLabels.Count - 2).TrueForAll(CsListRow),
+                    "title menu: selected C-server has Create / Join, then only room list rows (T-171) (" + Labels + ")");
                 TShot("title_" + tr + "_role");
                 yield return s_tHost.StartCoroutine(TWait(0.5f));
 

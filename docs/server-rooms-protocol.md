@@ -51,7 +51,7 @@ verifier, proof, nonce, save bytes) are raw bytes. Lists use indexed names: `sav
 | `old_client` | `proto` not supported |
 | `no_room` | room id or code not found (also used for a cleared code) |
 | `bad_password` | proof wrong |
-| `locked` | too many wrong passwords from this IP; `retry` = seconds |
+| `locked` | too many wrong passwords or unknown join codes from this IP; `retry` = seconds |
 | `bad_token` | token does not match this member (client then asks for the password and calls `rebind`) |
 | `not_member` | steam id is neither P1 nor P2 |
 | `already_member` | join by someone already in the room; response still carries `room` |
@@ -72,6 +72,9 @@ verifier, proof, nonce, save bytes) are raw bytes. Lists use indexed names: `sav
 - Login proof: the client calls `challenge` to get `salt` and a one-time `nonce` (16 random bytes, valid 120 s, single
   use, server keeps at most 10000 outstanding), then sends `proof = HMACSHA256(key: verifier, data: nonce)`.
 - Wrong proof: per client IP, 5 failures inside 15 minutes lock that IP out of password ops for 15 minutes (`locked`).
+  Since the T-173 review a `join` or `challenge` by an unknown, closed or expired code counts as a failure in the same
+  lockout (the code is an open room's only secret), and a locked IP is refused before the code is looked up, also for
+  open rooms. A full open room's (right) code does not count.
   Success does not reset the counter early (keep it simple).
 - Token: 32 random bytes as lowercase hex (64 chars), returned on create/join/rebind/copy/restore. The server stores
   `SHA256(token)` hex, up to 4 per member (oldest dropped), so one player can use several PCs. Authenticated ops send
@@ -293,3 +296,94 @@ with the room.dat fields and a `List<RoomBackupSave>`; `RoomBackupInfo.FromInfoR
     FromInfoReply, token round-trip.
 24. No secret in logs: capture the server's console output during the test and check that no token, and no password
     string used in the test, appears in it.
+
+## T-173 room numbers
+
+Each room has a display number `no` (decimal integer), starting at 1001 per server and increasing for new rooms
+(including password rooms, copies and restores). `create`, `join` and `info` return it; `copy` and `restore` also return
+it in their usual creation reply. The number is stored in `room.dat`. Startup resumes at `max(existing no) + 1`
+(at least 1001); old records without `no` receive numbers in `created` order, with room id breaking ties, and are
+persisted before requests are accepted. Numbers identify rooms for display, not authentication or joining; invite
+codes remain the join mechanism. Deleted-room numbers are not separately reserved across restarts.
+
+The local room backup stores `no` and `played` for the MyRooms list's display and newest-played-first ordering.
+MyRooms uses the existing job queue, token store and RoomSession; successful password-free create/join opens info
+and enters the first save; the picked co-op slot is linked to the new room (its `.oriroom` sidecar) so the room is
+hosted from that slot. A create / join / enter reports success only once the room session hosts or joins, and an
+error for anything before that (enter, download, slot); a cancelled one reports nothing. An existing member that
+gets `already_member` from an older server reuses its locally stored token. 删除 decides delete (seat 1) or quit
+from fresh info of that room, or its stored member list, and forgets the local record when the server answers
+`no_room` / `bad_token` / `not_member`. The room list shows only rooms of the selected room service. A failed
+`confirm` is remembered (file `confirm` in the room's local folder) and resent whenever fresh info of that room says it
+is still pending (我的房间 menu refresh, room page refresh, and an info check every 30 seconds while the room session
+runs in game) until info says the room is confirmed; info that says confirmed only clears the marker, so a reopened
+code is never closed by a late retry. A room session error while a create / join / enter still waits for it to start
+ends that session (no join or holder session after the error was shown). Creating from the title slot picker reads the co-op folder's selected save; an empty slot reports
+`no_save` (localized `rooms.err.no_save`), since new-game rooms are not supported yet. Room-page info refreshes every
+five seconds, and confirm/open_code update the displayed state on success. The original password helpers remain
+available for old rooms.
+
+## T-173 open rooms
+
+This section supersedes the password and automatic join-code rules above **only for open rooms**. Existing password
+rooms, including `copy` and `restore`, keep their existing behaviour.
+
+- `create` may omit both `salt` and `verifier`. Such a room stores `open=1`, `pending=1` and immediately reserves a
+  join code. Providing credentials still requires both valid fields and creates a password room (`open=0`,
+  `pending=0`). A pending room's code has no expiry, including when it is full.
+- `challenge` with an open room's active code returns `room`, `open=1`, with **no** `salt` or `nonce`.
+- `join` with an open room's code sends only `code`, `steam`, `nick`; no nonce or proof is required. The code must
+  still be open (pending, or `now < code_until`), and there must be a free seat. A closed/expired/unknown code or a
+  full room returns `no_room` (unknown/closed/expired codes count toward the IP lockout, see above). An existing
+  member using an active code gets a fresh token for its seat (open rooms have no `rebind`, so this is how a lost
+  token is recovered; older tokens stay valid). Successful join returns the usual `room`, `token`, `role`.
+- `create` takes an optional `seats` (2-4, otherwise `bad_request`); without it a room has 2 seats as before.
+  我的房间 creates its open rooms with `seats`=4, like the C-server room they play in.
+
+| op | request | rules | response |
+|---|---|---|---|
+| `confirm` | A (`room`, `steam`, `token`) | any member of an open room; sets `pending=0`, closes and releases the code; repeated calls succeed | — |
+| `open_code` | A | any member of an open room with a free seat; otherwise `forbidden`; reuse an active code or reserve a new one (`limit` if none is available); set `code_until=now+300` | `code`, `expires` (Unix seconds UTC), `now` (server time, Unix seconds) |
+
+`confirm` is sent when the creator presses start. The server allows any authenticated member to confirm. Calling it
+again also closes any subsequently reopened code. Password rooms reject both new operations with `forbidden`.
+`open_code` does not confirm a pending room: pending codes remain non-expiring until confirmation, regardless of
+`code_until`.
+
+`info` always includes `open` (1/0), `pending` (1/0), `code_expires` (Unix seconds UTC, 0 when no code or while
+pending) and `now` (the server's current Unix time; clients count `code_expires` down from the server's clock
+difference, never from their own clock). Every open-room member sees the active `code`; password-room codes remain
+visible only to seat 1.
+Filling a room, quitting, kicking or changing capacity does not change an open room's code lifecycle: membership
+changes never reopen a closed code. A code remains reserved until confirmation, window expiry or room deletion.
+
+The server exposes `CodeOpenSeconds` (default 300) and `PendingSeconds` (default 21600) for tests. Unconfirmed open
+rooms whose age reaches `PendingSeconds` are moved to trash, releasing their code, just like `delete_room`.
+Seat 1 may also delete a pending room normally. Code expiry and pending-room cleanup run lazily on room/code
+lookup (including `challenge`, `join`, `info`) and in the existing hourly maintenance. Expired codes are cleared,
+released and persisted. `open`, `pending`, `code_until` are stored in the Fields-encoded `room.dat`; startup keeps
+pending code reservations, closes expired windows and trashes overdue pending rooms before accepting requests.
+Old records without these fields are password rooms.
+
+Client additions (all return `RoomReply`; `OpenCode` results are in `Fields[code]` / `Fields[expires]`):
+
+```csharp
+public RoomReply Create(string steam, string nick, string roomName, byte[] save, string summary, string saveName);
+public RoomReply Create(string steam, string nick, string roomName, byte[] save, string summary, string saveName, int seats);
+public RoomReply Join(string code, string steam, string nick);
+public RoomReply Confirm(RoomAuth auth);
+public RoomReply Confirm(string room, string steam, string token);
+public RoomReply OpenCode(RoomAuth auth);
+public RoomReply OpenCode(string room, string steam, string token);
+```
+
+The original `Create(..., password, ...)` also creates an open room when `password` is null. The existing four-argument
+`Join` still uses password proof for password rooms, and skips proof when the challenge says `open=1`.
+Three-argument `Join` challenges first and reports `bad_request` (password required) for a password room; callers can
+use the existing password overload. `rebind` is password-only and returns `forbidden` for an open room; an open-room
+member recovers a lost token by joining again with an open code (see above).
+
+`RoomTest` adds real HTTP checks for pending creation, authenticated operations, password-free challenges/joins,
+existing members, confirmation and code release, five-minute reopening/renewal, full-room refusal, membership
+changes, lazy expiry, pending trash, restart reservations/windows, startup cleanup and hourly maintenance.
+Existing password-room checks remain unchanged. The T-173 review changed one open-room check (an existing member joining with an open code now gets a fresh token instead of `already_member`) and added checks for the code lockout, create `seats`, the server clock (`now`) and the 我的房间 rules.

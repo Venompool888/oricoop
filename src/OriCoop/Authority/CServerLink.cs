@@ -1,4 +1,5 @@
 using System;
+using System.Collections;
 using System.IO;
 using System.Net;
 using OriCoop.Net;
@@ -13,7 +14,10 @@ namespace OriCoop.Authority
         static CServerClient s_client;
         static bool s_installed;
         static string s_lastCode = ""; static byte[] s_lastToken;
+        static bool s_lastCreated;   // T-173: s_lastCode's room was created by this PC (a token rejoin keeps CServerClient.Created)
         static CServerClient s_stale;
+        // T-173: kicked out (CServerClient.RetryAllowed false): no reconnect until NetPlay.End has closed the session.
+        static bool s_endedForGood;
 
         public static CServerClient Client { get { return s_client; } }
         public static string LastFailure = "";      // L10n key of the last join failure ("" = none)
@@ -24,7 +28,7 @@ namespace OriCoop.Authority
             s_installed = true;
             IAuthority touch = AuthoritySource.Current;  // registers the 0xB0-0xBA handlers now (needed before CsWelcome)
             NetPlay.TransportFactory = Create;
-            NetPlay.Stopped = delegate { Teardown(); };   // leaving the room: free the socket, routing and arbiter role (T-031)
+            NetPlay.Stopped = delegate { Teardown(); s_endedForGood = false; };   // leaving the room: free the socket, routing and arbiter role (T-031)
             // T-113: before NetPlay.End says goodbye, free our seats on the server so a rejoin (or anyone) gets them now.
             NetPlay.Leaving = delegate
             {
@@ -44,6 +48,7 @@ namespace OriCoop.Authority
         static NetPeer Create(string transport, bool isHost, string target)
         {
             if (transport != "cserver") return null;
+            if (s_endedForGood) return null;   // T-173: kicked; NetPlay.End (deferred one frame) ends the session
             Teardown();
             // Socket of a dropped session: freed here, not inside its own Disconnected event (NetPlay may still poll it).
             if (s_stale != null) { try { s_stale.Leave(); } catch { } s_stale = null; }
@@ -71,13 +76,19 @@ namespace OriCoop.Authority
             byte mode = CServerClient.PlanJoin(isHost, code, s_lastCode, s_lastToken, NetPlay.RoomCodeOverride, out rejoin);
             if (rejoin) code = s_lastCode;
             // TODO(four-player): pass all local players' identities/count and map their assigned seats here.
+            // T-173: the real Steam account (0 / "" without Steam, e.g. test copies): kicks ban it, the room page and room
+            // list show the name. Create runs on the main thread (NetPlay.Update), as SteamTransport requires.
+            CsIdentity self = new CsIdentity { Steam = SteamTransport.LocalSteamId,
+                Nick = Arbiter.ClampUtf8(SteamTransport.LocalPersonaName ?? "", Arbiter.MaxTextBytes) };
             CServerClient c = new CServerClient(ep, mode, code,
-                rejoin ? s_lastToken : null, 1, new CsIdentity[] { new CsIdentity { Steam = 0, Nick = "" } });
+                rejoin ? s_lastToken : null, 1, new CsIdentity[] { self });
             c.RejoinFallsBackToJoin = rejoin;
+            c.RejoinCreated = rejoin && s_lastCreated;
+            c.Private = RoomServiceSession;   // T-173 (review F10): its room info never reaches the public room list
             c.SeatAssigned += delegate(int seat)
             {
                 NetPlay.RoomCodeOverride = c.Code;
-                s_lastCode = c.Code; s_lastToken = c.Token;
+                s_lastCode = c.Code; s_lastToken = c.Token; s_lastCreated = c.Created;
                 NetPlay.AssignSeat(c.PrimarySeat);
                 NetPlay.HostOverride = c.IsArbiter;
                 Plugin.Log.LogInfo("cserver: seat P" + seat + ", room code " + c.Code + (c.IsArbiter ? ", legacy arbiter" : ""));
@@ -96,7 +107,7 @@ namespace OriCoop.Authority
                 Plugin.Log.LogWarning("cserver: join failed: " + key + " (" + L10n.T(key) + ")");
                 // T-148: the saved seat or the room is gone: forget the token, so the next attempt (NetPlay retries after
                 // the client ends the refused connection) joins fresh instead of reusing the dead token forever.
-                if (c.PrimarySeat == 0 && (key == "server.err.token" || key == "server.err.noroom")) { s_lastToken = null; s_lastCode = ""; }
+                if (c.PrimarySeat == 0 && (key == "server.err.token" || key == "server.err.noroom")) { s_lastToken = null; s_lastCode = ""; s_lastCreated = false; }
             };
             // Not SessionEnded: that fires when the last partner leaves, but in server mode the room stays open.
             c.Peer.Disconnected += delegate(string why)
@@ -104,12 +115,39 @@ namespace OriCoop.Authority
                 if (s_client != c) return;
                 Plugin.Log.LogInfo("cserver: disconnected (" + why + ")");
                 Unroute(); s_client = null; s_stale = c;
+                if (!CServerClient.RetryAllowed(c.RefusedWith))
+                {
+                    // T-173: kicked (or refused as kicked): tell the player once and end online play for good, instead of
+                    // NetPlay retrying a rejoin the server refuses forever while the room page stays open.
+                    s_endedForGood = true; s_lastToken = null; s_lastCode = ""; s_lastCreated = false;
+                    NetHud.Toast(L10n.T(c.RefusedWith));
+                    if (Plugin.Instance != null) Plugin.Instance.StartCoroutine(EndForGood(c.RefusedWith));
+                }
             };
             s_client = c;
             NetRoute.UseServer(c);
             AuthoritySource.UseServer(c.Authority, c.Receive);
             Plugin.Log.LogInfo("cserver: connecting (" + (rejoin ? "rejoin " + code : isHost ? "new room" : "join " + code) + ")");
             return c.Peer;
+        }
+
+        // T-173 (review F10): this session plays a room-service room (我的房间 or a password room): RoomSession is active
+        // (set before it starts NetPlay, and still active on a reconnect). Its rooms stay off the C-server's room list.
+        static bool RoomServiceSession
+        {
+            get
+            {
+                OriCoop.Rooms.RoomsPanel p = OriCoop.Rooms.RoomsPanel.Instance;
+                return p != null && p.Session != null && p.Session.Active;
+            }
+        }
+
+        // T-173: one frame later, outside the peer's Disconnected event (NetPlay is still reading that peer then).
+        static IEnumerator EndForGood(string why)
+        {
+            yield return null;
+            if (s_endedForGood && NetPlay.Enabled) NetPlay.End(why);   // End -> Stopped clears s_endedForGood
+            s_endedForGood = false;
         }
 
         public static bool HasStale { get { return s_stale != null; } }   // T-152 test hook
@@ -134,7 +172,7 @@ namespace OriCoop.Authority
             NetPlay.HostOverride = false;   // RoomCodeOverride stays: NetPlay.End clears it; a reconnect reuses it
         }
 
-        static IPEndPoint Resolve(string hostPort)
+        internal static IPEndPoint Resolve(string hostPort)
         {
             if (hostPort.Length == 0) return null;
             string host = hostPort; int port = CServerConfig.DefaultPort;

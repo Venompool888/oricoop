@@ -169,7 +169,26 @@ namespace OriCoop.Rooms
             {
                 f.Set("save", save);
             }
-            return WithPassword("create", f, password);
+            return password == null ? Call("create", f) : WithPassword("create", f, password);
+        }
+
+        public RoomReply Create(string steam, string nick, string roomName,
+            byte[] save, string summary, string saveName)
+        {
+            return Create(steam, nick, roomName, null, save, summary, saveName);
+        }
+
+        // Open room with `seats` (2-4) seats; 我的房间 sends 4 (review F41). Servers without the field make 2.
+        public RoomReply Create(string steam, string nick, string roomName,
+            byte[] save, string summary, string saveName, int seats)
+        {
+            RoomWire.Fields f = F("steam", steam, "nick", nick, "name", roomName,
+                "summary", summary, "savename", saveName, "seats", seats);
+            if (save != null)
+            {
+                f.Set("save", save);
+            }
+            return Call("create", f);
         }
 
         RoomReply Login(string op, string key, string id, string password, string steam, string nick)
@@ -178,6 +197,19 @@ namespace OriCoop.Rooms
             if (!challenge.Ok)
             {
                 return challenge;
+            }
+            if (challenge.Fields.GetString("open") == "1")
+            {
+                return Call(op, F(key, id, "steam", steam, "nick", nick));
+            }
+            if (password == null)
+            {
+                return new RoomReply
+                {
+                    Error = "bad_request",
+                    Message = "Password required",
+                    Fields = new RoomWire.Fields()
+                };
             }
             byte[] nonce = challenge.Fields.GetBytes("nonce");
             byte[] verifier = RoomWire.Verifier(password, challenge.Fields.GetBytes("salt"));
@@ -189,6 +221,31 @@ namespace OriCoop.Rooms
         public RoomReply Join(string code, string password, string steam, string nick)
         {
             return Login("join", "code", code, password, steam, nick);
+        }
+
+        public RoomReply Join(string code, string steam, string nick)
+        {
+            return Login("join", "code", code, null, steam, nick);
+        }
+
+        public RoomReply Confirm(RoomAuth auth)
+        {
+            return Call("confirm", A(auth));
+        }
+
+        public RoomReply Confirm(string room, string steam, string token)
+        {
+            return Confirm(new RoomAuth { Room = room, Steam = steam, Token = token });
+        }
+
+        public RoomReply OpenCode(RoomAuth auth)
+        {
+            return Call("open_code", A(auth));
+        }
+
+        public RoomReply OpenCode(string room, string steam, string token)
+        {
+            return OpenCode(new RoomAuth { Room = room, Steam = steam, Token = token });
         }
 
         public RoomReply Rebind(string room, string password, string steam)

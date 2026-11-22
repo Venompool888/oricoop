@@ -24,7 +24,11 @@ namespace OriCoop.Rooms
         string screen = "list", message = "", roomName = "";
         Action<string> passwordDone;
         string passwordBack;
-        bool visible, busy, online, wasNetEnabled;
+        bool visible, busy, online, wasNetEnabled, openRooms;
+        readonly RoomReadyGate ready = new RoomReadyGate();   // waits for the first refresh (review F23)
+        readonly RoomActionLatch action = new RoomActionLatch();   // the running 我的房间 create/join/enter
+        long serverOffset;   // room service clock - local clock, from the latest info / open_code (review F28)
+        RoomConfirmRetry confirm;   // 开始 pressed, confirm not on the server yet (review F24)
         int revision;
         byte[] copyBytes;
         int overwrite = -1;
@@ -42,6 +46,9 @@ namespace OriCoop.Rooms
         internal Dictionary<string, RoomWire.Fields> Refreshed { get { return refreshed; } }
         internal int Overwrite { get { return overwrite; } }
         internal string AutoName { get { return roomName; } }
+        internal string Steam { get { return steam; } }
+        internal string GameServer { get { return gameServer; } }
+        internal RoomAuth Auth { get { return auth; } }
 
         static void EnsureInstance()
         {
@@ -51,7 +58,8 @@ namespace OriCoop.Rooms
             Instance = go.AddComponent<RoomsPanel>();
             Instance.jobs = new RoomJobs();
             Instance.Game = new RoomGame();
-            Instance.Game.Starting = delegate { Instance.busy = false; Instance.visible = false; };
+            // RoomGame.Host / Join: the room session is hosting or joining, so a waiting 我的房间 action has succeeded.
+            Instance.Game.Starting = delegate { Instance.busy = false; Instance.visible = false; Instance.action.Finish(null); };
             Instance.Game.PickCopySlot = delegate(byte[] bytes)
             {
                 Instance.copyBytes = bytes;
@@ -83,17 +91,21 @@ namespace OriCoop.Rooms
             if (p.Session != null && p.Session.Active) return;
             p.revision++;
             p.busy = false;
+            p.openRooms = false;
             p.visible = true;
             p.online = false;
+            p.serverOffset = 0;
             p.steam = TestValue("ORICOOP_TEST_STEAMID", SteamTransport.LocalSteamId.ToString());
             p.nick = TestValue("ORICOOP_TEST_NICK", SteamTransport.LocalPersonaName);
             p.serviceName = L10n.T("rooms.service");
             p.Show("list");
             p.autoOpen = autoRoom;
-            if (p.steam == "0") { p.message = L10n.T("rooms.steam_required"); return; }
+            // Waiters queued before this reopen are answered by this refresh, or right away on the early returns.
+            if (p.steam == "0") { p.message = L10n.T("rooms.steam_required"); p.FinishRefresh(); return; }
             p.store = new RoomLocalStore(RoomsDir);
             p.rooms = p.store.ListRooms();
             p.refreshed.Clear();
+            p.confirm = p.NewConfirmRetry();
             // T-159: rooms play through the selected C-server (was the relay); the room service runs on the same host.
             p.gameServer = (OriCoop.Authority.CServerConfig.Address ?? "").Trim();
             p.server = Plugin.Instance.Config.Bind("Rooms", "Server", "", "Room service URL; empty uses the selected C-server's host, port 47021").Value.Trim();
@@ -102,15 +114,26 @@ namespace OriCoop.Rooms
             {
                 Uri address;
                 if (p.gameServer.Length == 0 || !Uri.TryCreate("http://" + p.gameServer, UriKind.Absolute, out address))
-                { p.message = ErrorText("network"); return; }
+                { p.message = ErrorText("network"); p.FinishRefresh(); return; }
                 p.server = "http://" + address.Host + ":47021/";
             }
+            // The 上次游玩 room of another room service cannot be opened through this one (review F21).
+            if (p.autoOpen != null)
+                foreach (RoomBackupInfo known in p.rooms)
+                    if (known.Id == p.autoOpen && known.Server.Length > 0 && known.Server != p.server) p.autoOpen = null;
             p.client = new RoomClient(p.server);
+            p.confirm.Client = p.client;
+            p.ready.Begin();
             p.Request(p.client.Hello, delegate(RoomReply reply)
             {
                 p.online = reply.Ok;
-                if (!p.online) p.message = L10n.T("rooms.offline");
-                else if (p.autoOpen != null) { string room = p.autoOpen; p.autoOpen = null; p.OpenRoom(room); }
+                if (!p.online) { p.message = L10n.T("rooms.offline"); p.FinishRefresh(); }
+                else if (p.autoOpen != null)
+                {
+                    string room = p.autoOpen; p.autoOpen = null;
+                    p.FinishRefresh();
+                    p.OpenRoom(room);
+                }
                 else p.RefreshNext(0);
             });
         }
@@ -124,9 +147,42 @@ namespace OriCoop.Rooms
 
         void Show(string next) { screen = next; message = ""; }
 
+        internal void UseOpenRooms()
+        {
+            openRooms = true;
+            if (Session != null) Session.Password = null;
+        }
+
+        internal void WhenReady(Action<string> done)
+        {
+            ready.Wait(done, ReadyState);
+        }
+
+        string ReadyState()
+        {
+            return online ? null : ErrorText(steam == "0" ? "steam_required" : "network");
+        }
+
+        void FinishRefresh()
+        {
+            ready.End(ReadyState);
+        }
+
+        // 我的房间 (MyRooms.Cancel): the running create/join/enter is abandoned. Its done callback never runs, replies
+        // still on the way are dropped (revision), and a room session that has not started hosting or joining yet is
+        // left, so nothing enters the room afterwards.
+        internal void CancelMyRooms()
+        {
+            bool pending = action.Cancel();
+            ready.Drop();
+            revision++;
+            busy = false;
+            if (pending && Session != null && Session.Active) Session.Cancel();
+        }
+
         void RefreshNext(int index)
         {
-            if (index >= rooms.Count) return;
+            if (index >= rooms.Count) { FinishRefresh(); return; }
             RoomBackupInfo room = rooms[index];
             if (room.Server != server) { RefreshNext(index + 1); return; }
             SetRoom(room.Id);
@@ -148,13 +204,21 @@ namespace OriCoop.Rooms
             if (double.TryParse(TestValue("ORICOOP_ROOMS_POLL", ""),
                 System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out poll)
                 && poll > 0) Session.BackupSeconds = poll;
-            Session.Password = AskPassword;
+            if (!openRooms) Session.Password = AskPassword;
             Session.Copied = delegate { busy = false; };
-            Session.Error = delegate(string error)
+            RoomSession session = Session;
+            session.Error = delegate(string error)
             {
                 busy = false;
-                visible = true;
                 message = ErrorText(error);
+                // A 我的房间 action still waiting for the session to start: its page shows the error, the hidden native
+                // menu stays where it is (enter / download failures, review F25 / contract), and the session ends, so
+                // it can neither enter the room after the error was shown nor stay active as a slotless holder.
+                // Only the current session may fail the waiting action: a replaced session's late reply (an upload or
+                // live call still in flight) must not report the new room's enter as failed.
+                if (session == Session && MyRoomsRules.FailBeforeStart(action, session, message)) return;
+                if (session != Session) return;
+                visible = true;
                 NativeModeMenu.ShowRoomError();
             };
         }
@@ -181,6 +245,7 @@ namespace OriCoop.Rooms
 
         void RequestAuth(Func<RoomReply> work, Action<RoomReply> done)
         {
+            if (openRooms) { Request(work, done); return; }
             busy = true;
             int request = revision;
             Session.Call(work, delegate(RoomReply reply)
@@ -200,21 +265,281 @@ namespace OriCoop.Rooms
             store.SaveRoom(data);
             rooms = store.ListRooms();
             info = reply.Fields;
+            // T-173: an info reply that left before a rename still on its way has the old name: keep the new one.
+            if (renaming.Length > 0 && renamingRoom == auth.Room && renamingRevision == revision) info.Set("name", renaming);
             refreshed[auth.Room] = info;
+            NoteServerClock(info);
+            // Confirmed on the server: the marker goes; still pending after 开始 here: the confirm goes out again (F24).
+            if (confirm != null) confirm.SawInfo(auth, info);
         }
 
-        internal void OpenRoom(string room)
+        // Room service clock - local clock (review F28): code_expires is the server's time, so the countdown must not
+        // depend on this PC's clock.
+        void NoteServerClock(RoomWire.Fields f)
+        {
+            if (f.Has("now")) serverOffset = f.GetLong("now", RoomWire.Now) - RoomWire.Now;
+        }
+
+        internal long ServerOffset { get { return serverOffset; } }
+
+        internal bool ConfirmWanted(string room)
+        {
+            return confirm != null && confirm.Wanted(room);
+        }
+
+        RoomConfirmRetry NewConfirmRetry()
+        {
+            RoomConfirmRetry retry = new RoomConfirmRetry(jobs, store);
+            retry.Log = delegate(string text) { Plugin.Log.LogWarning("my rooms: " + text); };
+            retry.Failed = delegate(string room, string error)
+            {
+                Plugin.Log.LogWarning("my rooms: confirm (retried later): " + ErrorText(error));
+            };
+            retry.Confirmed = MarkConfirmed;
+            // The in-game check's info: the current room's info is updated (its SaveInfo resends or clears);
+            // another room's only feeds the retry.
+            retry.Checked = delegate(RoomAuth current, RoomReply r)
+            {
+                if (auth != null && auth.Room == current.Room && confirm == retry) SaveInfo(r);
+                else retry.SawInfo(current, r.Fields);
+            };
+            return retry;
+        }
+
+        void MarkConfirmed(string room)
+        {
+            RoomWire.Fields known;
+            if (refreshed.TryGetValue(room, out known)) ClearPending(known);
+            if (auth != null && auth.Room == room && info != null) ClearPending(info);
+        }
+
+        static void ClearPending(RoomWire.Fields f)
+        {
+            f.Set("pending", 0);
+            f.Set("code", "");
+            f.Set("code_expires", 0);
+        }
+
+        internal void OpenRoom(string room) { OpenRoom(room, false, null); }
+
+        // myRooms: a 我的房间 flow, which draws its own pages over the hidden native 我的房间 menu, so the panel's screen
+        // (which moves that hidden menu) stays as it is (review F25).
+        void OpenRoom(string room, bool myRooms, Action<string> done)
         {
             SetRoom(room);
-            Show("room");
+            Show(MyRoomsRules.ScreenAfterOpen(screen, myRooms));
             info = null;
             RoomAuth current = auth;
             RequestAuth(delegate { return client.Info(current); }, delegate(RoomReply r)
             {
                 if (r.Ok) SaveInfo(r);
                 else message = ErrorText(r.Error);
+                if (done != null) done(r.Ok ? null : message);
             });
         }
+
+        // The running 我的房间 action failed before its room session started: its page gets the reason.
+        void MyRoomsFail(string text)
+        {
+            message = text;
+            action.Finish(text);
+        }
+
+        // 我的房间 actions (create / join / enter): done(null) once the room session hosts or joins (Game.Starting),
+        // done(error) when anything before that fails (Session.Error included); CancelMyRooms drops them silently.
+        internal void CreateOpen(int slot, string name, Action<string> done)
+        {
+            int mine = action.Begin(done);
+            Saves.CoopSaveFolder.Enter();
+            string path = RoomGame.PathFor(slot);
+            if (!File.Exists(path)) { MyRoomsFail(ErrorText("no_save")); return; }
+            byte[] bytes = File.ReadAllBytes(path);
+            string summary = RoomGame.Summary(bytes);
+            string saveName = L10n.F("rooms.slot_name", slot + 1);
+            WhenReady(delegate(string error)
+            {
+                if (!action.Current(mine)) return;
+                if (error != null) { MyRoomsFail(error); return; }
+                message = "";
+                // Open rooms get 4 seats, like the C-server room they play in (review F41).
+                Request(delegate { return client.Create(steam, nick, name, bytes, summary, saveName, 4); }, delegate(RoomReply r)
+                {
+                    if (!action.Current(mine)) return;
+                    if (r.Ok)
+                    {
+                        string room = r.Fields.GetString("room"), save = r.Fields.GetString("saveid");
+                        long version = r.Fields.GetLong("version", 1);
+                        store.StoreVersion(room, save, version, bytes, summary);
+                        // Link the picked co-op slot to the new room, so entering it hosts from this slot instead of
+                        // copying the save into another empty slot (review F19).
+                        try { Game.UpdateVersion(slot, room, save, version); }
+                        catch (Exception e) { Plugin.Log.LogWarning("my rooms: could not link slot " + (slot + 1) + ": " + e.Message); }
+                    }
+                    OpenLoginResult(r, mine);
+                });
+            });
+        }
+
+        internal void JoinOpen(string code, Action<string> done)
+        {
+            int mine = action.Begin(done);
+            message = "";
+            Request(delegate { return client.Join(code, steam, nick); }, delegate(RoomReply r)
+            {
+                if (action.Current(mine)) OpenLoginResult(r, mine);
+            });
+        }
+
+        void OpenLoginResult(RoomReply reply, int mine)
+        {
+            // already_member: an older room service without fresh tokens for members (review F22); try the stored one.
+            if (!reply.Ok && reply.Error != "already_member") { MyRoomsFail(ErrorText(reply.Error)); return; }
+            string room = reply.Fields.GetString("room");
+            if (reply.Ok) store.SaveToken(room, reply.Fields.GetString("token"));
+            EnterOpen(room, mine);
+        }
+
+        internal void EnterOpenRoom(string room, Action<string> done)
+        {
+            EnterOpen(room, action.Begin(done));
+        }
+
+        void EnterOpen(string room, int mine)
+        {
+            OpenRoom(room, true, delegate(string error)
+            {
+                if (!action.Current(mine)) return;
+                if (error != null) { MyRoomsFail(error); return; }
+                if (info.GetLong("save.count", 0) == 0) { MyRoomsFail(ErrorText("no_save")); return; }
+                // done(null) follows from Game.Starting, done(error) from Session.Error (enter, download, slot).
+                Enter(info.GetString("save.0.id"));
+            });
+        }
+
+        // Delete (creator) or quit a 我的房间 room. The role comes from fresh info of that room, or from its stored
+        // member list when info fails (never from another room's info, review F27); a room the server no longer
+        // knows for us (no_room / bad_token / not_member) only loses its local record (review F20).
+        internal void DeleteOpenRoom(string room, Action<string> done) { DeleteOpenRoom(room, false, done); }
+
+        // onlyPending (abandoning before 开始): delete only while fresh info says the room is still pending.
+        void DeleteOpenRoom(string room, bool onlyPending, Action<string> done)
+        {
+            if (Session != null && Session.Active)
+            {
+                if (auth == null || auth.Room != room) { message = ErrorText("busy"); done(message); return; }
+                Session.Cancel();
+            }
+            RoomBackupInfo stored = null;
+            if (rooms != null)
+                foreach (RoomBackupInfo known in rooms)
+                    if (known.Id == room) stored = known;
+            SetRoom(room);
+            info = null;
+            message = "";
+            RoomAuth current = auth;
+            RequestAuth(delegate { return client.Info(current); }, delegate(RoomReply r)
+            {
+                if (MyRoomsRules.RoomGone(r.Error)) { ForgetRoom(current.Room); done(null); return; }
+                if (r.Ok) SaveInfo(r);
+                if (onlyPending && (!r.Ok || r.Fields.GetString("pending") != "1"))
+                {
+                    done(r.Ok ? null : ErrorText(r.Error));
+                    return;
+                }
+                bool creator = MyRoomsRules.DeleteAsCreator(r.Ok ? r.Fields : null, stored, steam);
+                RequestAuth(delegate { return creator ? client.DeleteRoom(current) : client.Quit(current); }, delegate(RoomReply d)
+                {
+                    if (!d.Ok && !MyRoomsRules.RoomGone(d.Error)) { message = ErrorText(d.Error); done(message); return; }
+                    ForgetRoom(current.Room);
+                    done(null);
+                });
+            });
+        }
+
+        void ForgetRoom(string room)
+        {
+            store.DeleteRoom(room);
+            refreshed.Remove(room);
+            if (confirm != null) confirm.Forget(room);
+            rooms = store.ListRooms();
+            if (auth != null && auth.Room == room)
+            {
+                info = null;
+                auth = null;
+                Session = null;
+            }
+            message = "";
+        }
+
+        // 我的房间 abandoned before 开始 by its creator (the room page's 离开房间): the pending room is deleted. Not
+        // when this PC already pressed 开始 (the confirm is only waiting for a retry, review F24).
+        internal void AbandonPendingRoom()
+        {
+            if (auth == null || info == null || info.GetString("open") != "1" || info.GetString("pending") != "1"
+                || info.GetString("role") != "1" || ConfirmWanted(auth.Room)) return;
+            DeleteOpenRoom(auth.Room, true, delegate(string error)
+            {
+                if (error != null) Plugin.Log.LogWarning("my rooms: abandon: " + error);
+            });
+        }
+
+        internal void RefreshOpenRoom()
+        {
+            RoomAuth current = auth;
+            if (current == null) return;
+            RequestAuth(delegate { return client.Info(current); }, delegate(RoomReply r)
+            {
+                if (auth == null || auth.Room != current.Room) return;
+                // SaveInfo also resends a confirm that 开始 here did not get through (review F24).
+                if (r.Ok) SaveInfo(r);
+                else message = ErrorText(r.Error);
+            });
+        }
+
+        // 开始 by the creator: the confirm is remembered and resent until the server has it (review F24).
+        internal void ConfirmOpenRoom()
+        {
+            if (auth != null && confirm != null) confirm.Pressed(auth);
+        }
+
+        internal void OpenInviteCode()
+        {
+            RoomAuth current = auth;
+            if (current == null) return;
+            message = "";
+            RequestAuth(delegate { return client.OpenCode(current); }, delegate(RoomReply r)
+            {
+                if (!r.Ok) { message = ErrorText(r.Error); return; }
+                NoteServerClock(r.Fields);
+                if (auth == null || auth.Room != current.Room || info == null) return;
+                info.Set("code", r.Fields.GetString("code"));
+                info.Set("code_expires", info.GetString("pending") == "1" ? 0 : r.Fields.GetLong("expires", 0));
+            });
+        }
+
+        // T-173 (room-v2-a, [E] 改名 on the room page): rename the current open room on the room service (any member may;
+        // the page lets only the C-server room's manager). The page shows the new name at once; fresh info follows.
+        // Until the rename's reply is in, an info reply (a refresh queued before the rename) carries the old name: the
+        // new one is kept over it (SaveInfo), so the page does not flip back. done(ok) runs with the rename's reply.
+        internal void RenameOpenRoom(string name, Action<bool> done)
+        {
+            RoomAuth current = auth;
+            if (current == null || info == null || string.IsNullOrEmpty(name)) { if (done != null) done(false); return; }
+            message = "";
+            info.Set("name", name);
+            renaming = name; renamingRoom = current.Room; renamingRevision = revision;
+            RequestAuth(delegate { return client.RenameRoom(current, name); }, delegate(RoomReply r)
+            {
+                if (renamingRoom == current.Room && renaming == name) renaming = "";   // not a later rename still on its way
+                if (!r.Ok) { message = ErrorText(r.Error); Plugin.Log.LogWarning("my rooms: rename refused: " + message); }
+                else Plugin.Log.LogInfo("my rooms: room renamed");
+                if (done != null) done(r.Ok);
+                if (auth != null && auth.Room == current.Room) RefreshOpenRoom();   // the stored name, or back to the old one
+            });
+        }
+
+        string renaming = "", renamingRoom = "";   // a rename on its way to the room service (RenameOpenRoom)
+        int renamingRevision;
 
         void LoginResult(RoomReply reply)
         {
@@ -251,8 +576,6 @@ namespace OriCoop.Rooms
                 SinglePlayerSummaries[slot] = RoomGame.Summary(File.ReadAllBytes(Saves.CoopSaveFolder.SinglePlayerPath(slot)));
         }
 
-        static readonly bool s_oldNameMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ROOM_NAME_HASH") == "1";
-
         internal void BeginCreate()
         {
             int count = 0;
@@ -261,8 +584,6 @@ namespace OriCoop.Rooms
             while (true)
             {
                 roomName = L10n.F("rooms.auto_name", nick, number);
-                // Test-only mutation switch (T-136): the old "#N" name, which the game draws as yellow markup.
-                if (s_oldNameMutation) roomName = L10n.F("rooms.default_name", nick) + " #" + number;
                 bool collision = false;
                 foreach (RoomBackupInfo room in rooms) if (room.Name == roomName) { collision = true; break; }
                 if (!collision) break;
@@ -335,6 +656,10 @@ namespace OriCoop.Rooms
         {
             revision++;
             busy = false;
+            // The revision drops the replies a running refresh chain waits for: answer its waiters now, or every later
+            // 我的房间 action would queue forever (review F23). A running 我的房间 action is abandoned with the page.
+            action.Cancel();
+            if (ready.Running) FinishRefresh();
             if (Session != null) Session.Cancel();
             if (screen == "list") { visible = false; return; }
             if (screen == "password")
@@ -354,6 +679,8 @@ namespace OriCoop.Rooms
         {
             jobs.Pump();
             if (Session != null) Session.Tick(Time.realtimeSinceStartup);
+            // In game no room page refreshes: a confirm 开始 did not get through is checked here (review F24).
+            if (confirm != null && Session != null) confirm.Tick(Time.realtimeSinceStartup, Session.Active, auth, info);
             if (wasNetEnabled && !NetPlay.Enabled && Session != null) Session.Leave();
             wasNetEnabled = NetPlay.Enabled;
         }
@@ -389,6 +716,8 @@ namespace OriCoop.Rooms
             switch (error)
             {
                 case "network": return L10n.T("rooms.err.network");
+                case "steam_required": return L10n.T("rooms.steam_required");
+                case "no_save": return L10n.T("rooms.err.no_save");
                 case "bad_request": return L10n.T("rooms.err.bad_request");
                 case "old_client": return L10n.T("rooms.err.old_client");
                 case "no_room": return L10n.T("rooms.err.no_room");

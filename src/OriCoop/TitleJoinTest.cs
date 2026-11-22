@@ -163,7 +163,10 @@ namespace OriCoop
                     yield return StartCoroutine(Row(2, 0.5f));
                 }
                 if (m_tr == "cserver") yield return StartCoroutine(CheckCServerEditor());
-                bool roleReady = TitleOrbOpen && LastPage == "role" && HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join");
+                // T-171: on a C-server the page is the room list (创建房间 / 加入房间 / the rooms on the server).
+                bool roleReady = TitleOrbOpen && LastPage == "role" && (m_tr == "cserver"
+                    ? HasKey(LastLabels, "csroom.list.create") && HasKey(LastLabels, "csroom.list.join")
+                    : HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join"));
                 Check(roleReady, m_tr + ": host / join page on the title (" + Labels + ")");
                 if (!roleReady || m_fails != 0) { Finish(); yield break; }
                 if (m_role == "host") yield return StartCoroutine(Host());
@@ -254,9 +257,37 @@ namespace OriCoop
                 Check(CServerListLabelsMatch() && saved.Count == before + 1 && saved[saved.Count - 1] == m_cserverAddress &&
                     CServerSavedOnDisk(m_cserverAddress), "cserver: Save appends to the persisted list");
                 yield return StartCoroutine(Row(saved.Count - 1, 0.5f));
-                Check(LastPage == "role" && LastLabels.Count == 2 && OriCoop.Authority.CServerConfig.Address == m_cserverAddress &&
+                // T-171: the room list = 创建房间 / 加入房间, then the rooms (or one status row).
+                Check(LastPage == "role" && LastLabels.Count >= 3 && HasKey(LastLabels.GetRange(0, 2), "csroom.list.create") && HasKey(LastLabels.GetRange(0, 2), "csroom.list.join")
+                    && OriCoop.Authority.CServerConfig.Address == m_cserverAddress &&
                     OriCoop.Authority.CServerConfig.Configured == m_cserverAddress,
-                    "cserver: picking the saved row selects its address and opens Host / Join");
+                    "cserver: picking the saved row selects its address and opens the room list (" + Labels + ")");
+            }
+
+            // T-176: before the code is shared, leave the room page through the Esc path (byLeave), or end the session from
+            // outside the way a kick does (CServerLink.EndForGood: NetPlay.End from a coroutine): the orb must close and the
+            // save-slot list come back usable (old code: the dead host page stayed on the orb). Then host again from the same slot.
+            IEnumerator CsLeaveAndRehost(int slot, bool byLeave)
+            {
+                string how = byLeave ? "T-176 leave: " : "T-176 session end: ";
+                yield return StartCoroutine(WaitFor(() => CsRoomPage.IsOpen, 5f));
+                Check(CsRoomPage.IsOpen, how + "host room page open before");
+                if (!CsRoomPage.IsOpen) yield break;
+                if (byLeave) CsRoomPage.Run(CsRoomPage.Model.Shortcut(Ui.CsRoomAction.Leave));
+                else NetPlay.End("T-176 test: the session ended by itself");
+                yield return StartCoroutine(TWait(1f));
+                Check(!CsRoomPage.IsOpen && !OnlineRoomScreen.Visible, how + "the room page is closed");
+                Check(!IsOpen, how + "the host orb is closed (" + Labels + ")");
+                Check(!NetPlay.Enabled, how + "the host session is over");
+                Check(SlotsReady, how + "save-slot list active on the SaveSlots screen (" + TitleScreenManager.CurrentScreen + ")");
+                Check(SlotPickPlan == "host:cserver", how + "the next slot pick still hosts (" + SlotPickPlan + ")");
+                if (m_fails != 0) yield break;
+                SaveSlotsUI ui = SaveSlotsUI.Instance;
+                ui.SetCurrentItem(slot);
+                ui.UsedSaveSlotSelected();
+                yield return StartCoroutine(WaitFor(() => IsOpen && LastPage == "hosting" && !string.IsNullOrEmpty(NetPlay.RoomCode), 20f));
+                Check(IsOpen && LastPage == "hosting", how + "picking the slot again opens the host page (" + Labels + ")");
+                Check(!string.IsNullOrEmpty(NetPlay.RoomCode), how + "rehost room code " + NetPlay.RoomCode);
             }
 
             // T-188: test games have no real devices (T-085), so the device "pressed on the menus" is injected. The host
@@ -274,6 +305,7 @@ namespace OriCoop
 
             IEnumerator Host()
             {
+                try { if (File.Exists(RenameFile)) File.Delete(RenameFile); } catch (Exception e) { Note("rename file: " + e.Message); }   // T-173: no stale marker
                 KeyboardOnlyP1.SetMenuDeviceForTest(HostMenuPad);                   // T-188: the host used pad 0 on the menus
                 yield return StartCoroutine(Row(0, 0.2f));                          // 开房 -> save slots
                 yield return StartCoroutine(WaitFor(() => SlotsReady, 8f));
@@ -284,6 +316,7 @@ namespace OriCoop
                 int slot = 1; int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_SLOT") ?? "1", out slot);
                 CheckCopyIn();
                 ui.SetCurrentItem(slot);
+                m_pickedSlot = ui.CurrentSlotIndex;   // T-173: the room page must show this slot
                 ui.UsedSaveSlotSelected();
                 float end = Time.realtimeSinceStartup + 20f;
                 while (Time.realtimeSinceStartup < end && !(LastPage == "hosting" && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected)
@@ -302,6 +335,10 @@ namespace OriCoop
                 {
                     Check(!string.IsNullOrEmpty(NetPlay.RoomCode), "host: room code " + NetPlay.RoomCode);
                     if (string.IsNullOrEmpty(NetPlay.RoomCode)) yield break;   // Run writes RESULT FAIL, not a timeout.
+                    yield return StartCoroutine(CsLeaveAndRehost(slot, true));    // T-176: Esc on the room page
+                    if (m_fails != 0) yield break;
+                    yield return StartCoroutine(CsLeaveAndRehost(slot, false));   // T-176: the session ends by itself (kick)
+                    if (m_fails != 0) yield break;
                     try { File.WriteAllText(RoomFile, NetPlay.RoomCode); } catch (Exception e) { Note("room file: " + e.Message); }
                 }
                 if (m_fails != 0) yield break;
@@ -309,6 +346,7 @@ namespace OriCoop
                 Shot("host_page");
                 yield return StartCoroutine(TWait(0.5f));
                 yield return StartCoroutine(Row(1, 0.5f));                          // 开始游戏
+                if (m_tr == "cserver") yield return StartCoroutine(CsRoomPageChecks(2));   // T-171: wait for the guest on the 房间管理页
                 end = Time.realtimeSinceStartup + 90f;
                 while (Time.realtimeSinceStartup < end && !NetPlay.LocalInGameplay()) { DismissResume(); yield return null; }
                 Check(NetPlay.LocalInGameplay(), "host: in game after 开始游戏");
@@ -365,6 +403,7 @@ namespace OriCoop
                 bool full = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_FULL") == "1";
                 if (full) Check(savesAtStart >= 10, "guest: every save slot is full (" + savesAtStart + " files)");
                 else Check(savesAtStart == 0, "guest: appdata has no saves (" + savesAtStart + ")");
+                if (m_tr == "cserver") yield return StartCoroutine(CsRoomListed());   // T-171: the host's room is on the list
                 KeyboardOnlyP1.SetMenuDeviceForTest(-1);                            // T-188: the guest used keyboard/mouse on the menus
                 yield return StartCoroutine(Row(1, 1.2f));                          // 加入 -> entry page
                 Check(TitleOrbOpen && LastPage == "entry" && !SlotsReady, "guest: join page on the title, no save slot (" + Labels + ")");
@@ -394,6 +433,7 @@ namespace OriCoop
                     yield return StartCoroutine(TWait(0.4f));
                     yield return StartCoroutine(DialType(code));
                     Check(!s_editing && s_entry == code, "guest: room code typed on the digit dial ('" + s_entry + "')");
+                    m_joinedCode = code;   // T-173: the room page's invite line must show the code this PC joined with
                     // T-046: older letter codes still enter: a letter switches the dial to text entry, whose alphabet keeps letters.
                     bool legacyBefore = s_legacyCode; s_legacyCode = true;
                     Check(HasLegacyLetter("AB12") && !HasLegacyLetter("1234") && Filter("ab2z") == "AB2Z" && !DialMode,
@@ -411,10 +451,11 @@ namespace OriCoop
                 Check(LastPage == "joining" || NetPlay.Enabled, "guest: connecting (" + Labels + ", net=" + NetPlay.CurrentPhase + ")");
                 if (m_tr == "cserver") Check(s_cserverBeginTarget == m_cserverAddress + "|" + s_entry.ToUpperInvariant(), "guest: Begin target " + s_cserverBeginTarget);
                 float end = Time.realtimeSinceStartup + 150f;
-                bool sawStart = false, picked = false;
+                bool sawStart = false, picked = false, csChecked = m_tr != "cserver";
                 while (Time.realtimeSinceStartup < end && !(NetPlay.LocalInGameplay() && SaveSync.Ready))
                 {
                     if (GuestFromTitle) sawStart = true;
+                    if (!csChecked && CsRoomPage.IsOpen) { csChecked = true; yield return StartCoroutine(CsRoomPageChecks(1)); }
                     if (full && !picked && GuestPickingSlot && SlotsReady)
                     {
                         // All slots full: the save slots came up to choose the slot for the co-op copy.
@@ -440,6 +481,9 @@ namespace OriCoop
                 }
                 Check(sawStart || GuestStatus.Length > 0, "guest: no-slot join started (" + GuestStatus + ")");
                 Check(m_roomSeen, "guest: room screen shown before the join starts");
+                // T-171: on a C-server join the guest's room screen must be the 房间管理页 and its checks must have run (an old
+                // LAN room panel would also set m_roomSeen and silently skip them).
+                Check(csChecked, "guest: the server room page (房间管理页) opened on the joined PC and was checked (transport " + m_tr + ")");
                 Check(NetPlay.LocalInGameplay() && SaveSync.Ready, "guest: in game with the host's save (net=" + NetPlay.CurrentPhase + ", status=" + GuestStatus + ", aborts=" + GuestJoin.Aborts + " " + GuestJoin.LastAbort + ")");
                 Check(SaveSync.JoinedHost && SaveSync.GuestJoinDistance < 3f, "guest: placed beside the host (distance " + SaveSync.GuestJoinDistance.ToString("F2") + ")");
                 if (!full) Check(TitleChoice == TitleNone && !LastSlotPick.StartsWith("title-") && !LastSlotPick.StartsWith("guest-slot"), "guest: no save slot was picked (" + LastSlotPick + ")");
@@ -469,10 +513,201 @@ namespace OriCoop
             {
                 // T-059: the room page comes up before the game starts; press its drawn continue / start button.
                 if (OnlineRoomScreen.Visible && OnlineRoomScreen.Click("room.continue") && !m_roomSeen) { m_roomSeen = true; Note("room screen: continue pressed"); }
+                // T-171: on a C-server the 房间管理页 readies this PC; a joined player goes in when the creator starts.
+                if (CsRoomPage.IsOpen && !m_roomSeen) { m_roomSeen = true; Note("cs room page shown"); }
                 if (UI.MainMenuVisible && GameController.Instance != null && GameController.Instance.IsLoadingGame) { UI.Menu.HideResumeScreen(); UI.Menu.HideMenuScreen(true); }
             }
 
             bool m_finished, m_roomSeen;
+            int m_pickedSlot = -1;
+
+            // T-171: the guest's server room list shows the host's room (CsList through the C-server) before joining.
+            IEnumerator CsRoomListed()
+            {
+                string code = "";
+                float wait = Time.realtimeSinceStartup + 105f;   // T-176: the host leaves and hosts again before publishing its code
+                while (Time.realtimeSinceStartup < wait && code.Length != 6)
+                {
+                    try { if (File.Exists(RoomFile)) code = File.ReadAllText(RoomFile).Trim(); } catch (Exception) { }
+                    yield return StartCoroutine(TWait(0.5f));
+                }
+                bool listed = false;
+                wait = Time.realtimeSinceStartup + 20f;
+                while (Time.realtimeSinceStartup < wait && !listed)
+                {
+                    RefreshTexts(true);
+                    // The row's label is the room's English name, its description starts with the room code (T-171).
+                    foreach (string[] row in LobbyRows(L10n.Zh)) if (code.Length == 6 && (row[0].Contains(code) || row[1].Contains(code))) listed = true;
+                    yield return StartCoroutine(TWait(0.5f));
+                }
+                Check(listed, "cserver: the host's room " + code + " is on the server's room list (" + Labels + ")");
+                Shot("room_list");
+            }
+
+            // T-171: the 房间管理页 with both players: the other PC's player appears, local seats say (你), nobody is 房主.
+            IEnumerator CsRoomPageChecks(int otherSeat)
+            {
+                float wait = Time.realtimeSinceStartup + 120f;
+                while (Time.realtimeSinceStartup < wait && !(CsRoomPage.IsOpen && OriCoop.Authority.CServerLink.Client != null
+                    && OriCoop.Authority.CServerLink.Client.SeatOnlineNow(otherSeat)))
+                    yield return null;
+                Check(CsRoomPage.IsOpen, m_role + ": 房间管理页 open on the C-server (" + Labels + ")");
+                yield return StartCoroutine(TWait(2f));   // the other PC's lobby state (ping, room save) arrives every 2 s
+                Ui.CsRoomModel m = CsRoomPage.Model;
+                int mine = Players.LocalSeat;
+                Ui.CsRoomRow own = m.Row(mine), other = m.Row(otherSeat);
+                Check(!other.Empty && !other.Name.Contains(L10n.T("csroom.you")) && own.Name.EndsWith(L10n.T("csroom.you")),
+                    m_role + ": room page rows: own P" + mine + " '" + own.Name + "', other P" + otherSeat + " '" + other.Name + "'");
+                Check(m.Row(3).Empty && m.Row(4).Empty && m.Row(3).Name == L10n.T("csroom.waiting_player"),
+                    m_role + ": empty seats wait for a player ('" + m.Row(3).Name + "')");
+                Check(own.Ping.EndsWith(" ms"), m_role + ": own ping shown (" + own.Ping + ")");
+                Check(m.IsManager == (m_role == "host"), m_role + ": only the room's creator manages it (manager P" + m.ManagerSeat + ")");
+                Check(CsLobby.CreatedRoom == (m_role == "host") && (CsLobby.LocalSummary.Length > 0) == (m_role == "host"),
+                    m_role + ": only the PC that created the room publishes its save (created=" + CsLobby.CreatedRoom + ", local save '" + CsLobby.LocalSummary + "')");
+                Check(Ui.CsRoomSummary.Parse(CsLobby.RoomSummary).HasSave, m_role + ": the room's save is known on the page (" + CsLobby.RoomSummary + ")");
+                // Owner playtest (T-173): the orb copy showed the game's difficulty picker; it must show only the save.
+                Check(CsRoomPage.OrbMenus <= 0, m_role + ": the room page orb shows only the save, no menu inside (" + CsRoomPage.OrbMenus + ")");
+                // The page shows the slot the host picked, not an older SaveSlotsManager slot (owner playtest, T-173).
+                if (m_role == "host")
+                    Check(m_pickedSlot >= 0 && Ui.CsRoomSummary.Parse(CsLobby.RoomSummary).Slot == m_pickedSlot,
+                        "host: the room page shows the picked save slot " + (m_pickedSlot + 1) + " (" + CsLobby.RoomSummary + ")");
+                // T-173 layout room-v2-a: room name above the orb, IP:Port and the invite code under it, [E] 改名 for the manager.
+                string name = CsRoomPage.NameShown;
+                Check(PlainRoomName(name), m_role + ": the room name is shown, English (ASCII) without markup ('" + name + "')");
+                Check(m_cserverAddress != null && m_cserverAddress.Length > 0 && CsRoomPage.IpPortShown == m_cserverAddress,
+                    m_role + ": the address line shows exactly the server this PC plays on, no label ('" + CsRoomPage.IpPortShown + "', test server '" + m_cserverAddress + "')");
+                // A C-server room from the server list: the live room code (the host's: the code it wrote to RoomFile when it
+                // created the room; the guest's: the one it typed to join).
+                string expected = m_joinedCode;
+                if (m_role == "host")
+                {
+                    expected = "";
+                    try { if (File.Exists(RoomFile)) expected = File.ReadAllText(RoomFile).Trim(); } catch (Exception e) { Note("room file: " + e.Message); }
+                }
+                Check(expected.Length == 6 && CsRoomPage.CodeShown == expected && CsRoomPage.CodeLineShown.Contains(expected),
+                    m_role + ": the invite line shows the room code " + expected + " ('" + CsRoomPage.CodeLineShown + "')");
+                Check(CsRoomPage.CanRenameNow == (m_role == "host"), m_role + ": only the room's manager may rename (" + CsRoomPage.CanRenameNow + ")");
+                if (m_role == "host")
+                {
+                    // The new name always differs from the room's name so far (a random two-word name may already be
+                    // "Spirit Grove"): a guest showing it can only have it from the rename.
+                    string target = name == RenameTo ? RenameToAlt : RenameTo;
+                    bool shown = CsRoomPage.TestRename(target);
+                    Check(shown && CsRoomPage.NameShown == target && !CsRoomPage.Renaming && Ui.CsRoomSummary.Parse(CsLobby.LocalSummary).Name == target,
+                        "host: renamed the room from '" + name + "' to '" + target + "' through the page's confirm path (shown '" + CsRoomPage.NameShown + "', save line '" + CsLobby.LocalSummary + "')");
+                    try { File.WriteAllText(RenameFile, target + "\n" + name); } catch (Exception e) { Note("rename file: " + e.Message); }
+                    // The server's room info: Tick hands the renamed line to the C-server, and the server's room list (what
+                    // the 服务器房间 page shows) carries the new name for this room's code.
+                    float until = Time.realtimeSinceStartup + 3f;
+                    while (Time.realtimeSinceStartup < until && ServerInfoName() != target) yield return null;
+                    Check(ServerInfoName() == target, "host: the renamed line went to the C-server as the room info ('" + ServerInfoName() + "')");
+                    string listed = null;
+                    until = Time.realtimeSinceStartup + 10f;
+                    while (Time.realtimeSinceStartup < until && listed != target)
+                    {
+                        string[] got = { null };
+                        string address = m_cserverAddress, code = NetPlay.RoomCode ?? "";
+                        System.Threading.ThreadPool.QueueUserWorkItem(delegate { got[0] = ListedName(address, code); });
+                        float give = Time.realtimeSinceStartup + 5f;
+                        while (got[0] == null && Time.realtimeSinceStartup < give) yield return null;
+                        listed = got[0];
+                        if (listed != target) yield return StartCoroutine(TWait(0.5f));
+                    }
+                    Check(listed == target, "host: the server's room list shows room " + NetPlay.RoomCode + " as '" + target + "' after the rename ('" + listed + "')");
+                }
+                else
+                {
+                    // The host renames once it sees this PC on its page and writes "new name\nold name" to the marker; the
+                    // new name (never the room's earlier name) must then come through LobbyState within ~6 s.
+                    string target = "", before = "";
+                    float until = Time.realtimeSinceStartup + 90f;
+                    while (Time.realtimeSinceStartup < until && target.Length == 0)
+                    {
+                        try
+                        {
+                            string[] lines = File.Exists(RenameFile) ? File.ReadAllText(RenameFile).Split('\n') : new string[0];
+                            if (lines.Length >= 2 && lines[0].Trim().Length > 0) { target = lines[0].Trim(); before = lines[1].Trim(); }
+                        }
+                        catch (Exception) { }
+                        if (target.Length == 0) yield return StartCoroutine(TWait(0.25f));
+                    }
+                    Check(target.Length > 0 && target != before, "guest: the host renamed the room from '" + before + "' to '" + target + "' (marker " + RenameFile + " within 90 s)");
+                    if (target.Length > 0)
+                    {
+                        until = Time.realtimeSinceStartup + 6f;
+                        while (Time.realtimeSinceStartup < until && CsRoomPage.IsOpen && CsRoomPage.NameShown != target) yield return null;
+                        name = CsRoomPage.NameShown;
+                        Check(name == target && name != before && PlainRoomName(name), "guest: the host's new room name reached this PC within 6 s ('" + name + "', expected '" + target + "', room save '" + CsLobby.RoomSummary + "')");
+                    }
+                }
+                // Owner playtest (T-173, 2026-11-22): the key bar is the game's own legend look, with the game's button icons
+                // (keyboard keys, then the controller's buttons after switching to the controller), not drawn keycaps.
+                GameSettings settings = GameSettings.Instance;
+                ControlScheme scheme = settings.CurrentControlScheme;
+                settings.CurrentControlScheme = settings.KeyboardScheme == ControlScheme.Controller ? ControlScheme.KeyboardAndMouse : settings.KeyboardScheme;
+                yield return StartCoroutine(CsBarIcons("keyboard"));
+                string keyboardIcons = CsRoomPage.BarIconMarkup;
+                Shot("room_page");
+                settings.CurrentControlScheme = ControlScheme.Controller;
+                yield return StartCoroutine(CsBarIcons("controller"));
+                Check(CsRoomPage.BarIconMarkup != keyboardIcons, m_role + ": the key bar switches to the controller's icons ('" + keyboardIcons + "' -> '" + CsRoomPage.BarIconMarkup + "')");
+                Shot("room_page_pad");
+                settings.CurrentControlScheme = scheme;
+            }
+
+            IEnumerator CsBarIcons(string device)
+            {
+                yield return StartCoroutine(TWait(0.5f));   // the bar redraws with the device's icons
+                int items = CsRoomPage.BarItems, missing = 0;
+                string counts = "";
+                for (int i = 0; i < items; i++)
+                {
+                    int n = NativeGui.IconsShown("csroom.bar." + i);
+                    counts += (i > 0 ? "," : "") + n;
+                    if (n < 1) missing++;
+                }
+                Check(items >= 2 && missing == 0, m_role + ": " + device + ": every key bar item shows the game's own button icon (" + items + " items, icons shown " + counts + ", markup '" + CsRoomPage.BarIconMarkup + "')");
+                if (device == "keyboard" && m_role == "host")
+                    Check(CsRoomPage.RenameHintShown && NativeGui.IconsShown("csroom.rename") >= 1,
+                        "host: keyboard: the rename hint shows the game's key icon (hint " + CsRoomPage.RenameHintShown + ", icons " + NativeGui.IconsShown("csroom.rename") + ")");
+            }
+
+            const string RenameTo = "Spirit Grove", RenameToAlt = "Misty Wells";
+            string m_joinedCode = "";
+
+            // The room info text this PC's link last handed the C-server, parsed: its room name ("" = none).
+            static string ServerInfoName()
+            {
+                OriCoop.Authority.CServerClient c = OriCoop.Authority.CServerLink.Client;
+                return c != null && c.RoomInfo != null ? Ui.CsRoomSummary.Parse(c.RoomInfo).Name : "";
+            }
+
+            // On a worker: the server's room list (CsList, as the 服务器房间 page fetches it), the name of the room with this
+            // code. "" = not listed or no list (never null: the caller waits for non-null).
+            static string ListedName(string address, string code)
+            {
+                try
+                {
+                    System.Net.EndPoint server = OriCoop.Authority.CServerLink.Resolve((address ?? "").Trim());
+                    string error;
+                    List<OriCoop.Authority.CsRoomListEntry> rooms = server != null ? OriCoop.Authority.CServerRoomList.Fetch(server, 3000, out error) : null;
+                    if (rooms != null)
+                        foreach (OriCoop.Authority.CsRoomListEntry room in rooms)
+                            if (room.Code == code) return Ui.CsRoomSummary.Parse(room.Text).Name;
+                }
+                catch (Exception) { }
+                return "";
+            }
+            string RenameFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-rename.txt"); } }
+
+            // A room name as the page may show it: English only (printable ASCII), no MessageBox markup, already clean.
+            static bool PlainRoomName(string name)
+            {
+                if (string.IsNullOrEmpty(name)) return false;
+                foreach (char c in name)
+                    if (c < ' ' || c > '~' || c == '*' || c == '<' || c == '>' || c == '#' || c == ';' || c == '=') return false;
+                return name == Ui.RoomNames.Clean(name);
+            }
             void Finish()
             {
                 if (m_finished) return;

@@ -17,6 +17,7 @@ $TS_Suites = [ordered]@{
     'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
+    'titlejoin-cs' = @('run-titlejoin.ps1', '-Transport', 'cserver')   # T-171/T-173: the C-server room pages (房间管理页) run only here
     'rooms'       = @('run-rooms.ps1')
 }
 $TS_AllSuites = @($TS_Suites.Keys)
@@ -50,7 +51,7 @@ $TS_ModuleSuites = @{
     'M5' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'local')   # T-165: 3P pickup dedupe (ProgressSync)
     'M6' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'local')   # T-165: 4P revive / spectate / menu / wipe, 3P soul link, cross-device revive
     'M7' = @('coopsave', 'titlejoin', 'net-newgame', 'rooms')   # the save files below add every multi-seat suite (T-165); rooms files do not need them
-    'M8' = @('local', 'titlejoin')
+    'M8' = @('local', 'titlejoin', 'titlejoin-cs', 'rooms')   # T-173: 我的房间 新建 / join dispatch in TitleMenu is checked only by run-rooms
     'M9' = @()            # harness files map to their own suite below
 }
 # Harness / test files -> the suite that runs them (checked before the module table).
@@ -58,7 +59,7 @@ $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
-    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin')
+    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-cs')
     # T-165: the co-op save lineage (phase L) runs after every net suite: the late guest's commit and the promoted host's
     # save only with 3-4 players, and SaveSync's reload in the 4P wipe. These save files (M7) select every multi-seat suite,
     # and the direct 'net' suite: SaveSync / GuestJoin are shared core (every phase, src\phase-map.psd1), but M7's only
@@ -69,9 +70,10 @@ $TS_FileSuites = [ordered]@{
     # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
     'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
-    'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
+    'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-cs', 'rooms'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
     'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
+    'RoomLeaveFlow'    = @('titlejoin', 'titlejoin-cs', 'rooms')   # T-176: the leave flow's real-game checks run in titlejoin cserver
     'MenuSoulFlameGuard' = @('net'); 'MenuSoulFlameTest' = @('net')   # T-179 skill tree B: net phase S4
     'TitleAnyKey'      = @('local', 'titlejoin'); 'TitleAnyKeyTest' = @('local')   # T-180 stuck key on press-any-key: run-test's title scenario
     'ImeGuard'         = @('local')   # T-181 IME off: checked in run-test's lifecycle scenario

@@ -55,9 +55,11 @@ $Mutations = @(
     @{ Name = 'MUTATE_BOTTOMHUD_P1VALUES'; Env = @{ ORICOOP_MUTATE_BOTTOMHUD_P1VALUES = '1' }; Script = @('run-test.ps1', '-Scenarios', 'bottomhud'); Expect = '^bottomhud: ' }
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
+    @{ Name = 'MUTATE_HIDE_ICONS';      Env = @{ ORICOOP_MUTATE_HIDE_ICONS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = "shows the game's own button icon" }   # T-173
+    @{ Name = 'MUTATE_ORB_MENUS';       Env = @{ ORICOOP_MUTATE_ORB_MENUS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = 'room page orb shows only the save' }   # T-173
     @{ Name = 'MUTATE_NO_COOP_FOLDER';  Env = @{ ORICOOP_MUTATE_NO_COOP_FOLDER = '1' }; Script = @('run-titlejoin.ps1'); Expect = 'inside OriCoop-coop|single-player save' }   # T-043
-    @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^native rooms page has rows$' }
-    @{ Name = 'MUTATE_ROOM_NAME_HASH';  Env = @{ ORICOOP_MUTATE_ROOM_NAME_HASH = '1' };  Script = @('run-rooms.ps1'); Expect = 'generated room name' }
+    @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^fresh \S+ menu is exactly' }   # T-173 rewrote run-rooms: check 7 (the fresh my-rooms menu rows) is the first to see the page's rows
+    @{ Name = 'MUTATE_ROOM_NAME_HASH';  Env = @{ ORICOOP_MUTATE_ROOM_NAME_HASH = '1' };  Script = @('run-rooms.ps1'); Expect = '^room name (is two English|has no MessageBox markup)' }   # T-173's create flow: run-rooms checks 18 / 19
     @{ Name = 'MUTATE_TOAST_NO_FALLBACK'; Env = @{ ORICOOP_MUTATE_TOAST_NO_FALLBACK = '1' }; Script = @('run-test.ps1', '-Scenarios', 'move'); Expect = '^toast: English falls back' }
     @{ Name = 'MUTATE_MENU_STALE_LOCK (S4)'; Env = @{ ORICOOP_MUTATE_MENU_STALE_LOCK = '1'; ORICOOP_PHASES = 'S4' }; Script = @('run-nettest.ps1'); Expect = '^S4 F8 online: a story lock' }
     @{ Name = 'MUTATE_OVERLAY_UNLOCK';  Env = @{ ORICOOP_MUTATE_OVERLAY_UNLOCK = '1' };  Script = @('run-test.ps1'); Expect = '^title menu: overlay lobby: (starting|ending) online play keeps' }

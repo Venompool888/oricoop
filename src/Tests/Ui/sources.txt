@@ -7,4 +7,13 @@ OriCoop\Ui\ControlsGuide.cs
 OriCoop\Ui\SignalLevels.cs
 OriCoop\Ui\ModeSelectLayout.cs
 OriCoop\Ui\MarkupText.cs
+OriCoop\Ui\CsRoomModel.cs
+OriCoop\Ui\RoomLeaveFlow.cs
+OriCoop\Ui\CsLobbyWire.cs
+OriCoop\Ui\RoomNames.cs
+OriCoop\Ui\MyRoomsModel.cs
+OriCoop\Ui\PressGate.cs
+OriCoop\Ui\CsLobbyState.cs
+OriCoop\Ui\SlotListRecovery.cs
+OriCoop\Ui\RoomNameEdit.cs
 OriCoop\Ui\RoomScreenModel.cs

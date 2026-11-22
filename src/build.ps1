@@ -23,6 +23,9 @@ foreach ($r in @(@('dead-marker\dead_marker.png', 'OriCoop.dead_marker.png'),
     $p = Join-Path $a $r[0]
     if (Test-Path $p) { $res += "/resource:$p,$($r[1])" } else { Write-Host "note: $($r[0]) not found, not embedded" }
 }
+# Room page textures (T-171/T-173): AI-made transparent PNGs, optional (the pages fall back to generated bands).
+$roomUi = Join-Path $a 'room-ui'
+if (Test-Path $roomUi) { foreach ($png in Get-ChildItem $roomUi -Filter '*.png' -File) { if ($png.Name -ne 'preview.png') { $res += "/resource:$($png.FullName),OriCoop.roomui.$($png.Name)" } } }
 # T-178: PlayStation button icons (AI-made from the game's Xbox icons) and the game's own Xbox icons (to switch back); private, not in the public sync allowlist.
 foreach ($g in @('ps', 'xbox')) { foreach ($f in @(Get-ChildItem (Join-Path $a "$g-glyphs") -Filter *.png -ErrorAction SilentlyContinue)) { $res += "/resource:$($f.FullName),OriCoop.$($g)_$($f.Name)" } }
 # Build info (T-032): the commit this DLL comes from, "+local" when src\OriCoop has uncommitted changes (Ui\BuildInfo.cs).

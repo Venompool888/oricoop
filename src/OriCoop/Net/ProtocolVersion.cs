@@ -9,8 +9,9 @@ namespace OriCoop.Net
     // net7: SeatSkills (msg 88) carries the per-seat skill record (T-043).
     // net8: RoomLink (msg 69) carries the room's latest save point and the saver's health (T-041).
     // net9: EscapeDone (msg 92): one player reached an escape's end, the team is brought there (T-169).
+    // net10: LobbyState / LobbyStart (msgs 94 / 95): the C-server room page's ready, ping, room save and start (T-171).
     internal static class ProtocolVersion
     {
-        public const string Mod = "0.2.0-net9";
+        public const string Mod = "0.2.0-net10";
     }
 }

@@ -45,6 +45,7 @@ namespace OriCoop
 
         internal static void ShowRoomError()
         {
+            if (MyRoomsPages.IsOpen) return;   // T-173: the 我的房间 page shows the error itself (its done callback)
             if (!IsOpen) OpenTitleOrbForInvite();
             if (IsOpen) GoPage(RoomPage(RoomsPanel.Instance.Screen), 0);
         }
@@ -64,6 +65,9 @@ namespace OriCoop
 
         static void SyncRoomPage()
         {
+            // T-173 review: a 我的房间 page (加入房间 / 房间列表) is drawn over the hidden 我的房间 menu; the menu stays there,
+            // whatever RoomsPanel.Screen does meanwhile, so closing the page shows 我的房间 again.
+            if (!MyRoomsPageFlow.NativeFollowsScreen(MyRoomsPages.IsOpen)) return;
             RoomsPanel p = RoomsPanel.Instance;
             int next = RoomPage(p.Screen);
             if (next == s_page) return;
@@ -111,12 +115,20 @@ namespace OriCoop
                         RoomRow(rows, RF("rooms.title", zh, p.ServiceName), p.Message, null);
                     if (s_page == PageRoomsMenu)
                     {
-                        RoomRow(rows, L10n.T("rooms.create", zh), L10n.T(p.Online ? "rooms.choose_save" : "rooms.offline", zh),
-                            delegate { if (p.Online) p.BeginCreate(); });
-                        RoomRow(rows, L10n.T("rooms.list", zh), L10n.T("rooms.list.desc", zh),
-                            delegate { s_roomsList = true; });
-                        RoomRow(rows, L10n.T("rooms.join_room", zh), L10n.T(p.Online ? "lobby.room.legacy" : "rooms.offline", zh),
-                            delegate { if (p.Online) p.BeginJoin(); });
+                        // T-173 (owner's sketch): 新建房间 / 加入房间 / 房间列表; no 房间列表 while the player has no rooms.
+                        int count = Rooms.MyRooms.RoomCount;   // rooms on the selected server only (review: other servers' rooms cannot be entered here)
+                        foreach (Ui.MyRoomsMenuItem item in Ui.MyRoomsMenu.Items(count))
+                        {
+                            if (item == Ui.MyRoomsMenuItem.Create)
+                                RoomRow(rows, L10n.T("myrooms.create", zh), L10n.T(p.Online ? "myrooms.create.desc" : "rooms.offline", zh),
+                                    delegate { if (p.Online) BeginMyRoomCreate(); });
+                            else if (item == Ui.MyRoomsMenuItem.Join)
+                                RoomRow(rows, L10n.T("myrooms.join", zh), L10n.T("myrooms.join.desc", zh),
+                                    delegate { MyRoomsPages.Show(MyRoomsPages.Page.Join, BackToMyRoomsMenu); });
+                            else
+                                RoomRow(rows, L10n.T("myrooms.list", zh), L10n.T("myrooms.list.desc", zh),
+                                    delegate { MyRoomsPages.Show(MyRoomsPages.Page.List, BackToMyRoomsMenu); });
+                        }
                     }
                     else if (s_page == PageRooms)
                     {
@@ -276,8 +288,22 @@ namespace OriCoop
             }
         }
 
+        // A 我的房间 page closed (Esc, or no rooms left): the native 我的房间 menu, with its rows refreshed (房间列表 may be gone).
+        static void BackToMyRoomsMenu()
+        {
+            if (!IsOpen) return;
+            s_roomsList = false;
+            if (s_page != PageRoomsMenu) GoPage(PageRoomsMenu, s_mgr.Index);
+            else RefreshTexts(true);
+        }
+
         static void RoomTick()
         {
+            if (MyRoomsPages.IsOpen)   // the page has the input; the hidden menu only keeps its texts fresh
+            {
+                if (Time.realtimeSinceStartup >= s_nextRefresh) RefreshTexts(false);
+                return;
+            }
             SyncRoomPage();
             if (s_editing) EditTick();
             else if (!s_mgr.IsLocked && !RoomsPanel.Instance.Busy && (RoomCodeFocused || RoomPasswordFocused))
@@ -296,6 +322,75 @@ namespace OriCoop
             }
             if (Time.realtimeSinceStartup >= s_nextRefresh) RefreshTexts(false);
         }
+
+        // T-173: 新建房间 -> the save slots (the title host flow); the slot pick creates the room (TitleSlotPick, MyRoomCreatePick).
+        static bool s_myRoomCreate;
+        internal static bool MyRoomCreating { get { return s_myRoomCreate; } }
+
+        static void BeginMyRoomCreate()
+        {
+            s_myRoomCreate = true;
+            TitleChoice = TitleOnline; TitleTransport = "cserver";
+            Plugin.Log.LogInfo("my rooms: new room -> save slots");
+            Destroy();
+            GoToSlots();
+        }
+
+        // The save slot picked for a new room: create the open room with it, then the room flow hosts it (RoomSession ->
+        // RoomHostSlot -> the room page). On failure the slot list comes back with the reason.
+        static readonly bool s_oldNameMutation = Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1"
+            && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ROOM_NAME_HASH") == "1";
+        static int MyRoomCreatePick(SaveSlotsUI ui)
+        {
+            int slot = ui.CurrentSlotIndex;
+            LastSlotPick = "myroom-create-" + slot;
+            string name = Ui.RoomNames.Random(new System.Random());
+            // Test-only mutation switch (T-136, moved here by the v0.2.4 release review: T-173's flow names rooms here, the old
+            // RoomsPanel.BeginCreate is no longer called): the old "#N" name, which the game draws as yellow markup.
+            if (s_oldNameMutation) name += " #1";
+            CsLobby.SetRoomName(name);
+            Plugin.Log.LogInfo("my rooms: new room '" + name + "' from slot " + (slot + 1));
+            s_slotRecovery.Cancel();
+            Rooms.MyRooms.CreateFromSlot(slot, name, delegate (string error)
+            {
+                if (error == null) { s_myRoomCreate = false; return; }   // the room session hosts it now
+                MyRoomCreateFailed(error);
+            });
+            return 2;
+        }
+
+        // T-173 review: the create, or the enter / download after it, failed (done(error) comes before the room session
+        // starts hosting). The slot list must take input again (Ui/SlotListRecovery.cs): an empty slot's hidden difficulty
+        // screen is cancelled properly (SaveSlotsUI ignores all input while it exists), and the list is switched back on a
+        // moment later (the pick's caller switches it off after we return when the failure comes at once).
+        static readonly SlotListRecovery s_slotRecovery = new SlotListRecovery();
+
+        static void MyRoomCreateFailed(string error)
+        {
+            Plugin.Log.LogInfo("my rooms: new room failed: " + error);
+            NetHud.Toast(error);
+            SaveSlotsUI ui = SaveSlotsUI.Instance;
+            bool selecting = false;
+            try { selecting = ui != null && ui.SelectingDifficulty; } catch (Exception) { }
+            if (s_slotRecovery.Fail(Time.realtimeSinceStartup, selecting))
+            {
+                try { ui.CancelDifficultyScreen(); }
+                catch (Exception e) { Plugin.Log.LogWarning("my rooms: closing the difficulty screen: " + e.Message); }
+            }
+        }
+
+        // Per frame (TitleDriver): switch the slot list back on once the failed pick is over.
+        static void SlotRecoveryTick()
+        {
+            if (!s_slotRecovery.Pending) return;
+            SaveSlotsUI ui = SaveSlotsUI.Instance;
+            if (!s_slotRecovery.Due(Time.realtimeSinceStartup, ui != null && ui.IsVisible, IsOpen)) return;
+            try { if (ui.SelectingDifficulty) ui.CancelDifficultyScreen(); } catch (Exception) { }
+            ui.Active = true;
+            Plugin.Log.LogInfo("my rooms: save slot list active again after the failed new room");
+        }
+
+        internal static bool MyRoomsMenuOpen { get { return IsOpen && s_page == PageRoomsMenu && s_mgr != null && !s_mgr.IsLocked; } }
 
         internal static int TestServerModeRoomsRow { get { return ServerModeRoomsRow; } }
         static bool RoomTestOn { get { return Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1"; } }

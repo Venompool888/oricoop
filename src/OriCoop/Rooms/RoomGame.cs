@@ -172,8 +172,9 @@ namespace OriCoop.Rooms
 
         public void Join(string target)
         {
+            MyRoomsPages.Page fromPage = MyRoomsPages.Current;   // T-176: Starting closes it
             Starting();
-            NativeModeMenu.RoomJoin(target);
+            NativeModeMenu.RoomJoin(target, fromPage);
         }
 
         public byte[] Snapshot(out string summary)

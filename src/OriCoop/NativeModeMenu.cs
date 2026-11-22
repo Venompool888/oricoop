@@ -6,6 +6,7 @@ using System.Text;
 using CatlikeCoding.TextBox;
 using Game;
 using HarmonyLib;
+using OriCoop.Ui;
 using UnityEngine;
 
 namespace OriCoop
@@ -42,6 +43,8 @@ namespace OriCoop
         static readonly List<MessageBox[]> s_itemBoxes = new List<MessageBox[]>();
         static int s_page;                 // 0 main, 1 online
         static bool s_fromNewGame;
+        static RoomEntryKind s_roomEntry;
+        static MyRoomsPages.Page s_myRoomsJoinPage;
         static DifficultyMode s_difficulty;
         static float s_unlockAt;
         static Driver s_driver;
@@ -276,6 +279,7 @@ namespace OriCoop
             s_root = null; s_mgr = null; s_items.Clear(); s_itemBoxes.Clear(); s_baseCurves.Clear();
             s_itemPositions.Clear(); s_itemSizes.Clear(); s_listTop = 0;
             s_fromTitle = false; s_onTitle = false; s_settle = false; s_soundIndex = -1;
+            s_roomEntry = RoomEntryKind.None; s_myRoomsJoinPage = MyRoomsPages.Page.None;
             RestoreSlotTexts();
         }
 
@@ -400,6 +404,66 @@ namespace OriCoop
             if (IsLobbyPage) { LobbyBack(); return; }
             if (s_page == 1) { s_page = 0; Relabel(2); OnHighlightChanged(); return; }
             BackToSlots();
+        }
+
+        // T-176: Reset (also called by End) restores the old orb, so navigate and lock it after End.
+        internal static void LeaveRoomPage()
+        {
+            RoomLeaveDestination destination = TakeRoomLeaveDestination();
+            OnlineRoomScreen.Reset();
+            NetPlay.End("left room");
+            GoAfterRoom(destination);
+        }
+
+        // T-176: the session ended by itself while the room page was up (kicked: CServerLink.EndForGood -> NetPlay.End ->
+        // OnlineRoomScreen.Reset): the same way back as leaving, a frame later (End is still running). After LeaveRoomPage
+        // the entry is already taken, so this does nothing.
+        internal static void RoomPageEndedBySession()
+        {
+            RoomLeaveDestination destination = TakeRoomLeaveDestination();
+            if (destination != RoomLeaveDestination.None && Plugin.Instance != null) Plugin.Instance.StartCoroutine(GoAfterRoomNextFrame(destination));
+        }
+
+        static RoomLeaveDestination TakeRoomLeaveDestination()
+        {
+            RoomLeaveDestination destination = RoomLeaveFlow.Destination(IsOpen && UsesRoomCode && (s_page == PageHost || s_page == PageJoin)
+                ? s_roomEntry : RoomEntryKind.None);
+            s_roomEntry = RoomEntryKind.None;
+            return destination;
+        }
+
+        static System.Collections.IEnumerator GoAfterRoomNextFrame(RoomLeaveDestination destination)
+        {
+            yield return null;
+            if (!NetPlay.Enabled && IsOpen) GoAfterRoom(destination);   // not if a new session started or the orb is gone
+        }
+
+        static void GoAfterRoom(RoomLeaveDestination destination)
+        {
+            switch (destination)
+            {
+                case RoomLeaveDestination.SaveSlots:
+                    Core.Input.Cancel.Used = true;           // Esc / B on the page
+                    Core.Input.ActionButtonA.Used = true;    // 「离开房间」 pressed with A / Enter: must not pick the slot again
+                    SaveSlotsUI ui = SaveSlotsUI.Instance;
+                    if (ui != null && ui.SelectingDifficulty) ui.CancelDifficultyScreen();
+                    s_fromNewGame = false;
+                    BackToSlots();
+                    return;
+                case RoomLeaveDestination.RoomList: GoPage(PageRole, 0); break;
+                case RoomLeaveDestination.CodeEntry: GoPage(PageEntry, 1); break;
+                case RoomLeaveDestination.MyRooms:
+                    if (Rooms.RoomsPanel.Instance.Screen != "list") Rooms.RoomsPanel.Instance.Back();
+                    BackToMyRoomsMenu();
+                    if (s_myRoomsJoinPage != MyRoomsPages.Page.None)
+                    {
+                        MyRoomsPages.Show(s_myRoomsJoinPage, BackToMyRoomsMenu);
+                        return;
+                    }
+                    break;
+                default: return;
+            }
+            RoomPanelShowLocked(MyRoomsPageFlow.NativeUnlockDelay);
         }
 
         static void BackToSlots()
@@ -651,7 +715,7 @@ namespace OriCoop
 
         class Driver : MonoBehaviour
         {
-            float m_probeT = -1f; int m_probeStep, m_probeRoomsStep, m_probeSub;
+            float m_probeT = -1f; int m_probeStep, m_probeRoomsStep, m_probeSub, m_probeRoomsWait;
 
             void Update()
             {
@@ -706,13 +770,22 @@ namespace OriCoop
                         }
                         else if (m_probeRoomsStep == 1)
                         {
-                            bool noPopup = typeof(Rooms.RoomsPanel).GetMethod("OnGUI", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) == null;
-                            if (LastPage != "roomsmenu" || LastLabels.Count < 4 || !HasKey(LastLabels, "rooms.create")
-                                || !HasKey(LastLabels, "rooms.list") || !HasKey(LastLabels, "rooms.join_room")
-                                || !HasKey(LastLabels, "common.back") || !s_mgr.IsVisible || !s_mgr.IsActive || !noPopup)
-                                Plugin.Log.LogError("mode menu probe: expected native rooms rows and no popup (" + Labels + ")");
-                            else Plugin.Log.LogInfo("mode menu probe: native rooms rows verified (no popup)");
-                            Shot("modemenu_rooms"); s_mgr.OnBackPressed();
+                            Rooms.RoomsPanel rp = Rooms.RoomsPanel.Instance;
+                            if (rp != null && rp.Busy && m_probeRoomsWait++ < 20) m_probeRoomsStep--;   // the room service is still answering: look again
+                            else
+                            {
+                                m_probeRoomsWait = 0;
+                                bool noPopup = typeof(Rooms.RoomsPanel).GetMethod("OnGUI", BindingFlags.Instance | BindingFlags.NonPublic | BindingFlags.DeclaredOnly) == null;
+                                // T-173: 新建房间 / 加入房间 / 房间列表 (only when the player has rooms) / 返回; a service message row may come first.
+                                bool hasRooms = rp != null && Rooms.MyRooms.RoomCount > 0;
+                                if (LastPage != "roomsmenu" || LastLabels.Count < (hasRooms ? 4 : 3) || !HasKey(LastLabels, "myrooms.create")
+                                    || !HasKey(LastLabels, "myrooms.join") || HasKey(LastLabels, "myrooms.list") != hasRooms
+                                    || !HasKey(LastLabels, "common.back") || !s_mgr.IsVisible || !s_mgr.IsActive || !noPopup)
+                                    Plugin.Log.LogError("mode menu probe: expected native rooms rows (new / join" + (hasRooms ? " / list" : ", no list without rooms")
+                                        + " / back) and no popup (" + Labels + ")");
+                                else Plugin.Log.LogInfo("mode menu probe: native rooms rows verified (no popup)");
+                                Shot("modemenu_rooms"); s_mgr.OnBackPressed();
+                            }
                         }
                         else
                         {

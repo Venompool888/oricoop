@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using OriCoop.Ui;
 using UnityEngine;
 
 namespace OriCoop
@@ -135,6 +136,7 @@ namespace OriCoop
                 r.Add(new[] { L10n.T("server.test", zh), TestStatus(zh) });
                 r.Add(new[] { L10n.T("common.ok", zh), L10n.T("server.add.desc", zh) });
             }
+            else if (CsRoomListPage) CsRoomListRows(r, zh);   // T-171
             else if (s_page == PageRole)
             {
                 r.Add(new[] { L10n.T("lobby.host", zh), L10n.T(roomCode ? "lobby.host.room.desc" : direct ? "lobby.host.direct.desc" : "lobby.host.steam.desc", zh) });
@@ -439,11 +441,13 @@ namespace OriCoop
             }
             else if (s_page == PageRole)
             {
+                if (CsRoomListPressed(index)) return;   // T-171: a listed room
                 if (s_transport == "cserver" && index < 2 && !ValidateCServer()) return;
                 if (index == 0)
                 {
                     string srv = LobbyServer;
                     if (roomCode && srv.Length == 0) { ToastKey("lobby.server.required"); return; }
+                    s_roomEntry = roomCode ? RoomEntryKind.MenuHost : RoomEntryKind.None;
                     GoPage(PageHost, 1);
                     if (s_transport == "cserver") BeginCServer(true, srv + "|");
                     else NetPlay.Begin(true, s_transport, "");
@@ -529,6 +533,7 @@ namespace OriCoop
             }
             s_joinTarget = s_entryKind == 0 ? s_entry.ToUpperInvariant() : IpText + ":" + s_port;
             if (s_transport == "cserver") s_joinTarget = OriCoop.Authority.CServerConfig.Address + "|" + s_joinTarget;
+            s_roomEntry = UsesRoomCode ? RoomEntryKind.CodeJoin : RoomEntryKind.None;
             GoPage(PageJoin, 1);
             Plugin.Log.LogInfo("mode menu: join " + s_transport + " " + s_joinTarget);
             if (s_transport == "cserver") BeginCServer(false, s_joinTarget);

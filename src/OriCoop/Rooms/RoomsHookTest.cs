@@ -11,23 +11,32 @@ namespace OriCoop
 {
     public static partial class NativeModeMenu
     {
-        internal static IEnumerator RoomsTestMenu(MonoBehaviour host, bool start)
+        // Title -> 多人游玩 -> 自建服务器; stops on the server mode page (Run checks and presses its 我的房间 row next).
+        internal static IEnumerator RoomsTestMenu(MonoBehaviour host)
         {
             s_tHost = host;
-            if (start) yield return host.StartCoroutine(Row(1, 0.5f));
-            else
-            {
-                yield return host.StartCoroutine(PressCoop());
-                yield return host.StartCoroutine(Row(Array.IndexOf(TitleTransports, "cserver"), 0.5f));
-                // Stop on server mode; Run checks and presses the actual My rooms row next.
-            }
+            yield return host.StartCoroutine(PressCoop());
+            yield return host.StartCoroutine(Row(Array.IndexOf(TitleTransports, "cserver"), 0.5f));
         }
     }
 }
 
 namespace OriCoop.Rooms
 {
-    // Real title/menu + session + save hooks. No synthetic enter/upload/leave calls to the server.
+    // T-173 我的房间 end to end through the real title menu, the native pages and the room page; no synthetic
+    // create/join/enter/upload/leave calls to the room service (the test only reads info with the panel's own auth).
+    //  both:  title -> 多人游玩 -> 自建服务器 -> 我的房间: a fresh room folder shows exactly 新建房间 / 加入房间 / 返回 (no
+    //         房间列表); Back returns to 自建服务器; reopen.
+    //  host:  新建房间 -> save slots -> co-op slot 1 -> the open room is created and entered (room page, holding the save
+    //         from the picked slot): pending, 6-character invite code open, English two-word name, 4 seats, ROOM >= 1001.
+    //         Waits for the guest on the C-server and on its room page; the page is pending (准备 / 开始 / 踢出 / 离开, no
+    //         换存档); ready + 开始 through the page; the confirm closes the code (pending 0, no code).
+    //  guest: 加入房间 page -> the test C-server + the shared code -> 加入 -> the room page of the same room (pending, 准备);
+    //         ready; the host's 开始 takes it into the game; after the confirm it reopens the invite code (开放邀请码: 6
+    //         characters, about 300 s left).
+    //  then the gameplay half (both): room slot loaded, live code, PerformSave upload + version, guest backup, host adopt,
+    //         return-to-title snapshot upload, lease release. Last, the guest returns to the title, opens 我的房间 again
+    //         (now with 房间列表) and the list shows exactly this room: its name, ROOM <no>, 2/4.
     public sealed class RoomsHookTest : MonoBehaviour
     {
         internal static bool Enabled
@@ -79,6 +88,8 @@ namespace OriCoop.Rooms
         RoomClient client;
         RoomJobs reads;
         long upload;
+        bool autoContinue;   // the Update loop may press the room page's continue (ready, and start / go in)
+        const int PickedSlot = 1;   // co-op slot 2: run-rooms.ps1 puts the host's fixture save there (not the first slot, review F19)
 
         static object Get(object target, string name)
         {
@@ -130,11 +141,12 @@ namespace OriCoop.Rooms
             Application.runInBackground = true;
             if (reads != null) reads.Pump();
             if (done) return;
-            if (Time.realtimeSinceStartup - began > 345) Check(false, "overall timeout");
+            if (Time.realtimeSinceStartup - began > 480) Check(false, "overall timeout");   // run-rooms.ps1 waits 500 s
             if (TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.PressStart)
                 TestHarness.PulseMenu = true;
-            // T-059: the room page comes up before the game starts; press its drawn continue / start button.
-            if (OnlineRoomScreen.Visible && OnlineRoomScreen.Click("room.continue") && !roomScreenSeen) { roomScreenSeen = true; Plugin.Log.LogInfo("ROOMS room screen continued"); }
+            // T-059 / T-171: the room page comes up before the game starts; once Run allows it, press its continue
+            // (CsRoomPage.TestContinue: ready, then the creator starts once everyone is ready).
+            if (autoContinue && OnlineRoomScreen.Visible && OnlineRoomScreen.Click("room.continue") && !roomScreenSeen) { roomScreenSeen = true; Plugin.Log.LogInfo("ROOMS room screen continued"); }
             if (UI.MainMenuVisible && GameController.Instance != null && GameController.Instance.IsLoadingGame)
             {
                 UI.Menu.HideResumeScreen();
@@ -201,6 +213,13 @@ namespace OriCoop.Rooms
 
         static string RowText(string key) { return L10n.T(key).Split('{')[0].Trim(); }
 
+        // A native row shows the key's text (Chinese or English, possibly upper case).
+        static bool RowIs(string row, string key)
+        {
+            return row.IndexOf(L10n.T(key, true), StringComparison.OrdinalIgnoreCase) >= 0
+                || row.IndexOf(L10n.T(key, false), StringComparison.OrdinalIgnoreCase) >= 0;
+        }
+
         IEnumerator Press(string page, string key, string label = null)
         {
             bool pressed = false;
@@ -208,25 +227,53 @@ namespace OriCoop.Rooms
                 && NativeModeMenu.TestRoomPress(label ?? RowText(key)), 15);
             if (done) yield break;
             string detail = "native page '" + page + "' row '" + L10n.T(key) + "'";
-            if (!pressed)
-            {
-                string path = page == "roomcreate" ? Saves.CoopSaveFolder.SinglePlayerPath(0) : RoomGame.PathFor(0);
-                detail = "timeout waiting for " + detail + "; " + NativeModeMenu.TestRoomState()
-                    + "; slot 0 path=" + path + ", exists=" + File.Exists(path) + ", slots=" + SaveSlotsManager.SaveSlotCount;
-            }
+            if (!pressed) detail = "timeout waiting for " + detail + "; " + NativeModeMenu.TestRoomState()
+                + " (" + string.Join(" | ", NativeModeMenu.TestRoomRows()) + ")";
             Check(pressed, detail);
-        }
-
-        IEnumerator Dial(string page, string key, string value)
-        {
-            bool set = false;
-            yield return Wait(() => set = NativeModeMenu.LastPage == page
-                && NativeModeMenu.TestRoomPress(RowText(key)) && NativeModeMenu.TestSetDial(value), 15);
-            if (!set && !done) Check(false, "native dial " + key + "; " + NativeModeMenu.TestRoomState());
         }
 
         bool Idle { get { return !(bool)Get(panel, "busy"); } }
         bool RoomReady { get { return Idle && Get(panel, "info") != null && panel.Session != null; } }
+        static bool SlotsReady
+        {
+            get
+            {
+                SaveSlotsUI ui = SaveSlotsUI.Instance;
+                return ui != null && ui.IsVisible && ui.Active && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.SaveSlots;
+            }
+        }
+
+        static string BarText(List<OriCoop.Ui.CsRoomBarItem> bar)
+        {
+            string text = "";
+            foreach (OriCoop.Ui.CsRoomBarItem item in bar) text += (text.Length > 0 ? "/" : "") + item.Action + (item.Enabled ? "" : "(off)");
+            return text;
+        }
+
+        static bool BarHas(List<OriCoop.Ui.CsRoomBarItem> bar, OriCoop.Ui.CsRoomAction action)
+        {
+            return bar.Exists(x => x.Action == action);
+        }
+
+        // Title -> 多人游玩 -> 自建服务器 -> 我的房间 through the real menu; waits for the room service's answer.
+        IEnumerator OpenMyRooms(string when)
+        {
+            yield return Wait(() => NativeModeMenu.TitleItemsReady
+                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, 100);
+            if (!Check(NativeModeMenu.TitleItemsReady
+                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, "title ready (" + when + ")")) yield break;
+            yield return NativeModeMenu.RoomsTestMenu(this);
+            if (!Check(NativeModeMenu.LastPage == "servermode" && NativeModeMenu.LastLabels.Exists(x => x.Contains("我的房间")
+                || x.IndexOf("My rooms", StringComparison.OrdinalIgnoreCase) >= 0), "自建服务器 page has the 我的房间 row (" + when + ")"))
+                yield break;
+            // Dispatch the actual 我的房间 row, not an independent panel initialization.
+            typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
+                .Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });   // the 自建服务器 page's 我的房间 row (T-045, T-095)
+            panel = RoomsPanel.Instance;
+            if (!Check(panel != null && NativeModeMenu.LastPage == "roomsmenu", "我的房间 opens the controller and its native page (" + when + ")")) yield break;
+            yield return Wait(() => Idle && Array.Exists(NativeModeMenu.TestRoomRows(), x => RowIs(x, "myrooms.create")), 25);
+            Check(Idle && (bool)Get(panel, "online"), "room service hello (" + when + ")");
+        }
 
         IEnumerator Run()
         {
@@ -236,105 +283,218 @@ namespace OriCoop.Rooms
             string server = Environment.GetEnvironmentVariable("ORICOOP_ROOMS_SERVER");
             if (!Check(Uri.TryCreate(server, UriKind.Absolute, out url) && url.Scheme == "http"
                 && url.Host == "127.0.0.1" && cserver.StartsWith("127.0.0.1:"), "localhost services")) yield break;
-            yield return Wait(() => NativeModeMenu.TitleItemsReady
-                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, 100);
-            if (!Check(NativeModeMenu.TitleItemsReady
-                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, "title ready")) yield break;
-            yield return NativeModeMenu.RoomsTestMenu(this, false);
-            if (!Check(NativeModeMenu.LastLabels.Exists(x => x.Contains("我的房间")
-                || x.IndexOf("My rooms", StringComparison.OrdinalIgnoreCase) >= 0), "自建服务器 My rooms row"))
-                yield break;
-            // Dispatch the actual My rooms row, not an independent panel initialization.
-            typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
-                .Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });   // the 自建服务器 page's My rooms row (T-045, T-095)
-            panel = RoomsPanel.Instance;
-            if (!Check(panel != null, "My rooms opens controller")) yield break;
-            if (!Check(NativeModeMenu.LastPage == "roomsmenu" && NativeModeMenu.TestRoomRows().Length >= 2,
-                "native rooms page has rows")) yield break;
-            yield return Wait(() => Idle, 25);
-            yield return Wait(() => NativeModeMenu.TestRoomRows().Length >= 4, 5);
+            // Setup: the player saved this C-server (服务器管理), as anyone who reached 自建服务器 with it selected has. The
+            // client's config is a private copy of the test copy's (test-launch.ps1), so this never reaches another run.
+            yield return Wait(() => Plugin.Instance != null, 30);
+            if (!OriCoop.Authority.CServerConfig.Servers.Contains(cserver)) OriCoop.Authority.CServerConfig.AddServer(cserver);
+            if (!Check(OriCoop.Authority.CServerConfig.Servers.Contains(cserver) && OriCoop.Authority.CServerConfig.Address == cserver,
+                "test C-server " + cserver + " saved and selected")) yield break;
+
+            yield return OpenMyRooms("first visit");
+            if (done) yield break;
+            // T-173 (owner): no 房间列表 while the player has no rooms.
             string[] menuRows = NativeModeMenu.TestRoomRows();
-            if (!Check(NativeModeMenu.LastPage == "roomsmenu" && menuRows.Length >= 4
-                && Array.Exists(menuRows, x => x.IndexOf(L10n.T("rooms.create"), StringComparison.OrdinalIgnoreCase) >= 0)
-                && Array.Exists(menuRows, x => x.IndexOf(L10n.T("rooms.list"), StringComparison.OrdinalIgnoreCase) >= 0)
-                && Array.Exists(menuRows, x => x.IndexOf(L10n.T("rooms.join_room"), StringComparison.OrdinalIgnoreCase) >= 0),
-                "My rooms submenu lists Create / Room list / Join / Back (" + string.Join(" | ", menuRows) + ")")) yield break;
-            if (!Check(Idle && (bool)Get(panel, "online"), "room service hello")) yield break;
+            if (!Check(NativeModeMenu.LastPage == "roomsmenu" && menuRows.Length == 3 && RowIs(menuRows[0], "myrooms.create")
+                && RowIs(menuRows[1], "myrooms.join") && RowIs(menuRows[2], "common.back")
+                && !Array.Exists(menuRows, x => RowIs(x, "myrooms.list")),
+                "fresh 我的房间 menu is exactly 新建房间 / 加入房间 / 返回, no 房间列表 (" + string.Join(" | ", menuRows) + ")")) yield break;
             bool backed = false;
             yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
-            if (!Check(backed && NativeModeMenu.LastPage == "servermode", "native rooms Back/Esc returns to server mode")) yield break;
+            if (!Check(backed && NativeModeMenu.LastPage == "servermode", "我的房间 Back returns to the 自建服务器 page")) yield break;
             typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
                 .Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });
-            yield return Wait(() => Idle, 25);
-            // T-095: 房间列表 is its own page; a fresh room folder shows the empty-list row, Back returns to the submenu.
-            yield return Press("roomsmenu", "rooms.list");
-            if (done) yield break;
-            if (!Check(NativeModeMenu.LastPage == "rooms" && NativeModeMenu.TestRoomRows().Length == 2
-                && NativeModeMenu.TestRoomRows()[0] == L10n.T("rooms.empty"), "room list page shows the empty-list row (" + NativeModeMenu.TestRoomState() + ")")) yield break;
-            backed = false;
-            yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
-            if (!Check(backed && NativeModeMenu.LastPage == "roomsmenu", "room list Back returns to the My rooms submenu")) yield break;
-            if (role == "host")
-            {
-                yield return Press("roomsmenu", "rooms.create");
-                if (done) yield break;
-                string name = panel.AutoName;
-                string prefix = L10n.F("rooms.default_name", Environment.GetEnvironmentVariable("ORICOOP_TEST_NICK")) + " ";
-                int number;
-                if (!Check(name.StartsWith(prefix) && int.TryParse(name.Substring(prefix.Length), out number) && number >= 1,
-                    "no text entry: generated room name matches nick's room N (" + name + ")")) yield break;
-                // T-136: # * $ @ ^ [ ] < > are MessageBox markup; a generated name must not contain any of them.
-                if (!Check(!OriCoop.Ui.MarkupText.HasMarkup(name), "generated room name has no MessageBox markup (" + name + ")")) yield break;
-                Publish("name", name);
-                yield return Dial("roomcreate", "rooms.password", "1234");
-                yield return Press("roomcreate", "rooms.create_slot", L10n.F("rooms.create_slot", 1, ""));
-                if (done) yield break;
-            }
-            else
-            {
-                yield return Wait(() => Shared().GetString("live").Length > 0, 150);
-                if (!Check(Shared().GetString("live").Length > 0, "host published shared live code")) yield break;
-                yield return Press("roomsmenu", "rooms.join_room");
-                if (done) yield break;
-                yield return Dial("roomjoin", "rooms.code", Shared().GetString("code"));
-                yield return Dial("roomjoin", "rooms.password", "1234");
-                yield return Press("roomjoin", "rooms.join");
-                if (done) yield break;
-            }
-            yield return Wait(() => RoomReady, 25);
-            if (!Check(RoomReady, role + " authenticated room")) yield break;
-            auth = (RoomAuth)Get(panel, "auth");
-            client = (RoomClient)Get(panel, "client");
-            room = auth.Room;
-            var info = (RoomWire.Fields)Get(panel, "info");
-            save = info.GetString("save.0.id");
-            if (!Check(info.GetString("name") == Shared().GetString("name"),
-                "4-digit password authenticated auto-named room end to end (" + role + ")")) yield break;
-            if (role == "host")
-            {
-                Publish("room", room);
-                Publish("code", info.GetString("code"));
-            }
-            else if (!Check(room == Shared().GetString("room"), "joined shared room id")) yield break;
-            // T-136: the native room page shows names without markup (a # would turn the rest of the row yellow).
-            string[] viewRows = NativeModeMenu.TestRoomRows(); string marked = null;
-            foreach (string row in viewRows) if (OriCoop.Ui.MarkupText.HasMarkup(row)) { marked = row; break; }
-            if (!Check(viewRows.Length > 0 && marked == null, "room page rows carry no MessageBox markup (" + (marked ?? viewRows.Length + " rows") + ")")) yield break;
-            yield return Press("roomview", "rooms.continue");
+            yield return Wait(() => Idle && Array.Exists(NativeModeMenu.TestRoomRows(), x => RowIs(x, "myrooms.create")), 25);
+            if (!Check(NativeModeMenu.LastPage == "roomsmenu" && panel == RoomsPanel.Instance && Idle,
+                "我的房间 reopens (" + NativeModeMenu.TestRoomState() + ")")) yield break;
+            if (role == "host") yield return CreateRoom();
+            else yield return JoinRoom(cserver);
             if (done) yield break;
             if (role == "host") yield return Host();
-            else yield return Join();
+            else
+            {
+                yield return Join();
+                if (!done) yield return RoomList();
+            }
             if (!done) Finish(true);
         }
 
+        // Host: 新建房间 -> save slots -> slot 1 -> the open room's page; the guest joins; ready + 开始 confirms the room.
+        IEnumerator CreateRoom()
+        {
+            yield return Press("roomsmenu", "myrooms.create");
+            if (done) yield break;
+            yield return Wait(() => SlotsReady, 15);
+            if (!Check(SlotsReady && NativeModeMenu.MyRoomCreating, "新建房间 opens the save slot screen (screen="
+                + TitleScreenManager.CurrentScreen + ")")) yield break;
+            yield return Wait(() => false, 0.8f);   // the slot list settles (TitleJoinTest does the same)
+            if (!Check(SaveSlotsManager.SlotExists(PickedSlot), "co-op slot " + (PickedSlot + 1) + " has the fixture save ("
+                + Rooms.RoomGame.PathFor(PickedSlot) + ")")) yield break;
+            SaveSlotsUI ui = SaveSlotsUI.Instance;
+            ui.SetCurrentItem(PickedSlot);
+            ui.UsedSaveSlotSelected();
+            if (!Check(NativeModeMenu.LastSlotPick == "myroom-create-" + PickedSlot, "slot pick creates the room ("
+                + NativeModeMenu.LastSlotPick + ")")) yield break;
+            yield return Wait(() => panel.Session != null && panel.Session.Holder && panel.Game.Slot >= 0 && CsRoomPage.IsOpen
+                && !string.IsNullOrEmpty(NetPlay.RoomCode) && RoomReady, 45);
+            if (!Check(panel.Session != null && panel.Session.Holder && CsRoomPage.IsOpen && !string.IsNullOrEmpty(NetPlay.RoomCode) && RoomReady,
+                "new room created and entered: room page open, holding the room's save (page=" + NativeModeMenu.LastPage
+                + ", room page=" + CsRoomPage.IsOpen + ", code=" + NetPlay.RoomCode + ", " + NativeModeMenu.TestRoomState() + ")")) yield break;
+            if (!Check(panel.Game.Slot == PickedSlot && SaveSlotsManager.CurrentSlotIndex == PickedSlot,
+                "the room's save is hosted from the picked co-op slot (F19): slot " + panel.Game.Slot)) yield break;
+            auth = panel.Auth;
+            client = (RoomClient)Get(panel, "client");
+            room = auth.Room;
+            yield return ReadInfo();
+            if (done) yield break;
+            RoomWire.Fields f = observed.Fields;
+            string code = f.GetString("code"), name = f.GetString("name");
+            long no = f.GetLong("no", 0);
+            save = f.GetString("save.0.id");
+            if (!Check(f.GetString("open") == "1" && f.GetString("pending") == "1" && code.Length == 6,
+                "new room is open and pending with a 6-character invite code (" + code + ")")) yield break;
+            string[] words = name.Split(' ');
+            bool ascii = name.Length > 0;
+            foreach (char c in name) if (c < ' ' || c > '~') ascii = false;
+            if (!Check(ascii && words.Length == 2 && Array.IndexOf(OriCoop.Ui.RoomNames.First, words[0]) >= 0
+                && Array.IndexOf(OriCoop.Ui.RoomNames.Last, words[1]) >= 0, "room name is two English room-name words (" + name + ")")) yield break;
+            // T-136: # * $ @ ^ [ ] < > are MessageBox markup; a room name must not contain any of them.
+            if (!Check(!OriCoop.Ui.MarkupText.HasMarkup(name), "room name has no MessageBox markup (" + name + ")")) yield break;
+            if (!Check(f.GetLong("seats", 0) == 4 && no >= 1001 && save.Length > 0,
+                "4 seats, ROOM " + no + " (>= 1001), one save")) yield break;
+            Publish("room", room);
+            Publish("name", name);
+            Publish("no", no.ToString());
+            Publish("code", code);
+            // The C-server room's code reaches the room service (live) while the creator is still on the room page.
+            yield return Wait(() => postedLive == NetPlay.RoomCode, 20);
+            if (!Check(postedLive == NetPlay.RoomCode, "live code posted from the room page (" + postedLive + ")")) yield break;
+            Publish("live", NetPlay.RoomCode);
+            OriCoop.Authority.CServerClient cs = null;
+            yield return Wait(delegate
+            {
+                cs = OriCoop.Authority.CServerLink.Client;
+                return cs != null && cs.SeatOnlineNow(2) && Shared().GetString("guestpage") == "1";
+            }, 150);
+            if (!Check(cs != null && cs.SeatOnlineNow(2) && Shared().GetString("guestpage") == "1",
+                "guest online on the C-server (seat 2) and on its room page")) yield break;
+            OriCoop.Ui.CsRoomModel model = CsRoomPage.Model;
+            List<OriCoop.Ui.CsRoomBarItem> bar = model.Bar();
+            if (!Check(CsRoomPage.IsOpen && model.Persistent && !model.Confirmed && model.IsManager
+                && BarHas(bar, OriCoop.Ui.CsRoomAction.Start) && BarHas(bar, OriCoop.Ui.CsRoomAction.Ready)
+                && BarHas(bar, OriCoop.Ui.CsRoomAction.Kick) && BarHas(bar, OriCoop.Ui.CsRoomAction.Leave)
+                && !BarHas(bar, OriCoop.Ui.CsRoomAction.SwitchSave),
+                "creator's room page: pending my room, bar 开始/准备/踢出/离开, no 换存档 (" + BarText(bar) + ", persistent="
+                + model.Persistent + ", confirmed=" + model.Confirmed + ", in room=" + MyRooms.InRoom + ")")) yield break;
+            autoContinue = true;   // ready, then 开始 once the guest is ready (CsRoomPage.TestContinue)
+            yield return Wait(() => roomScreenSeen && !CsRoomPage.IsOpen, 60);
+            if (!Check(roomScreenSeen && !CsRoomPage.IsOpen,
+                "ready + 开始 through the room page (" + CsRoomPage.LastAction + ")")) yield break;
+            float end = Time.realtimeSinceStartup + 15;
+            do
+            {
+                yield return ReadInfo();
+                if (done) yield break;
+                if (observed.Fields.GetString("pending") == "0" && observed.Fields.GetString("code").Length == 0) break;
+                yield return Wait(() => false, 0.5f);
+            } while (Time.realtimeSinceStartup < end);
+            if (!Check(observed.Fields.GetString("pending") == "0" && observed.Fields.GetString("code").Length == 0
+                && observed.Fields.GetLong("code_expires", -1) == 0,
+                "开始 confirmed the room: pending 0, invite code closed (code='" + observed.Fields.GetString("code") + "')")) yield break;
+            Publish("confirmed", "1");
+        }
+
+        // Guest: 加入房间 page -> the test C-server and the shared code -> 加入 -> the room page; ready; reopen the code.
+        IEnumerator JoinRoom(string cserver)
+        {
+            yield return Wait(() => Shared().GetString("code").Length > 0, 150);
+            string code = Shared().GetString("code");
+            if (!Check(code.Length == 6, "host published the invite code (" + code + ")")) yield break;
+            yield return Press("roomsmenu", "myrooms.join");
+            if (done) yield break;
+            if (!Check(MyRoomsPages.IsOpen && MyRoomsPages.Current == MyRoomsPages.Page.Join, "加入房间 opens the join page ("
+                + MyRoomsPages.TestState + ")")) yield break;
+            if (!Check(MyRoomsPages.JoinModel.Servers.Contains(cserver), "join page lists the test C-server ("
+                + string.Join(", ", MyRoomsPages.JoinModel.Servers.ToArray()) + ")")) yield break;
+            // The page preselects the server chosen under 服务器管理 (the test C-server), before anything is picked by hand.
+            if (!Check(MyRoomsPages.JoinModel.ServerText == cserver, "join page preselects the selected server ("
+                + MyRoomsPages.JoinModel.ServerText + ")")) yield break;
+            bool set = false;
+            yield return Wait(() => set = MyRoomsPages.TestSetJoin(cserver, code), 5);
+            if (!Check(set && MyRoomsPages.JoinModel.ServerText == cserver && MyRoomsPages.JoinModel.Code == code && MyRoomsPages.JoinModel.CanJoin,
+                "join page: server " + MyRoomsPages.JoinModel.ServerText + ", code " + MyRoomsPages.JoinModel.Code)) yield break;
+            bool pressed = false;
+            yield return Wait(() => pressed = MyRoomsPages.TestPressJoin(), 10);
+            if (!Check(pressed, "加入 pressed (" + MyRoomsPages.TestState + ")")) yield break;
+            yield return Wait(() => RoomReady && !MyRoomsPages.IsOpen, 60);
+            if (!Check(RoomReady && !MyRoomsPages.IsOpen, "joined by invite code: authenticated room (" + MyRoomsPages.TestState + ")")) yield break;
+            auth = panel.Auth;
+            client = (RoomClient)Get(panel, "client");
+            room = auth.Room;
+            save = panel.Info.GetString("save.0.id");
+            if (!Check(room == Shared().GetString("room") && panel.Info.GetString("name") == Shared().GetString("name"),
+                "joined the shared room (" + room + ", " + panel.Info.GetString("name") + ")")) yield break;
+            yield return Wait(() => CsRoomPage.IsOpen, 60);
+            if (!Check(CsRoomPage.IsOpen, "guest's room page open (page=" + NativeModeMenu.LastPage + ", net=" + NetPlay.CurrentPhase + ")")) yield break;
+            yield return Wait(() => false, 0.5f);   // the page fills its model when it ticks / draws
+            OriCoop.Ui.CsRoomModel model = CsRoomPage.Model;
+            List<OriCoop.Ui.CsRoomBarItem> bar = model.Bar();
+            if (!Check(model.Persistent && !model.Confirmed && !model.IsManager && BarHas(bar, OriCoop.Ui.CsRoomAction.Ready),
+                "guest's room page: pending my room with 准备 (" + BarText(bar) + ", persistent=" + model.Persistent + ", confirmed="
+                + model.Confirmed + ", in room=" + MyRooms.InRoom + ", pending=" + MyRooms.Pending + ")")) yield break;
+            Publish("guestpage", "1");
+            autoContinue = true;   // ready; the creator's 开始 takes this PC into the game (LobbyStart)
+            yield return Wait(() => Shared().GetString("confirmed") == "1", 120);
+            if (!Check(Shared().GetString("confirmed") == "1" && !CsRoomPage.IsOpen, "host's 开始 took the guest in (page closed), room confirmed"))
+                yield break;
+            // 开放邀请码 as the room page offers it: on a confirmed room (fresh info) with a free seat.
+            yield return Wait(delegate { MyRooms.RefreshRoom(); return !MyRooms.Pending && MyRooms.CanOpenCode; }, 20);
+            if (!Check(!MyRooms.Pending && MyRooms.CanOpenCode, "guest sees the room confirmed, 开放邀请码 allowed")) yield break;
+            MyRooms.OpenCode();
+            long left = 0;
+            yield return Wait(delegate { left = MyRooms.CodeExpires - RoomWire.Now; return MyRooms.Code.Length == 6 && left > 0; }, 10);
+            Check(MyRooms.Code.Length == 6 && left >= 280 && left <= 305,
+                "member reopened the invite code: " + MyRooms.Code + ", " + left + " s left");
+        }
+
+        // Guest, after the session: 我的房间 now has 房间列表, and the list shows exactly this room.
+        IEnumerator RoomList()
+        {
+            yield return Wait(() => Shared().GetString("released") == "1", 150);
+            if (!Check(Shared().GetString("released") == "1", "host returned to the title, lease released")) yield break;
+            if (NetPlay.LocalInGameplay()) GameController.Instance.RestartGame();
+            yield return Wait(() => (panel.Session == null || !panel.Session.Active)
+                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, 60);
+            if (!Check((panel.Session == null || !panel.Session.Active)
+                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, "guest back on the title, room session ended")) yield break;
+            yield return OpenMyRooms("after playing");
+            if (done) yield break;
+            string[] menuRows = NativeModeMenu.TestRoomRows();
+            if (!Check(menuRows.Length == 4 && RowIs(menuRows[0], "myrooms.create") && RowIs(menuRows[1], "myrooms.join")
+                && RowIs(menuRows[2], "myrooms.list") && RowIs(menuRows[3], "common.back"),
+                "我的房间 menu now has 房间列表 (" + string.Join(" | ", menuRows) + ")")) yield break;
+            yield return Press("roomsmenu", "myrooms.list");
+            if (done) yield break;
+            if (!Check(MyRoomsPages.IsOpen && MyRoomsPages.Current == MyRoomsPages.Page.List, "房间列表 page open (" + MyRoomsPages.TestState + ")")) yield break;
+            OriCoop.Ui.MyRoomsListModel list = MyRoomsPages.ListModel;
+            string rows = "";
+            for (int i = 0; i < list.Rooms.Count; i++)
+            {
+                OriCoop.Ui.MyRoomsListRow r = list.Row(i);
+                rows += (i > 0 ? " | " : "") + r.Id + " " + r.Name + " / " + r.Number + " / " + r.Count;
+            }
+            OriCoop.Ui.MyRoomsListRow row = list.Rooms.Count == 1 ? list.Row(0) : new OriCoop.Ui.MyRoomsListRow();
+            if (!Check(list.Rooms.Count == 1 && row.Id == room && row.Name == Shared().GetString("name")
+                && row.Number == "ROOM " + Shared().GetString("no") && row.Count == "2/4" && !row.Full,
+                "房间列表 shows exactly this room: name, ROOM number, 2/4 (" + rows + ")")) yield break;
+            bool backed = false;
+            yield return Wait(() => backed = MyRoomsPages.TestBack(), 5);
+            yield return Wait(() => NativeModeMenu.LastPage == "roomsmenu" && !MyRoomsPages.IsOpen, 5);
+            Check(backed && !MyRoomsPages.IsOpen && NativeModeMenu.LastPage == "roomsmenu", "房间列表 Back returns to 我的房间");
+        }
+
+        // The gameplay half (the room was created, entered and started through the room page by CreateRoom).
         IEnumerator Host()
         {
-            yield return Wait(() => panel.Game.Slot >= 0 && NativeModeMenu.LastPage == "hosting"
-                && !string.IsNullOrEmpty(NetPlay.RoomCode), 40);
-            if (!Check(panel.Session.Holder && panel.Game.Slot >= 0
-                && NativeModeMenu.LastPage == "hosting" && !string.IsNullOrEmpty(NetPlay.RoomCode),
-                "enter host opens title host slot")) yield break;
-            yield return NativeModeMenu.RoomsTestMenu(this, true);
             yield return Wait(() => NetPlay.LocalInGameplay(), 90);
             if (!Check(NetPlay.LocalInGameplay() && SaveSlotsManager.CurrentSlotIndex == panel.Game.Slot,
                 "room slot loaded and gameplay running")) yield break;
@@ -405,11 +565,12 @@ namespace OriCoop.Rooms
                 && observed.Fields.GetLong("save.0.version", 0) == upload + 1
                 && observed.Fields.GetString("save.0.holder").Length == 0,
                 "return title snapshot version +1 and lease free");
+            if (!done) Publish("released", "1");   // the guest's 房间列表 check waits for this
         }
 
         IEnumerator Join()
         {
-            yield return Wait(() => NetPlay.PartnerHere && NetPlay.LocalInGameplay(), 100);
+            yield return Wait(() => NetPlay.PartnerHere && NetPlay.LocalInGameplay() && Shared().GetString("live").Length > 0, 100);
             string target = Environment.GetEnvironmentVariable("ORICOOP_NET_CSERVER") + "|"
                 + Shared().GetString("live");
             if (!Check(joinedTarget == target && panel.Session.Active && !panel.Session.Holder && !NetPlay.IsHost

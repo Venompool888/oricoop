@@ -57,8 +57,10 @@
         @{ Switch = 'ORICOOP_MUTATE_BOTTOMHUD_LAYOUT'; File = 'src\OriCoop\BottomHud.cs'; Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_SIGNPOST';       File = 'src\OriCoop\P2Extras.cs';       Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_ORB_MENUS';      File = 'src\OriCoop\CsRoomPage.cs';     Suite = 'titlejoin-cs'; Phase = '' }   # T-173 room page orb copy keeps the difficulty picker
+        @{ Switch = 'ORICOOP_MUTATE_HIDE_ICONS';     File = 'src\OriCoop\NativeGui.cs';      Suite = 'titlejoin-cs'; Phase = '' }   # T-173 game button icons in native labels stay hidden
         @{ Switch = 'ORICOOP_MUTATE_TOAST_NO_FALLBACK'; File = 'src\OriCoop\NetHud.cs';      Suite = 'local';     Phase = '' }
-        @{ Switch = 'ORICOOP_MUTATE_ROOM_NAME_HASH'; File = 'src\OriCoop\Rooms\RoomsPanel.cs'; Suite = 'rooms';   Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_ROOM_NAME_HASH'; File = 'src\OriCoop\NativeRooms.cs';     Suite = 'rooms';   Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_MENU_STALE_LOCK'; File = 'src\OriCoop\CoopMenu.cs';      Suite = 'net';       Phase = 'S4' }
         @{ Switch = 'ORICOOP_MUTATE_ROOMS_NATIVE_OFF'; File = 'src\OriCoop\NativeRooms.cs';   Suite = 'rooms';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_OVERLAY_UNLOCK';  File = 'src\OriCoop\TitleMenu.cs';      Suite = 'local';     Phase = '' }

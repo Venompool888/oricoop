@@ -29,9 +29,11 @@ namespace OriCoop
         // if this screen had taken it (T-120: an unconditional reset showed and unlocked the page under the overlay lobby).
         public static void Reset()
         {
-            bool wasVisible = Visible;
+            bool wasVisible = Visible, roomPage = CsRoomPage.IsOpen;
             Visible = Confirmed = false; proceed = null; buttons.Clear(); drawn.Clear(); frame.Clear();
+            CsRoomPage.Close();   // T-171
             if (wasVisible || NativeModeMenu.OverlayUnlockMutated) NativeModeMenu.RoomPanelVisible(false);
+            if (roomPage) NativeModeMenu.RoomPageEndedBySession();   // T-176: no dead host / join page after a kick either
         }
         public static bool BeforeProceed(Action next)
         {
@@ -45,11 +47,14 @@ namespace OriCoop
             drawn.Clear(); buttons.Clear(); frame.Clear();
             addresses = NetPlay.IsHost && NetPlay.TransportName == "direct" ? NetPlay.LocalAddresses() : new string[0];
             NativeModeMenu.RoomPanelVisible(true);
+            if (CsRoomPage.Active) CsRoomPage.Open();   // T-171: a C-server room gets the 房间管理页
         }
         public static void Continue()
         {
             if (!Visible) return;
             Confirmed = true; Visible = false;
+            CsRoomPage.Close();
+            CsLobby.Changed();   // tell the room this PC is in the game now
             NativeModeMenu.RoomPanelVisible(false);
             Action next = proceed; proceed = null;
             if (next != null) next();
@@ -91,13 +96,17 @@ namespace OriCoop
         internal static bool Click(string id)
         {
             Action action;
+            if (Visible && CsRoomPage.IsOpen) return id == "room.continue" && CsRoomPage.TestContinue();
             if (!Visible || !drawn.TryGetValue(id, out action)) return false;
             action(); return true;
         }
         public static void Tick()
         {
+            CsLobby.Tick();   // T-171: C-server room page state (ready, ping, start) between PCs, also while in the game
+            MyRoomsPages.Tick();   // T-173: 我的房间 join / list pages
             if (!Visible || Time.unscaledTime < ignoreUntil) return;
             if (!NetPlay.Enabled) { Reset(); return; }
+            if (CsRoomPage.IsOpen) { CsRoomPage.Tick(); return; }
             if (buttons.Count == 0) return;
             if (Core.Input.MenuDown.OnPressed || Input.GetKeyDown(KeyCode.DownArrow)) focus = (focus + 1) % buttons.Count;
             if (Core.Input.MenuUp.OnPressed || Input.GetKeyDown(KeyCode.UpArrow)) focus = (focus + buttons.Count - 1) % buttons.Count;
@@ -124,9 +133,12 @@ namespace OriCoop
         }
         public static void Draw()
         {
+            MyRoomsPages.Draw();   // T-173
+            if (!MyRoomsPages.IsOpen && NativeModeMenu.MyRoomsMenuOpen) MyRoomsPages.DrawMenuKeys();
             if (!Visible) return;
             if (!NetPlay.Enabled) { Reset(); return; }
             NativeModeMenu.RoomPanelVisible(true);
+            if (CsRoomPage.IsOpen) { CsRoomPage.Draw(); return; }
             Ui.RoomScreenModel model = frame.Get(Event.current.type == EventType.Layout, s_buildModel);
             if (model == null) return;      // opened after this frame's Layout: draw from the next frame on
             NativeGui.BeginPage("online.room");

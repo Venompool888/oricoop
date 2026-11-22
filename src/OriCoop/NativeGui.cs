@@ -18,6 +18,7 @@ namespace OriCoop
             public string Key;            // last layout inputs: skip rebuilding the text when nothing changed
             public Vector3 Pos, Scale;
             public Rect LastRect;         // screen rect last drawn into (for scroll-view hiding)
+            public Color Tint = Color.white;   // a label's colour, also applied to the game's button icons in it
             public Mesh Mesh;
             public Material QuadMaterial;
             public readonly List<RendererMaterial> Materials = new List<RendererMaterial>();
@@ -27,6 +28,7 @@ namespace OriCoop
         {
             public Renderer Renderer;
             public Material Material;
+            public Color BaseColor = Color.white;   // a button icon's own colour, before the label's alpha
         }
 
         static readonly Ui.NativeGuiState s_state = new Ui.NativeGuiState();
@@ -282,7 +284,7 @@ namespace OriCoop
                 e.Box = e.Go.GetComponentInChildren<MessageBox>(true);
             }
             if (e.Box == null || e.Box.TextBox == null) throw new System.InvalidOperationException("Native text has no TextBox");
-            Touch(e); e.LastRect = r;
+            Touch(e); e.LastRect = r; e.Tint = color;
             Camera camera = P2Hud.GuiCamera();
             int order = ++DrawOrder;
             string key = text + "|" + r + "|" + fontPx + "|" + anchor + "|" + color + "|" + Screen.width + "x" + Screen.height + "|" + L10n.Zh;
@@ -377,6 +379,81 @@ namespace OriCoop
                     owned.Material.renderQueue = QueueBase + order;
                 }
             }
+            SetIconOrder(e, order);
+        }
+
+        // T-173: the game's button icons in a label ("<icon>C</>" markup, or [Cancel] etc. that the game's parser turns into
+        // it) are not part of the TextRenderer's mesh: MoonIconRenderer instantiates one small icon object per icon under
+        // itself while the text renders. LabelCore hides every child renderer after rendering (the hint prefab's backing
+        // strip), and the icons are made after Touch set the overlay layer, so they stayed hidden on the game's UI layer.
+        // Show them with the text: overlay layer, same order and queue, the label's alpha (greyed items grey their icon).
+        static readonly bool s_mutateHideIcons = MutationOn("ORICOOP_MUTATE_HIDE_ICONS");
+        static void SetIconOrder(Element e, int order)
+        {
+            foreach (TextRenderer tr in e.Box.TextBox.textRenderers)
+            {
+                if (!(tr is MoonIconRenderer) || s_mutateHideIcons) continue;
+                foreach (Renderer renderer in tr.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (renderer == null || !renderer.gameObject.activeInHierarchy) continue;   // inactive = a pooled, unused icon
+                    renderer.gameObject.layer = OverlayLayer;
+                    renderer.enabled = true; renderer.sortingOrder = order;
+                    RendererMaterial owned = null;
+                    foreach (RendererMaterial candidate in e.Materials)
+                        if (candidate.Renderer == renderer) { owned = candidate; break; }
+                    if (owned == null)
+                    {
+                        owned = new RendererMaterial(); owned.Renderer = renderer;
+                        e.Materials.Add(owned);
+                    }
+                    Material source = renderer.sharedMaterial;
+                    if (owned.Material == null && source != null)
+                    {
+                        owned.Material = new Material(source);
+                        owned.Material.hideFlags = HideFlags.HideAndDontSave;
+                        owned.BaseColor = IconColor(source);
+                    }
+                    if (owned.Material == null) continue;
+                    renderer.sharedMaterial = owned.Material;
+                    owned.Material.renderQueue = QueueBase + order;
+                    Color c = owned.BaseColor; c.a *= e.Tint.a;
+                    if (owned.Material.HasProperty("_Color")) owned.Material.SetColor("_Color", c);
+                    else if (owned.Material.HasProperty("_TintColor")) owned.Material.SetColor("_TintColor", c);
+                }
+            }
+        }
+
+        static Color IconColor(Material m)
+        {
+            if (m.HasProperty("_Color")) return m.GetColor("_Color");
+            if (m.HasProperty("_TintColor")) return m.GetColor("_TintColor");
+            return Color.white;
+        }
+
+        // Test-only mutation switches (a run of the game's real test suites only).
+        static bool MutationOn(string name)
+        {
+            bool testRun = System.Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1" || !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN"));
+            return testRun && System.Environment.GetEnvironmentVariable(name) == "1";
+        }
+
+        // For tests: how many of the game's button icons label `id` shows right now (on the overlay layer, rendering).
+        internal static int IconsShown(string id)
+        {
+            try
+            {
+                Element e;
+                if (!s_elements.TryGetValue(id, out e) || e == null || e.Go == null || !e.Go.activeInHierarchy || e.Box == null || e.Box.TextBox == null || e.Box.TextBox.textRenderers == null) return 0;
+                int n = 0;
+                foreach (TextRenderer tr in e.Box.TextBox.textRenderers)
+                {
+                    if (!(tr is MoonIconRenderer)) continue;
+                    foreach (Renderer renderer in tr.GetComponentsInChildren<Renderer>(false))
+                        if (renderer != null && renderer.enabled && renderer.gameObject.layer == OverlayLayer) n++;
+                }
+                return n;
+            }
+            catch (System.Exception error) { WarnOnce("IconsShown", id, error); return 0; }
         }
 
         public static void Panel(string id, Rect r, Color color)
@@ -432,6 +509,128 @@ namespace OriCoop
                 (Point(camera, r.x, r.yMax, QuadZ(camera)) - e.Go.transform.position).magnitude, 1f);
             e.QuadMaterial.mainTexture = tex;
             e.QuadMaterial.SetColor("_TintColor", tint * 0.5f);
+            e.Quad.sortingOrder = ++DrawOrder;
+            e.QuadMaterial.renderQueue = QueueBase + DrawOrder;
+        }
+
+        // T-184: many small textured quads (particles, smoke puffs, glints) in ONE mesh and one draw call, at the current
+        // draw order (so they sit above what was drawn before and under what comes after). Centre / size in screen
+        // pixels, angle in degrees, colour per sprite (the vertex colour; the texture is multiplied by it). additive =
+        // glow (Particles/Additive), else alpha blended. Without the native GUI the sprites are drawn with IMGUI.
+        public struct Sprite
+        {
+            public Vector2 Center, Size;
+            public float Angle;
+            public Color Color;
+        }
+
+        sealed class SpriteBatch
+        {
+            public Vector3[] Vertices = new Vector3[0];
+            public Vector2[] UV = new Vector2[0];
+            public Color[] Colors = new Color[0];
+        }
+        static readonly Dictionary<string, SpriteBatch> s_spriteBatches = new Dictionary<string, SpriteBatch>();
+
+        public static void Sprites(string id, Texture tex, bool additive, List<Sprite> sprites)
+        {
+            try { SpritesCore(id, tex, additive, sprites); }
+            catch (System.Exception error) { Failed("Sprites", id, error); }
+        }
+
+        static void SpritesCore(string id, Texture tex, bool additive, List<Sprite> sprites)
+        {
+            if (!Repaint || tex == null || sprites == null) return;
+            Frame();
+            if (!AvailableCore())
+            {
+                Hide(id);
+                Color old = GUI.color; Matrix4x4 oldMatrix = GUI.matrix;
+                try
+                {
+                    foreach (Sprite s in sprites)
+                    {
+                        GUI.color = s.Color;
+                        GUI.matrix = oldMatrix;
+                        if (s.Angle != 0f) GUIUtility.RotateAroundPivot(s.Angle, s.Center);
+                        GUI.DrawTexture(new Rect(s.Center.x - s.Size.x / 2f, s.Center.y - s.Size.y / 2f, s.Size.x, s.Size.y), tex);
+                    }
+                }
+                finally { GUI.color = old; GUI.matrix = oldMatrix; }
+                return;
+            }
+            Element e;
+            if (s_elements.TryGetValue(id, out e) && (e == null || e.Go == null || e.Quad == null || e.QuadMaterial == null || e.Mesh == null)) RemoveElement(id, e);
+            if (!s_elements.TryGetValue(id, out e))
+            {
+                e = new Element(); s_elements.Add(id, e);
+                e.Go = new GameObject("OriCoopNativeGui_" + id);
+                Object.DontDestroyOnLoad(e.Go);
+                e.Mesh = new Mesh(); e.Mesh.MarkDynamic(); e.Mesh.hideFlags = HideFlags.HideAndDontSave;
+                e.Go.AddComponent<MeshFilter>().sharedMesh = e.Mesh;
+                e.Quad = e.Go.AddComponent<MeshRenderer>();
+                Shader shader = additive ? Shader.Find("Particles/Additive") : null;
+                if (shader == null) shader = Shader.Find("Particles/Alpha Blended");
+                e.QuadMaterial = new Material(shader);
+                e.QuadMaterial.hideFlags = HideFlags.HideAndDontSave;
+                e.Quad.sharedMaterial = e.QuadMaterial;
+            }
+            SpriteBatch b;
+            if (!s_spriteBatches.TryGetValue(id, out b)) { b = new SpriteBatch(); s_spriteBatches[id] = b; }
+            Touch(e);
+            Camera camera = P2Hud.GuiCamera();
+            // The object sits at the screen's top-left corner, one local unit = one screen pixel (y down = local -y).
+            Vector3 origin = Point(camera, 0f, 0f, QuadZ(camera));
+            e.Go.transform.position = origin;
+            e.Go.transform.rotation = camera.transform.rotation;
+            float unit = (Point(camera, 1f, 0f, QuadZ(camera)) - origin).magnitude;
+            e.Go.transform.localScale = new Vector3(unit, unit, 1f);
+            int capacity = b.Colors.Length / 4;
+            bool grew = sprites.Count > capacity;
+            if (grew)
+            {
+                int n = Mathf.Max(16, Mathf.NextPowerOfTwo(sprites.Count));
+                b.Vertices = new Vector3[n * 4]; b.UV = new Vector2[n * 4]; b.Colors = new Color[n * 4];
+                for (int i = 0; i < n; i++)
+                {
+                    b.UV[i * 4] = new Vector2(0f, 1f); b.UV[i * 4 + 1] = new Vector2(1f, 1f); b.UV[i * 4 + 2] = new Vector2(1f, 0f); b.UV[i * 4 + 3] = new Vector2(0f, 0f);
+                }
+                capacity = n;
+            }
+            for (int i = 0; i < capacity; i++)
+            {
+                int v = i * 4;
+                if (i >= sprites.Count)
+                {
+                    b.Vertices[v] = b.Vertices[v + 1] = b.Vertices[v + 2] = b.Vertices[v + 3] = Vector3.zero;
+                    b.Colors[v] = b.Colors[v + 1] = b.Colors[v + 2] = b.Colors[v + 3] = Color.clear;
+                    continue;
+                }
+                Sprite s = sprites[i];
+                float a = s.Angle * Mathf.Deg2Rad, c = Mathf.Cos(a), sn = Mathf.Sin(a);
+                float hx = s.Size.x / 2f, hy = s.Size.y / 2f;
+                Vector2 ax = new Vector2(c * hx, sn * hx), ay = new Vector2(-sn * hy, c * hy);   // screen space, y down
+                Vector2 p0 = s.Center - ax - ay, p1 = s.Center + ax - ay, p2 = s.Center + ax + ay, p3 = s.Center - ax + ay;
+                b.Vertices[v] = new Vector3(p0.x, -p0.y, 0f); b.Vertices[v + 1] = new Vector3(p1.x, -p1.y, 0f);
+                b.Vertices[v + 2] = new Vector3(p2.x, -p2.y, 0f); b.Vertices[v + 3] = new Vector3(p3.x, -p3.y, 0f);
+                b.Colors[v] = b.Colors[v + 1] = b.Colors[v + 2] = b.Colors[v + 3] = s.Color;
+            }
+            if (grew)
+            {
+                e.Mesh.Clear();
+                e.Mesh.vertices = b.Vertices; e.Mesh.uv = b.UV; e.Mesh.colors = b.Colors;
+                int[] tris = new int[capacity * 6];
+                for (int i = 0; i < capacity; i++)
+                {
+                    tris[i * 6] = i * 4; tris[i * 6 + 1] = i * 4 + 1; tris[i * 6 + 2] = i * 4 + 2;
+                    tris[i * 6 + 3] = i * 4; tris[i * 6 + 4] = i * 4 + 2; tris[i * 6 + 5] = i * 4 + 3;
+                }
+                e.Mesh.triangles = tris;
+            }
+            else { e.Mesh.vertices = b.Vertices; e.Mesh.colors = b.Colors; }
+            e.Mesh.bounds = new Bounds(new Vector3(Screen.width / 2f, -Screen.height / 2f, 0f), new Vector3(Screen.width * 4f, Screen.height * 4f, 10f));
+            e.QuadMaterial.mainTexture = tex;
+            e.QuadMaterial.SetColor("_TintColor", new Color(0.5f, 0.5f, 0.5f, 0.5f));
             e.Quad.sortingOrder = ++DrawOrder;
             e.QuadMaterial.renderQueue = QueueBase + DrawOrder;
         }

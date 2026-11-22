@@ -1,6 +1,10 @@
-# Two real clients exercise My rooms, password create/join, title host/join, and gameplay over a localhost C-server
-# (T-159: rooms play through the C-server; the relay is gone).
-# Checks PerformSave upload, guest backup, return-to-title snapshot and lease release. No Steam.
+# Two real clients exercise 我的房间 (T-173) over a localhost room service and C-server (T-159: rooms play through the
+# C-server; the relay is gone), all through the real title menu and pages (src\OriCoop\Rooms\RoomsHookTest.cs):
+# fresh 我的房间 menu (新建房间 / 加入房间, no 房间列表); host: 新建房间 -> save slots -> co-op slot 1 -> pending open room
+# (invite code, English name, 4 seats, ROOM >= 1001) on the room page; guest: 加入房间 page -> server + invite code ->
+# the same room's page; ready + the creator's 开始 confirms the room and closes the code; the guest reopens the code
+# (5 minutes). Then gameplay: PerformSave upload, guest backup, host adopt, return-to-title snapshot and lease release;
+# last the guest's 房间列表 shows the room (name, ROOM <no>, 2/4). No Steam, no passwords.
 # Uses the caller's ORICOOP_TEST_DLL; builds only RoomServer and CServer (Get-TestServerExe) when needed.
 param([switch]$Force)
 $ErrorActionPreference = 'Stop'
@@ -45,7 +49,13 @@ try {
         Get-ChildItem -LiteralPath $saves -File | Where-Object {
             $_.Name -like 'saveFile*' -or $_.Name -like '*.oricoop*' -or $_.Name -eq 'oricoop-player.txt'
         } | Remove-Item -Force
-        if ($i -eq 0) { Copy-Item (Join-Path $fixture '*') $saves -Force }
+        if ($i -eq 0) {
+            Copy-Item (Join-Path $fixture '*') $saves -Force
+            # 新建房间 picks a co-op slot: the host's co-op slot 2 (saveFile1) holds the fixture save, a non-first slot so the
+            # test proves the room is hosted from the PICKED slot (review F19), not from slot 1 by default.
+            New-Item -ItemType Directory -Path $coop -Force | Out-Null
+            Copy-Item (Join-Path $fixture 'saveFile0.sav') (Join-Path $coop 'saveFile1.sav') -Force
+        }
     }
     $ready = $false
     for ($attempt = 0; $attempt -lt 30; $attempt++) {
@@ -77,7 +87,7 @@ try {
     $watch = [Diagnostics.Stopwatch]::StartNew()
     $clients = @(Start-TestClients $specs)
     $logs = @((Get-ClientLog 'rooms-host'), (Get-ClientLog 'rooms-join'))
-    while ($watch.Elapsed.TotalSeconds -lt 360) {
+    while ($watch.Elapsed.TotalSeconds -lt 500) {   # RoomsHookTest gives up after 480 s
         Invoke-TestWatch
         $finished = @($logs | Where-Object {
             (Test-Path -LiteralPath $_) -and (Select-String -LiteralPath $_ -Pattern 'ROOMS DONE (ok|fail)')
