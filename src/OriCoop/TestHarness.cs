@@ -1423,11 +1423,22 @@ namespace OriCoop
         {
             Note("--- scenario: lifecycle (cutscene hide / movement lock)");
             int err0 = m_errors;
-            // T-181: the IME stays off in gameplay (Chinese IME candidate box on D). By now the game has run for a
-            // while and has had at least one focus change event at start-up.
+            // T-181 / T-187: the IME cannot take the game's keys (Chinese IME candidate box on D). Real play has the
+            // window focused, and a focused window keeps its input context (the detach only holds without focus). So
+            // the check focuses the window (hidden test desktop only), switches the IME on the way a player's toggle
+            // does, and expects the guard to have closed it again half a second later.
             Check(Input.imeCompositionMode == IMECompositionMode.Off, "ime: Unity's IME composition mode is Off (" + Input.imeCompositionMode + ")");
-            Check(ImeGuard.WindowFound && !ImeGuard.WindowHasContext(), "ime: no input-method context attached to the game window (found="
-                + ImeGuard.WindowFound + " detaches=" + ImeGuard.Detaches + " last='" + ImeGuard.LastResult + "')");
+            bool imeFocused = ImeGuard.TestFocusWindow();
+            yield return StartCoroutine(Wait(0.3f));
+            bool imeAttached = ImeGuard.WindowHasContext(), imeOpened = imeAttached && ImeGuard.TestOpenIme();
+            yield return StartCoroutine(Wait(0.5f));
+            string imeState = "focusedForTest=" + imeFocused + " attachedBefore=" + imeAttached + " openedByTest=" + imeOpened + " " + ImeGuard.TestState();
+            // Not judged (SKIP, never a pass): on the test desktop the window must have got the focus and, with a context
+            // attached, the IME must really have been switched on; otherwise "closed again" proves nothing.
+            if (ImeGuard.OnTestDesktop && !imeFocused) Skip("ime: the game window did not get the keyboard focus on the test desktop, so the focused case cannot be checked (" + imeState + ")");
+            else if (imeAttached && !imeOpened) Skip("ime: the IME could not be switched on here, so closing it again cannot be checked (" + imeState + ")");
+            else Check(ImeGuard.WindowFound && !ImeGuard.ImeActive(),
+                "ime: the input method cannot take keys from the game window (detached, or closed again after being switched on; " + imeState + ")");
             P1.gameObject.SetActive(false);
             yield return StartCoroutine(Wait(0.5f));
             Check(!P2.gameObject.activeSelf, "lifecycle: P2 hidden while a cutscene hides P1");
