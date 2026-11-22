@@ -233,6 +233,13 @@ static partial class StoryTests
             l.TrackRemote(r, false, 0f); Equal(false, l.Watching); r.Classified = true; Equal(true, l.Watching);
             r.Resolved = true; Equal(false, l.Watching); r.Watch = true; Equal(true, l.Watching);
         });
+        Check("T-185 a classified start that only waits for this PC's scene trip is not watched; once the wait is over it is again", delegate {
+            StoryLedger<Run> l = new StoryLedger<Run>(); Run r = new Run { Key = "a", Sender = 2, Token = 1, Classified = true };
+            l.TrackRemote(r, false, 0f); Equal(true, l.Watching);
+            r.TripWait = true; Equal(false, l.Watching);
+            r.TripWait = false; Equal(true, l.Watching);
+            r.TripWait = true; r.Watch = true; Equal(true, l.Watching);   // really watching (gave up on it) still hides
+        });
         Check("story local timeout and lock rules", delegate {
             Run r = new Run { Began = 0f };
             Equal(false, StoryLedger<Run>.LocalEnded(r, false, true, 0.6f));

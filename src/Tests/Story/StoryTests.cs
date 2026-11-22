@@ -53,6 +53,7 @@ static partial class StoryTests
         MirrorBaselineCases();   // T-175
         StoryLockRepairCases();   // T-177
         MirrorStartsCases();   // T-183
+        SceneTripRuleCases();   // T-185
         return failures == 0 ? 0 : 1;
     }
 }

@@ -99,6 +99,7 @@
         @{ Switch = 'ORICOOP_MUTATE_WORLD_WHOLE_BLOB'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net-3p'; Phase = '' }   # T-168 same-RTT world events (net W5, net-4p and net-3p-cs check it too)
         @{ Switch = 'ORICOOP_MUTATE_SHARE_TRIGGERS'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 string triggers stay per PC (KURO post-story checks; World unit tests)
         @{ Switch = 'ORICOOP_MUTATE_MIRROR_TRIGGER_RUNS'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 a mirror's start consumes the string trigger (KURO: 03 and 04 ran once)
+        @{ Switch = 'ORICOOP_MUTATE_START_IN_SCENE_TRIP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-185 a mirrored start waits for this PC's scene trip (KURO=1 over 90 ms: stories ended only once 04 finished, own Ori back at the tree)
         @{ Switch = 'ORICOOP_MUTATE_SERIALIZE_STOPS'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 a scene's LateStart load does not stop a running sequence (KURO: 03 and 04 ran once)
         @{ Switch = 'ORICOOP_MUTATE_STREAM_IN_STORY'; File = 'src\OriCoop\EnemySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 the host does not stream the partner's scenes during a story (KURO: 03 and 04 ran once, Ori back at the tree)
     )
