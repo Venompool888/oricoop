@@ -12,14 +12,16 @@ namespace OriCoop
         static readonly Seats.SeatInputs inputs = new Seats.SeatInputs();
         static readonly Dictionary<int, Vector3> last = new Dictionary<int, Vector3>();
         static InputDevice? pendingInput;
+        static bool primaryFixed; // T-188: the player picked the primary seat's device in F8, or the game started
         public static int EdgeBlocks;
         public static void Reset()
         {
-            inputs.Clear(); last.Clear(); pendingInput = null;
+            inputs.Clear(); last.Clear(); pendingInput = null; primaryFixed = false;
         }
         static InputDevice DefaultInput(int seat)
         {
-            if (seat == Players.LocalSeat && !inputs.Used(-1)) return new InputDevice(InputDevice.DeviceKind.KeyboardMouse, -1);
+            // T-188: the primary seat gets the device used last on the menus (keyboard/mouse only if nothing was pressed).
+            if (seat == Players.LocalSeat) return Device(Seats.PrimaryInput.Default(inputs, KeyboardOnlyP1.MenuDevice));
             for (int pad = 0; pad < 4; pad++)
             {
                 if (!inputs.Used(pad)) return new InputDevice(InputDevice.DeviceKind.Pad, pad);
@@ -33,13 +35,34 @@ namespace OriCoop
             return new InputDevice(input < 0 ? InputDevice.DeviceKind.KeyboardMouse : InputDevice.DeviceKind.Pad, input);
         }
         static int Code(InputDevice d) { return d.Kind == InputDevice.DeviceKind.KeyboardMouse ? -1 : d.Pad; }
+        static InputDevice Device(int code) { return new InputDevice(code < 0 ? InputDevice.DeviceKind.KeyboardMouse : InputDevice.DeviceKind.Pad, code); }
+        static string Describe(int code) { return code < 0 ? "keyboard/mouse" : "pad " + code; }
         static bool Same(InputDevice a, InputDevice b) { return Code(a) == Code(b); }
         public static bool SetInput(int seat, InputDevice device)
         {
             if (!Players.IsLocal(seat) || device.Kind != InputDevice.DeviceKind.KeyboardMouse && device.Kind != InputDevice.DeviceKind.Pad
                 || device.Kind == InputDevice.DeviceKind.Pad && (device.Pad < 0 || device.Pad > 3)) return false;
             foreach (int other in Players.LocalSeats) InputOf(other);
-            return inputs.Set(seat, Code(device));
+            if (!inputs.Set(seat, Code(device))) return false;
+            if (seat == Players.LocalSeat) primaryFixed = true; // an explicit choice is never overridden
+            return true;
+        }
+
+        // T-188: on the menus, until the player picks a device in F8, the primary seat follows the device used last;
+        // once the game starts it stays put (so e.g. a key pressed in the pause menu doesn't take a controller away).
+        static void FollowMenuDevice()
+        {
+            if (primaryFixed) return;
+            int seat = Players.LocalSeat;
+            if (!KeyboardOnlyP1.InMenu())
+            {
+                primaryFixed = true;
+                if (inputs.Get(seat) != -2) Plugin.Log.LogInfo("online P" + seat + " input at game start: " + Describe(inputs.Get(seat)));
+                return;
+            }
+            int was = inputs.Get(seat);
+            if (Seats.PrimaryInput.Follow(inputs, seat, KeyboardOnlyP1.MenuDevice))
+                Plugin.Log.LogInfo("online P" + seat + " input follows the menu device: " + Describe(was) + " -> " + Describe(inputs.Get(seat)));
         }
         public static bool Add(InputDevice device)
         {
@@ -75,6 +98,7 @@ namespace OriCoop
         {
             if (!NetPlay.Enabled) return;
             Reconcile();
+            FollowMenuDevice();
             if (!NetPlay.LocalInGameplay() || !SaveSync.Ready && NetPlay.Connected) return;
             foreach (int seat in Players.LocalSeats)
             {

@@ -30,7 +30,7 @@ namespace OriCoop
         static readonly Action s_netHudDraw = NetHud.Draw, s_sessionDraw = SessionScreens.Draw, s_controlsGuideDraw = ControlsGuideHud.Draw;
         static readonly Action s_localRefreshIds = P2Context.RefreshIds;
         static readonly Action s_testThrow = TestThrow;
-        static readonly Action s_padsTick = Pads.VirtualPads.Tick, s_glyphsTick = Glyphs.PadGlyphs.Tick;
+        static readonly Action s_padsTick = Pads.VirtualPads.Tick, s_glyphsTick = Glyphs.PadGlyphs.Tick, s_menuDeviceTick = KeyboardOnlyP1.TrackMenuDevice;
         static readonly Action s_localWall = OnlineLocalPlayers.ApplyWall, s_roomDraw = OnlineRoomScreen.Draw, s_roomTick = OnlineRoomScreen.Tick;
 
         Action m_tick, m_lifecycle, m_sampleInput, m_sharedProgress, m_tickCamera;
@@ -227,6 +227,7 @@ namespace OriCoop
         {
             SubsystemGuard.Run("VirtualPads.Tick", s_padsTick);
             SubsystemGuard.Run("PadGlyphs.Tick", s_glyphsTick);
+            SubsystemGuard.Run("KeyboardOnlyP1.TrackMenuDevice", s_menuDeviceTick);
             SubsystemGuard.Run("NetPlay.Update", s_netUpdate);
             SubsystemGuard.Run("OnlineRoomScreen.Tick", s_roomTick);
             if (!string.IsNullOrEmpty(m_testThrowName)) SubsystemGuard.Run(m_testThrowName, s_testThrow);
