@@ -462,7 +462,7 @@ namespace OriCoop
             "revive.hold", "按住 {0} 复活", "Hold {0} to revive",
             "revive.again", "被打断了，重新按住 {0}", "Interrupted - Hold {0} again",
             "revive.mouse", "鼠标左键", "the left mouse button",
-            "revive.self_hold", "按住 {0} 在最近的灵魂连接复活", "Hold {0} to revive at the latest soul link",
+            "revive.self_hold", "按住 {0} 回到上一个灵魂连接或存档点复活", "Hold {0} to revive at the last soul link or save point",
             "revive.link_made", "{0} 建立了新的灵魂连接", "{0} made a new soul link",
             "revive.death_save", "你在有伙伴死亡时创建了存档，生命值已自动减半", "You saved while a partner was down: half your health was taken",
             "escape.mash", "连按 {0} 到伙伴身边复活", "Mash {0} to come back beside a teammate",

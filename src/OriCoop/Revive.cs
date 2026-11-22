@@ -276,6 +276,7 @@ namespace OriCoop
             if (!Local) { if (AnyDowned) ClearAll("left local co-op", Host.P1 != null); HideStaleSelfHints(); return; }
             Subscribe();
             TrackSafeGround();
+            ResolveSavePoint();   // T-202: no save yet in this game -> the latest checkpoint is the save point
             if (s_down[Host.LocalSeat] != null) KeepPinned(s_down[Host.LocalSeat]);
             foreach (int seat in PresentSeats) Step(s_down[seat]);
             foreach (int seat in PresentSeats) TickSelf(s_down[seat]);   // T-041: hold Y at the latest soul link

@@ -69,6 +69,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_MODE_FIXED_SIZE'; Env = @{ ORICOOP_MUTATE_MODE_FIXED_SIZE = '1' }; Script = @('run-test.ps1'); Expect = '^title menu: how-to-play chooser scales' }
     @{ Name = 'TEST_THROW';             Env = @{ ORICOOP_TEST_THROW = 'mutation' };      Script = @('run-test.ps1', '-Scenarios', 'move');     Expect = '^move: |TestThrow' }
     @{ Name = 'P3_OFF (CUT)';           Env = @{ ORICOOP_P3_OFF = '1'; ORICOOP_NET_ONLY = 'P3' }; Script = @('run-nettest.ps1');               Expect = '^CUT ' }
+    @{ Name = 'MUTATE_LEVER_DROP_HOLD (CUT lever)'; Env = @{ ORICOOP_MUTATE_LEVER_DROP_HOLD = '1'; ORICOOP_PHASES = 'CUT' }; Script = @('run-nettest.ps1'); Expect = '^T-194 guest pulls: the player who pulled walks away from the lever' }   # T-194 (the real lever grab closes CUT)
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
     @{ Name = 'PHYS_OFF (P)';           Env = @{ ORICOOP_PHYS_OFF = '1' };               Script = @('run-nettest.ps1');                        Expect = '^P\w* ' }
     @{ Name = 'WORLDOBJ_OFF (WO)';      Env = @{ ORICOOP_WORLDOBJ_OFF = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');        Expect = '^WO' }
@@ -80,6 +81,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_SELF_REVIVE_IN_PLACE (R5)'; Env = @{ ORICOOP_MUTATE_SELF_REVIVE_IN_PLACE = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R5 guest: (back at the soul link|health equals)' }   # T-041
     @{ Name = 'MUTATE_LINK_HOST_ONLY (R5b)'; Env = @{ ORICOOP_MUTATE_LINK_HOST_ONLY = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R5b host: the guest''s offered save point' }   # T-041
     @{ Name = 'MUTATE_LINK_HOST_ONLY (4P)'; Env = @{ ORICOOP_MUTATE_LINK_HOST_ONLY = '1' }; Script = @('run-nettest.ps1', '-Clients', '4'); Expect = '^4P P\d learns that P4''s offered save point' }   # T-041
+    @{ Name = 'MUTATE_NO_CHECKPOINT_POINT (R6)'; Env = @{ ORICOOP_MUTATE_NO_CHECKPOINT_POINT = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R6 (host: (the room had a save point|with no room save)|guest: (told the room|holding Y revives))' }   # T-202
     @{ Name = 'MUTATE_NO_SEAT_SKILLS (4P)'; Env = @{ ORICOOP_MUTATE_NO_SEAT_SKILLS = '1' }; Script = @('run-nettest.ps1', '-Clients', '4'); Expect = '^R skills|4P skills' }   # T-043
     @{ Name = 'MUTATE_WORLD_NO_REBROADCAST (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_NO_REBROADCAST = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d has guest P2''s world object change' }   # T-141, T-192: whole-blob fixture (world events go via the arbiter since T-168)
     @{ Name = 'MUTATE_WORLD_WHOLE_BLOB (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_WHOLE_BLOB = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d keeps every seat''s same-RTT world event' }   # T-168

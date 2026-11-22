@@ -106,12 +106,17 @@ namespace OriCoop
             }
             RegisterNet(); Subscribe();
             TrackSafeGround();
+            bool told = ResolveSavePoint();   // T-202: no room save yet -> the host's latest checkpoint is the save point
             int seen = 0;
             foreach (int seat in PresentSeats) if (!Players.IsLocal(seat)) seen |= 1 << seat;
             if ((seen & ~s_seenRemote) != 0)
             {
                 SendDownedState();
-                if (Services.Net.IsHost) SendRoomLink();   // T-041: a PC that joined or reloaded learns the latest soul link
+                if (Services.Net.IsHost)
+                {
+                    NoteTeammateArrival();
+                    if (!told) SendRoomLink();   // T-041: a PC that joined or reloaded learns the latest soul link
+                }
             }
             s_seenRemote = seen;
             foreach (int localSeat in Players.LocalSeats)

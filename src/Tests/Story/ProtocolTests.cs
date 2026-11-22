@@ -400,5 +400,26 @@ static partial class StoryTests
             Equal((byte)2, bytes[16]);
             Equal(false, ObjectWire.LeverChanged(2, 2)); Equal(true, ObjectWire.LeverChanged(1, 2));
         });
+        // T-194: a partner's world blob read into the live lever keeps this PC's own grab; a load keeps nothing.
+        Check("lever hold kept through a live world apply", delegate {
+            int held = LeverHold.Capture(true, true, true, true);
+            Equal(true, LeverHold.Kept(held)); Equal(true, LeverHold.Grabbed(held)); Equal(true, LeverHold.InRange(held));
+        });
+        Check("lever hold keeps each flag on its own", delegate {
+            int near = LeverHold.Capture(true, true, false, true);     // standing beside it, not holding
+            Equal(true, LeverHold.Kept(near)); Equal(false, LeverHold.Grabbed(near)); Equal(true, LeverHold.InRange(near));
+            int grab = LeverHold.Capture(true, true, true, false);
+            Equal(true, LeverHold.Kept(grab)); Equal(true, LeverHold.Grabbed(grab)); Equal(false, LeverHold.InRange(grab));
+        });
+        Check("lever nobody uses: nothing to put back", delegate {
+            int idle = LeverHold.Capture(true, true, false, false);
+            Equal(false, LeverHold.Kept(idle)); Equal(false, LeverHold.Grabbed(idle)); Equal(false, LeverHold.InRange(idle));
+        });
+        Check("lever hold is dropped by the game's own load and never touched by a write", delegate {
+            int load = LeverHold.Capture(false, true, true, true);     // checkpoint / scene load: SeinLever is reset too
+            Equal(LeverHold.None, load); Equal(false, LeverHold.Kept(load)); Equal(false, LeverHold.Grabbed(load)); Equal(false, LeverHold.InRange(load));
+            int write = LeverHold.Capture(true, false, true, true);    // WorldSync capturing the lever's bytes
+            Equal(LeverHold.None, write); Equal(false, LeverHold.Kept(write)); Equal(false, LeverHold.Grabbed(write)); Equal(false, LeverHold.InRange(write));
+        });
     }
 }

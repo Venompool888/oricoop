@@ -238,6 +238,139 @@ namespace OriCoop
             yield return Barrier(h, 23);
         }
 
+        // T-202 (#285): a downed player comes back on its own, without a teammate and without a new soul link.
+        //   R6  no room save in this session yet (what a real session is like until its first save: the host loaded its
+        //       game before the guest arrived) and nobody has the energy for a soul link. The room's save point is the
+        //       host's latest checkpoint. The guest goes down away from it, is told to hold Y, holds: still down after
+        //       1 s, back after 2 s at that checkpoint with full health; energy untouched, nobody's world reloads and
+        //       the host pays nothing.
+        //   R6b the same for the host's own Ori.
+        static IEnumerator SelfRespawn(TestHarness h, bool host)
+        {
+            Own.Mortality.Health.RestoreAllHealth();
+            yield return Wait(1.6f);   // the last revive's invincibility runs out
+            yield return Barrier(h, 30);
+            int restores0 = TestHarness.RestoreCheckpointCalls;
+            int self0 = Revive.SelfRevives, saves0 = Revive.DeathSaves, links0 = Revive.LinksNoted;
+            Own.Energy.SetCurrent(0f);
+            h.Check(!Own.SoulFlame.CanAffordSoulFlame, "R6 " + (host ? "host" : "guest") + ": no energy for a soul link (energy " + F(Own.Energy.Current) + ")");
+            if (!host)
+            {
+                // The guest forgets first, so the host's word after barrier 31 is news to it.
+                Revive.TestForgetRoomSave();
+                Plugin.Teleport(Own, Puppet.Position + new Vector3(1.5f, 0f, 0f));
+                yield return Wait(0.8f);
+                h.Check(!Revive.HaveLink, "R6 guest: no room save known (as before the session's first save)");
+            }
+            yield return Barrier(h, 31);
+            SaveReport spot = new SaveReport();
+            float hostHealth0 = Own.Mortality.Health.Amount;
+            if (host)
+            {
+                int points0 = Revive.CheckpointPoints, sent0 = Revive.RoomLinksSent;
+                Revive.TestForgetRoomSave();
+                GameController.Instance.CreateCheckpoint();   // a plain checkpoint: no save, no soul link
+                spot.Position = Own.Position; spot.HasPosition = true;
+                float end = Time.realtimeSinceStartup + 3f;
+                while (!Revive.HaveLink && Time.realtimeSinceStartup < end) yield return null;
+                h.Check(Revive.HaveLink && Revive.LinkFromCheckpoint && Revive.CheckpointPoints > points0
+                    && Vector3.Distance(Revive.LinkPosition, spot.Position) < 0.5f && Revive.RoomLinksSent > sent0,
+                    "R6 host: with no room save, its latest checkpoint is the room's save point and was announced (have "
+                    + Revive.HaveLink + ", from checkpoint " + Revive.LinkFromCheckpoint + ", d=" + F(Vector3.Distance(Revive.LinkPosition, spot.Position))
+                    + ", sent " + sent0 + " -> " + Revive.RoomLinksSent + ")");
+            }
+            yield return Barrier(h, 32, "", spot);
+            if (!host)
+            {
+                SaveReport told;
+                Vector3 at = s_partnerSteps.TryGetValue(32, out told) && told.HasPosition ? told.Position : Puppet.Position;
+                float end = Time.realtimeSinceStartup + 5f;
+                while (!Revive.HaveLink && Time.realtimeSinceStartup < end) yield return null;
+                h.Check(Revive.HaveLink && Revive.LinksNoted > links0 && Vector3.Distance(Revive.LinkPosition, at) < 0.5f,
+                    "R6 guest: told the room's save point, the host's latest checkpoint (have " + Revive.HaveLink + ", d="
+                    + F(Vector3.Distance(Revive.LinkPosition, at)) + ")");
+                Revive.LastSelfHint = null;
+                Hurt(Own, 1000f);
+                yield return Wait(0.6f);
+                Revive.Downed d = Revive.DownedOf(1);
+                h.Check(d != null && d.LinkHealth == 0f, "R6 guest: own Ori downed; no soul link was made after it went down");
+                float skull = d != null ? Vector3.Distance(d.Marker, at) : -1f;
+                h.Check(skull > 1f, "R6 guest: went down away from the save point (skull d=" + F(skull) + ")");
+                string hint = L10n.T("revive.self_hold");
+                h.Check(Revive.LastSelfHint != null && Revive.LastSelfHint.Contains("<icon>")
+                    && Revive.LastSelfHint.Contains(hint.Substring(hint.IndexOf("{0}") + 3)),
+                    "R6 guest: the hint says to hold the button to come back at the last soul link or save point (" + Revive.LastSelfHint + ")");
+                Revive.TestHoldSelf = true;
+                yield return Wait(1f);
+                h.Check(Revive.DownedOf(1) != null, "R6 guest: still down after holding Y for 1 s");
+                yield return HoldSelfUntilUp(3f);
+                float back = Vector3.Distance(Own.Position, at);
+                h.Check(Revive.SelfRevives == self0 + 1 && Revive.DownedOf(1) == null,
+                    "R6 guest: holding Y revives it on its own: no teammate, no new soul link");
+                // The teleport puts it 0.5 above the spot; the skull is about 1.5 away.
+                h.Check(back < 1f, "R6 guest: back at the last save point, not at its skull (d=" + F(back) + ", skull was " + F(skull) + " away)");
+                h.Check(Mathf.Abs(Own.Mortality.Health.Amount - Own.Mortality.Health.MaxHealth) < 0.01f,
+                    "R6 guest: back with full health (" + F(Own.Mortality.Health.Amount) + "/" + F(Own.Mortality.Health.MaxHealth) + ")");
+                h.Check(Own.Energy.Current == 0f, "R6 guest: energy untouched (" + F(Own.Energy.Current) + ")");
+            }
+            yield return Barrier(h, 33);
+            yield return Wait(0.5f);
+            if (host)
+            {
+                h.Check(Revive.DownedOf(2) == null && !ReviveHud.SkullShown(2), "R6 host: the guest's skull is gone after it came back on its own");
+                h.Check(Vector3.Distance(Puppet.Position, Revive.LinkPosition) < 2f, "R6 host: the guest's Ori is shown at the save point (d="
+                    + F(Vector3.Distance(Puppet.Position, Revive.LinkPosition)) + ")");
+                h.Check(Revive.DeathSaves == saves0 && Mathf.Abs(Own.Mortality.Health.Amount - hostHealth0) < 0.01f,
+                    "R6 host: the guest's comeback cost the host nothing (health " + F(hostHealth0) + " -> " + F(Own.Mortality.Health.Amount) + ")");
+            }
+            h.Check(TestHarness.RestoreCheckpointCalls == restores0, "R6 " + (host ? "host" : "guest") + ": no checkpoint reload on this PC");
+
+            // R6b: the host's own Ori, same rule.
+            Own.Mortality.Health.RestoreAllHealth();
+            yield return Wait(1.6f);
+            yield return Barrier(h, 34);
+            self0 = Revive.SelfRevives;
+            if (host)
+            {
+                Plugin.Teleport(Own, Revive.LinkPosition + new Vector3(1.5f, 0f, 0f));
+                yield return Wait(0.8f);
+                Hurt(Own, 1000f);
+                yield return Wait(0.6f);
+                Revive.Downed d = Revive.DownedOf(1);
+                // Read once it is down: the save point follows the host's checkpoints (a checkpoint zone at the new
+                // spot may have fired), and a downed Ori makes none.
+                Vector3 at = Revive.LinkPosition;
+                float skull = d != null ? Vector3.Distance(d.Marker, at) : -1f;
+                h.Check(d != null && d.LinkHealth == 0f && Revive.LinkFromCheckpoint && skull > 1f,
+                    "R6b host: own Ori downed away from the save point, still no room save (skull d=" + F(skull) + ")");
+                Revive.TestHoldSelf = true;
+                yield return Wait(1f);
+                h.Check(Revive.DownedOf(1) != null, "R6b host: still down after holding Y for 1 s");
+                yield return HoldSelfUntilUp(3f);
+                float back = Vector3.Distance(Own.Position, at);
+                h.Check(Revive.SelfRevives == self0 + 1 && Revive.DownedOf(1) == null && back < 1f,
+                    "R6b host: holding Y brings it back at its latest checkpoint (d=" + F(back) + ")");
+                h.Check(Mathf.Abs(Own.Mortality.Health.Amount - Own.Mortality.Health.MaxHealth) < 0.01f && Own.Energy.Current == 0f,
+                    "R6b host: back with full health, energy untouched (" + F(Own.Mortality.Health.Amount) + "/" + F(Own.Mortality.Health.MaxHealth)
+                    + ", energy " + F(Own.Energy.Current) + ")");
+            }
+            yield return Barrier(h, 35);
+            yield return Wait(0.5f);
+            if (!host) h.Check(Revive.DownedOf(2) == null && !ReviveHud.SkullShown(2), "R6b guest: the host's skull is gone after it came back on its own");
+            h.Check(TestHarness.RestoreCheckpointCalls == restores0, "R6b " + (host ? "host" : "guest") + ": no checkpoint reload on this PC");
+            // Later phases expect energy, full health and a room save made with nobody down.
+            Own.Mortality.Health.RestoreAllHealth();
+            Own.Energy.RestoreAllEnergy();
+            if (host)
+            {
+                GameController.Instance.CreateCheckpoint();
+                GameController.Instance.SaveGameController.PerformSave();
+                h.Check(Revive.HaveLink && !Revive.LinkFromCheckpoint, "R6 host: the next room save is the save point again");
+            }
+            yield return Wait(0.5f);
+            yield return Barrier(h, 36);
+        }
+
         // Game seconds (T-071): every wait here is for something the game times (hurt flash, invincibility, death, the
         // revive hold and glow); real seconds failed whenever a busy PC ran the game slower than real time.
         static IEnumerator Wait(float s) { return TestClock.WaitGame(s); }
@@ -343,6 +476,15 @@ namespace OriCoop
             int restores0 = TestHarness.RestoreCheckpointCalls;
             Own.Mortality.Health.RestoreAllHealth();
             yield return Barrier(h, 1);
+            // T-202: the way a real session starts. The host loaded its game alone; when the guest's Ori first appeared
+            // the room already had a save point (the host's checkpoint) and the guest was told. Before T-202 there was
+            // none until the first save made with a teammate present, so a downed player had nothing to hold Y for.
+            if (host)
+                h.Check(Revive.TeammateArrivals > 0 && Revive.FirstArrivalHadPoint,
+                    "R6 host: the room had a save point when the guest's Ori first appeared, before any save in co-op (arrivals "
+                    + Revive.TeammateArrivals + ", from the host's checkpoint: " + Revive.FirstArrivalFromCheckpoint + ")");
+            else
+                h.Check(Revive.HaveLink, "R6 guest: knows the room's save point before anyone made a soul link for it");
 
             // R0: partner hurt visuals (P4). Guest is hurt first (host watches), then the host (guest watches).
             for (int round = 0; round < 2; round++)
@@ -590,6 +732,7 @@ namespace OriCoop
             yield return Barrier(h, 10);
             yield return SoulLink(h, host);
             yield return DeathRules(h, host);
+            yield return SelfRespawn(h, host);
             HoldSpiritFlame(false);
             PartnerFx.ReviveHook = null;
         }

@@ -249,6 +249,114 @@ namespace OriCoop
             h.Note("P3 " + label + ": sawCamera=" + sawCamera);
             if (Failures(h) > failures) h.Note("P3 " + label + " state: " + Diag() + " lever=" + s_lever.Direction);
         }
+        // ---- T-194 (playtest 4, Spirit Cavern B): the real grab. LeverPull above calls the Lever's own events and never
+        // goes through the player's SeinLever, so it could not see a player left attached to the lever. Here the bot
+        // holds Grab and pushes the stick like a player; after the lever's story everybody must be able to walk away
+        // from it (ticket: "all players move normally after the lever and its cutscene"). A player the lever still
+        // holds gets at most 0.8 + 0.4 from it (SeinLever pulls Ori back to 0.8 beside the lever every frame).
+        const float LeverWalkGoal = 5f, LeverWalkFree = 4f;
+        static readonly System.Reflection.FieldInfo F_leverPulls = AccessTools.Field(typeof(SeinLever), "m_moveSeinPosition");
+        static bool HeldByLever()
+        {
+            SeinLever own = Own == null ? null : Own.Abilities.Lever;
+            return own != null && (own.IsUsingLever || (bool)F_leverPulls.GetValue(own));
+        }
+        static string LeverState()
+        {
+            SeinLever own = Own == null ? null : Own.Abilities.Lever;
+            return "lever=" + s_lever.Direction + " grabbed=" + s_lever.IsGrabbed + " inRange=" + s_lever.InRange
+                + " using=" + (own != null && own.IsUsingLever) + " pulls=" + (own != null && (bool)F_leverPulls.GetValue(own))
+                + " dx=" + (Own.Position.x - s_lever.transform.position.x).ToString("F2") + " kept=" + CutsceneGuard.LeverHoldsKept;
+        }
+        static IEnumerator BesideLever()
+        {
+            Bot(); P2Input.BotRT = false;
+            Plugin.Teleport(Own, s_lever.transform.position + Vector3.right * (NetPlay.IsHost ? -1.2f : 1.2f));
+            float end = Now + 5f;
+            while (!Own.PlatformBehaviour.PlatformMovement.IsOnGround && Now < end) yield return null;
+            yield return Wait(0.3f);   // SeinLever.EnterLever needs a fixed step inside the radius
+        }
+        static IEnumerator LeverRealPull(TestHarness h, string label, bool host, int step)
+        {
+            int failures = Failures(h); bool puller = NetPlay.IsHost == host;
+            string who = puller ? "the player who pulled" : "the partner";
+            yield return Settle();
+            yield return BesideLever();
+            int before = (int)s_lever.Direction;   // before the barrier: the partner may push as soon as it is through
+            yield return Barrier(h, step);
+            if (puller)
+            {
+                P2Input.BotRT = true;   // hold Grab: SeinLever.GrabLever
+                float limit = Now + 4f;
+                while (Now < limit && !Own.Abilities.Lever.IsUsingLever) yield return null;
+                h.Check(Own.Abilities.Lever.IsUsingLever, "T-194 " + label + ": the Grab button grabs the lever (" + LeverState() + ")");
+                NetTestHarness.BotLX = before == (int)Lever.LeverDirections.Right ? -1f : 1f;
+                limit = Now + 4f;
+                while (Now < limit && (int)s_lever.Direction == before) yield return null;
+                h.Check((int)s_lever.Direction != before, "T-194 " + label + ": the stick pushes the lever (" + LeverState() + ")");
+                // A player lets go during the lever's cutscene (input is locked there): nothing is pressed after it.
+                yield return Wait(0.3f);
+                P2Input.BotRT = false; NetTestHarness.BotLX = 0f;
+            }
+            bool sawLetterbox = false, freeAgain = false;
+            float start = Now, end = Now + 30f, freeSince = -1f;
+            while (Now < end)
+            {
+                sawLetterbox |= Letterbox.ShowLetterboxes;
+                NetTestHarness.BotButtons = OpenBoxes() > 0 && ((int)(Now * 4f)) % 2 == 0 ? P2Input.BTN_A : 0;
+                if ((StorySync.TakeoverMaskPublic() & 191) != 0 || Letterbox.ShowLetterboxes) freeSince = -1f;
+                else if (freeSince < 0) freeSince = Now;
+                if (Now - start >= 2f && freeSince >= 0 && Now - freeSince >= 1.5f) { freeAgain = true; break; }
+                yield return null;
+            }
+            NetTestHarness.BotButtons = 0;
+            Sample p = new Sample { Step = step + 1, Direction = (int)s_lever.Direction, SawLetterbox = sawLetterbox };
+            Local[step + 1] = p; Send(p);
+            yield return Barrier(h, step + 1);
+            h.Check(sawLetterbox, "T-194 " + label + ": the lever's story ran here");
+            h.Check(freeAgain, "T-194 " + label + ": free again after the story");
+            h.Check(Remote.ContainsKey(step + 1) && (int)s_lever.Direction == Remote[step + 1].Direction && (int)s_lever.Direction != before,
+                "T-194 " + label + ": lever moved, same direction on both");
+            string after = LeverState();
+            // The check itself: walk away from the lever (host to the left, guest to the right; flat ground both ways).
+            float leverX = s_lever.transform.position.x, far = Mathf.Abs(Own.Position.x - leverX);
+            NetTestHarness.BotLX = NetPlay.IsHost ? -1f : 1f;
+            end = Now + 3f;
+            while (Now < end && far < LeverWalkGoal) { far = Mathf.Max(far, Mathf.Abs(Own.Position.x - leverX)); yield return null; }
+            NetTestHarness.BotLX = 0f;
+            h.Check(far >= LeverWalkFree, "T-194 " + label + ": " + who + " walks away from the lever ("
+                + far.ToString("F2") + " >= " + LeverWalkFree.ToString("F0") + "; before the walk: " + after + ")");
+            h.Check(!HeldByLever(), "T-194 " + label + ": the lever no longer holds " + who + " (" + LeverState() + ")");
+            if (Failures(h) > failures) h.Note("T-194 " + label + " state: " + Diag() + " " + LeverState());
+        }
+        // The partner pushed the lever while this player stood beside it: the lever must still take a grab here.
+        static IEnumerator LeverGrabAgain(TestHarness h, string label, bool host, int step)
+        {
+            yield return Settle();
+            yield return BesideLever();
+            yield return Barrier(h, step);
+            if (NetPlay.IsHost != host) yield break;
+            P2Input.BotRT = true;
+            float limit = Now + 4f;
+            while (Now < limit && !Own.Abilities.Lever.IsUsingLever) yield return null;
+            h.Check(Own.Abilities.Lever.IsUsingLever, "T-194 " + label + ": the lever takes a grab after the partner's push (" + LeverState() + ")");
+            P2Input.BotRT = false;
+            limit = Now + 3f;
+            while (Now < limit && HeldByLever()) yield return null;
+            h.Check(!HeldByLever(), "T-194 " + label + ": letting go of Grab releases the lever (" + LeverState() + ")");
+        }
+        static IEnumerator LeverHoldRun(TestHarness h)
+        {
+            yield return Step(h, 120, LeverSetup(h, 121));
+            if (s_lever == null) yield break;
+            try
+            {
+                yield return Step(h, 124, LeverRealPull(h, "guest pulls", false, 125));
+                yield return Step(h, 128, LeverRealPull(h, "host pulls", true, 129));   // also puts the lever back
+                yield return Step(h, 132, LeverGrabAgain(h, "guest", false, 133));
+            }
+            finally { Bot(); P2Input.BotRT = false; }
+        }
         static IEnumerator ResetPedestal(TestHarness h, int step)
         {
             while (Now - s_lastActivation < 30.5f) yield return null;
@@ -904,10 +1012,13 @@ namespace OriCoop
             Local.Clear(); s_pedestal = null; s_lever = null; s_lastActivation = -31f;
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_SWEEP") == "1") { yield return NetStorySweep.Run(h); yield break; }
             bool original = Ability;
-            bool leverOnly = Environment.GetEnvironmentVariable("ORICOOP_P3_LEVER") == "1";
+            // ORICOOP_P3_LEVER=1: only the opt-in lever steps; =hold: only the T-194 real-grab steps (they also close CUT).
+            string leverMode = Environment.GetEnvironmentVariable("ORICOOP_P3_LEVER");
+            bool leverOnly = leverMode == "1";
             try
             {
                 Bot(); NetPlay.SetSim(0, 0, 0, 0); yield return Barrier(h, 1);
+                if (leverMode == "hold") { yield return LeverHoldRun(h); yield break; }
                 if (!NetPlay.IsHost && Remote.ContainsKey(1)) original = Remote[1].Ability;
                 if (!leverOnly)
                 {
@@ -955,11 +1066,13 @@ namespace OriCoop
                 while (Ability != original && Now < end) yield return null;
                 h.Check(Ability == original, "CUT original WallJump restored");
                 yield return Barrier(h, 70);
+                // T-194: a real lever grab, after the reload above (fresh scene state, nothing left of the pedestal).
+                yield return LeverHoldRun(h);
             }
             finally
             {
                 if (NetPlay.IsHost && Own != null) Own.PlayerAbilities.SetAbility(AbilityType.WallJump, original);
-                Bot(); NetPlay.SetSim(0, 0, 0, 0); StorySync.TestResolveDelay = 0f;
+                Bot(); P2Input.BotRT = false; NetPlay.SetSim(0, 0, 0, 0); StorySync.TestResolveDelay = 0f;
             }
         }
     }

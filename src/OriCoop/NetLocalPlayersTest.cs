@@ -210,6 +210,45 @@ namespace OriCoop
             }
         }
 
+        // T-202 (#285): the extra local player (a second player on one PC) goes down and holds its own Y: it comes back
+        // on its own at the room's save point with full health. Nobody revives it, nobody makes a soul link, no reload.
+        static IEnumerator LocalExtraSelfRespawn(TestHarness h)
+        {
+            bool owner = Players.LocalSeat == 2;
+            int restores = TestHarness.RestoreCheckpointCalls, self = Revive.SelfRevives, revives = Revive.Revives;
+            yield return TestClock.WaitGame(1.6f);   // the cross-device revive's invincibility runs out
+            yield return ThreeRound(h, 604, ClientCount);
+            h.Check(Revive.HaveLink, "locals: this device knows the room's save point (T-202)");
+            if (owner)
+            {
+                SeinCharacter extra = Players.OriOf(localExtra);
+                h.Check(extra != null, "locals: the extra's Ori exists for its own comeback");
+                if (extra == null) yield break;
+                extra.Mortality.DamageReciever.OnRecieveDamage(new Damage(1000, Vector2.zero, extra.Position, DamageType.Spikes, null));
+            }
+            yield return LocalWait(1f);
+            h.Check(Revive.DownedAtSeat(localExtra) != null, "locals: the extra is down again on every device (T-202)");
+            yield return ThreeRound(h, 605, ClientCount);
+            if (owner)
+            {
+                Revive.TestHoldSelf = true;
+                TestClock.Window hold = new TestClock.Window(4f);
+                while (Revive.DownedAtSeat(localExtra) != null && hold.Open) yield return null;
+                Revive.TestHoldSelf = false;
+                SeinCharacter back = Players.OriOf(localExtra);
+                float d = back != null ? Vector3.Distance(back.Position, Revive.LinkPosition) : -1f;
+                h.Check(Revive.SelfRevives == self + 1 && back != null && back.gameObject.activeInHierarchy && d >= 0f && d < 1.5f,
+                    "locals: the extra holds its own Y and comes back at the room's save point (T-202, d=" + F(d) + ")");
+                h.Check(back != null && Mathf.Abs(back.Mortality.Health.Amount - back.Mortality.Health.MaxHealth) < 0.01f,
+                    "locals: the extra is back with full health (T-202)");
+            }
+            float deadline = Time.realtimeSinceStartup + 8f;
+            while (Revive.DownedAtSeat(localExtra) != null && Time.realtimeSinceStartup < deadline) yield return null;
+            h.Check(Revive.DownedAtSeat(localExtra) == null && Revive.Revives == revives && TestHarness.RestoreCheckpointCalls == restores,
+                "locals: the extra's own comeback clears its skull on every device: no teammate revive, no reload (T-202)");
+            yield return ThreeRound(h, 606, ClientCount);
+        }
+
         static IEnumerator LocalPlayersCore(TestHarness h)
         {
             float deadline = Time.realtimeSinceStartup + 120f;
@@ -393,6 +432,7 @@ namespace OriCoop
                     "locals: stones tell the extra local player from P1 (moving=" + moving + ", dir=" + dir +
                     ", PC dir=" + stone.LocalPushDir + ", messages=" + sends + ")");
             }
+            yield return LocalExtraSelfRespawn(h);
             // T-108: this device's own Ori goes down while its extra local player is alive: no spectating, which starts
             // only once every player on the PC is down (T-042). Then it comes back (the host revives it).
             int restoresBeforeOwn = TestHarness.RestoreCheckpointCalls;

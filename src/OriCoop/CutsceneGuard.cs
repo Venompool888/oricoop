@@ -136,6 +136,36 @@ namespace OriCoop
                 return __exception;
             }
         }
+        // T-194 (playtest 4, Spirit Cavern B): the lever is also plain world state. After a push the partner's blob of
+        // it comes back within a second and WorldSync reads it into the live lever with Lever.Serialize, which clears
+        // IsGrabbed and InRange (meant for a load, where the player's SeinLever is reset as well). SeinLever still held
+        // the lever: with IsGrabbed false it never releases, with InRange false it never leaves, and it pulls Ori back
+        // to the lever every frame ("invisible wall" within 0.4 of it until the room is left). A partner's push while
+        // this Ori only stood beside the lever left it unusable the same way. This PC's own use of the lever is not
+        // world state: keep it through a live world apply (Story/ObjectCore.cs LeverHold).
+        // Test-only mutation ORICOOP_MUTATE_LEVER_DROP_HOLD=1: the apply clears it again (pre-T-194).
+        static readonly bool s_mutateLeverDropHold = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_LEVER_DROP_HOLD") == "1";
+        static readonly MethodInfo SetLeverGrabbed = AccessTools.PropertySetter(typeof(Lever), "IsGrabbed"),
+            SetLeverInRange = AccessTools.PropertySetter(typeof(Lever), "InRange");
+        public static int LeverHoldsKept;
+        [HarmonyPatch(typeof(Lever), "Serialize")]
+        static class LeverKeepHold
+        {
+            static void Prefix(Lever __instance, Archive ar, out int __state)
+            {
+                __state = s_mutateLeverDropHold ? LeverHold.None
+                    : LeverHold.Capture(StoryHost.Current.WorldApplying, ar.Reading, __instance.IsGrabbed, __instance.InRange);
+            }
+            static void Postfix(Lever __instance, int __state)
+            {
+                if (!LeverHold.Kept(__state)) return;
+                SetLeverGrabbed.Invoke(__instance, new object[] { LeverHold.Grabbed(__state) });
+                SetLeverInRange.Invoke(__instance, new object[] { LeverHold.InRange(__state) });
+                LeverHoldsKept++;
+                Log("lever hold kept through a world apply " + new MoonGuid(__instance.MoonGuid) + " grabbed=" + LeverHold.Grabbed(__state)
+                    + " inRange=" + LeverHold.InRange(__state) + " direction=" + __instance.Direction);
+            }
+        }
         public static void LocalActivation(GetAbilityPedestal pedestal)
         {
             if (Off || !Online || StoryHost.Current.Inside || ReplayingPedestal || pedestal.CurrentState == GetAbilityPedestal.States.Completed) return;

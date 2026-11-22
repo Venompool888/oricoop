@@ -74,5 +74,79 @@ static class SoulLinkTests
             SoulLinkRules.CancelRescue(d);
             Check(!d.Holding && d.Progress == 0f && d.Given == 0f && d.Rescuer == 0, "rescue still running");
         });
+
+        // T-202 (#285): a downed player always has a save point to hold Y / Q for.
+        run("T-202 no room save yet: the host's latest checkpoint is the save point", delegate {
+            SavePointState p = new SavePointState();
+            Check(!p.Have && !p.Resolve(true), "a save point without any checkpoint");
+            p.NoteCheckpoint(At(1, 10f, 20f, 12f));
+            Check(p.Resolve(true), "the checkpoint did not become the save point");
+            Check(p.Have && p.FromCheckpoint && Near(p.Point.X, 10f) && Near(p.Point.Y, 20f) && p.Point.Seat == 1,
+                "save point " + p.Point.X + "," + p.Point.Y + " seat " + p.Point.Seat);
+            Check(!p.Resolve(true), "announced the same checkpoint twice");
+        });
+        run("T-202 a checkpoint save point gives full health", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteCheckpoint(At(1, 10f, 20f, 7f));   // the Ori had 7 health when the checkpoint was made
+            p.Resolve(true);
+            Check(Near(p.Point.Health, 0f), "checkpoint save point carries health " + p.Point.Health);
+            DownedRoster<DownedState> r = Roster(2);
+            if (p.Point.Health > 0f) SoulLinkRules.NoteLink(r, p.Point.Health);   // what Revive.NoteSavePoint does
+            Check(Near(SoulLinkRules.SelfReviveHealth(r.Seats[2], 16f), 16f), "got " + SoulLinkRules.SelfReviveHealth(r.Seats[2], 16f));
+        });
+        run("T-202 the checkpoint save point follows the host's newer checkpoints", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteCheckpoint(At(1, 10f, 20f, 12f)); p.Resolve(true);
+            p.NoteCheckpoint(At(1, 30f, 40f, 12f));
+            Check(p.Resolve(true) && Near(p.Point.X, 30f) && Near(p.Point.Y, 40f), "stayed at " + p.Point.X + "," + p.Point.Y);
+        });
+        run("T-202 a room save replaces the checkpoint save point", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteCheckpoint(At(1, 10f, 20f, 12f)); p.Resolve(true);
+            p.NoteSave(At(2, 50f, 60f, 6f));
+            Check(p.Have && !p.FromCheckpoint && Near(p.Point.X, 50f) && Near(p.Point.Health, 6f) && p.Point.Seat == 2,
+                "save point " + p.Point.X + " health " + p.Point.Health);
+        });
+        run("T-202 after a room save a checkpoint no longer moves the save point", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteSave(At(2, 50f, 60f, 6f));
+            p.NoteCheckpoint(At(1, 70f, 80f, 12f));
+            Check(!p.Resolve(true) && Near(p.Point.X, 50f) && Near(p.Point.Health, 6f), "moved to " + p.Point.X);
+        });
+        run("T-202 a soul link's own checkpoint does not undo it", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteCheckpoint(At(1, 10f, 20f, 12f)); p.Resolve(true);
+            p.NoteCheckpoint(At(1, 30f, 40f, 6f));   // CastSoulFlame: checkpoint, then the save, in one frame
+            p.NoteSave(At(1, 30f, 40f, 6f));
+            Check(!p.Resolve(true) && !p.FromCheckpoint && Near(p.Point.Health, 6f), "the soul link's health was lost: " + p.Point.Health);
+        });
+        run("T-202 only the save authority decides", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteCheckpoint(At(2, 10f, 20f, 12f));
+            Check(!p.Resolve(false) && !p.Have, "a guest made its own checkpoint the room's save point");
+            p.NoteSave(At(1, 50f, 60f, 0f));   // the host's word
+            Check(p.Have && Near(p.Point.X, 50f), "the host's save point was not taken");
+            Check(p.Resolve(true) == false, "became host: its checkpoint replaced the room's save point");
+        });
+        run("T-202 a new session starts from this PC's latest checkpoint", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteCheckpoint(At(1, 10f, 20f, 12f)); p.Resolve(true);
+            p.NoteSave(At(2, 50f, 60f, 6f));
+            p.NoteCheckpoint(At(1, 70f, 80f, 12f));
+            p.SessionEnded();
+            Check(!p.Have && p.HaveCheckpoint, "session end: have=" + p.Have + " checkpoint=" + p.HaveCheckpoint);
+            Check(p.Resolve(true) && Near(p.Point.X, 70f) && p.FromCheckpoint, "next session at " + p.Point.X);
+        });
+        run("T-202 back at the title the checkpoint is forgotten", delegate {
+            SavePointState p = new SavePointState();
+            p.NoteCheckpoint(At(1, 10f, 20f, 12f));
+            p.ForgetCheckpoint(); p.SessionEnded();
+            Check(!p.HaveCheckpoint && !p.Resolve(true) && !p.Have, "the last game's checkpoint is still the save point");
+        });
+    }
+
+    static ReviveWire.Link At(int seat, float x, float y, float health)
+    {
+        ReviveWire.Link l; l.Seat = seat; l.X = x; l.Y = y; l.Z = 0f; l.Health = health; return l;
     }
 }
