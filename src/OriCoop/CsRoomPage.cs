@@ -17,6 +17,9 @@ namespace OriCoop
     //   "1: 沉没林地 - 6%", play time, difficulty, then IP:Port and the invite code · right: 玩家列表 P1-P4 (name, ping, status)
     //   bottom: keycap bar 开始游戏 / 准备 / 换存档 / 踢出 / 离开房间 (every item can also be focused and pressed / clicked;
     //   the keys are in the config, [RoomPage]).
+    // T-189: the same page in the game (pause menu -> 房间管理, OpenInGame): no orb, save, ready or start; the room name,
+    //   ip:port and the invite code at the left, 玩家列表 at the right, and the bar [开放邀请码] / [复制邀请码] / [踢出] / [返回] /
+    //   离开房间 (asked first, then the main menu). Back returns to the pause menu with 房间管理 still selected.
     internal static class CsRoomPage
     {
         static readonly CsRoomModel s_model = new CsRoomModel(delegate (string key) { return L10n.T(key); });
@@ -33,6 +36,12 @@ namespace OriCoop
         static ConfigEntry<KeyCode> s_keyStart, s_keyReady, s_keySwitch, s_keyKick, s_keyLeave;
         static ConfigEntry<KeyCode> s_padStart, s_padReady, s_padSwitch, s_padKick;
         static ConfigEntry<KeyCode> s_keyCode, s_padCode;   // T-173: 开放邀请码
+        static ConfigEntry<KeyCode> s_keyCopy, s_padCopy;   // T-189: 复制邀请码 (in the game)
+        static bool s_inGame, s_fromPause;   // T-189: opened from the pause menu (PauseMenuEntry held it)
+        static float s_copiedUntil;          // T-189: "已复制" next to the code until then
+        static string s_copied = "";         // T-189: what the last 复制邀请码 put on the clipboard (for the harness)
+        static readonly bool s_testRun = Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1"
+            || !string.IsNullOrEmpty(Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN"));
         // T-173 (room-v2-a): [E] 改名. While the name is being typed every other key / button / click of the page is ignored.
         static ConfigEntry<KeyCode> s_keyRename;
         static readonly RoomNameEdit s_edit = new RoomNameEdit();
@@ -48,6 +57,13 @@ namespace OriCoop
 
         public static bool Active { get { return CsLobby.Active; } }
         public static bool IsOpen { get { return s_open; } }
+        // T-189: the page is open in the game (from the pause menu), not on the title.
+        public static bool InGame { get { return s_open && s_inGame; } }
+        // T-189: the pause menu offers 房间管理 now (Ui/InGameRoomRules: a linked C-server session in the game).
+        public static bool InGameAvailable
+        {
+            get { return InGameRoomRules.ShowPauseEntry(NetPlay.Enabled, NetPlay.TransportName, CServerLink.Client != null, NetPlay.LocalInGameplay()); }
+        }
         internal static CsRoomModel Model { get { return s_model; } }
 
         static void BindKeys()
@@ -65,6 +81,8 @@ namespace OriCoop
             s_padKick = c.Bind("RoomPage", "KickButton", KeyCode.JoystickButton6, "Server room page, controller: kick the selected player (View / Back).");
             s_keyCode = c.Bind("RoomPage", "OpenCodeKey", KeyCode.O, "My room page: open the invite code for 5 minutes.");
             s_padCode = c.Bind("RoomPage", "OpenCodeButton", KeyCode.JoystickButton3, "My room page, controller: open the invite code (Y).");
+            s_keyCopy = c.Bind("RoomPage", "CopyCodeKey", KeyCode.C, "In-game room page: copy the invite code to the clipboard.");
+            s_padCopy = c.Bind("RoomPage", "CopyCodeButton", KeyCode.JoystickButton2, "In-game room page, controller: copy the invite code (X).");
             s_keyRename = c.Bind("RoomPage", "RenameKey", KeyCode.E, "Server room page: rename the room (the room's manager; English letters only). Enter confirms, Esc cancels.");
         }
 
@@ -89,11 +107,40 @@ namespace OriCoop
             Plugin.Log.LogInfo("cs room: page open (" + (CsLobby.CreatedRoom ? "creator, slot " + (PickedSlot + 1) : "joined") + ")");
         }
 
+        // T-189: pause menu -> 房间管理. The pause menu stays logically open and hidden (PauseMenuEntry.Suspend, as 多人游戏设置
+        // does); Close gives it back with 房间管理 still selected.
+        public static void OpenInGame()
+        {
+            if (s_open || !InGameAvailable) return;
+            BindKeys();
+            s_open = true; s_inGame = true;
+            s_fromPause = PauseMenuEntry.Suspend();
+            s_ignoreUntil = Time.unscaledTime + 0.3f;
+            s_gate.Block(Time.unscaledTime, 0.3f);   // the press that picked 房间管理 is still down
+            s_model.ResetFocus();
+            s_edit.Cancel();
+            s_renameRect = new Rect();
+            s_copiedUntil = 0f;
+            s_mineRoom = Rooms.MyRooms.InRoom;
+            if (Rooms.MyRooms.InRoom && Rooms.MyRooms.RoomName.Length > 0) CsLobby.SetRoomName(Rooms.MyRooms.RoomName);
+            Plugin.Log.LogInfo("cs room: in-game page open (" + (Rooms.MyRooms.InRoom ? "my room" : "server room " + (NetPlay.RoomCode ?? "")) + ", pause held " + s_fromPause + ")");
+        }
+
         public static void Close()
         {
             if (!s_open) return;
             s_open = false;
             s_edit.Cancel();
+            if (s_inGame)
+            {
+                s_inGame = false;
+                s_model.InGame = false;
+                NativeGui.BeginPage("cs.room"); NativeGui.EndPage();
+                if (s_fromPause) PauseMenuEntry.Return();
+                s_fromPause = false;
+                Plugin.Log.LogInfo("cs room: in-game page closed");
+                return;
+            }
             DestroyOrb();
             foreach (GameObject g in s_hidden) if (g != null) g.SetActive(true);
             s_hidden.Clear();
@@ -179,6 +226,15 @@ namespace OriCoop
         static void MapKeys()
         {
             s_keys.Clear();
+            if (s_inGame)
+            {
+                // T-189: [SPACE] / Y 开放邀请码, [C] / X 复制邀请码, [DEL] / View 踢出; Esc / B is 返回 (the cancel edge in Tick).
+                s_keys.Bind(CsRoomAction.OpenCode, Code(s_keyStart)); s_keys.Bind(CsRoomAction.OpenCode, Code(s_keyCode));
+                s_keys.Bind(CsRoomAction.OpenCode, Code(s_padCode));
+                s_keys.Bind(CsRoomAction.CopyCode, Code(s_keyCopy)); s_keys.Bind(CsRoomAction.CopyCode, Code(s_padCopy));
+                s_keys.Bind(CsRoomAction.Kick, Code(s_keyKick)); s_keys.Bind(CsRoomAction.Kick, Code(s_padKick));
+                return;
+            }
             s_keys.Bind(CsRoomAction.Start, Code(s_keyStart)); s_keys.Bind(CsRoomAction.Start, Code(s_padStart));
             s_keys.Bind(CsRoomAction.Ready, Code(s_keyReady)); s_keys.Bind(CsRoomAction.Ready, Code(s_padReady));
             s_keys.Bind(CsRoomAction.SwitchSave, Code(s_keySwitch)); s_keys.Bind(CsRoomAction.SwitchSave, Code(s_padSwitch));
@@ -190,6 +246,8 @@ namespace OriCoop
         public static void Tick()
         {
             if (!s_open) return;
+            // T-189: the session ended, the game left gameplay or the pause menu went away under the page: close it.
+            if (s_inGame && (!InGameAvailable || UI.Menu == null || !UI.Menu.MainMenuVisible)) { Close(); return; }
             Fill();
             MapKeys();
             float now = Time.unscaledTime;
@@ -219,7 +277,7 @@ namespace OriCoop
             if (!picked && rename && MayRename) { BeginRename(); return; }   // this frame's typed "e" is not taken
             if (!picked)
             {
-                if (cancel) action = s_model.Shortcut(CsRoomAction.Leave);
+                if (cancel) action = s_model.Shortcut(s_inGame ? CsRoomAction.Back : CsRoomAction.Leave);   // T-189: Esc / B = 返回 in the game
                 else if (up) s_model.Up();
                 else if (down) s_model.Down();
                 else if (left) s_model.Left();
@@ -251,12 +309,44 @@ namespace OriCoop
                     OnlineRoomScreen.Continue();
                     break;
                 case CsRoomAction.OpenCode: Rooms.MyRooms.OpenCode(); break;
+                case CsRoomAction.CopyCode: CopyCode(); break;
+                case CsRoomAction.Back:
+                    if (s_model.LeaveAsked) s_model.CancelLeave();   // 取消 on the leave question
+                    else Close();                                    // back to the pause menu
+                    break;
+                case CsRoomAction.ConfirmLeave: LeaveGame(); break;
                 case CsRoomAction.Leave:
+                    if (s_inGame) { s_model.AskLeave(); break; }   // T-189: asked first in the game
                     if (s_model.Persistent && !s_model.Confirmed && s_model.IsManager) Rooms.MyRooms.AbandonPending();
                     NativeModeMenu.LeaveRoomPage();
                     break;
             }
         }
+
+        // T-189: the shown code (a 我的房间 room's open invite code, or the server-list room's live code) onto the clipboard.
+        // Only the code, as the join page's box takes it.
+        static void CopyCode()
+        {
+            string code;
+            CodeLine(out code);
+            if (code.Length == 0) return;
+            // Test runs never write the real clipboard: it belongs to the window station, shared with the owner's desktop
+            // (docs/testing-rules.md: tests must not disturb the owner). They record the copy only.
+            try { if (!s_testRun) GUIUtility.systemCopyBuffer = code; s_copied = code; s_copiedUntil = Time.unscaledTime + 2f; }
+            catch (Exception e) { Plugin.Log.LogWarning("cs room: copy failed: " + e.Message); }
+        }
+
+        // T-189: 离开房间 confirmed on the in-game page: the pause menu's own quit (GameController.RestartGame, what the game's
+        // ReturnToTitleScreenAction does). Returning to the title ends the online session (TitleReturn); a 我的房间 room stays
+        // in 我的房间 on the room service.
+        static void LeaveGame()
+        {
+            Close();
+            Plugin.Log.LogInfo("cs room: left the room from the game: back to the main menu");
+            LeftFromGame++;
+            if (GameController.Instance != null) GameController.Instance.RestartGame();
+        }
+        internal static int LeftFromGame;   // for the harness
 
         // Harness stand-in for the old "continue" button: ready this PC; the room's manager also starts once everyone is
         // ready (or joins a game already running). true once this PC has gone into the game.
@@ -359,21 +449,16 @@ namespace OriCoop
         // The invite line under the orb and the code in it ("" = none shown). A 我的房间 room: its room-service invite code
         // (private: never the C-server's live code), with the time left once reopened, or 未开放. A C-server room from the
         // server list: the live room code other players type under 加入房间.
-        static string CodeLine(out string code)
+        static string CodeLine(out string code) { return CodeLine(out code, false); }
+
+        // T-189: the text itself is Ui/InGameRoomRules.CodeLine (unit-tested); full = the in-game page's 房间已满.
+        static string CodeLine(out string code, bool full)
         {
-            code = "";
-            if (s_mineRoom || Rooms.MyRooms.InRoom)
-            {
-                s_mineRoom = true;
-                code = Rooms.MyRooms.InRoom ? Rooms.MyRooms.Code : "";
-                if (code.Length == 0) return L10n.T("csroom.code_closed");
-                long left = Rooms.MyRooms.CodeExpires > 0 ? Rooms.MyRooms.CodeExpires - (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds : -1;
-                if (left < 0 && Rooms.MyRooms.CodeExpires > 0) left = 0;
-                string clock = left >= 0 ? (left / 60) + ":" + (left % 60).ToString("D2") : "";
-                return L10n.F("csroom.code", code, clock).TrimEnd();
-            }
-            code = NetPlay.RoomCode ?? "";
-            return code.Length > 0 ? L10n.F("csroom.code", code, "").TrimEnd() : "";
+            bool mine = s_mineRoom || Rooms.MyRooms.InRoom;
+            if (mine) s_mineRoom = true;
+            code = mine ? (Rooms.MyRooms.InRoom ? Rooms.MyRooms.Code : "") : NetPlay.RoomCode ?? "";
+            long now = (long)(DateTime.UtcNow - new DateTime(1970, 1, 1)).TotalSeconds;
+            return InGameRoomRules.CodeLine(delegate (string key) { return L10n.T(key); }, mine, code, mine ? Rooms.MyRooms.CodeExpires : 0, now, full);
         }
 
         // ---- harness hooks (read-only, plus TestRename through the real confirm path) -------------------------
@@ -387,6 +472,20 @@ namespace OriCoop
         internal static string BarIconMarkup { get { return s_open ? s_barIcons : ""; } }   // the drawn bar's icons, "|"-joined
         internal static bool RenameHintShown { get { return s_open && s_renameRect.width > 0f; } }
         internal static bool Renaming { get { return s_edit.Editing; } }
+        internal static string Copied { get { return s_copied; } }   // T-189: the last code put on the clipboard
+        internal static bool CopiedShown { get { return s_open && Time.unscaledTime < s_copiedUntil; } }
+        // T-189: the bar's actions as drawn now, comma-joined (disabled ones marked "(off)").
+        internal static string BarActions
+        {
+            get
+            {
+                if (!s_open) return "";
+                Fill();
+                List<string> items = new List<string>();
+                foreach (CsRoomBarItem item in s_model.Bar()) items.Add(item.Action + (item.Enabled ? "" : "(off)"));
+                return string.Join(",", items.ToArray());
+            }
+        }
 
         // Rename as a player does: start the edit, clear the box, type the name, confirm (EndEdit -> ApplyRename).
         // true once this page shows the new name.
@@ -411,6 +510,10 @@ namespace OriCoop
             s_model.Confirmed = mine && !Rooms.MyRooms.Pending;
             s_model.CodeOpen = mine && Rooms.MyRooms.Code.Length > 0;
             s_model.CanOpenCode = mine && Rooms.MyRooms.CanOpenCode;   // room-service members < seats, not the C-server seats
+            s_model.InGame = s_inGame;   // T-189
+            string shownCode;
+            CodeLine(out shownCode);
+            s_model.HasCode = shownCode.Length > 0;
             CServerClient c = CServerLink.Client;
             int rtt = NetPlay.RttMs > 0f ? (int)(NetPlay.RttMs + 0.5f) : -1;
             for (int seat = 1; seat <= CsRoomModel.SeatCount; seat++)
@@ -444,6 +547,18 @@ namespace OriCoop
             {
                 GUI.depth = -250;
                 float w = Screen.width, h = Screen.height;
+                if (s_inGame)
+                {
+                    // T-189: over the paused game: a dark veil so the page reads, then the page without the save column.
+                    NativeGui.Panel("csroom.veil", new Rect(0f, 0f, w, h), new Color(0.01f, 0.02f, 0.04f, 0.72f));
+                    RoomUiDraw.Title("csroom.title", L10n.T("csroom.title"));
+                    DrawName(w, h);
+                    DrawInfoInGame(w, h);
+                    DrawPlayers(w, h);
+                    DrawBar(w, h);
+                    Mouse();
+                    return;
+                }
                 // Title with a dark mist band behind it (the game's menus put their titles on one).
                 RoomUiDraw.Title("csroom.title", L10n.T("csroom.title"));
 
@@ -515,6 +630,22 @@ namespace OriCoop
             NativeGui.Label("csroom.code", new Rect(x, h * 0.775f, cw, h * 0.04f), CodeLine(out code), h * 0.029f, TextAnchor.MiddleCenter, Text);
         }
 
+        // T-189: the in-game left column under the name banner: ip:port, the invite line ("房间已满" once every seat is taken),
+        // then a note: "已复制" after 复制邀请码, the leave question, or how long an opened code stays open.
+        static void DrawInfoInGame(float w, float h)
+        {
+            float cw = w * 0.33f, x = w * 0.1f;
+            RoomUiDraw.Description("csroom.infoband", new Rect(w * 0.1f, h * 0.29f, w * 0.33f, h * 0.2f), "");
+            NativeGui.Label("csroom.ipport", new Rect(x, h * 0.31f, cw, h * 0.05f), IpPort(), h * 0.032f, TextAnchor.MiddleCenter, Text);
+            string code, line = CodeLine(out code, s_model.SeatsFull);
+            NativeGui.Label("csroom.code", new Rect(x, h * 0.37f, cw, h * 0.05f), line, h * 0.032f, TextAnchor.MiddleCenter, Text);
+            string note = s_model.LeaveAsked ? L10n.T("csroom.leave_ask")
+                : Time.unscaledTime < s_copiedUntil ? L10n.T("csroom.copied")
+                : s_model.Persistent && code.Length == 0 && !s_model.SeatsFull ? L10n.T("csroom.code_minutes") : "";
+            NativeGui.Label("csroom.note", new Rect(x, h * 0.43f, cw, h * 0.045f), note, h * 0.028f, TextAnchor.MiddleCenter,
+                s_model.LeaveAsked ? Gold : Dim);
+        }
+
         static string DifficultyText(int difficulty)
         {
             if (difficulty < 0 || !Enum.IsDefined(typeof(DifficultyMode), difficulty)) return "";
@@ -550,8 +681,10 @@ namespace OriCoop
                 NativeGui.Label("csroom.row." + seat + ".p", new Rect(r.x + width * 0.04f, r.y, width * 0.1f, rowH), row.Label, font, TextAnchor.MiddleLeft, Text);
                 NativeGui.Label("csroom.row." + seat + ".name", new Rect(r.x + width * 0.14f, r.y, width * 0.46f, rowH), row.Name, font, TextAnchor.MiddleLeft, name);
                 NativeGui.Label("csroom.row." + seat + ".ping", new Rect(r.x + width * 0.6f, r.y, width * 0.16f, rowH), row.Ping, font, TextAnchor.MiddleCenter, Text);
+                // Gold = ready on the title page; in the game (T-189) there is no ready: this PC's own row in gold.
+                bool gold = s_inGame ? !row.Empty && s_model.Seats[seat].Local : !row.Empty && row.Ready;
                 NativeGui.Label("csroom.row." + seat + ".status", new Rect(r.x + width * 0.78f, r.y, width * 0.2f, rowH), row.Status, font, TextAnchor.MiddleCenter,
-                    !row.Empty && row.Ready ? Gold : Text);
+                    gold ? Gold : Text);
             }
         }
 
@@ -563,9 +696,10 @@ namespace OriCoop
             {
                 KeyCode key, pad;
                 Keys(item.Action, out key, out pad);
-                string icon = RoomUiDraw.KeyIcon(key, pad);
+                bool noKey = key == KeyCode.None && pad == KeyCode.None;   // T-189: in-game 离开房间: the label alone
+                string icon = noKey ? null : RoomUiDraw.KeyIcon(key, pad);
                 icons += (icons.Length > 0 ? "|" : "") + icon;
-                keys.Add(new RoomUiDraw.Key { Name = KeyName(item.Action), Icon = icon, Label = item.Label, Enabled = item.Enabled, Selected = item.Selected });
+                keys.Add(new RoomUiDraw.Key { Name = noKey ? "" : KeyName(item.Action), Icon = icon, Label = item.Label, Enabled = item.Enabled, Selected = item.Selected });
             }
             s_barIcons = icons;
             s_barRects.Clear();
@@ -598,10 +732,16 @@ namespace OriCoop
                 case CsRoomAction.SwitchSave: k = s_keySwitch; p = s_padSwitch; break;
                 case CsRoomAction.Kick: k = s_keyKick; p = s_padKick; break;
                 case CsRoomAction.Leave: k = s_keyLeave; break;
-                case CsRoomAction.OpenCode: k = s_keyCode; p = s_padCode; break;
+                case CsRoomAction.OpenCode: k = s_inGame ? s_keyStart : s_keyCode; p = s_padCode; break;   // T-189: [SPACE] in the game
+                case CsRoomAction.CopyCode: k = s_keyCopy; p = s_padCopy; break;
+                case CsRoomAction.Back: k = s_keyLeave; break;
             }
             key = k != null ? k.Value : KeyCode.None;
-            pad = action == CsRoomAction.Leave ? KeyCode.JoystickButton1 : p != null ? p.Value : KeyCode.None;
+            pad = action == CsRoomAction.Leave || action == CsRoomAction.Back ? KeyCode.JoystickButton1 : p != null ? p.Value : KeyCode.None;
+            // T-189: in the game Esc / B is 返回; 离开房间 has no key of its own (focus it and confirm, or click it). The leave
+            // question's 确定离开 takes Enter / A (the focus starts on it).
+            if (s_inGame && action == CsRoomAction.Leave) { key = KeyCode.None; pad = KeyCode.None; }
+            if (action == CsRoomAction.ConfirmLeave) { key = KeyCode.Return; pad = KeyCode.JoystickButton0; }
         }
 
         // The key's name for a drawn keycap: only used when the game has no button icon for the key (RoomUiDraw.KeyIcon).

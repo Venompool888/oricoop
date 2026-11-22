@@ -99,6 +99,8 @@ namespace OriCoop
             }
 
             string RoomFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-room.txt"); } }
+            // T-189: the guest writes it once its pause menu checks are done; the host ends the session only after that.
+            string GuestDoneFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-guestdone.txt"); } }
 
             static bool CServerSavedOnDisk(string address)
             {
@@ -306,6 +308,7 @@ namespace OriCoop
             IEnumerator Host()
             {
                 try { if (File.Exists(RenameFile)) File.Delete(RenameFile); } catch (Exception e) { Note("rename file: " + e.Message); }   // T-173: no stale marker
+                try { if (File.Exists(GuestDoneFile)) File.Delete(GuestDoneFile); } catch (Exception e) { Note("guest done file: " + e.Message); }   // T-189
                 KeyboardOnlyP1.SetMenuDeviceForTest(HostMenuPad);                   // T-188: the host used pad 0 on the menus
                 yield return StartCoroutine(Row(0, 0.2f));                          // 开房 -> save slots
                 yield return StartCoroutine(WaitFor(() => SlotsReady, 8f));
@@ -371,8 +374,12 @@ namespace OriCoop
                     "host: guest Ori beside the host (distance " + (NetPlay.HaveRemotePos ? Vector3.Distance(NetPlay.LatestRemotePos, me).ToString("F2") : "?") + ")");
                 GameController.Instance.SaveGameController.PerformSave();   // a host save online writes the co-op slot only
                 CheckSaveIsolation(slot);
+                yield return StartCoroutine(PauseRoomChecks());                     // T-189: pause menu -> 房间管理
                 Shot("in_game");
                 yield return StartCoroutine(TWait(8f));                             // let the guest finish its checks
+                float doneBy = Time.realtimeSinceStartup + 45f;                     // T-189: and its pause menu checks
+                while (Time.realtimeSinceStartup < doneBy && !File.Exists(GuestDoneFile)) yield return StartCoroutine(TWait(0.5f));
+                if (!File.Exists(GuestDoneFile)) Note("guest pause checks not reported done within 45 s");
                 if (m_tr == "cserver")
                 {
                     // T-031: the server-mode room's arbiter role must end with the session. It used to survive NetPlay.End,
@@ -507,6 +514,98 @@ namespace OriCoop
                     "guest: no single-player save file created online (" + m_singleSaves.Count + " -> "
                     + Saves.CoopSaveFolder.SinglePlayerSlotsWithSaves().Length + ")");
                 Shot("in_game");
+                yield return StartCoroutine(PauseRoomChecks());                     // T-189: pause menu -> 房间管理
+                try { File.WriteAllText(GuestDoneFile, "done"); } catch (Exception e) { Note("guest done file: " + e.Message); }
+            }
+
+            // T-189: the pause menu's 房间管理. On a C-server: the item right above the game's quit item, pressing it opens the
+            // room page in the game (no save / ready / start; copy the code, 踢出 for the manager with the other player picked,
+            // 离开房间 asks first), and 返回 goes back to the pause menu with 房间管理 still selected. On LAN: no such item.
+            IEnumerator PauseRoomChecks()
+            {
+                UI.Menu.ShowMenuScreen(true);
+                float until = Time.realtimeSinceStartup + 5f;
+                while (Time.realtimeSinceStartup < until && !(PauseScreen.Instance != null && PauseScreen.Instance.NavigationManager != null
+                    && PauseScreen.Instance.NavigationManager.IsVisible)) yield return null;
+                yield return StartCoroutine(TWait(1f));
+                int index, quit; string selected;
+                bool shown = PauseMenuEntry.RoomEntryShown(out index, out quit, out selected);
+                if (m_tr != "cserver")
+                {
+                    Check(!shown && index < 0, m_role + ": LAN: the pause menu has no room entry (房间管理) (index " + index + ", quit " + quit + ")");
+                    UI.Menu.HideMenuScreen(true);
+                    yield return StartCoroutine(TWait(1f));
+                    yield break;
+                }
+                Check(shown && index >= 1 && index == quit - 1, m_role + ": C-server: the pause menu has 房间管理 right above the game's quit item (index " + index + ", quit " + quit + ")");
+                Note("pause menu: screen " + UI.Menu.CurrentScreen + ", visible " + UI.Menu.MainMenuVisible + ", list visible " + PauseScreen.Instance.NavigationManager.IsVisible
+                    + ", items " + PauseScreen.Instance.NavigationManager.MenuItems.Count + ", selected '" + selected + "'");
+                yield return StartCoroutine(TWait(1f));
+                Shot("pause_room_entry");
+                if (!shown) { UI.Menu.HideMenuScreen(true); yield break; }
+                bool pressed = PauseMenuEntry.PressRoomEntry();
+                yield return StartCoroutine(TWait(1f));
+                Check(pressed && CsRoomPage.InGame && !PauseScreen.Instance.NavigationManager.IsVisible,
+                    m_role + ": 房间管理 opens the room page in the game over the hidden pause menu (open " + CsRoomPage.InGame + ")");
+                if (!CsRoomPage.InGame) { UI.Menu.HideMenuScreen(true); yield break; }
+                string code = NetPlay.RoomCode ?? "";
+                Ui.CsRoomModel m = CsRoomPage.Model;
+                int mine = Players.LocalSeat, other = mine == 1 ? 2 : 1;
+                // The manager's bar keeps 踢出 (off until the other player is picked); a guest has none.
+                string bar = m_role == "host" ? "CopyCode,Kick(off),Back,Leave" : "CopyCode,Back,Leave";
+                Check(CsRoomPage.BarActions == bar, m_role + ": in-game bar is " + bar + ", no save, ready or start (" + CsRoomPage.BarActions + ")");
+                Check(code.Length == 6 && CsRoomPage.CodeShown == code, m_role + ": in-game page shows the room code " + code + " ('" + CsRoomPage.CodeLineShown + "')");
+                Check(CsRoomPage.IpPortShown == m_cserverAddress && PlainRoomName(CsRoomPage.NameShown),
+                    m_role + ": in-game page shows the server '" + CsRoomPage.IpPortShown + "' and the room name '" + CsRoomPage.NameShown + "'");
+                Check(m.Row(mine).Status == L10n.T("csroom.local") && m.Row(other).Status == L10n.T("csroom.remote") && !m.Row(other).Empty && m.Row(3).Empty,
+                    m_role + ": in-game rows: own P" + mine + " '" + m.Row(mine).Status + "', other P" + other + " '" + m.Row(other).Name + " / " + m.Row(other).Status + "'");
+                yield return StartCoroutine(TWait(0.5f));
+                Check(NativeGui.IconsShown("csroom.bar.0") >= 1 && NativeGui.IconsShown("csroom.bar.1") >= 1,
+                    m_role + ": in-game bar keys show the game's button icons (" + CsRoomPage.BarIconMarkup + ")");
+                Shot("ingame_room_page");
+                CoopMenu.Open();   // F8 / a View hold on top of the page: refused (one pause hold, T-189 review)
+                yield return null;
+                Check(!CoopMenu.IsOpen && CsRoomPage.InGame, m_role + ": the co-op settings panel does not open over the in-game room page (panel " + CoopMenu.IsOpen + ")");
+                if (CoopMenu.IsOpen) CoopMenu.Close();
+                if (m_role == "host")
+                {
+                    m.ClickRow(other);   // pick the guest, as a click on its row does: 踢出 appears (not pressed)
+                    Check(CsRoomPage.BarActions == "CopyCode,Kick,Back,Leave", "host: with the guest picked the bar offers 踢出 (" + CsRoomPage.BarActions + ")");
+                    m.ClickRow(mine);
+                    Check(CsRoomPage.BarActions == "CopyCode,Kick(off),Back,Leave", "host: never 踢出 on its own row (" + CsRoomPage.BarActions + ")");
+                    m.ResetFocus();
+                }
+                else
+                {
+                    m.ClickRow(other);   // the host's row, picked as a click does
+                    Check(!m.IsManager && CsRoomPage.BarActions == "CopyCode,Back,Leave" && m.Shortcut(Ui.CsRoomAction.Kick) == Ui.CsRoomAction.None,
+                        "guest: not the manager: no 踢出 even with the host's row picked (" + CsRoomPage.BarActions + ")");
+                    m.ResetFocus();
+                }
+                // Test runs record the copy without touching the real clipboard (shared with the owner's desktop).
+                CsRoomPage.Run(m.Shortcut(Ui.CsRoomAction.CopyCode));
+                yield return null;
+                Check(CsRoomPage.Copied == code && CsRoomPage.CopiedShown,
+                    m_role + ": 复制邀请码 copies just the code '" + CsRoomPage.Copied + "' and shows 已复制 (" + CsRoomPage.CopiedShown + ")");
+                int left0 = CsRoomPage.LeftFromGame;
+                CsRoomPage.Run(m.Shortcut(Ui.CsRoomAction.Leave));
+                yield return null;
+                Check(CsRoomPage.BarActions == "ConfirmLeave,Back" && CsRoomPage.InGame && NetPlay.Enabled && CsRoomPage.LeftFromGame == left0,
+                    m_role + ": 离开房间 asks first, nothing left yet (" + CsRoomPage.BarActions + ")");
+                Shot("ingame_room_leave_ask");
+                CsRoomPage.Run(m.Shortcut(Ui.CsRoomAction.Back));   // 取消
+                yield return null;
+                Check(CsRoomPage.InGame && CsRoomPage.BarActions == bar, m_role + ": 取消 keeps the page and its bar (" + CsRoomPage.BarActions + ")");
+                CsRoomPage.Run(m.Shortcut(Ui.CsRoomAction.Back));   // 返回
+                yield return StartCoroutine(TWait(0.8f));
+                Check(!CsRoomPage.IsOpen && PauseMenuEntry.RoomEntrySelected && UI.Menu.MainMenuVisible,
+                    m_role + ": 返回 closes the page and the pause menu comes back with 房间管理 selected (open " + CsRoomPage.IsOpen + ")");
+                yield return StartCoroutine(TWait(0.5f));   // PauseMenuEntry gives the pause menu back 0.3 s after Return
+                UI.Menu.HideMenuScreen(true);
+                yield return StartCoroutine(TWait(1f));
+                // The pause menu really closes (a hold left behind keeps LockClosingMenu, and HideMenuScreen does nothing).
+                Check(!UI.Menu.MainMenuVisible && NetPlay.Enabled && NetPlay.LocalInGameplay(),
+                    m_role + ": the pause menu closes after the room page and the game goes on online (menu " + UI.Menu.MainMenuVisible + ", net=" + NetPlay.CurrentPhase + ")");
             }
 
             void DismissResume()

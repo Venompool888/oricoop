@@ -29,7 +29,7 @@ namespace OriCoop
         // if this screen had taken it (T-120: an unconditional reset showed and unlocked the page under the overlay lobby).
         public static void Reset()
         {
-            bool wasVisible = Visible, roomPage = CsRoomPage.IsOpen;
+            bool wasVisible = Visible, roomPage = CsRoomPage.IsOpen && !CsRoomPage.InGame;   // T-189: the in-game page has no title page to go back to
             Visible = Confirmed = false; proceed = null; buttons.Clear(); drawn.Clear(); frame.Clear();
             CsRoomPage.Close();   // T-171
             if (wasVisible || NativeModeMenu.OverlayUnlockMutated) NativeModeMenu.RoomPanelVisible(false);
@@ -104,6 +104,7 @@ namespace OriCoop
         {
             CsLobby.Tick();   // T-171: C-server room page state (ready, ping, start) between PCs, also while in the game
             MyRoomsPages.Tick();   // T-173: 我的房间 join / list pages
+            if (CsRoomPage.InGame) { CsRoomPage.Tick(); return; }   // T-189: pause menu -> 房间管理
             if (!Visible || Time.unscaledTime < ignoreUntil) return;
             if (!NetPlay.Enabled) { Reset(); return; }
             if (CsRoomPage.IsOpen) { CsRoomPage.Tick(); return; }
@@ -135,6 +136,7 @@ namespace OriCoop
         {
             MyRoomsPages.Draw();   // T-173
             if (!MyRoomsPages.IsOpen && NativeModeMenu.MyRoomsMenuOpen) MyRoomsPages.DrawMenuKeys();
+            if (CsRoomPage.InGame) { CsRoomPage.Draw(); return; }   // T-189
             if (!Visible) return;
             if (!NetPlay.Enabled) { Reset(); return; }
             NativeModeMenu.RoomPanelVisible(true);

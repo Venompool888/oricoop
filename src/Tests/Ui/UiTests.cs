@@ -449,6 +449,7 @@ static class UiTests
         RoomInputTests.Register(Run);   // T-171 / T-173 review fixes
         RoomRenameTests.Register(Run);   // T-173 room page layout room-v2-a: [E] 改名
         RoomLeaveTests.Register(Run);   // T-176
+        InGameRoomTests.Register(Run);   // T-189
 
         return s_failed == 0 ? 0 : 1;
     }

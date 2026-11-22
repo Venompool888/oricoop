@@ -130,6 +130,7 @@ namespace OriCoop
         static void OpenPage(int page)
         {
             if (s_testPage == "" && !NetPlay.LocalInGameplay()) return;
+            if (CsRoomPage.InGame) return;   // T-189: never over the in-game room page (one pause hold, see Tick)
             if (IsOpen) { GoTo(page); return; }
             IsOpen = true;
             Page = page;
@@ -174,7 +175,9 @@ namespace OriCoop
             bool inGame = NetPlay.LocalInGameplay();
             if (!IsOpen)
             {
-                if (!inGame) { s_backHeld = 0f; return; }
+                // T-189: not over the in-game room page: its View is 踢出, and opening here would take the page's pause hold
+                // (PauseMenuEntry has one), leaving the native pause menu live under the page.
+                if (!inGame || CsRoomPage.InGame) { s_backHeld = 0f; return; }
                 // Hold Back/View on any pad for 1 s, or press F8.
                 PollPads();
                 bool backDown = false; for (int i = 0; i < 4; i++) if ((s_buttons[i] & BACK) != 0) backDown = true;
@@ -377,7 +380,8 @@ namespace OriCoop
         {
             if (!IsOpen)
             {
-                if (s_testPage == "coop.hint" || (UI.MainMenuVisible && Characters.Sein != null))
+                // T-189: not over the in-game room page (the panel does not open there).
+                if (s_testPage == "coop.hint" || (UI.MainMenuVisible && Characters.Sein != null && !CsRoomPage.InGame))
                 {
                     Styles();
                     NativeGui.BeginPage("coop.hint");

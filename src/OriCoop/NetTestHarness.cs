@@ -927,31 +927,72 @@ namespace OriCoop
                 if (!s_done) throw new InvalidOperationException("3P host completion signal missing");
             }
         }
-        // T-141: guest P2 changes a world event (GameController blob, like a door / lever / story flag); guest P3, which in
-        // P2P / relay talks only to the host, must see it within 3 s. Before T-141 it came only with a digest resync (two
-        // mismatching rounds 5 s apart, at least ~5-10 s). Mutation ORICOOP_MUTATE_WORLD_NO_REBROADCAST=1 must fail it.
+        // T-141: guest P2 changes a world object; guest P3, which in P2P / relay talks only to the host, must see it within
+        // 3 s. Before T-141 it came only with a digest resync (two mismatching rounds 5 s apart, at least ~5-10 s).
+        // T-192: since T-168 a world EVENT (GameController, an aggregate) goes as an item batch through the arbiter, which
+        // sends every committed batch to all; the host's whole-blob rebroadcast no longer carries it. Doors, levers,
+        // pedestals and every other non-aggregate object still go whole through the host, so P2 also changes a whole-blob
+        // fixture (RelayFixture, registered in the master SaveSceneManager like any saveable object). Mutation
+        // ORICOOP_MUTATE_WORLD_NO_REBROADCAST=1 must fail the "world object change" check (net-3p; in net-3p-cs the
+        // C-server relays every message itself, so the rebroadcast is not used there).
         static IEnumerator ThreeGuestWorldChange(TestHarness h)
         {
             const int target = 4141;
+            RelayFixture relay = null;
             try
             {
-                // Create the fixture event everywhere first and let the scans settle, so no PC's own first capture of
-                // it (value 0) races the change below.
+                // Create the fixtures everywhere first and let the scans settle, so no PC's own first capture of
+                // them (value 0) races the change below.
                 FixtureState();
+                relay = RelayFixture.Create();
                 yield return Wait(1.5f);
                 yield return ThreeRound(h, 30);
                 float start = Time.realtimeSinceStartup;
-                if (Players.LocalSeat == 2) FixtureState().Value = target;
+                if (Players.LocalSeat == 2) { FixtureState().Value = target; relay.Value = target; }
                 float until = start + 3f;
-                while (FixtureState().Value != target && Time.realtimeSinceStartup < until) yield return null;
-                h.Note("3P guest world change seen on P" + Players.LocalSeat + " value=" + FixtureState().Value
-                    + " elapsedMs=" + F((Time.realtimeSinceStartup - start) * 1000f));
+                float eventAt = -1f, objectAt = -1f;
+                while ((eventAt < 0f || objectAt < 0f) && Time.realtimeSinceStartup < until)
+                {
+                    if (eventAt < 0f && FixtureState().Value == target) eventAt = Time.realtimeSinceStartup - start;
+                    if (objectAt < 0f && relay.Value == target) objectAt = Time.realtimeSinceStartup - start;
+                    yield return null;
+                }
+                h.Note("3P guest world change seen on P" + Players.LocalSeat + " event=" + FixtureState().Value
+                    + " eventMs=" + F(eventAt * 1000f) + " object=" + relay.Value + " objectMs=" + F(objectAt * 1000f));
                 h.Check(FixtureState().Value == target, "3P P" + Players.LocalSeat + " has guest P2's world event change within 3 s");
+                h.Check(relay.Value == target, "3P P" + Players.LocalSeat + " has guest P2's world object change (whole blob via host) within 3 s");
                 yield return ThreeRound(h, 31);
             }
             finally
             {
                 if (s_worldFixture != null) { UnityEngine.Object.Destroy(s_worldFixture.gameObject); s_worldFixture = null; }
+                RelayFixture.Drop(relay);
+            }
+        }
+
+        // T-192: a plain saveable object (WorldSync Meaning.Raw, sent whole like a door or lever) for the 3P rebroadcast check.
+        internal sealed class RelayFixture : SaveSerialize
+        {
+            static readonly MoonGuid Id = new MoonGuid(0x57434f4f, 0x50544553, 0x54313932, 0x52454c59);
+            public int Value;
+            public override void Serialize(Archive ar) { ar.Serialize(ref Value); }
+
+            public static RelayFixture Create()
+            {
+                if (SaveSceneManager.Master == null) throw new InvalidOperationException("3P no master SaveSceneManager for the relay fixture");
+                GameObject go = new GameObject("OriCoop T-192 world relay fixture");
+                go.SetActive(false);
+                RelayFixture fixture = go.AddComponent<RelayFixture>();
+                fixture.MoonGuid = new MoonGuid(Id);
+                SaveSceneManager.Master.AddSaveObject(fixture, new MoonGuid(Id));
+                return fixture;
+            }
+
+            public static void Drop(RelayFixture fixture)
+            {
+                if (SaveSceneManager.Master != null)
+                    SaveSceneManager.Master.SaveData.RemoveAll(delegate(SaveSceneManager.SaveId a) { return a.Id == Id; });
+                if (fixture != null) UnityEngine.Object.Destroy(fixture.gameObject);
             }
         }
 

@@ -431,7 +431,7 @@ namespace OriCoop
         }
 
         // Test-only mutation switches (a run of the game's real test suites only).
-        static bool MutationOn(string name)
+        internal static bool MutationOn(string name)   // also PauseMenuEntry (T-189)
         {
             bool testRun = System.Environment.GetEnvironmentVariable("ORICOOP_TEST") == "1" || !string.IsNullOrEmpty(System.Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN"));
             return testRun && System.Environment.GetEnvironmentVariable(name) == "1";

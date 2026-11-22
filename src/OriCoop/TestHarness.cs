@@ -2079,6 +2079,10 @@ namespace OriCoop
         {
             Note("--- scenario: title (return to main menu with P2 in game)");
             int err0 = m_errors;
+            // T-191: the owner's session below starts an online host first, and starting online play removes the local
+            // P2 (NetPlay.Begin -> DespawnNow), so by that quit no P2 is left; the game's own scene teardown then hides
+            // a missing lifecycle fix (ORICOOP_MUTATE_NO_LIFECYCLE passed every check). Quit once offline with P2 in the game.
+            yield return StartCoroutine(QuitWithLocalP2());
             // Like the owner's session (2026-11-15): F8 menu opened and closed, an online host still open, then
             // pause menu -> quit to the title.
             CoopMenu.Open(); yield return StartCoroutine(Wait(0.5f)); CoopMenu.Close();
@@ -2185,6 +2189,92 @@ namespace OriCoop
                 Check(Characters.Sein == P1, "title: Characters.Sein is P1 after rejoin");
             }
             Check(m_errors == err0, "title: no errors");
+        }
+
+        // T-191: local co-op, P2 in the game, pause menu -> quit to the title, then load the save again and rejoin P2.
+        IEnumerator QuitWithLocalP2()
+        {
+            if (P2 == null)
+            {
+                Bot(0f, P2Input.BTN_A);
+                yield return StartCoroutine(Wait(0.2f));
+                Bot(0f, 0);
+                yield return StartCoroutine(Wait(0.5f));
+            }
+            bool ready = P2 != null && P2.gameObject.activeInHierarchy && !NetPlay.Enabled;
+            Check(ready, "title: P2 is in the game (local co-op) before the quit");
+            if (!ready) yield break;
+            TeardownP2Copies = -1;
+            UI.Menu.ShowMenuScreen(true);
+            yield return StartCoroutine(Wait(1f));
+            GameController.Instance.RestartGame();
+            float end = Time.unscaledTime + 40f;
+            while (Time.unscaledTime < end && (Characters.Sein != null || GameController.Instance.InputLocked)) yield return null;
+            yield return StartCoroutine(Wait(3f));
+            // The game destroys every scene object on the way to the title, P2 included, so "P2 is gone at the title"
+            // can't tell whether the mod removed it. The lifecycle fix's promise is that P2 goes BEFORE the game tears
+            // gameplay down (RemoveGameplayObjects): look at that moment.
+            Check(TeardownP2Copies == 0, "title: P2 already removed when the game tears gameplay down (P2 goes before P1; active P2 copies then: " + TeardownP2Copies + ")");
+            Check(Characters.Sein == null && P2 == null, "title: P1 and P2 gone after the local co-op quit");
+            Check(!P2Context.Inside, "title: not stuck in P2 context after the local co-op quit");
+
+            // Back into the game the same way the run started (test mode loads co-op without the mode question).
+            end = Time.unscaledTime + 40f;
+            bool chosen = false;
+            int lastForce = -1;
+            while (Time.unscaledTime < end && !chosen)
+            {
+                SaveSlotsUI ui = SaveSlotsUI.Instance;
+                if (ui != null && ui.IsVisible && ui.Active && ui.Items != null && ui.Items.Count > m_slot)
+                {
+                    ui.SetCurrentItem(m_slot);
+                    ui.UsedSaveSlotSelected();
+                    chosen = true;
+                }
+                else
+                {
+                    int tick = (int)(Time.unscaledTime / 2f);
+                    if (tick != lastForce)
+                    {
+                        lastForce = tick;
+                        if (TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.PressStart) PulseMenu = true;
+                        if (TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu)
+                            TitleScreenManager.SetScreen(TitleScreenManager.Screen.SaveSlots);
+                    }
+                    yield return null;
+                }
+            }
+            end = Time.unscaledTime + 60f;
+            float lastDismiss = -10f;
+            while (Time.unscaledTime < end && (Characters.Sein == null || !Characters.Sein.gameObject.activeInHierarchy || GameController.Instance.InputLocked))
+            {
+                if (UI.MainMenuVisible && Time.unscaledTime - lastDismiss > 1f) { lastDismiss = Time.unscaledTime; UI.Menu.HideResumeScreen(); UI.Menu.HideMenuScreen(true); }
+                yield return null;
+            }
+            yield return StartCoroutine(Wait(4f));
+            Check(chosen && Characters.Sein != null && Characters.Sein.gameObject.activeInHierarchy, "title: save loads again after the local co-op quit");
+            Bot(0f, P2Input.BTN_A);
+            yield return StartCoroutine(Wait(0.2f));
+            Bot(0f, 0);
+            yield return StartCoroutine(Wait(0.5f));
+            Check(P2 != null && P2 != Characters.Sein, "title: P2 rejoins after the local co-op quit");
+        }
+
+        // T-191: P2 copies still active when the game starts removing gameplay objects; runs after the mod's own
+        // prefix (Plugin.RemoveGameplayObjectsPatch -> DespawnNow), before the game's code.
+        public static int TeardownP2Copies = -1;
+        [HarmonyPatch(typeof(GameController), "RemoveGameplayObjects")]
+        static class TeardownProbePatch
+        {
+            [HarmonyPriority(Priority.Last)]
+            static void Prefix()
+            {
+                if (!Enabled) return;
+                int n = 0;
+                foreach (SeinCharacter s in UnityEngine.Object.FindObjectsOfType<SeinCharacter>())
+                    if (s != null && s.gameObject.activeInHierarchy && s.name.StartsWith("seinCharacter_P")) n++;
+                TeardownP2Copies = n;
+            }
         }
 
         string Shot(string name)

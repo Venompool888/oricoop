@@ -180,6 +180,16 @@ namespace OriCoop
             "csroom.list.loading", "正在读取房间列表…", "Loading the room list...",
             "csroom.list.none", "这台服务器上还没有房间", "No rooms on this server yet",
             "csroom.list.failed", "读不到房间列表，服务器可能没开或版本太旧", "Can't load the room list: the server may be down or too old",
+            "csroom.local", "本机", "This PC",   // T-189
+            "csroom.remote", "远程", "Online",   // T-189
+            "csroom.act.copy_code", "复制邀请码", "Copy code",   // T-189
+            "csroom.act.back", "返回", "Back",   // T-189
+            "csroom.act.cancel", "取消", "Cancel",   // T-189
+            "csroom.act.leave_yes", "确定离开", "Leave",   // T-189
+            "csroom.copied", "已复制", "Copied",   // T-189
+            "csroom.room_full", "房间已满", "Room full",   // T-189
+            "csroom.leave_ask", "确定离开房间并回到主菜单？", "Leave the room and go back to the main menu?",   // T-189
+            "csroom.code_minutes", "邀请码开放 5 分钟", "The invite code opens for 5 minutes",   // T-189
             "server.add", "添加服务器", "Add server",
             "server.remove", "删除服务器", "Remove server",
             "server.add.desc", "输入服务器地址和端口，保存到列表", "Enter the server address and port, then save it to the list.",
@@ -277,6 +287,7 @@ namespace OriCoop
             "coop.choose_controllers", "双人 · 选择手柄", "2 players: choose controllers",
             "coop.settings", "双人设置", "Co-op settings",
             "pause.multiplayer_settings", "多人游戏设置", "Multiplayer settings",
+            "pause.room", "房间管理", "Room",   // T-189
             "coop.local_seat", "P{0}: {1}", "P{0}: {1}",
             "coop.change_device", "{0}    [更改]", "{0}    [Change device]",
             "coop.add_local", "加入本机玩家", "Add local player",

@@ -17,3 +17,4 @@ OriCoop\Ui\CsLobbyState.cs
 OriCoop\Ui\SlotListRecovery.cs
 OriCoop\Ui\RoomNameEdit.cs
 OriCoop\Ui\RoomScreenModel.cs
+OriCoop\Ui\InGameRoomRules.cs

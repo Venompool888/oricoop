@@ -9,7 +9,8 @@ namespace OriCoop.Ui
     // answers with the action to run. C-server rooms have no host: the "manager" is the device owning the
     // lowest online seat (the creator while it is there, CServerClient.ArbiterSeat); only the manager sees
     // 开始游戏 / 换存档 / 踢出, and nothing on the page names it.
-    internal enum CsRoomAction { None, Start, Ready, SwitchSave, Kick, Leave, OpenCode }
+    // T-189: CopyCode, Back and ConfirmLeave belong to the in-game page (pause menu -> 房间管理) only.
+    internal enum CsRoomAction { None, Start, Ready, SwitchSave, Kick, Leave, OpenCode, CopyCode, Back, ConfirmLeave }
 
     internal sealed class CsRoomSeat
     {
@@ -111,6 +112,11 @@ namespace OriCoop.Ui
         // T-173: the room service allows open_code (a confirmed room with fewer members than seats; MyRooms.CanOpenCode).
         // The C-server seats say nothing about it: a member may be offline, and a room may have fewer than 4 seats.
         public bool CanOpenCode;
+        // T-189: the in-game page (pause menu -> 房间管理): no save, no ready / start; the invite code (open, copy), kick, back to
+        // the pause menu, and leaving the room (asked first, then back to the main menu). HasCode = a code to copy is shown
+        // (a 我的房间 room's open invite code, or a server-list room's live room code). LeaveAsked = 离开房间 was pressed and the
+        // bar asks to confirm.
+        public bool InGame, HasCode, LeaveAsked;
         public int FocusBar;     // index into Bar() while FocusRow == BarRow
         Func<string, string> m_text;
 
@@ -163,7 +169,19 @@ namespace OriCoop.Ui
 
         // T-173 (room-v2-a): the room's name can be changed ([E] 改名) by the room's manager only, and not once a game is
         // already running (the name is the room's, set before it plays).
-        public bool CanRename { get { return IsManager && !GameRunning; } }
+        // T-189: in the game (the in-game page) the manager may rename too (owner-approved design).
+        public bool CanRename { get { return IsManager && (InGame || !GameRunning); } }
+
+        // T-189: every seat has a player (online or held): nobody else can come in, so the invite code cannot be opened or
+        // copied.
+        public bool SeatsFull
+        {
+            get
+            {
+                for (int s = 1; s <= SeatCount; s++) if (!Seats[s].Taken) return false;
+                return true;
+            }
+        }
 
         // Someone on another PC is already in the game: this PC can only join it (加入游戏), whoever it is.
         public bool GameRunning
@@ -179,7 +197,11 @@ namespace OriCoop.Ui
         public int FocusSeat { get { return FocusRow < BarRow ? FocusRow + 1 : 0; } }
 
         // The page opens with the focus on the bar and no player picked.
-        public void ResetFocus() { m_focusRow = BarRow; FocusBar = 0; m_pickedSeat = 0; m_pickedNick = ""; }
+        public void ResetFocus() { m_focusRow = BarRow; FocusBar = 0; m_pickedSeat = 0; m_pickedNick = ""; LeaveAsked = false; }
+
+        // T-189 (in-game page): 离开房间 asks first; the bar becomes 确定离开 / 取消 with the focus on 确定离开.
+        public void AskLeave() { LeaveAsked = true; m_focusRow = BarRow; FocusBar = 0; }
+        public void CancelLeave() { LeaveAsked = false; m_focusRow = BarRow; FocusBar = 0; }
 
         // The given seat's player can be kicked by this PC: a taken seat of another PC.
         public bool CanKick(int seat)
@@ -202,7 +224,8 @@ namespace OriCoop.Ui
             }
             row.Name = s.Nick + (s.Local ? " " + m_text("csroom.you") : "");
             row.Ping = s.RttMs < 0 || !s.Online ? "-" : s.RttMs + " ms";
-            row.Status = !s.Online ? m_text("csroom.offline") : s.Playing ? m_text("csroom.playing") : m_text(s.Ready ? "csroom.ready" : "csroom.not_ready");
+            if (InGame) row.Status = m_text(!s.Online ? "csroom.offline" : s.Local ? "csroom.local" : "csroom.remote");   // T-189: no ready in the game
+            else row.Status = !s.Online ? m_text("csroom.offline") : s.Playing ? m_text("csroom.playing") : m_text(s.Ready ? "csroom.ready" : "csroom.not_ready");
             return row;
         }
 
@@ -210,6 +233,29 @@ namespace OriCoop.Ui
         {
             List<CsRoomBarItem> bar = new List<CsRoomBarItem>();
             bool manager = IsManager;
+            if (InGame)
+            {
+                // T-189: [开放邀请码] (我的房间 rooms: a closed code opens for 5 minutes) / [复制邀请码] / [踢出] (the manager; on
+                // with another PC's player picked or focused) /
+                // [返回] (the pause menu) / 离开房间. A full room cannot take anyone: open and copy are off.
+                if (LeaveAsked)
+                {
+                    Add(bar, CsRoomAction.ConfirmLeave, "csroom.act.leave_yes", true);
+                    Add(bar, CsRoomAction.Back, "csroom.act.cancel", true);
+                    MarkFocus(bar);
+                    return bar;
+                }
+                bool full = SeatsFull;
+                if (Persistent) Add(bar, CsRoomAction.OpenCode, "csroom.act.open_code", Confirmed && !CodeOpen && CanOpenCode && !full);
+                Add(bar, CsRoomAction.CopyCode, "csroom.act.copy_code", HasCode && !full);
+                // 踢出 stays in the manager's bar (off until another PC's player is picked or focused): a bar that grew and
+                // shrank with the pick made a click or a confirm run the item next to the one drawn (T-189 review).
+                if (manager) Add(bar, CsRoomAction.Kick, "csroom.act.kick", CanKick(KickSeat));
+                Add(bar, CsRoomAction.Back, "csroom.act.back", true);
+                Add(bar, CsRoomAction.Leave, "csroom.act.leave", true);
+                MarkFocus(bar);
+                return bar;
+            }
             if (Persistent && Confirmed)
             {
                 Add(bar, CsRoomAction.Start, "csroom.act.enter", true);
@@ -293,6 +339,9 @@ namespace OriCoop.Ui
         public CsRoomAction Click(int barIndex)
         {
             if (barIndex < 0 || barIndex >= Bar().Count) return CsRoomAction.None;
+            // The bar as drawn: with the keyboard focus on another PC's player row (not confirmed), 踢出 was drawn on and acts on
+            // that player; moving the focus to the bar must not leave 踢出 without its target (T-189 review).
+            if (FocusRow >= 0 && FocusRow < BarRow && CanKick(FocusRow + 1)) Pick(FocusRow + 1);
             FocusRow = BarRow; FocusBar = barIndex;
             return Press();
         }

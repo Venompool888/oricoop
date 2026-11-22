@@ -57,6 +57,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
     @{ Name = 'MUTATE_HIDE_ICONS';      Env = @{ ORICOOP_MUTATE_HIDE_ICONS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = "shows the game's own button icon" }   # T-173
     @{ Name = 'MUTATE_ORB_MENUS';       Env = @{ ORICOOP_MUTATE_ORB_MENUS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = 'room page orb shows only the save' }   # T-173
+    @{ Name = 'MUTATE_PAUSE_ROOM_ANY';  Env = @{ ORICOOP_MUTATE_PAUSE_ROOM_ANY = '1' }; Script = @('run-titlejoin.ps1'); Expect = '^(host|join|guest): LAN: the pause menu has no room entry' }   # T-189
     @{ Name = 'MUTATE_NO_COOP_FOLDER';  Env = @{ ORICOOP_MUTATE_NO_COOP_FOLDER = '1' }; Script = @('run-titlejoin.ps1'); Expect = 'inside OriCoop-coop|single-player save' }   # T-043
     @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^fresh \S+ menu is exactly' }   # T-173 rewrote run-rooms: check 7 (the fresh my-rooms menu rows) is the first to see the page's rows
     @{ Name = 'MUTATE_ROOM_NAME_HASH';  Env = @{ ORICOOP_MUTATE_ROOM_NAME_HASH = '1' };  Script = @('run-rooms.ps1'); Expect = '^room name (is two English|has no MessageBox markup)' }   # T-173's create flow: run-rooms checks 18 / 19
@@ -80,7 +81,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_LINK_HOST_ONLY (R5b)'; Env = @{ ORICOOP_MUTATE_LINK_HOST_ONLY = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R5b host: the guest''s offered save point' }   # T-041
     @{ Name = 'MUTATE_LINK_HOST_ONLY (4P)'; Env = @{ ORICOOP_MUTATE_LINK_HOST_ONLY = '1' }; Script = @('run-nettest.ps1', '-Clients', '4'); Expect = '^4P P\d learns that P4''s offered save point' }   # T-041
     @{ Name = 'MUTATE_NO_SEAT_SKILLS (4P)'; Env = @{ ORICOOP_MUTATE_NO_SEAT_SKILLS = '1' }; Script = @('run-nettest.ps1', '-Clients', '4'); Expect = '^R skills|4P skills' }   # T-043
-    @{ Name = 'MUTATE_WORLD_NO_REBROADCAST (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_NO_REBROADCAST = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d has guest P2''s world event change' }   # T-141
+    @{ Name = 'MUTATE_WORLD_NO_REBROADCAST (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_NO_REBROADCAST = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d has guest P2''s world object change' }   # T-141, T-192: whole-blob fixture (world events go via the arbiter since T-168)
     @{ Name = 'MUTATE_WORLD_WHOLE_BLOB (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_WHOLE_BLOB = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d keeps every seat''s same-RTT world event' }   # T-168
 )
 if (-not $NoMutations) {

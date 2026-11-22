@@ -156,6 +156,11 @@ namespace OriCoop
                     NativeGui.Label(kid, r, k.Icon + " " + k.Label, font, TextAnchor.MiddleCenter, color);
                     continue;
                 }
+                if (string.IsNullOrEmpty(k.Name))   // T-189: an item with no key (in-game 离开房间): the label alone, no empty cap
+                {
+                    NativeGui.Label(kid, r, k.Label, font, TextAnchor.MiddleCenter, color);
+                    continue;
+                }
                 float capH = font * 1.15f, capW = CapWidth(capH, k.Name);
                 float cx = r.center.x - itemW * 0.05f;
                 Keycap(kid, new Rect(cx - capW, r.center.y - capH / 2f, capW, capH), k.Name, color);
