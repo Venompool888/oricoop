@@ -259,8 +259,22 @@ namespace OriCoop
                     "cserver: picking the saved row selects its address and opens Host / Join");
             }
 
+            // T-188: test games have no real devices (T-085), so the device "pressed on the menus" is injected. The host
+            // plays as a controller player, the guest as a keyboard/mouse player.
+            const int HostMenuPad = 0;
+            void CheckPrimaryInput(string who, int expected, string what)
+            {
+                InputDevice d = OnlineLocalPlayers.InputOf(Players.LocalSeat);
+                int code = d.Kind == InputDevice.DeviceKind.KeyboardMouse ? -1 : d.Pad;
+                int game = expected < 0 ? -1 : expected;
+                bool gameOk = expected < 0 ? KeyboardOnlyP1.GamePad < 0 : KeyboardOnlyP1.GamePad == game && !KeyboardOnlyP1.StartOnly;
+                Check(code == expected && gameOk, who + ": " + what + " (P" + Players.LocalSeat + " input " + (code < 0 ? "keyboard/mouse" : "pad " + code)
+                    + ", game reads: " + KeyboardOnlyP1.State + ")");
+            }
+
             IEnumerator Host()
             {
+                KeyboardOnlyP1.SetMenuDeviceForTest(HostMenuPad);                   // T-188: the host used pad 0 on the menus
                 yield return StartCoroutine(Row(0, 0.2f));                          // 开房 -> save slots
                 yield return StartCoroutine(WaitFor(() => SlotsReady, 8f));
                 yield return StartCoroutine(TWait(0.8f));
@@ -299,6 +313,17 @@ namespace OriCoop
                 while (Time.realtimeSinceStartup < end && !NetPlay.LocalInGameplay()) { DismissResume(); yield return null; }
                 Check(NetPlay.LocalInGameplay(), "host: in game after 开始游戏");
                 Check(m_roomSeen, "host: room screen shown before the game starts");
+                yield return StartCoroutine(TWait(1f));                             // KeyboardOnlyP1.Refresh runs in FixedUpdate
+                CheckPrimaryInput("host", HostMenuPad, "T-188 the controller used on the menus still drives P1 in game");
+                KeyboardOnlyP1.SetMenuDeviceForTest(-1);                            // a key pressed later (e.g. in the pause menu)
+                yield return StartCoroutine(TWait(0.5f));
+                CheckPrimaryInput("host", HostMenuPad, "T-188 once in game a later key press does not take the controller away");
+                GameSeatView hostSeats = new GameSeatView();
+                bool pickedKb = hostSeats.SetInput(Players.LocalSeat, new InputDevice(InputDevice.DeviceKind.KeyboardMouse, -1));
+                yield return StartCoroutine(TWait(0.5f));
+                Check(pickedKb, "host: T-188 picking keyboard/mouse only in F8 is accepted");
+                CheckPrimaryInput("host", -1, "T-188 keyboard/mouse only, when picked, sticks");
+                hostSeats.SetInput(Players.LocalSeat, new InputDevice(InputDevice.DeviceKind.Pad, HostMenuPad));
                 end = Time.realtimeSinceStartup + 150f;
                 while (Time.realtimeSinceStartup < end && !(NetPlay.PartnerHere && SaveSync.Ready)) { DismissResume(); yield return null; }
                 Check(NetPlay.PartnerHere && SaveSync.Ready, "host: guest joined and loaded (net=" + NetPlay.CurrentPhase + ")");
@@ -340,6 +365,7 @@ namespace OriCoop
                 bool full = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_FULL") == "1";
                 if (full) Check(savesAtStart >= 10, "guest: every save slot is full (" + savesAtStart + " files)");
                 else Check(savesAtStart == 0, "guest: appdata has no saves (" + savesAtStart + ")");
+                KeyboardOnlyP1.SetMenuDeviceForTest(-1);                            // T-188: the guest used keyboard/mouse on the menus
                 yield return StartCoroutine(Row(1, 1.2f));                          // 加入 -> entry page
                 Check(TitleOrbOpen && LastPage == "entry" && !SlotsReady, "guest: join page on the title, no save slot (" + Labels + ")");
                 if (m_tr == "direct")
@@ -418,6 +444,7 @@ namespace OriCoop
                 Check(SaveSync.JoinedHost && SaveSync.GuestJoinDistance < 3f, "guest: placed beside the host (distance " + SaveSync.GuestJoinDistance.ToString("F2") + ")");
                 if (!full) Check(TitleChoice == TitleNone && !LastSlotPick.StartsWith("title-") && !LastSlotPick.StartsWith("guest-slot"), "guest: no save slot was picked (" + LastSlotPick + ")");
                 yield return StartCoroutine(TWait(4f));
+                CheckPrimaryInput("guest", -1, "T-188 keyboard/mouse used on the menus stays keyboard/mouse in game");
                 Vector3 me = Characters.Sein != null ? Characters.Sein.Position : Vector3.zero;
                 Check(NetPlay.HaveRemotePos && Vector3.Distance(NetPlay.LatestRemotePos, me) < 4f,
                     "guest: still beside the host (distance " + (NetPlay.HaveRemotePos ? Vector3.Distance(NetPlay.LatestRemotePos, me).ToString("F2") : "?") + ")");

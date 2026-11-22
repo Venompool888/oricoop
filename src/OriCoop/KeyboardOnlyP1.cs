@@ -56,6 +56,52 @@ namespace OriCoop
 
         static void Set(int pad, bool startOnly, string state) { GamePad = pad; StartOnly = startOnly; State = state; }
 
+        // T-188: the device the player pressed last on the menus (-1 keyboard/mouse, 0..3 pad, -2 nothing yet). The online
+        // primary seat starts with it (OnlineLocalPlayers / Seats.PrimaryInput). Watches every connected pad, not GamePad:
+        // the menus also take pad buttons through Unity's joystick key codes, so the pad in use need not be GamePad.
+        static readonly Seats.MenuDevice s_menuDevice = new Seats.MenuDevice();
+        static readonly bool[] s_padActive = new bool[4];
+        static KeyCode[] s_keyboardCodes;
+        public static int MenuDevice { get { return s_menuDevice.Last; } }
+        internal static void SetMenuDeviceForTest(int device) { s_menuDevice.Clear(); s_menuDevice.Last = device; }
+
+        // Main thread, every frame (Update: GetKeyDown is only valid there).
+        public static void TrackMenuDevice()
+        {
+            if (!InMenu()) return;
+            for (int i = 0; i < 4; i++) s_padActive[i] = PadActive(i);
+            if (s_menuDevice.Observe(Input.anyKeyDown && KeyboardOrMouseDown(), s_padActive) && Plugin.Log != null)
+                Plugin.Log.LogInfo("menu input device: " + (MenuDevice < 0 ? "keyboard/mouse" : "pad " + MenuDevice));
+        }
+
+        // anyKeyDown is also true for joystick buttons; only keyboard keys and mouse buttons count here. Hotkeys a
+        // controller player also presses (F8 co-op menu, F9/F10, Steam's F12, Alt-Tab, the Windows key...) don't count.
+        static bool KeyboardOrMouseDown()
+        {
+            if (s_keyboardCodes == null)
+            {
+                var codes = new System.Collections.Generic.List<KeyCode>();
+                foreach (KeyCode k in System.Enum.GetValues(typeof(KeyCode)))
+                    if (k != KeyCode.None && k < KeyCode.JoystickButton0 && !(k >= KeyCode.F1 && k <= KeyCode.F15) &&
+                        k != KeyCode.LeftAlt && k != KeyCode.RightAlt && k != KeyCode.AltGr && k != KeyCode.Tab &&
+                        k != KeyCode.LeftWindows && k != KeyCode.RightWindows && k != KeyCode.Print && k != KeyCode.SysReq &&
+                        k != KeyCode.Numlock && k != KeyCode.CapsLock && k != KeyCode.ScrollLock && k != KeyCode.Pause)
+                        codes.Add(k);
+                s_keyboardCodes = codes.ToArray();
+            }
+            foreach (KeyCode k in s_keyboardCodes) if (Input.GetKeyDown(k)) return true;
+            return false;
+        }
+
+        static bool PadActive(int pad)
+        {
+            if (!Connected(pad) || Pads.VirtualPads.GetState(pad, ref s_state) != 0) return false;
+            XInputGamepad g = s_state.Gamepad;
+            return g.wButtons != 0 || g.bLeftTrigger > 60 || g.bRightTrigger > 60 ||
+                   System.Math.Abs((int)g.sThumbLX) > 16000 || System.Math.Abs((int)g.sThumbLY) > 16000 ||
+                   System.Math.Abs((int)g.sThumbRX) > 16000 || System.Math.Abs((int)g.sThumbRY) > 16000;
+        }
+
         // P2's pad if it is plugged in, else any plugged-in pad. (XboxController's state is polled by the game's own
         // thread, so this is cheap; calling XInput on an empty slot is not.)
         static int PadForGame()

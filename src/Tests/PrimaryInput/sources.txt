@@ -1,0 +1,2 @@
+OriCoop\Seats\SeatInputs.cs
+OriCoop\Seats\PrimaryInput.cs
