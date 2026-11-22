@@ -220,13 +220,19 @@ namespace OriCoop
                 int lastDot = s_entry.LastIndexOf('.');
                 Check(s_editing, "cserver: address editor accepts keyboard input");
                 if (!s_editing) yield break;
-                s_cursor = lastDot + 1;
-                CServerEditInput("0");
+                // Keep the edit valid for any IPv4 address: append to a one-digit last octet, otherwise shorten it.
+                System.Net.IPAddress ip;
+                bool append = !System.Net.IPAddress.TryParse(host, out ip) || host.Length - lastDot - 1 == 1;
+                string typed = append ? "0" : "\b";
+                string undo = append ? "\b" : host.Substring(host.Length - 1);
+                s_cursor = host.Length;
+                CServerEditInput(typed);
                 string edited = s_entry;
-                Check(edited != host && edited == host.Insert(lastDot + 1, "0"), "cserver: typed address changes the editor");
-                CServerEditInput("\b");
-                Check(s_entry == host, "cserver: Backspace removes the typed character");
-                CServerEditInput("0\r");
+                string expected = append ? host + "0" : host.Substring(0, host.Length - 1);
+                Check(edited != host && edited == expected, "cserver: keyboard input changes the address editor");
+                CServerEditInput(undo);
+                Check(s_entry == host, "cserver: reversing the edit restores the address");
+                CServerEditInput(typed + "\r");
                 Check(LastPage == "serveradd" && s_cserverHost == edited && OriCoop.Authority.CServerConfig.Servers.Count == before,
                     "cserver: Enter accepts the host field without adding a partial server");
                 yield return StartCoroutine(TWait(0.5f));
@@ -235,8 +241,8 @@ namespace OriCoop
                 // before adding/selecting: both clients must use the exact endpoint provided by the runner.
                 yield return StartCoroutine(Row(0, 0.5f));
                 yield return StartCoroutine(Row(0, 0.4f));
-                s_cursor = lastDot + 2;
-                CServerEditInput("\b\r");
+                s_cursor = edited.Length;
+                CServerEditInput(undo + "\r");
                 Check(LastPage == "serveradd" && s_cserverHost == host && s_cserverHost + ":" + s_cserverPort == supplied &&
                     OriCoop.Authority.CServerConfig.Servers.Count == before,
                     "cserver: editor restores the supplied endpoint before saving the list");

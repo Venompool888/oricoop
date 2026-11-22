@@ -1,8 +1,7 @@
 # Two to four isolated Ori clients; none uses the owner's real LOCALAPPDATA save location.
 # -Clients 3|4: processes start together; only the LAST guest connects after LateJoinSec (default 20) and after the host settled the save lineage (T-129 marker file).
-# -CServer: all games go through a local CServer.exe with one room code (server mode) instead of direct UDP (LAN
-#   host mode); works with -Clients 2..4. $env:ORICOOP_TEST_CSERVER = 'host:port' uses that server instead.
-#   (T-159: the -Relay transport is gone.)
+# -CServer: all games share one room on the remote test C-server instead of direct UDP (LAN host mode).
+#   Works with -Clients 2..4. See src\test-servers\README.md for configuration.
 # -TimeoutSec: whole run (default 1020). -HarnessSec: the in-game suite limit (ORICOOP_HARNESS_SEC, default 900; the
 #   harness needed ~360 s at HEAD 2026-11-16 and phase WO adds ~120 s, more under load; main reached ~655 s on 2026-11-18 and T-059's local-player checks need more; TestHarness defaults to 420).
 # -Width/-Height: window size of both games (default 640x360; larger for readable screenshots).
@@ -19,6 +18,11 @@ if ($LocalPlayers) {
 $ErrorActionPreference = 'Stop'
 if (-not $PSBoundParameters.ContainsKey('LateJoinSec') -and $Clients -ge 3) { $LateJoinSec = 20 }
 . (Join-Path $PSScriptRoot 'test-launch.ps1')   # copy lock, quiet launch, owner watchdog (docs\testing-rules.md)
+if ($CServer) {
+    $script:ExtraEnv['ORICOOP_NET_CSERVER'] = Get-RemoteTestServer 'cserver'
+    Assert-TestServerCurrent 'cserver'
+    $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
+}
 Start-TestRun -Force:$Force
 $testDir = $TL_TestDir
 New-Item -ItemType Directory -Force $testDir | Out-Null
@@ -113,22 +117,7 @@ function Compare-Tracks([string]$label, [object[]]$observer, [object[]]$owner) {
 
 $clientProcesses = @()
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
-$serverProc = $null
 try {
-    if ($CServer -and $env:ORICOOP_TEST_CSERVER) {
-        # Remote C-server (host:port from the local environment only; never put a real address in the repo).
-        'CSERVER: remote C-server from ORICOOP_TEST_CSERVER (no local CServer.exe)'
-        $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
-        $script:ExtraEnv['ORICOOP_NET_CSERVER'] = $env:ORICOOP_TEST_CSERVER
-    } elseif ($CServer) {
-        # C-server (equal mode, docs/c-server-design.md): every game connects to a local CServer.exe; seat 1 creates the room.
-        $csPort = 47022 + $TL_PortOffset
-        # ORICOOP_CSERVER_EXE picks another CServer build (e.g. a protocol change under test).
-        $csExe = Get-TestServerExe 'CServer'   # this checkout's source, or ORICOOP_CSERVER_EXE (T-088)
-        $serverProc = Start-Process -FilePath $csExe -ArgumentList ('--port ' + $csPort) -PassThru -WindowStyle Hidden -RedirectStandardOutput (Join-Path $testDir 'cserver.log')
-        $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
-        $script:ExtraEnv['ORICOOP_NET_CSERVER'] = '127.0.0.1:' + $csPort
-    }
     $roomFile = Join-Path $testDir 'room-code.txt'
     Remove-Item $roomFile -Force -ErrorAction SilentlyContinue
     if ($CServer) { $script:ExtraEnv['ORICOOP_NET_ROOM_FILE'] = $roomFile }
@@ -175,10 +164,8 @@ try {
         if (-not $client.HasExited) { $client.Kill(); $client.WaitForExit() }
         Add-Content -LiteralPath $launchLog -Value ('EXIT ' + [DateTime]::UtcNow.ToString('o') + ' pid=' + $client.Id + ' exitCode=' + $client.ExitCode)
     }
-    if ($serverProc -and -not $serverProc.HasExited) { $serverProc.Kill() }
-    Complete-TestRun   # kills only this run's PIDs, unlinks the client junctions, releases the copy lock
+    Complete-TestRun   # kills only this run's PIDs and unlinks the client junctions
 }
-if ($CServer -and (Test-Path (Join-Path $testDir 'cserver.log'))) { '--- cserver ---'; Get-Content (Join-Path $testDir 'cserver.log') | Select-Object -Last 10 }
 $passed = $true
 foreach ($resultPath in $results) {
     '--- {0} ---' -f $resultPath

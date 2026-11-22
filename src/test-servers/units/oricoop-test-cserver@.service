@@ -1,0 +1,37 @@
+# T-155: TEST instance (not production). %i = slot 0-3; ports come from /etc/oricoop/test-%i.env,
+# written by src/test-servers/remote-deploy.sh (slot N: C-server UDP 47102+10N).
+[Unit]
+Description=OriCoop TEST C-server, slot %i
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+EnvironmentFile=/etc/oricoop/test-%i.env
+WorkingDirectory=/opt/oricoop/test/%i/cserver
+ExecStart=/opt/oricoop/dotnet/dotnet /opt/oricoop/test/%i/cserver/CServer.dll --port ${CSERVER_PORT}
+LogsDirectory=oricoop-test-cserver-%i
+Environment=DOTNET_ROOT=/opt/oricoop/dotnet
+Environment=DOTNET_CLI_TELEMETRY_OPTOUT=1
+Environment=DOTNET_gcServer=0
+Restart=always
+RestartSec=3
+# Test instances must never starve the production services on the same machine.
+Nice=10
+CPUWeight=20
+MemoryMax=192M
+NoNewPrivileges=yes
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectControlGroups=yes
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX
+LockPersonality=yes
+CapabilityBoundingSet=
+
+[Install]
+WantedBy=multi-user.target

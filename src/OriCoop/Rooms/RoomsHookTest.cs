@@ -281,8 +281,15 @@ namespace OriCoop.Rooms
             string cserver = Environment.GetEnvironmentVariable("ORICOOP_NET_CSERVER") ?? "";
             Uri url;
             string server = Environment.GetEnvironmentVariable("ORICOOP_ROOMS_SERVER");
-            if (!Check(Uri.TryCreate(server, UriKind.Absolute, out url) && url.Scheme == "http"
-                && url.Host == "127.0.0.1" && cserver.StartsWith("127.0.0.1:"), "localhost services")) yield break;
+            // T-155: both services come from the runner: the remote test slot (src\test-servers), or a loopback pair.
+            // Never a remote machine's default ports (rooms 47021, C-server 47022): a test must not write its rooms
+            // into a real server.
+            string[] cs = cserver.Split(':'); int csPort = 0;
+            bool given = Uri.TryCreate(server, UriKind.Absolute, out url) && url.Scheme == "http" && cs.Length == 2 && cs[0].Length > 0
+                && int.TryParse(cs[1], out csPort);
+            bool loopback = given && url.Host == "127.0.0.1" && cs[0] == "127.0.0.1";
+            if (!Check(given && (loopback || (url.Port != 47021 && csPort != 47022)),
+                "test services from the runner (loopback, or a test slot: not the default ports of a real server)")) yield break;
             // Setup: the player saved this C-server (服务器管理), as anyone who reached 自建服务器 with it selected has. The
             // client's config is a private copy of the test copy's (test-launch.ps1), so this never reaches another run.
             yield return Wait(() => Plugin.Instance != null, 30);

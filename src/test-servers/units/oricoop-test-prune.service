@@ -1,0 +1,7 @@
+# T-155: test room servers keep every test run's rooms; drop rooms older than 2 days (test slots only).
+[Unit]
+Description=OriCoop TEST room data cleanup
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh -c 'for d in /var/lib/private/oricoop-test-rooms-*/rooms /var/lib/private/oricoop-test-rooms-*/trash; do [ -d "$d" ] && find "$d" -mindepth 1 -maxdepth 1 -mtime +2 -exec rm -rf {} +; done; exit 0'
