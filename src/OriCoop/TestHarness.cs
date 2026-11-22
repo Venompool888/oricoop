@@ -1423,6 +1423,11 @@ namespace OriCoop
         {
             Note("--- scenario: lifecycle (cutscene hide / movement lock)");
             int err0 = m_errors;
+            // T-181: the IME stays off in gameplay (Chinese IME candidate box on D). By now the game has run for a
+            // while and has had at least one focus change event at start-up.
+            Check(Input.imeCompositionMode == IMECompositionMode.Off, "ime: Unity's IME composition mode is Off (" + Input.imeCompositionMode + ")");
+            Check(ImeGuard.WindowFound && !ImeGuard.WindowHasContext(), "ime: no input-method context attached to the game window (found="
+                + ImeGuard.WindowFound + " detaches=" + ImeGuard.Detaches + " last='" + ImeGuard.LastResult + "')");
             P1.gameObject.SetActive(false);
             yield return StartCoroutine(Wait(0.5f));
             Check(!P2.gameObject.activeSelf, "lifecycle: P2 hidden while a cutscene hides P1");
@@ -2082,6 +2087,9 @@ namespace OriCoop
             int ended0 = TitleReturn.SessionsEnded;
             UI.Menu.ShowMenuScreen(true);
             yield return StartCoroutine(Wait(1f));
+            // T-180: a key goes down in the game and Unity loses its key-up (TestQuiet fakes Unity's anyKey).
+            bool stuckKey = TitleAnyKeyTest.Available;
+            if (stuckKey) TitleAnyKeyTest.HoldKeyFromGameplay();
             GameController.Instance.RestartGame();
             float end = Time.unscaledTime + 40f;
             while (Time.unscaledTime < end && (Characters.Sein != null || GameController.Instance.InputLocked)) yield return null;
@@ -2093,9 +2101,19 @@ namespace OriCoop
             end = Time.unscaledTime + 10f;
             while (Time.unscaledTime < end && TitleScreenManager.CurrentScreen != TitleScreenManager.Screen.PressStart) yield return null;
             int callbacks0 = PressStartCallbacks;
-            FakeAnyKeySteps = 3;
-            end = Time.unscaledTime + 5f;
-            while (Time.unscaledTime < end && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.PressStart) yield return null;
+            if (stuckKey)
+            {
+                bool stuckMoved = false; string stuckDiag = "";
+                yield return StartCoroutine(TitleAnyKeyTest.StuckThenPress((ok, d) => { stuckMoved = ok; stuckDiag = d; }));
+                Check(stuckMoved, "title: with a key Unity thinks is still held, a new key press on \"press any key\" moves on (T-180; " + stuckDiag + ")");
+            }
+            else
+            {
+                Note("title: TestQuiet fake keys not available, stuck-key check skipped (T-180)");
+                FakeAnyKeySteps = 3;
+                end = Time.unscaledTime + 5f;
+                while (Time.unscaledTime < end && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.PressStart) yield return null;
+            }
             Check(PressStartCallbacks > callbacks0 && TitleScreenManager.CurrentScreen != TitleScreenManager.Screen.PressStart,
                 "title: a key press on \"press any key\" moves on (" + TitleDiag() + ")");
             Check(Characters.Sein == null, "title: P1 removed by the game");

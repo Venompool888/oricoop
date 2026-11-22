@@ -23,6 +23,8 @@ foreach ($r in @(@('dead-marker\dead_marker.png', 'OriCoop.dead_marker.png'),
     $p = Join-Path $a $r[0]
     if (Test-Path $p) { $res += "/resource:$p,$($r[1])" } else { Write-Host "note: $($r[0]) not found, not embedded" }
 }
+# T-178: PlayStation button icons (AI-made from the game's Xbox icons) and the game's own Xbox icons (to switch back); private, not in the public sync allowlist.
+foreach ($g in @('ps', 'xbox')) { foreach ($f in @(Get-ChildItem (Join-Path $a "$g-glyphs") -Filter *.png -ErrorAction SilentlyContinue)) { $res += "/resource:$($f.FullName),OriCoop.$($g)_$($f.Name)" } }
 # Build info (T-032): the commit this DLL comes from, "+local" when src\OriCoop has uncommitted changes (Ui\BuildInfo.cs).
 $sha = (git -C $root rev-parse --short HEAD 2>$null); if (-not $sha) { $sha = 'unknown' }
 $dirty = (git -C $root status --porcelain -- src/OriCoop 2>$null); if ($dirty) { $sha = "$sha+local" }

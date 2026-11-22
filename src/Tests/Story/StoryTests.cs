@@ -50,6 +50,8 @@ static partial class StoryTests
         SkillCases();
         SeatSkillCases();
         PuppetGateCases();
+        MirrorBaselineCases();   // T-175
+        StoryLockRepairCases();   // T-177
         return failures == 0 ? 0 : 1;
     }
 }

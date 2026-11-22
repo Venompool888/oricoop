@@ -40,8 +40,11 @@ namespace OriCoop.TestQuiet
         public static bool U_GetMouseButton(int b) { return false; }
         public static bool U_GetMouseButtonDown(int b) { return false; }
         public static bool U_GetMouseButtonUp(int b) { return false; }
-        public static bool U_get_anyKey() { return false; }
-        public static bool U_get_anyKeyDown() { return false; }
+        // T-180: a test may fake Unity's keyboard "any key" state (never a real device): FakeAnyKey = Unity believes a key
+        // is held (a lost key-up), FakeAnyKeyDown = a key went down this frame. Both false unless a test sets them.
+        public static bool FakeAnyKey, FakeAnyKeyDown;
+        public static bool U_get_anyKey() { return FakeAnyKey || FakeAnyKeyDown; }
+        public static bool U_get_anyKeyDown() { return FakeAnyKeyDown; }
         public static Vector3 U_get_mousePosition() { return Vector3.zero; }
         public static Vector2 U_get_mouseScrollDelta() { return Vector2.zero; }
         public static string U_get_inputString() { return ""; }

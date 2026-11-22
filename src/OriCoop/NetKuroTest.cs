@@ -1,6 +1,7 @@
 using System;
 using System.Collections;
 using Game;
+using HarmonyLib;
 using UnityEngine;
 
 namespace OriCoop
@@ -10,13 +11,16 @@ namespace OriCoop
     // (DestroyGameplayElementsAction). Playtest 2026-11-17: the host's Ori never came back because the partner kept
     // spiritTreeRefined loaded. Expect: each end has its Ori back within 5 s of the game being playable again, and
     // sees the partner's puppet. ORICOOP_RESPAWN_OFF=1 (CutsceneRespawn) must make it fail.
+    // ORICOOP_P3_KURO=chain (T-172) is the same run with the host holding its 01 for 4 s so the guest's mirror gets
+    // ahead, plus the oracles for that race.
     internal static class NetKuroTest
     {
         const string Scene = "spiritTreeRefined";
         const string TriggerPath = "01. reachSpiritTreeActionSequence";
-        // The Spirit Tree story chains 01 -> 02 through world-state conditions; the test runs the Kuro attack (02, the
-        // sequence with DestroyGameplayElementsAction) directly on the host while the guest stands beside it, which is
-        // exactly where the gate (T-040) puts both players.
+        // The Kuro attack (02, the sequence with DestroyGameplayElementsAction). The game starts it only from 01's last
+        // action, "18. Run 02" (RunActionOnce). T-182: the test used to Perform 02 directly while both players stood in
+        // the trigger; the gate (T-040) fired 01 as well, and 01's RunActionOnce, which the direct Perform had bypassed,
+        // ran 02 a second time and removed the host's Ori again. Both modes now let the game run 01 -> 02 itself.
         const string KuroPath = "02. kuroAttackActionSequence";
         static PlayerCollisionTrigger s_trigger;
         static Rect s_rect;
@@ -66,23 +70,66 @@ namespace OriCoop
                 if (s != null && PathOf(s).EndsWith(name, StringComparison.Ordinal) && InScene(s)) return s;
             return null;
         }
-        static void Press() { NetTestHarness.BotButtons = ((int)(Now * 4f)) % 2 == 0 ? P2Input.BTN_A : 0; }
-        // Host: what the trigger chain does after the Spirit Tree talk: start the Kuro attack (02).
-        static IEnumerator RunChain(TestHarness h)
+        // T-177: 04's "11. Show World Map Objective Action" opens the world map and waits (12.) until the player presses
+        // through it; online it is a skipped menu suspend (SessionRules.LocalLocked), not a popup. A mirror shows it too.
+        static bool ObjectiveShowing()
         {
-            // 02 starts the Kuro cutscene scenes; the game itself continues to 03 / 04 (string triggers), so only 02.
-            foreach (string name in new string[] { KuroPath })
+            GameMapUI map = GameMapUI.Instance;
+            return map != null && map.ShowObjective != null && map.ShowObjective.IsPerforming;
+        }
+        // What a player answers: story texts, skipped native popups (SessionRules.PopupOpen), the world-map objective.
+        static bool WaitingForPress() { return NetCutsceneTest.OpenBoxes() > 0 || SessionRules.PopupOpen || ObjectiveShowing(); }
+        static void Answer() { NetTestHarness.BotButtons = WaitingForPress() && ((int)(Now * 4f)) % 2 == 0 ? P2Input.BTN_A : 0; }
+        static readonly string[] ChainPaths = { TriggerPath, KuroPath, "03. worldMapActionSequence", "04. returnCameraToPlayerActionSequence" };
+        static string RunningChain()
+        {
+            string running = "";
+            foreach (string name in ChainPaths) { ActionSequence s = FindSeq(name); if (s != null && s.IsRunning) running += name + ";"; }
+            return running;
+        }
+        // T-182: how many times 02 was performed on this PC during the run. Counted at Perform, not by polling IsRunning:
+        // in the mutant the direct 02 still sat at index 0 when 01's RunActionOnce performed it again (no visible edge).
+        static int s_kuroStarts;
+        static bool s_watchKuro;
+        static ActionSequence s_kuro;
+        [HarmonyPatch(typeof(ActionSequence), "Perform")]
+        static class CountKuro
+        {
+            static bool Prepare() { return TestHarness.Enabled; }
+            static void Postfix(ActionSequence __instance)
+            { if (s_watchKuro && s_kuro != null && __instance == s_kuro && __instance.IsRunning) s_kuroStarts++; }
+        }
+        // Both stand in the trigger, the gate fires, the host runs 01 natively and the guest mirrors it; 01 starts 02.
+        // T-172 (playtest 3), ORICOOP_P3_KURO=chain: the host holds its own 01 for a few seconds so the guest's mirror
+        // reaches "18. Run 02 (RunActionOnce)" first, as in the playtest (there the host was 1.3 s behind).
+        static bool Chain { get { return Environment.GetEnvironmentVariable("ORICOOP_P3_KURO") == "chain"; } }
+        const float HostDelay = 4f;
+        static IEnumerator NativeChain(TestHarness h, Action kuroStarted)
+        {
+            ActionSequence reach = FindSeq(TriggerPath), kuro = FindKuro();
+            Check(h, reach != null && kuro != null, "chain: 01 and 02 found");
+            if (reach == null || kuro == null) yield break;
+            float end = Now + 30f;
+            while (!reach.IsRunning && Now < end) yield return null;
+            Check(h, reach.IsRunning, "chain: the gate started 01 on this PC");
+            if (!reach.IsRunning) yield break;
+            h.Note("KURO chain: 01 running (" + (NetPlay.IsHost ? "host, original" : "guest, mirror") + ")");
+            if (NetPlay.IsHost && Chain)
             {
-                ActionSequence s = FindSeq(name);
-                Check(h, s != null, "sequence found: " + name);
-                if (s == null) yield break;
-                for (Transform t = s.transform; t != null; t = t.parent) if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
-                s.Perform(null);
-                float end = Now + 150f;
-                while (s.IsPerforming && Now < end) { Press(); yield return null; }
-                NetTestHarness.BotButtons = 0;
-                h.Note("KURO " + name + " done=" + !s.IsPerforming + ": " + Diag());
+                reach.IsSuspended = true;
+                float resume = Now + HostDelay;
+                while (Now < resume) yield return null;
+                reach.IsSuspended = false;
+                h.Note("KURO chain: host resumed its 01 after " + HostDelay + " s");
             }
+            end = Now + 60f;
+            bool started = false;
+            while (reach.IsRunning && Now < end) { if (kuro.IsRunning) started = true; yield return null; }
+            // 02 may have started in the same frame 01 ended: give it a moment.
+            float grace = Now + 1f;
+            while (!started && Now < grace) { if (kuro.IsRunning) started = true; yield return null; }
+            h.Note("KURO chain: 01 ended, 02 started here=" + started + " held=" + WorldSync.MirrorHeldTotal);
+            if (started) kuroStarted();
         }
         static string Diag()
         {
@@ -140,11 +187,26 @@ namespace OriCoop
             yield return NetCutsceneTest.Settle();
             int removedBase = CutsceneRespawn.Removed;
             bool removed = false; float playableAt = -1f, backAt = -1f;
-            if (NetPlay.IsHost) yield return RunChain(h);
+            int heldBase = WorldSync.MirrorHeldTotal, leftoverBase = StorySync.LeftoverCleanups;
+            bool hostKuro = false;
+            s_kuroStarts = 0; s_kuro = FindKuro(); s_watchKuro = true;
+            yield return NativeChain(h, delegate { hostKuro = true; });
+            if (!Chain && NetPlay.IsHost) Check(h, hostKuro, "the host's own 01 started 02 (the game's chain, no direct Perform)");
+            if (Chain)
+            {
+                // WorldSync captures every 0.25 s: the guest's held change shows up just after its 01 ended.
+                float until = Now + 3f;
+                while (!NetPlay.IsHost && WorldSync.MirrorHeldTotal <= heldBase && Now < until) yield return null;
+                // T-172 oracles. Host: its own 01 still started 02 although the guest's mirror ran 01's RunActionOnce(02)
+                // first. Guest: the race really happened here (its mirror held the RunActionOnce change back).
+                if (NetPlay.IsHost) Check(h, hostKuro, "chain: the host's own 01 started 02 after the guest's mirror got there first");
+                else Check(h, WorldSync.MirrorHeldTotal > heldBase, "chain: the guest's mirror changed story state and held it back (race reproduced)");
+            }
             float end = Now + (NetPlay.IsHost ? 240f : 420f);
             while (Now < end)
             {
-                NetTestHarness.BotButtons = NetCutsceneTest.OpenBoxes() > 0 && ((int)(Now * 4f)) % 2 == 0 ? P2Input.BTN_A : 0;
+                // Story texts, skipped native popups (T-172) and 04's world-map objective (T-177) wait for the player's press.
+                Answer();
                 if (!OriHere() || CutsceneRespawn.Removed > removedBase) removed = true;
                 if (removed && playableAt < 0f && Playable()) playableAt = Now;
                 if (removed && playableAt >= 0f && !Playable()) playableAt = -1f;   // still inside the sequence
@@ -157,9 +219,60 @@ namespace OriCoop
             if (NetPlay.IsHost) Check(h, removed, "Kuro cutscene removed the host's Ori (DestroyGameplayElementsAction ran)");
             Check(h, OriHere() && (backAt < 0f ? !removed : playableAt < 0f || backAt - playableAt <= 5f), "own Ori present (back within 5 s of the game being playable)");
             Check(h, UI.Cameras.Current != null && UI.Cameras.Current.Target != null, "camera has a target");
+            if (Chain)
+            {
+                // T-175: once every story is over nothing of a cutscene is left. The host mirrored the guest's 03/04
+                // while it still had its own spirit-tree letterbox and animation; cleanup used to put those back.
+                // T-177: the bot keeps answering like a player while the stories run (04 waits for the world-map
+                // objective to be pressed through before it stops the character animation and unlocks input).
+                float over = Now + 60f;
+                while (StorySync.StoryActive && Now < over) { Answer(); yield return null; }
+                NetTestHarness.BotButtons = 0;
+                // T-177: when StorySync says every story is over, the spirit-tree sequences really are over here. The
+                // guest's stories used to be ended by CutsceneGuard's 20 s LockInputByAction repair while 04 still waited
+                // for its world-map objective (03 locks input, 04 unlocks it).
+                string stillRunning = RunningChain();
+                h.Note("KURO chain stories over: story=" + StorySync.StoryActive + " running=" + stillRunning + " objective=" + ObjectiveShowing());
+                Check(h, !StorySync.StoryActive && stillRunning.Length == 0,
+                    "chain: stories ended only once the spirit-tree sequences had finished here (none still running)");
+                float settle = Now + 1f;
+                while (Now < settle) yield return null;
+                SeinCharacter own = NetCutsceneTest.Own;
+                bool animating = own != null && own.Controller != null && own.Controller.IsPlayingAnimation;
+                h.Note("KURO chain end: story=" + StorySync.StoryActive + " letterbox=" + Letterbox.ShowLetterboxes + " animation=" + animating
+                    + " leftoverCleanups=" + (StorySync.LeftoverCleanups - leftoverBase));
+                // The case really happened: the host mirrored the guest's 03/04 with its own Kuro leftovers still on.
+                if (NetPlay.IsHost) Check(h, StorySync.LeftoverCleanups > leftoverBase,
+                    "chain: the host's mirror cleanup met leftover cutscene state (T-175 case reproduced)");
+                Check(h, !StorySync.StoryActive && !Letterbox.ShowLetterboxes && !animating,
+                    "chain: no letterbox or character animation left once the stories ended");
+                // T-177 movement probe: the own Ori can really move. A player first presses through whatever is still
+                // open (text, popup, world-map objective), then walks: the bot pushes right for 1 s.
+                float answer = Now + 10f; bool wasOpen = false;
+                while (WaitingForPress() && Now < answer) { wasOpen = true; Answer(); yield return null; }
+                NetTestHarness.BotButtons = 0;
+                Vector3 from = own != null ? own.Position : Vector3.zero;
+                NetTestHarness.BotLX = 1f;
+                float push = Now + 1f;
+                while (Now < push) yield return null;
+                NetTestHarness.BotLX = 0f;
+                float moved = own != null ? Mathf.Abs(own.Position.x - from.x) : 0f;
+                h.Note("KURO chain move probe: moved=" + moved.ToString("0.00") + " answeredFirst=" + wasOpen + " blocked="
+                    + (own != null && own.Controller != null ? own.Controller.IsPlayingAnimation + "/" + own.Controller.LockMovementInput : "no-ori")
+                    + " held=" + SessionRules.LocalLocked);
+                Check(h, own != null && moved > 0.5f, "chain: own Ori walks once the stories ended (bot pushed right for 1 s)");
+            }
+            // T-177: the puppet comes back once this PC is out of every lock (Plugin.SpawnPuppet refuses while
+            // GameController.InputLocked). A player presses through what is still open, e.g. the host's mirrored copy
+            // of 04's world-map objective; the bot used to stop pressing here and the map stayed open.
             float seen = Now + 10f;
-            while (!PartnerVisible() && Now < seen) yield return null;
+            while (!PartnerVisible() && Now < seen) { Answer(); yield return null; }
+            NetTestHarness.BotButtons = 0;
             Check(h, PartnerVisible(), "partner puppet visible again");
+            // T-182: the story ran the Kuro attack once. The host is the original: its 02 starts only from its own 01.
+            s_watchKuro = false;
+            h.Note("KURO 02 starts here=" + s_kuroStarts + " (" + (NetPlay.IsHost ? "host" : "guest") + ")");
+            if (NetPlay.IsHost) Check(h, s_kuroStarts == 1, "the Kuro attack (02) ran exactly once on the host (got " + s_kuroStarts + ")");
             h.Note("KURO end: " + Diag());
             NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = 512, Found = backAt >= 0f });
             yield return NetCutsceneTest.Barrier(h, 512);
@@ -174,7 +287,7 @@ namespace OriCoop
                 if (s_trigger == null || !NetCutsceneTest.Remote.ContainsKey(501) || !NetCutsceneTest.Remote[501].Found) yield break;
                 yield return NetCutsceneTest.Step(h, 510, Play(h));
             }
-            finally { NetTestHarness.BotLX = 0; NetTestHarness.BotButtons = 0; }
+            finally { s_watchKuro = false; NetTestHarness.BotLX = 0; NetTestHarness.BotButtons = 0; }
         }
     }
 }

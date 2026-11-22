@@ -269,6 +269,10 @@ namespace OriCoop
                 h.Check(released, "S4 F8 online: a story lock released while the panel was open stays released (T-132)");
                 h.Check(kept, "S4 F8 online: a story lock taken while the panel was open survives closing it (T-132)");
             }
+            // T-179: the B that closes a menu must not also be a Soul Flame tap that reopens the skill tree.
+            // It takes the guest ~3 s; both walk together again afterwards ("S4 both move after closing menu").
+            if (guest) yield return MenuSoulFlameTest.SkillTreeShortB(h, Own);
+            Publish(h, 25, false); yield return Barrier(h, 25);
             Dictionary<ISuspendable, int> after = SuspensionCounts(); int compared = 0, changed = 0;
             foreach (KeyValuePair<ISuspendable, int> pair in before)
             { int count; if (after.TryGetValue(pair.Key, out count)) { compared++; if (count != pair.Value) changed++; } }

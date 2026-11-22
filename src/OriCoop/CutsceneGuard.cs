@@ -186,12 +186,17 @@ namespace OriCoop
             Trace("spirit state", Characters.Ori == null ? "null" : Characters.Ori.CurrentState.ToString());
             Trace("local input locked", (gc != null && (gc.LockInput || gc.LockInputByAction)
                 || own != null && own.CutsceneBlocked != null && own.CutsceneBlocked.Active).ToString());
+            // T-172: the other reasons the own Ori can't move although input is not locked (playtest 3: the guest
+            // stood still for 21 s after "local input locked=False" and nothing in the trace said why).
+            Trace("local move blocked", MoveBlockers(own));
             float now = Time.realtimeSinceStartup;
             int puppetId = puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f ? puppet.CinematicPuppet.GetInstanceID() : 0;
             if (PuppetGate.Observe(puppetId, now)) Log("camera puppet came straight back: the scene drives it, not clearing it for 30 s (T-137)");
-            // Only LockPlayerInputAction's coroutine sets LockInputByAction and it clears it after a few seconds; a
-            // coroutine killed with its GameObject (story stopped / deactivated mid-way) never does and the player can't
-            // move at all (it also keeps the originator's story alive). Held 20 s: release it.
+            // LockPlayerInputAction's coroutine clears LockInputByAction after a few seconds; a coroutine killed with its
+            // GameObject (story stopped / deactivated mid-way) never does and the player can't move at all (it also keeps
+            // the originator's story alive). Held 20 s with no story sequence running: release it. T-177: "Lock player
+            // input" (LockPlayerInputManualAction) has no timer and the story clears it itself (spirit tree 03 -> 04,
+            // over 20 s with the world map and its objective): while a story sequence runs, wait up to 60 s.
             // Fully black (FadeStay) while nothing is loading: start the "stuck black" clock.
             bool black = UI.Fader != null && UI.Fader.CurrentState == FaderB.State.FadeStay
                 && gc != null && !gc.IsLoadingGame && Services.Session.Ready && !StorySync.StoryActive;
@@ -200,8 +205,11 @@ namespace OriCoop
             else s_actionLockSince = -1f;
             bool parked = ParkedInMove(UI.Cameras.Current);
             if (!parked) s_moveSince = -1f; else if (s_moveSince < 0) s_moveSince = now;
-            if (!Off && s_actionLockSince >= 0 && now - s_actionLockSince >= 20f)
-            { gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++; Log("repair stale LockInputByAction (held 20 s)"); }
+            if (!Off && s_actionLockSince >= 0 && StoryLockRepair.Due(now - s_actionLockSince, StorySync.StorySequenceRunning()))
+            {
+                Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + StorySync.StorySequenceRunning() + ")");
+                gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++;
+            }
             if (StoryHost.Current.Inside || own == null || gc == null || gc.IsLoadingGame || gc.GameplaySuspended
                 || Game.UI.MainMenuVisible || StorySync.StoryActive
                 || PedestalWindow) { s_freeSince = -1f; return; }   // a pedestal/lever cutscene runs natively: hands off
@@ -216,6 +224,20 @@ namespace OriCoop
             // Free for 3 s: repair. Still locked 30-120 s after the last story ended: a half-run story left it so.
             if (s_freeSince >= 0 && now - s_freeSince >= 3f || since >= 30f && since <= 120f)
                 Repair(now, false, since <= 120f);
+        }
+        static string MoveBlockers(SeinCharacter own)
+        {
+            if (own == null || own.Controller == null) return "no-ori";
+            string why = "";
+            if (own.Controller.LockMovementInput) why += "LockMovementInput,";
+            if (own.Controller.IgnoreControllerInput) why += "IgnoreControllerInput,";
+            if (own.Controller.IsPlayingAnimation) why += "PlayingAnimation,";
+            if (own.CutsceneMovement != null && own.CutsceneMovement.Active) why += "CutsceneMovement,";
+            if (!own.Active) why += "OriInactive,";
+            if (GameController.Instance != null && (GameController.Instance.GameplaySuspended || GameController.Instance.IsSuspended)) why += "Suspended,";
+            if (SessionRules.LocalLocked) why += "SessionHold,";
+            if (StorySync.Watching) why += "Watching,";
+            return why.Length == 0 ? "none" : why.TrimEnd(',');
         }
         // A teleport moves the player but not the orb; a hovering orb then drifts in from far away and spirit flame
         // is fired from where it is ("attacks fly over from over there").

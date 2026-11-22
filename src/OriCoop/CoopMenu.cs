@@ -91,7 +91,7 @@ namespace OriCoop
                 if (TestPadButtons != null) { s_connected[i] = true; s_buttons[i] = TestPadButtons[i]; continue; }
                 // Polling an empty XInput slot is slow; check unplugged slots only once a second.
                 if (!s_connected[i] && !rescan) { s_buttons[i] = 0; continue; }
-                s_connected[i] = XInput.XInputGetState(i, ref s_state) == 0;
+                s_connected[i] = Pads.VirtualPads.GetState(i, ref s_state) == 0;
                 int b = 0;
                 if (s_connected[i])
                 {

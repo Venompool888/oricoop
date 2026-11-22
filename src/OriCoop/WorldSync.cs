@@ -53,6 +53,10 @@ namespace OriCoop
         static readonly Dictionary<string, ManifestEntry> s_compareManifest = new Dictionary<string, ManifestEntry>();
         static readonly HashSet<string> s_loggedLocalTypes = new HashSet<string>();
         static readonly HashSet<int> s_pendingSnapshots = new HashSet<int>();
+        // T-172: changes inside a story this PC only mirrors stay local (World/MirrorHold.cs).
+        static readonly World.MirrorHold s_mirrorHold = new World.MirrorHold();
+        static readonly HashSet<string> s_mirrorKeys = new HashSet<string>();
+        public static int MirrorHeldTotal { get { return s_mirrorHold.HeldTotal; } }
         static bool s_init, s_awaitSnapshot, s_restorePending, s_fullPending, s_loggedHighlightedDoors, s_loggedSceneLoader;
         static float s_scanAt, s_digestAt, s_requestAt;
         static float s_bandwidthAt;
@@ -107,6 +111,7 @@ namespace OriCoop
             s_loggedHighlightedDoors = false;
             s_loggedSceneLoader = false;
             s_pendingSnapshots.Clear();
+            s_mirrorHold.Clear(); s_mirrorKeys.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             s_digestSequence = s_receivedDigest = 0;
             s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; s_mismatchStreak = 0;
@@ -433,6 +438,7 @@ namespace OriCoop
         static List<Blob> Capture(bool full)
         {
             List<Blob> changed = new List<Blob>();
+            s_mirrorKeys.Clear();
             Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
                 SaveSceneManager.SaveId[] entries = manager.SaveData.ToArray();
                 foreach (SaveSceneManager.SaveId entry in entries)
@@ -443,6 +449,7 @@ namespace OriCoop
                     if (Excluded(save)) { s_excluded.Add(key); s_blobs.Remove(key); continue; }
                     s_excluded.Remove(key);
                     if (s_bad.Contains(key)) continue;
+                    if (StorySync.MirrorOwns(save as Component)) s_mirrorKeys.Add(key);
                     try
                     {
                         byte[] bytes = CaptureBytes(save);
@@ -467,7 +474,18 @@ namespace OriCoop
             {
                 ulong known;
                 if (!s_bad.Contains(pair.Key) && !s_excluded.Contains(pair.Key)
-                    && (full || !s_known.TryGetValue(pair.Key, out known) || known != pair.Value.Hash)) changed.Add(pair.Value);
+                    && (full || !s_known.TryGetValue(pair.Key, out known) || known != pair.Value.Hash))
+                {
+                    // T-172: a mirror's change of the story's own script state is not proposed (see MirrorHold).
+                    bool wasHeld = s_mirrorHold.IsHeld(pair.Key);
+                    if (!full && s_mirrorHold.Hold(pair.Key, s_mirrorKeys.Contains(pair.Key)))
+                    {
+                        if (!wasHeld) CoopTrace.Event("story", "mirror.state.held", "key", pair.Key, "type", pair.Value.Type);
+                        continue;
+                    }
+                    if (wasHeld) CoopTrace.Event("story", "mirror.state.released", "key", pair.Key, "type", pair.Value.Type);
+                    changed.Add(pair.Value);
+                }
             }
             return changed;
         }
@@ -689,6 +707,7 @@ namespace OriCoop
             if (!s_bad.Contains(key)) s_blobs[key] = MakeBlob(scene, id, bytes, schema, type);
             else s_blobs.Remove(key);
             s_known[key] = incoming; // Remote application is never a new local proposal.
+            s_mirrorHold.Applied(key);
             // T-141: the other guests (P2P / relay: connected only to us) get the accepted blob now, not after a digest
             // resync 5-60 s later, during which their own whole-GameController blob could overwrite it again.
             if (forwardTo != null && forwardTo.Length > 0 && !s_mutateNoRebroadcast)
@@ -825,6 +844,16 @@ namespace OriCoop
             return hash;
         }
 
+        // T-172: a change held back by MirrorHold is not shared yet; the digest compares what the partners know of it
+        // (the running PC's value), or a guest would call a held mirror change a mismatch and request a full resync.
+        // Held objects are story script state (Raw schema), whose digest hash equals the canonical hash in s_known.
+        static ulong SharedHash(string key, Blob blob)
+        {
+            ulong known;
+            if (s_mirrorHold.IsHeld(key) && blob.Schema == Meaning.Raw && s_known.TryGetValue(key, out known)) return known;
+            return DigestHash(blob);
+        }
+
         // Hash used by the world digest and manifest (not by live change detection, which keeps blob.Hash).
         // Respawner's m_needsToRespawn (decomp Respawner.cs:188) follows the host-owned enemy (EnemySync), so the
         // guest's copy differs after every kill; only its presence is compared, or each kill re-triggers a full resync.
@@ -851,7 +880,7 @@ namespace OriCoop
             {
                 Blob blob = s_blobs[key];
                 writer.Write(blob.Scene.ToByteArray()); writer.Write(blob.Id.ToByteArray());
-                writer.Write((byte)blob.Schema); writer.Write(DigestHash(blob));
+                writer.Write((byte)blob.Schema); writer.Write(SharedHash(key, blob));
             }
             writer.Flush(); ulong hash = HashBytes(stream.ToArray()); count = keys.Count;
             writer.Close(); stream.Close(); return hash;
@@ -908,7 +937,7 @@ namespace OriCoop
             foreach (KeyValuePair<string, Blob> pair in s_blobs)
             {
                 Blob blob = pair.Value;
-                target.Add(pair.Key, new ManifestEntry { Scene = blob.Scene, Id = blob.Id, Hash = DigestHash(blob), Type = blob.Type });
+                target.Add(pair.Key, new ManifestEntry { Scene = blob.Scene, Id = blob.Id, Hash = SharedHash(pair.Key, blob), Type = blob.Type });
             }
         }
 
@@ -922,7 +951,7 @@ namespace OriCoop
                 if (batch.Length + 48 + Encoding.UTF8.GetByteCount(blob.Type) > MaxMessage - 8)
                 { FlushManifest(sequence, false, batch, writer, count); count = 0; }
                 writer.Write(blob.Scene.ToByteArray()); writer.Write(blob.Id.ToByteArray());
-                writer.Write(DigestHash(blob)); writer.Write(blob.Type); count++;
+                writer.Write(SharedHash(key, blob)); writer.Write(blob.Type); count++;
             }
             FlushManifest(sequence, true, batch, writer, count); writer.Close(); batch.Close();
         }

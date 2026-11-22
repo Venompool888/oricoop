@@ -9,3 +9,5 @@ OriCoop\Story\SkillSplit.cs
 OriCoop\Story\SeatSkills.cs
 OriCoop\Story\PuppetRepairGate.cs
 OriCoop\Net\ProtocolVersion.cs
+OriCoop\Story\MirrorBaseline.cs
+OriCoop\Story\StoryLockRepair.cs

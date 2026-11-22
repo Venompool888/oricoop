@@ -1,6 +1,6 @@
 # Builds <repo>\dist\OriCoop-kit-v*.zip: BepInEx + the OriCoop mod, to unzip into another PC's own
 # "Ori and the Blind Forest Definitive Edition" install folder (next to oriDE.exe). No game files, no saves.
-param([switch]$WithGlyphs, [string]$Game)
+param([string]$Game)
 $ErrorActionPreference = 'Stop'
 $root = Split-Path -Parent $PSScriptRoot
 $game = if ($Game) { $Game } else { Join-Path $root 'game' }
@@ -23,7 +23,7 @@ Copy-Item "$game\BepInEx\config\BepInEx.cfg" "$stage\BepInEx\config"
 $dll = (& (Join-Path $PSScriptRoot 'build-commit.ps1') $commit | Select-Object -Last 1)
 if (-not (Test-Path -LiteralPath $dll)) { throw "build of $commit failed: no DLL at '$dll'" }
 Copy-Item -LiteralPath $dll "$stage\BepInEx\plugins\OriCoop.dll"
-if ($WithGlyphs -and (Test-Path "$game\BepInEx\plugins\OriPSGlyphs.dll")) { Copy-Item "$game\BepInEx\plugins\OriPSGlyphs.dll" "$stage\BepInEx\plugins" }
+# T-178: PlayStation icons are built into OriCoop.dll now; the old stand-alone OriPSGlyphs.dll is no longer shipped.
 Copy-Item (Join-Path $root 'TWO-PC-TEST.md') "$stage\OriCoop-README-online.md"
 # Licence notices for the bundled BepInEx / HarmonyX / MonoMod / Mono.Cecil (LGPL-2.1 and MIT require them).
 Copy-Item (Join-Path $PSScriptRoot 'assets\kit\THIRD-PARTY-LICENSES.txt') "$stage\THIRD-PARTY-LICENSES.txt"

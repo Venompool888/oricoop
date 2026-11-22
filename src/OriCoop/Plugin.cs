@@ -30,6 +30,7 @@ namespace OriCoop
         static readonly Action s_netHudDraw = NetHud.Draw, s_sessionDraw = SessionScreens.Draw, s_controlsGuideDraw = ControlsGuideHud.Draw;
         static readonly Action s_localRefreshIds = P2Context.RefreshIds;
         static readonly Action s_testThrow = TestThrow;
+        static readonly Action s_padsTick = Pads.VirtualPads.Tick, s_glyphsTick = Glyphs.PadGlyphs.Tick;
         static readonly Action s_localWall = OnlineLocalPlayers.ApplyWall, s_roomDraw = OnlineRoomScreen.Draw, s_roomTick = OnlineRoomScreen.Tick;
 
         Action m_tick, m_lifecycle, m_sampleInput, m_sharedProgress, m_tickCamera;
@@ -154,6 +155,15 @@ namespace OriCoop
             P2Skin.Init(Config);
             NetPlay.Init(Config);
             DisplayFix.Init(Config);
+            // T-178: PlayStation pads (DualSense / DualShock 4): button icons and native input without Steam Input.
+            var icons = Config.Bind("Controllers", "ButtonIcons", "Auto", new ConfigDescription(
+                "Auto = follow the controller used last (PlayStation pad -> PlayStation icons, Xbox pad -> Xbox icons); PlayStation / Xbox = always that set.",
+                new AcceptableValueList<string>("Auto", "PlayStation", "Xbox")));
+            var psInput = Config.Bind("Controllers", "PlayStationInput", "Auto", new ConfigDescription(
+                "Auto = read DualSense / DualShock 4 pads directly unless Steam Input (or DS4Windows) already shows them to the game as an Xbox pad; On = always read them directly; Off = never.",
+                new AcceptableValueList<string>("Auto", "On", "Off")));
+            Glyphs.PadGlyphs.IconSet = icons.Value; icons.SettingChanged += (s2, e2) => Glyphs.PadGlyphs.IconSet = icons.Value;
+            Pads.VirtualPads.Mode = psInput.Value; psInput.SettingChanged += (s2, e2) => Pads.VirtualPads.Mode = psInput.Value;
             KeyboardOnlyP1.P1Pad = m_p1Pad.Value;
             m_p1Pad.SettingChanged += (s, e) => KeyboardOnlyP1.P1Pad = m_p1Pad.Value;
             H = new Harmony("local.oricoop");
@@ -175,6 +185,7 @@ namespace OriCoop
             if (TestHarness.Enabled) runner.AddComponent<TestHarness>();
             if (SkinDump.Enabled) runner.AddComponent<SkinDump>();
             if (LobbyProbe.Enabled) runner.AddComponent<LobbyProbe>();
+            if (Glyphs.GlyphProbe.Enabled) runner.AddComponent<Glyphs.GlyphProbe>();
         }
 
         public class Runner : MonoBehaviour
@@ -184,7 +195,7 @@ namespace OriCoop
             void LateUpdate() { Instance.DoLateUpdate(); SubsystemGuard.Run("StorySync.ApplyIntro", StorySync.ApplyIntro); }
             void OnGUI() { Instance.DoGUI(); }
             void OnDestroy() { Log.LogWarning("OriCoopRunner destroyed"); }
-            void OnApplicationQuit() { NetPlay.Shutdown(); CoopTrace.Event("scene", "quit"); CoopTrace.Flush(); }
+            void OnApplicationQuit() { Pads.PsHid.Shutdown(); NetPlay.Shutdown(); CoopTrace.Event("scene", "quit"); CoopTrace.Flush(); }
         }
 
         void OnDestroy() { Log.LogInfo("BepInEx plugin component destroyed (expected in this game); runner keeps ticking"); }
@@ -214,6 +225,8 @@ namespace OriCoop
 
         internal void DoUpdate()
         {
+            SubsystemGuard.Run("VirtualPads.Tick", s_padsTick);
+            SubsystemGuard.Run("PadGlyphs.Tick", s_glyphsTick);
             SubsystemGuard.Run("NetPlay.Update", s_netUpdate);
             SubsystemGuard.Run("OnlineRoomScreen.Tick", s_roomTick);
             if (!string.IsNullOrEmpty(m_testThrowName)) SubsystemGuard.Run(m_testThrowName, s_testThrow);

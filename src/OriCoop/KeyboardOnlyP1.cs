@@ -77,7 +77,7 @@ namespace OriCoop
         static bool PadHeld(int pad)
         {
             if (!Connected(pad)) return false;
-            if (XInput.XInputGetState(pad, ref s_state) != 0) return false;
+            if (Pads.VirtualPads.GetState(pad, ref s_state) != 0) return false;
             XInputGamepad g = s_state.Gamepad;
             return g.wButtons != 0 || g.bLeftTrigger > 20 || g.bRightTrigger > 20;
         }

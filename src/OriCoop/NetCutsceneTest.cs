@@ -896,7 +896,8 @@ namespace OriCoop
             if (!s_registered) { NetPlay.On(BarrierMessage, Receive); s_registered = true; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_GATE") == "1") { yield return GateRun(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_LOOK") == "1") { yield return LookRun(h); yield break; }
-            if (Environment.GetEnvironmentVariable("ORICOOP_P3_KURO") == "1") { yield return NetKuroTest.Run(h); yield break; }
+            string kuro = Environment.GetEnvironmentVariable("ORICOOP_P3_KURO");
+            if (kuro == "1" || kuro == "chain") { yield return NetKuroTest.Run(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_SCAN") == "1") { yield return NetStoryScan.Run(h); yield break; }
             // Keep Remote/Acknowledged: the partner's first barrier can arrive before this end reaches P3 (one run per
             // process, so nothing stale is in there).

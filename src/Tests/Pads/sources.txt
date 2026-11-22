@@ -1,0 +1,3 @@
+OriCoop\Pads\PadTypes.cs
+OriCoop\Pads\PsReport.cs
+OriCoop\Pads\MirrorJudge.cs

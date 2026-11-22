@@ -244,7 +244,7 @@ namespace OriCoop
                     m_padButtons[i] = 0;
                     continue;
                 }
-                m_padConnected[i] = XInput.XInputGetState(i, ref m_xState) == 0;
+                m_padConnected[i] = Pads.VirtualPads.GetState(i, ref m_xState) == 0;
                 int b = 0;
                 if (m_padConnected[i])
                 {

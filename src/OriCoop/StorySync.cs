@@ -59,6 +59,29 @@ namespace OriCoop
         static readonly HashSet<CutsceneController> LocalOnlyControllers = new HashSet<CutsceneController>();
         static int s_localOnlyDepth, s_localOnlyRunDepth;
         static int LiveRemotes() { return Ledger.LiveRemotes; }
+        // T-175: a story of this PC is running, so it owns the takeover flags, not a mirror: a story it started
+        // (Local) or a local-only native replay (pedestal / lever, CutsceneGuard). Not Pending: those are unclassified
+        // candidates (plant projectile sequences, a mirror's own sub-sequences), not stories of this PC.
+        static bool OwnStoryRunning()
+        {
+            if (Local.Count > 0 || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0 || CutsceneGuard.PedestalWindow) return true;
+            foreach (ActionSequence sequence in LocalOnly) if (sequence != null && sequence.IsRunning) return true;
+            foreach (CutsceneController controller in LocalOnlyControllers) if (controller != null && controller.CurrentState != null) return true;
+            return false;
+        }
+        // T-177: a story sequence or controller this PC runs (its own, a mirror, a local-only replay) is still going.
+        // While it is, LockInputByAction may be that story's own "Lock player input" (CutsceneGuard, StoryLockRepair).
+        public static bool StorySequenceRunning()
+        {
+            foreach (Story story in Local.Values)
+                if (story.Sequence != null && story.Sequence.IsRunning || story.Controller != null && story.Controller.CurrentState != null) return true;
+            foreach (ActionSequence sequence in OwnedSequences) if (sequence != null && sequence.IsRunning) return true;
+            foreach (CutsceneController controller in OwnedControllers) if (controller != null && controller.CurrentState != null) return true;
+            foreach (ActionSequence sequence in LocalOnly) if (sequence != null && sequence.IsRunning) return true;
+            return false;
+        }
+        // Test only (NetKuroTest chain): mirror cleanups that found takeover state left over from an earlier cutscene.
+        public static int LeftoverCleanups;
         public static bool StoryActive { get { return Local.Count + Remote.Count + Pending.Count > 0; } }
         public static float LastStoryActivity = -1f;
         // Test only (NetCutsceneTest): start mirrors this late, like a slow resolve / scene load on a real link.
@@ -70,6 +93,19 @@ namespace OriCoop
             LastStoryActivity = Time.realtimeSinceStartup;
         }
         public static void ExitLocalOnly() { s_localOnlyDepth--; }
+        // T-172: is this save object inside a story this PC is only mirroring right now (the mirrored sequence or
+        // controller, or a sequence the mirror chained into)? Its state belongs to the PC that runs the story.
+        public static bool MirrorOwns(Component c)
+        {
+            if (c == null || Remote.Count == 0) return false;
+            Transform t = c.transform;
+            foreach (ActionSequence sequence in OwnedSequences) if (Below(t, sequence)) return true;
+            foreach (CutsceneController controller in OwnedControllers) if (Below(t, controller)) return true;
+            foreach (Component mirrored in Mirrored) if (Below(t, mirrored)) return true;
+            return false;
+        }
+        static bool Below(Transform t, Component root)
+        { return root != null && (t == root.transform || t.IsChildOf(root.transform)); }
         public static int TakeoverMaskPublic() { return TakeoverMask(); }
         static readonly HashSet<CutsceneController> OwnedControllers = new HashSet<CutsceneController>();
         static readonly HashSet<LockPlayerInputAction> OwnedInputActions = new HashSet<LockPlayerInputAction>();
@@ -85,6 +121,7 @@ namespace OriCoop
             public Transform Cinematic;
             public float Tween, Horizontal, Vertical, Zoom;
             public bool ShowUI, Letterboxes;
+            public bool OwnStory;   // T-175: a story of this PC was running when the mirror began (it owns the flags above)
             public Ori Spirit;
             public Ori.State SpiritState;
             public GameplayCamera GameplayCamera;
@@ -269,6 +306,7 @@ namespace OriCoop
         {
             if (s_native != null || Own == null || GameController.Instance == null) return;
             NativeState n = new NativeState(); n.Ori = Own; n.Game = GameController.Instance;
+            n.OwnStory = OwnStoryRunning();
             n.Lock = n.Game.LockInput; n.ActionLock = n.Game.LockInputByAction; n.Active = n.Ori.Active;
             n.Blocked = n.Ori.CutsceneBlocked != null && n.Ori.CutsceneBlocked.Active;
             n.Movement = n.Ori.Controller.LockMovementInput; n.Ignore = n.Ori.Controller.IgnoreControllerInput;
@@ -295,8 +333,7 @@ namespace OriCoop
         {
             NativeState n = s_native; s_native = null;
             bool previous = s_mirroring; s_mirroring = true;
-            bool keepLock = n != null && n.Game != null && n.Lock && n.Game.LockInput;
-            bool keepActionLock = n != null && n.Game != null && n.ActionLock && n.Game.LockInputByAction;
+            bool ownNow = OwnStoryRunning();
             try
             {
                 foreach (ActionSequence sequence in OwnedSequences) TryStop(sequence);
@@ -324,26 +361,37 @@ namespace OriCoop
                     finally { if (controller != null) controller.CurrentState = null; }
                 }
                 if (n == null || n.Ori == null || n.Ori != Own || n.Game != GameController.Instance) return;
-                if (n.Ori.CutsceneBlocked != null && !n.Blocked) n.Ori.CutsceneBlocked.Exit();
-                if (n.Ori.CutsceneMovement != null && !n.CutsceneMoving) n.Ori.CutsceneMovement.Exit();
+                // T-175: a flag captured when no story of ours was running is a leftover of the cutscene the mirror took
+                // over, not the original: put back gameplay. A story of ours that started since owns the flags now.
+                bool own = n.OwnStory;
+                bool leftover = !own && !ownNow && (n.Letterboxes || n.Animation || n.Lock || n.ActionLock || n.Movement
+                    || n.Ignore || n.Blocked || n.CutsceneMoving || !n.ShowUI);
+                if (leftover) LeftoverCleanups++;
+                if (n.OwnStory != ownNow || leftover)
+                    CutsceneGuard.Log("story cleanup baseline ownAtStart=" + n.OwnStory + " ownNow=" + ownNow
+                        + " letterbox=" + n.Letterboxes + " animation=" + n.Animation + " lock=" + n.Lock + "/" + n.ActionLock);
+                if (n.Ori.CutsceneBlocked != null && MirrorBaseline.Restore(n.Blocked, own, ownNow) == false) n.Ori.CutsceneBlocked.Exit();
+                if (n.Ori.CutsceneMovement != null && MirrorBaseline.Restore(n.CutsceneMoving, own, ownNow) == false) n.Ori.CutsceneMovement.Exit();
                 n.Ori.PlatformBehaviour.Gravity.Active = n.Gravity;
                 n.Ori.PlatformBehaviour.PlatformMovement.UseCenterRayForGroundAngle = n.CenterRay;
                 // Only remove locks introduced since replay began. Preexisting native locks belong
                 // to their original script, not this run. Menu/watch gates never write these flags.
-                n.Game.LockInput = keepLock;
-                n.Game.LockInputByAction = keepActionLock;
-                if (!n.Movement) n.Ori.Controller.LockMovementInput = false;
-                if (!n.Ignore) n.Ori.Controller.IgnoreControllerInput = false;
-                if (!n.Animation) n.Ori.Controller.IsPlayingAnimation = false;
+                if (MirrorBaseline.Restore(n.Lock, own, ownNow) == false) n.Game.LockInput = false;
+                if (MirrorBaseline.Restore(n.ActionLock, own, ownNow) == false) n.Game.LockInputByAction = false;
+                if (MirrorBaseline.Restore(n.Movement, own, ownNow) == false) n.Ori.Controller.LockMovementInput = false;
+                if (MirrorBaseline.Restore(n.Ignore, own, ownNow) == false) n.Ori.Controller.IgnoreControllerInput = false;
+                if (MirrorBaseline.Restore(n.Animation, own, ownNow) == false) n.Ori.Controller.IsPlayingAnimation = false;
                 if (n.Active && !n.Ori.Active) n.Ori.Active = true;
                 n.Ori.Speed = Vector3.zero;
                 if (!CutsceneGuard.Off)
                 {
                     // Put back what the mirrored story changed (it may have been stopped half-way).
-                    if (Game.UI.SeinUI != null && Game.UI.SeinUI.ShowUI != n.ShowUI)
-                    { Game.UI.SeinUI.ShowUI = n.ShowUI; CutsceneGuard.Log("story restored ShowUI=" + n.ShowUI); }
-                    if (Letterbox.ShowLetterboxes != n.Letterboxes)
-                    { Letterbox.ShowLetterboxes = n.Letterboxes; CutsceneGuard.Log("story restored letterbox=" + n.Letterboxes); }
+                    bool? hidden = MirrorBaseline.Restore(!n.ShowUI, own, ownNow);
+                    if (Game.UI.SeinUI != null && hidden.HasValue && Game.UI.SeinUI.ShowUI != !hidden.Value)
+                    { Game.UI.SeinUI.ShowUI = !hidden.Value; CutsceneGuard.Log("story restored ShowUI=" + !hidden.Value); }
+                    bool? letterbox = MirrorBaseline.Restore(n.Letterboxes, own, ownNow);
+                    if (letterbox.HasValue && Letterbox.ShowLetterboxes != letterbox.Value)
+                    { Letterbox.ShowLetterboxes = letterbox.Value; CutsceneGuard.Log("story restored letterbox=" + letterbox.Value); }
                     if (n.GameplayCamera != null && n.GameplayCamera.Target != n.Target)
                     { n.GameplayCamera.Target = n.Target; CutsceneGuard.Log("story restored camera target"); }
                     if (n.Spirit != null && n.SpiritState == Ori.State.Hovering && Characters.Ori != null && Characters.Ori.CurrentState != Ori.State.Hovering)

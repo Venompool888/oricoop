@@ -113,6 +113,7 @@ static class WorldTests
             Check(seen.Count == 4 && !seen.FirstTime(3, 2) && seen.FirstTime(3, 1), "oldest evicted first");
         });
         DeltaSyncTests.Register(Run);   // T-168
+        MirrorHoldTests.Register(Run);  // T-172
         Console.WriteLine("World: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }

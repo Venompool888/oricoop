@@ -46,7 +46,7 @@ namespace OriCoop
         internal static readonly PadBot[] BotPads = new PadBot[4];
 
         static XInputState s_probe = new XInputState();
-        public static bool IsConnected(int padIndex) { return XInput.XInputGetState(padIndex, ref s_probe) == 0; }
+        public static bool IsConnected(int padIndex) { return Pads.VirtualPads.GetState(padIndex, ref s_probe) == 0; }
 
         public static void Sample(int padIndex, InputState s)
         {
@@ -61,7 +61,7 @@ namespace OriCoop
         static void SamplePad(int padIndex, InputState s, bool trackJoin)
         {
             bool wasStart = s.Start.IsPressed;
-            bool connected = XInput.XInputGetState(padIndex, ref s_state) == 0;
+            bool connected = Pads.VirtualPads.GetState(padIndex, ref s_state) == 0;
             if (trackJoin) Connected = connected;
             XInputGamepad g = s_state.Gamepad;
             int b = connected ? g.wButtons : 0;
