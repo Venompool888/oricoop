@@ -444,7 +444,15 @@ namespace OriCoop
         public static bool SignalLost { get { return s_session.SignalLost; } }
         public static string SteamPartnerName { get { return s_steam != null ? s_steam.RemoteName : ""; } }
         public static bool SteamReady { get { return s_steam != null && s_steam.Ready; } }
-        public static void OpenSteamInvite() { if (s_steam != null && s_steam.Ready) s_steam.OpenInviteOverlay(); }
+        static float s_overlayToastAt;
+        public static void OpenSteamInvite()
+        {
+            if (s_steam != null && s_steam.Ready && !s_steam.OpenInviteOverlay() && Time.realtimeSinceStartup >= s_overlayToastAt)
+            {
+                s_overlayToastAt = Time.realtimeSinceStartup + 5f;
+                NetHud.Toast(L10n.T("steam.overlay.off", true), L10n.T("steam.overlay.off", false));
+            }
+        }
 
         // This PC's LAN IPv4 addresses, for the direct-host page ("tell your friend this address").
         public static string[] LocalAddresses()
@@ -502,6 +510,7 @@ namespace OriCoop
 
         // false while the lobby is not ready (nothing to poll yet).
         static bool s_steamReadyLogged;
+        static readonly bool s_mutateKeepSteamProblem = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STEAM_KEEP_PROBLEM") == "1";
         static bool PumpSteam()
         {
             if (s_steam == null)
@@ -522,8 +531,11 @@ namespace OriCoop
                 Close(); s_retryAt = Time.realtimeSinceStartup + 5f;
                 return false;
             }
-            if (IsHost && s_steam.Ready && Input.GetKeyDown(s_inviteKey.Value)) s_steam.OpenInviteOverlay();
+            if (IsHost && s_steam.Ready && Input.GetKeyDown(s_inviteKey.Value)) OpenSteamInvite();
             if (!s_steam.Ready) return false;
+            // T-216: the host's lobby is up again after a Steam error, so the failure is over. Problem stayed set
+            // until a guest connected: the phase stayed Retrying, the host page showed "failed" and Start did nothing.
+            if (IsHost && Problem.Length > 0 && !s_mutateKeepSteamProblem) Problem = "";
             if (s_steamReconnects > 0 && Peer != null && Peer.State == PeerState.Connected) s_steamReconnects = 0;
             if (IsHost && !s_steamReadyLogged) { s_steamReadyLogged = true; Plugin.Log.LogInfo("net: Steam: lobby ready " + s_steam.LobbyId); }
             if (s_pendingConnect && s_steam.RemoteEndPoint != null) { s_pendingConnect = false; Peer.Connect(s_steam.RemoteEndPoint); Plugin.Log.LogInfo("net: Steam: in lobby; connecting to " + s_steam.RemoteName); }
@@ -803,6 +815,7 @@ namespace OriCoop
         public static void Update()
         {
             // Before the Enabled check: Steam invites must be caught (and acted on) while online play is off.
+            SteamTransport.PumpFake();
             SubsystemGuard.Run("SteamInviteHook.Tick", s_inviteTick);
             if (!Enabled) return;
             if (Input.GetKeyDown(s_statsKey.Value)) s_showStats = !s_showStats;

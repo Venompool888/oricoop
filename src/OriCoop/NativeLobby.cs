@@ -207,13 +207,17 @@ namespace OriCoop
                     r.Add(new[] { L10n.T("lobby.connected", zh), L10n.T("lobby.connected.desc", zh) });
                 else
                 {
+                    bool steam = s_transport == "steam";
+                    bool waiting = steam && NetPlay.SteamLobby == 0 && Net.SteamTransport.PendingInviteRaw == 0;
                     string status;
-                    if (s_transport == "steam") status = L10n.T("lobby.steam.accept", zh);
+                    if (steam) status = L10n.T(waiting ? "lobby.steam.accept" : "lobby.steam.joining", zh);
                     else if (NetPlay.CurrentPhase == NetPlay.Phase.Connecting)
                         status = roomCode ? L10n.T("lobby.room.found", zh) : string.Format(L10n.T("lobby.connecting.target", zh), s_joinTarget);
                     else status = L10n.T("lobby.preparing", zh);
-                    r.Add(new[] { L10n.T("lobby.connecting_bare", zh) + dots, status + SaveNote(zh) });
-                    r.Add(new[] { L10n.T("common.cancel", zh), L10n.T("lobby.join.cancel.desc", zh) });
+                    r.Add(new[] { L10n.T(waiting ? "lobby.steam.waiting" : "lobby.connecting_bare", zh) + dots, status + SaveNote(zh) });
+                    // T-218: the page opens with the cursor on Cancel and only the focused row's text is shown. While
+                    // waiting for an invite the player must see what to do, so Cancel carries the same explanation.
+                    r.Add(new[] { L10n.T("common.cancel", zh), waiting ? status + SaveNote(zh) : L10n.T("lobby.join.cancel.desc", zh) });
                 }
             }
             return r.ToArray();
@@ -236,17 +240,7 @@ namespace OriCoop
 
         static string FriendlyError(string raw, bool timedOut)
         {
-            string lower = (raw ?? "").ToLowerInvariant();
-            // T-148: a refused C-server join ends with its L10n key (server.err.noroom / full / version / token) as the reason.
-            if (lower.StartsWith("server.err.")) return raw;
-            // T-201: the server never answered the connection request (down, wrong address, or the network drops it).
-            if (lower.Contains("no answer")) return "lobby.error.noanswer";
-            if (timedOut || lower.Contains("timeout") || lower.Contains("timed out")) return "lobby.error.timeout";
-            if (lower.Contains("not found") || lower.Contains("no such room")) return "lobby.error.room";
-            if (lower.Contains("full")) return "lobby.error.full";
-            if (lower.Contains("resolve") || lower.Contains("host is known")) return "lobby.error.address";
-            if (lower.Contains("steam")) return "lobby.error.steam";
-            return "lobby.error.failed";
+            return JoinErrorText.Key(raw, timedOut, s_transport == "steam");
         }
 
         // The value being edited, with the cursor marked while editing.

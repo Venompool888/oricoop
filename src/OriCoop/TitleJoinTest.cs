@@ -2,13 +2,15 @@
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using Game;
+using OriCoop.Net;
 using UnityEngine;
 
 namespace OriCoop
 {
     // Real menu test of the title online flow (src\run-titlejoin.ps1; ORICOOP_TITLEJOIN = host|join, transport in
-    // ORICOOP_TITLEJOIN_TRANSPORT = direct|cserver). Not the normal harness (ORICOOP_TEST stays off), so both games go
+    // ORICOOP_TITLEJOIN_TRANSPORT = direct|cserver|steam). Not the normal harness (ORICOOP_TEST stays off), so both games go
     // through the menus exactly as a player does:
     //   host:  title -> 多人游玩 -> transport -> 开房 -> save slot -> host page -> 开始游戏 -> in game, waits for the guest
     //   guest: (appdata without any save) title -> 多人游玩 -> transport -> 加入 -> address / room code -> 连接 ->
@@ -35,6 +37,7 @@ namespace OriCoop
             float m_t0;
             string m_out, m_role, m_tr;
             string m_cserverAddress;
+            string m_steamFault = "";   // T-216: "drop-create" = the host's first Steam lobby result never comes
 
             void Note(string s) { string l = string.Format("[{0,7:F2}] {1}", Time.realtimeSinceStartup - m_t0, s); m_lines.Add(l); Plugin.Log.LogInfo("TITLEJOIN " + s); }
             void Check(bool ok, string what) { m_checks++; if (!ok) m_fails++; Note((ok ? "PASS " : "FAIL ") + what); }
@@ -46,6 +49,7 @@ namespace OriCoop
                 m_t0 = Time.realtimeSinceStartup;
                 m_role = TitleJoinRole;
                 m_tr = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_TRANSPORT") ?? "direct";
+                m_steamFault = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_STEAMFAULT") ?? "";
                 m_out = Environment.GetEnvironmentVariable("ORICOOP_TEST_OUT") ?? Path.Combine(Application.dataPath, "titlejoin.txt");
                 s_tHost = this;
                 StartCoroutine(Run());
@@ -99,6 +103,11 @@ namespace OriCoop
             }
 
             string RoomFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-room.txt"); } }
+            string SteamWaitingFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-steam-waiting.txt"); } }
+            static SteamTransport SteamLink
+            {
+                get { return (SteamTransport)typeof(NetPlay).GetField("s_steam", BindingFlags.Static | BindingFlags.NonPublic).GetValue(null); }
+            }
             // T-189: the guest writes it once its pause menu checks are done; the host ends the session only after that.
             string GuestDoneFile { get { return Path.Combine(Path.GetDirectoryName(Path.GetFullPath(m_out)), "titlejoin-guestdone.txt"); } }
 
@@ -329,13 +338,36 @@ namespace OriCoop
                 CheckCopyIn();
                 ui.SetCurrentItem(slot);
                 m_pickedSlot = ui.CurrentSlotIndex;   // T-173: the room page must show this slot
+                if (m_tr == "steam")
+                {
+                    // Creating the lobby releases the automatic invite; first let the guest inspect the waiting page.
+                    yield return StartCoroutine(WaitFor(() => File.Exists(SteamWaitingFile), 20f));
+                    Check(File.Exists(SteamWaitingFile), "steam: guest reached the wait-for-invite page before lobby creation");
+                    if (m_fails != 0) yield break;
+                }
                 ui.UsedSaveSlotSelected();
-                float end = Time.realtimeSinceStartup + 20f;
+                bool faulty = m_tr == "steam" && m_steamFault.Length > 0, sawTimeout = false;
+                string sawProblem = "";
+                float end = Time.realtimeSinceStartup + (faulty ? 70f : 20f);
                 while (Time.realtimeSinceStartup < end && !(LastPage == "hosting" && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected)
                     && (m_tr != "cserver" || !string.IsNullOrEmpty(NetPlay.RoomCode))))
                 {
                     if (m_tr == "cserver" && OriCoop.Authority.CServerLink.LastFailure.Length > 0) break;
+                    if (faulty && NetPlay.CurrentPhase == NetPlay.Phase.Retrying && NetPlay.Problem.Length > 0)
+                    {
+                        sawProblem = NetPlay.Problem;
+                        sawTimeout |= NetPlay.Problem.Contains("Timed out waiting for the Steam lobby");
+                    }
                     yield return null;
+                }
+                if (faulty)
+                {
+                    // T-216: the first CreateLobby result was lost. The 30 s timeout shows as a failure, the retry 5 s
+                    // later must get a lobby (before: "a Steam lobby result is still pending" for ever) and the page
+                    // must leave the failed state (before: Problem stayed until a guest connected).
+                    Check(sawTimeout, "T-216: the lost lobby result showed as a timeout on the host page first (problem '" + sawProblem + "')");
+                    Check(NetPlay.CurrentPhase == NetPlay.Phase.Waiting && NetPlay.Problem.Length == 0 && NetPlay.SteamReady,
+                        "T-216: the automatic retry got a lobby and the failure was cleared (net=" + NetPlay.CurrentPhase + ", problem '" + NetPlay.Problem + "')");
                 }
                 Check(IsOpen && LastPage == "hosting", "host: slot pick opens the host page (" + Labels + ", net=" + NetPlay.CurrentPhase + ")");
                 Check((NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected) &&
@@ -354,10 +386,18 @@ namespace OriCoop
                     try { File.WriteAllText(RoomFile, NetPlay.RoomCode); } catch (Exception e) { Note("room file: " + e.Message); }
                 }
                 if (m_fails != 0) yield break;
-                yield return StartCoroutine(TWait(1f));
-                Shot("host_page");
-                yield return StartCoroutine(TWait(0.5f));
-                yield return StartCoroutine(Row(1, 0.5f));                          // 开始游戏
+                if (m_tr == "steam")
+                {
+                    yield return StartCoroutine(SteamHostRoom());
+                    if (m_fails != 0) yield break;
+                }
+                else
+                {
+                    yield return StartCoroutine(TWait(1f));
+                    Shot("host_page");
+                    yield return StartCoroutine(TWait(0.5f));
+                    yield return StartCoroutine(Row(1, 0.5f));                      // 开始游戏
+                }
                 if (m_tr == "cserver") yield return StartCoroutine(CsRoomPageChecks(2));   // T-171: wait for the guest on the 房间管理页
                 end = Time.realtimeSinceStartup + 90f;
                 while (Time.realtimeSinceStartup < end && !NetPlay.LocalInGameplay()) { DismissResume(); yield return null; }
@@ -400,6 +440,55 @@ namespace OriCoop
                         "host: ending the session clears the arbiter role and the server link (HostOverride=" + NetPlay.HostOverride +
                         ", link=" + (OriCoop.Authority.CServerLink.Client != null) + ")");
                 }
+            }
+
+            IEnumerator SteamHostRoom()
+            {
+                FakeSteamApi api = SteamApi.Current as FakeSteamApi;
+                SteamTransport link = SteamLink;
+                ulong lobby = link == null ? 0 : link.LobbyId;
+                Check(NetPlay.UsesSteam && NetPlay.SteamReady && api != null && lobby != 0 &&
+                    api.GetNumLobbyMembers(lobby) == 1 && !NetPlay.PartnerHere,
+                    "steam: lobby is ready before anyone joined (fake Steam, lobby " + lobby + ")");
+                if (m_fails != 0) yield break;
+                int before = api.InviteDialogsOpened;
+                yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.invite"), 5f));
+                Check(api.InviteDialogsOpened == before + 1, "steam: 邀请好友 opens one fake Steam invite dialog");
+                if (m_fails != 0) yield break;
+                yield return StartCoroutine(WaitFor(() => api.GetNumLobbyMembers(lobby) == 2, 15f));
+                Check(api.GetNumLobbyMembers(lobby) == 2, "steam: lobby has two members before 开始游戏");
+                if (m_fails != 0) yield break;
+                Shot("host_page");
+                yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.continue"), 5f));
+                m_roomSeen = OnlineRoomScreen.Confirmed;
+                Check(m_roomSeen, "steam: 开始游戏 pressed on the host room screen");
+            }
+
+            IEnumerator SteamGuestRoom()
+            {
+                yield return StartCoroutine(Row(1, 0.3f));                         // 加入 -> wait for a Steam invite
+                // T-218: no SetCurrentItem here. The page opens with the cursor on Cancel and shows only the focused
+                // row's text, so the explanation must be there without the player moving the cursor.
+                RefreshTexts(true);
+                Check(TitleOrbOpen && OnSteamJoinPage && !SlotsReady && LastTooltip.Contains(L10n.T("lobby.steam.accept")) &&
+                    LastLabels.Count > 0 && LastLabels[0].StartsWith(L10n.T("lobby.steam.waiting"), StringComparison.Ordinal) &&
+                    SteamTransport.PendingInviteRaw == 0 && NetPlay.UsesSteam && NetPlay.Peer == null && NetPlay.CurrentPhase == NetPlay.Phase.Starting,
+                    "steam: waiting page says to accept a Steam invite and is not connecting (net=" + NetPlay.CurrentPhase + ")");
+                if (m_fails != 0) yield break;
+                Check(LastTooltip.Contains(L10n.T("lobby.save.note")), "guest: join page says the co-op copy is saved automatically");
+                Shot("join_page");
+                File.WriteAllText(SteamWaitingFile, "waiting");
+                yield return StartCoroutine(WaitFor(() => NetPlay.SteamLobby != 0, m_steamFault.Length > 0 ? 90f : 20f));
+                Check(NetPlay.SteamLobby != 0 && NetPlay.UsesSteam, "steam: automatic invite started the Steam join");
+                if (m_fails != 0) yield break;
+                yield return StartCoroutine(WaitFor(() => NetPlay.PartnerHere && OnlineRoomScreen.Visible, 12f));
+                SteamTransport link = SteamLink;
+                Check(NetPlay.UsesSteam && NetPlay.PartnerHere && link != null && link.RemoteSteamId == 1001,
+                    "steam: guest connected to host 1001 after the invite (net=" + NetPlay.CurrentPhase + ")");
+                if (m_fails != 0) yield break;
+                yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.continue"), 5f));
+                m_roomSeen = OnlineRoomScreen.Confirmed;
+                Check(m_roomSeen, "steam: 继续 pressed on the guest room screen");
             }
 
             // Digit keys on the focused dial row, then Enter, through the lobby's own key handling (NativeLobby test hooks).
@@ -498,6 +587,49 @@ namespace OriCoop
                 else Check(savesAtStart == 0, "guest: appdata has no saves (" + savesAtStart + ")");
                 if (m_tr == "cserver") yield return StartCoroutine(CsRoomListed());   // T-171: the host's room is on the list
                 KeyboardOnlyP1.SetMenuDeviceForTest(-1);                            // T-188: the guest used keyboard/mouse on the menus
+                if (m_tr == "steam")
+                {
+                    yield return StartCoroutine(SteamGuestRoom());
+                    if (m_fails != 0) yield break;
+                }
+                else yield return StartCoroutine(JoinAddress());
+                float end = Time.realtimeSinceStartup + 150f;
+                bool sawStart = false, picked = false, csChecked = m_tr != "cserver", stayedSteam = true;
+                while (Time.realtimeSinceStartup < end && !(NetPlay.LocalInGameplay() && SaveSync.Ready))
+                {
+                    if (m_tr == "steam") stayedSteam &= NetPlay.UsesSteam;
+                    if (GuestFromTitle) sawStart = true;
+                    if (!csChecked && CsRoomPage.IsOpen) { csChecked = true; yield return StartCoroutine(CsRoomPageChecks(1)); }
+                    if (full && !picked && GuestPickingSlot && SlotsReady)
+                    {
+                        // All slots full: the save slots came up to choose the slot for the co-op copy.
+                        yield return StartCoroutine(TWait(4.5f));     // after the "joined" toast: the slot prompt shows
+                        Shot("pick_slot");
+                        yield return StartCoroutine(TWait(0.5f));
+                        SaveSlotsUI ui = SaveSlotsUI.Instance;
+                        ui.SetCurrentItem(2);
+                        ui.UsedSaveSlotSelected();
+                        picked = true;
+                        Note("picked slot 2 for the co-op copy");
+                    }
+                    DismissResume();
+                    yield return null;
+                }
+                // The no-slot join drives the save-slot screen itself for a moment; "no save slot was picked" below covers the picker.
+                if (m_tr == "steam") Check(stayedSteam && NetPlay.UsesSteam, "steam: guest stayed on the Steam transport until it was in the game");
+                if (full)
+                {
+                    Check(picked, "guest: all slots full -> asked to pick a slot (NeedSlotChoice=" + GuestJoin.NeedSlotChoice + ")");
+                    Check(LastSlotPick == "guest-slot-2", "guest: the picked slot keeps the co-op copy (" + LastSlotPick + ")");
+                    string bk = Path.Combine(SavesDir, "OriCoop-backups");
+                    int nb = 0; try { if (Directory.Exists(bk)) nb = Directory.GetFiles(bk).Length; } catch (Exception) { }
+                    Check(nb >= 1, "guest: the overwritten save was backed up first (" + nb + " file(s) in OriCoop-backups)");
+                }
+                yield return StartCoroutine(CheckGuestLoaded(full, sawStart, csChecked));
+            }
+
+            IEnumerator JoinAddress()
+            {
                 yield return StartCoroutine(Row(1, 1.2f));                          // 加入 -> entry page
                 Check(TitleOrbOpen && LastPage == "entry" && !SlotsReady, "guest: join page on the title, no save slot (" + Labels + ")");
                 if (m_tr == "direct")
@@ -544,35 +676,10 @@ namespace OriCoop
                 yield return StartCoroutine(Row(m_tr == "direct" ? 2 : 1, 0.5f));  // 连接
                 Check(LastPage == "joining" || NetPlay.Enabled, "guest: connecting (" + Labels + ", net=" + NetPlay.CurrentPhase + ")");
                 if (m_tr == "cserver") Check(s_cserverBeginTarget == m_cserverAddress + "|" + s_entry.ToUpperInvariant(), "guest: Begin target " + s_cserverBeginTarget);
-                float end = Time.realtimeSinceStartup + 150f;
-                bool sawStart = false, picked = false, csChecked = m_tr != "cserver";
-                while (Time.realtimeSinceStartup < end && !(NetPlay.LocalInGameplay() && SaveSync.Ready))
-                {
-                    if (GuestFromTitle) sawStart = true;
-                    if (!csChecked && CsRoomPage.IsOpen) { csChecked = true; yield return StartCoroutine(CsRoomPageChecks(1)); }
-                    if (full && !picked && GuestPickingSlot && SlotsReady)
-                    {
-                        // All slots full: the save slots came up to choose the slot for the co-op copy.
-                        yield return StartCoroutine(TWait(4.5f));     // after the "joined" toast: the slot prompt shows
-                        Shot("pick_slot");
-                        yield return StartCoroutine(TWait(0.5f));
-                        SaveSlotsUI ui = SaveSlotsUI.Instance;
-                        ui.SetCurrentItem(2);
-                        ui.UsedSaveSlotSelected();
-                        picked = true;
-                        Note("picked slot 2 for the co-op copy");
-                    }
-                    DismissResume();
-                    yield return null;
-                }
-                if (full)
-                {
-                    Check(picked, "guest: all slots full -> asked to pick a slot (NeedSlotChoice=" + GuestJoin.NeedSlotChoice + ")");
-                    Check(LastSlotPick == "guest-slot-2", "guest: the picked slot keeps the co-op copy (" + LastSlotPick + ")");
-                    string bk = Path.Combine(SavesDir, "OriCoop-backups");
-                    int nb = 0; try { if (Directory.Exists(bk)) nb = Directory.GetFiles(bk).Length; } catch (Exception) { }
-                    Check(nb >= 1, "guest: the overwritten save was backed up first (" + nb + " file(s) in OriCoop-backups)");
-                }
+            }
+
+            IEnumerator CheckGuestLoaded(bool full, bool sawStart, bool csChecked)
+            {
                 Check(sawStart || GuestStatus.Length > 0, "guest: no-slot join started (" + GuestStatus + ")");
                 Check(m_roomSeen, "guest: room screen shown before the join starts");
                 // T-171: on a C-server join the guest's room screen must be the 房间管理页 and its checks must have run (an old

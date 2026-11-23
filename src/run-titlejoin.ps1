@@ -1,8 +1,8 @@
 ﻿# Title online flow with real menus (TitleJoinTest.cs): the host picks 多人游玩 -> transport -> 开房 -> a save slot;
 # the guest starts with NO saves at all (appdata2 emptied) and picks 多人游玩 -> transport -> 加入, enters the address
 # or room code and connects. Checks: the guest never sees a save slot, loads the host's save, ends beside the host,
-# and keeps a co-op copy in a slot.  -Transport direct (default, LAN host mode) | cserver (remote test C-server).
-# Steam cannot run here (the test copy has no Steam client session); its pages are covered by run-test.
+# and keeps a co-op copy in a slot. -Transport direct (default, LAN) | cserver (remote test server) |
+# steam (fake Steam on loopback; the guest accepts an automatic invite).
 # -FullSlots: the guest has 10 unrelated saves (every slot full): it is asked which slot keeps the co-op copy.
 # -Prologue skip|leave (T-203, TitlePrologueTest.cs): the host starts a NEW game on an empty slot while the guest
 #   waits; the prologue plays on both. skip (LAN or -Transport cserver): in step, only the host's input counts, the
@@ -10,9 +10,15 @@
 #   leaves mid-prologue, joins again late (waiting screen), the host skips, the late guest loads the host's save.
 #   hostquit (LAN only): the host quits to the title mid-prologue; the guest's copy ends after the 10 s link-drop
 #   grace, its join is given up with "the host left", both titles are usable.
-param([ValidateSet('direct', 'cserver')][string]$Transport = 'direct', [int]$TimeoutSec = 300, [switch]$Force, [switch]$FullSlots, [int]$Width = 800, [int]$Height = 450,
-    [ValidateSet('', 'skip', 'leave', 'hostquit')][string]$Prologue = '')
+param([ValidateSet('direct', 'cserver', 'steam')][string]$Transport = 'direct', [int]$TimeoutSec = 300, [switch]$Force, [switch]$FullSlots, [int]$Width = 800, [int]$Height = 450,
+    [ValidateSet('', 'skip', 'leave', 'hostquit')][string]$Prologue = '',
+    [ValidateSet('', 'drop-create')][string]$SteamFault = '')   # T-216: -Transport steam only; the host's first CreateLobby result never comes
 $ErrorActionPreference = 'Stop'
+if ($Transport -eq 'steam' -and ($Prologue -or $FullSlots)) { throw '-Transport steam does not support -Prologue or -FullSlots' }
+if ($SteamFault) {
+    if ($Transport -ne 'steam') { throw '-SteamFault needs -Transport steam' }
+    if (-not $PSBoundParameters.ContainsKey('TimeoutSec')) { $TimeoutSec = 360 }   # the lost result costs the 30 s lobby timeout plus the 5 s retry
+}
 if ($Prologue) {
     if ($Prologue -ne 'skip' -and $Transport -ne 'direct') { throw "-Prologue $Prologue runs on the LAN join page only: use -Transport direct" }
     if (-not $PSBoundParameters.ContainsKey('TimeoutSec')) { $TimeoutSec = 540 }   # the prologue runs about a minute before Naru is playable
@@ -28,6 +34,14 @@ New-Item -ItemType Directory -Force $testDir | Out-Null
 # Files only: a folder another test keeps there under a titlejoin* name (seen: titlejoin-fake-steam) is not this run's
 # to remove, and Remove-Item stops the whole run on a folder that has children.
 Get-ChildItem $testDir -Filter 'titlejoin*' -File -ErrorAction SilentlyContinue | Remove-Item -Force
+if ($Transport -eq 'steam') {
+    # The fake Steam's shared folder (lobby and peer files). Its name must NOT start with "titlejoin": the cleanup
+    # above matched titlejoin* and, on branches older than main e468d45, stops a whole run on a folder with files in
+    # it. Removed again when the run ends: the test folder is shared with the other suites of this test copy.
+    $fakeDir = Join-Path $testDir 'fake-steam-run'
+    if (Test-Path -LiteralPath $fakeDir) { Remove-Item -LiteralPath $fakeDir -Recurse -Force }
+    New-Item -ItemType Directory $fakeDir | Out-Null
+}
 $hostOut = Join-Path $testDir 'titlejoin-host.txt'
 $guestOut = Join-Path $testDir 'titlejoin-guest.txt'
 # Host: the pristine saves. Guest: no saves at all (no slot files, links or backups).
@@ -50,6 +64,13 @@ function Client-Spec([string]$role, [string]$appData, [string]$resultPath) {
     $vars = @{ LOCALAPPDATA = $appData; ORICOOP_TEST = ''; ORICOOP_TITLEJOIN = $role; ORICOOP_TITLEJOIN_TRANSPORT = $Transport
         ORICOOP_SLOT = '1'; ORICOOP_TEST_OUT = $resultPath }
     if ($Transport -eq 'cserver') { $vars['ORICOOP_NET_CSERVER'] = $remote }
+    if ($Transport -eq 'steam') {
+        $vars['ORICOOP_NET_TRANSPORT'] = 'steam'
+        $vars['ORICOOP_FAKE_STEAM_DIR'] = $fakeDir
+        $vars['ORICOOP_FAKE_STEAM_ID'] = if ($role -eq 'host') { '1001' } else { '1002' }
+        $vars['ORICOOP_FAKE_STEAM_AUTOINVITE'] = if ($role -eq 'join') { '1' } else { '0' }
+        if ($SteamFault) { $vars['ORICOOP_TITLEJOIN_STEAMFAULT'] = $SteamFault; if ($role -eq 'host') { $vars['ORICOOP_FAKE_STEAM_FAULT'] = $SteamFault } }
+    }
     if ($FullSlots) { $vars['ORICOOP_TITLEJOIN_FULL'] = '1' }
     if ($Prologue) { $vars['ORICOOP_TITLEJOIN_PROLOGUE'] = $Prologue }
     @{ Tag = ('titlejoin-' + $role); Arguments = "-screen-fullscreen 0 -screen-width $Width -screen-height $Height"; Vars = $vars }
@@ -69,6 +90,7 @@ try {
 } finally {
     foreach ($client in $clients) { if (-not $client.HasExited) { $client.Kill(); $client.WaitForExit() }; $client.Dispose() }
     foreach ($c in $before.Keys) { [IO.File]::WriteAllBytes($c, $before[$c]) }
+    if ($Transport -eq 'steam' -and (Test-Path -LiteralPath $fakeDir)) { Remove-Item -LiteralPath $fakeDir -Recurse -Force -ErrorAction SilentlyContinue }
     Complete-TestRun
 }
 $passed = $true

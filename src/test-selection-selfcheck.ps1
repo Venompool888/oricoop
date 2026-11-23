@@ -52,6 +52,15 @@ foreach ($row in $multiRows) {
     $missing = @($row[1] | Where-Object { $got -notcontains $_ })
     Ok ($missing.Count -eq 0) ('a change to ' + $row[0] + ' runs ' + ($row[1] -join ',') + $(if ($missing.Count) { ' (missing: ' + ($missing -join ',') + ')' } else { '' }))
 }
+foreach ($file in @('SteamTransport.cs', 'Net\SteamApi.cs', 'Net\RealSteamApi.cs', 'Net\FakeSteamApi.cs', 'SteamInviteHook.cs', 'NetPlay.cs')) {   # T-216: NetPlay drives the Steam session (PumpSteam)
+    $got = @((Get-Selection @('src\OriCoop\' + $file)).Suites)
+    Ok ($got -contains 'titlejoin-steam') ('a change to ' + $file + ' runs titlejoin-steam')
+    Ok ($got -contains 'titlejoin-steam-retry') ('a change to ' + $file + ' runs titlejoin-steam-retry')
+}
+foreach ($file in @('Net\NetPeer.cs', 'InviteRules.cs')) {
+    $got = @((Get-Selection @('src\OriCoop\' + $file)).Suites)
+    Ok ($got -notcontains 'titlejoin-steam') ('a change to ' + $file + ' does not run titlejoin-steam')
+}
 # A shared-core file (every phase, phase-map.psd1 Full) runs the direct 'net' suite, the one 2-player suite that is never
 # limited to a few phases (T-096): selecting only net-relay / net-newgame would run just INTRO,MOVE,W (T-165 found
 # SaveSync and GuestJoin like that).

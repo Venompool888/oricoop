@@ -53,6 +53,37 @@ static class UiTests
     {
         L10n.LanguageCode = delegate { return s_language; };
 
+        Run("join error: server key takes precedence and keeps its original spelling", delegate {
+            Equal("Server.Err.Full", JoinErrorText.Key("Server.Err.Full", true, true));
+        });
+        Run("join error: Steam no answer is a host error before timeout", delegate {
+            Equal("lobby.error.noanswer.host", JoinErrorText.Key("No Answer from the Steam host", true, true));
+        });
+        Run("join error: non-Steam no answer remains a server error", delegate {
+            Equal("lobby.error.noanswer", JoinErrorText.Key("No Answer from the server", true, false));
+        });
+        Run("join error: timeout by flag or either reason", delegate {
+            Equal("lobby.error.timeout", JoinErrorText.Key("room not found", true, false));
+            Equal("lobby.error.timeout", JoinErrorText.Key("Timeout", false, false));
+            Equal("lobby.error.timeout", JoinErrorText.Key("Timed out waiting for Steam", false, true));
+        });
+        Run("join error: missing room before full or Steam error", delegate {
+            Equal("lobby.error.room", JoinErrorText.Key("Steam room not found", false, true));
+            Equal("lobby.error.room", JoinErrorText.Key("No such room or full", false, false));
+        });
+        Run("join error: full room before address or Steam error", delegate {
+            Equal("lobby.error.full", JoinErrorText.Key("Steam room full", false, true));
+        });
+        Run("join error: address by either reason", delegate {
+            Equal("lobby.error.address", JoinErrorText.Key("Could not resolve Steam address", false, true));
+            Equal("lobby.error.address", JoinErrorText.Key("Host is known", false, false));
+        });
+        Run("join error: Steam reason and generic fallback", delegate {
+            Equal("lobby.error.steam", JoinErrorText.Key("Steam unavailable", false, true));
+            Equal("lobby.error.failed", JoinErrorText.Key("unknown error", false, true));
+            Equal("lobby.error.failed", JoinErrorText.Key(null, false, false));
+        });
+
         // T-174: the room page must draw the same rows on Layout and on the Repaint after it, even when the seats
         // change in between (the Steam lobby landing mid-frame made Repaint draw member row 1 that Layout never had).
         Run("room page: rows built on Layout stay the same through Repaint when seats change", delegate {

@@ -17,6 +17,8 @@ $TS_Suites = [ordered]@{
     'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
+    'titlejoin-steam' = @('run-titlejoin.ps1', '-Transport', 'steam')
+    'titlejoin-steam-retry' = @('run-titlejoin.ps1', '-Transport', 'steam', '-SteamFault', 'drop-create')   # T-216: the host's first lobby result is lost
     'titlejoin-cs' = @('run-titlejoin.ps1', '-Transport', 'cserver')   # T-171/T-173: the C-server room pages (房间管理页) run only here
     'titlejoin-prologue' = @('run-titlejoin.ps1', '-Prologue', 'skip')         # T-203: new game, the prologue on both PCs, the host's skip
     'titlejoin-prologue-leave' = @('run-titlejoin.ps1', '-Prologue', 'leave')  # T-203: the guest leaves mid-prologue, joins again late
@@ -58,6 +60,7 @@ $TS_ModuleSuites = @{
     'M8' = @('local', 'titlejoin', 'titlejoin-cs', 'rooms')   # T-173: 我的房间 新建 / join dispatch in TitleMenu is checked only by run-rooms
     'M9' = @()            # harness files map to their own suite below
 }
+$TS_SteamFiles = @('SteamTransport', 'SteamApi', 'RealSteamApi', 'FakeSteamApi', 'SteamInviteHook', 'NetPlay', 'JoinErrorText')   # NetPlay: PumpSteam / OpenSteam drive the Steam session
 # Harness / test files -> the suite that runs them (checked before the module table).
 $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
@@ -140,7 +143,11 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -like 'src\OriCoop\*') {
         foreach ($k in $TS_FileSuites.Keys) { if ($leaf -eq $k) { return @{ Suites = $TS_FileSuites[$k]; Why = 'harness ' + $k } } }
         if ($leaf -like 'Net*Test' -or $leaf -like '*SyncTest' -or $leaf -like 'NetStory*') { return @{ Suites = @('net'); Why = 'net harness' } }
-        if ($moduleMap.ContainsKey($leaf)) { $m = $moduleMap[$leaf]; return @{ Suites = $TS_ModuleSuites[$m]; Why = $m } }
+        if ($moduleMap.ContainsKey($leaf)) {
+            $m = $moduleMap[$leaf]; $s = $TS_ModuleSuites[$m]
+            if ($TS_SteamFiles -contains $leaf) { $s = $s + @('titlejoin-steam', 'titlejoin-steam-retry') }
+            return @{ Suites = $s; Why = $m }
+        }
         return @{ Suites = $TS_AllSuites; Why = 'unknown mod file: everything' }
     }
     return @{ Suites = @(); Why = 'not covered by game suites' }
