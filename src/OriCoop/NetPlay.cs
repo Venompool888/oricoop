@@ -76,17 +76,34 @@ namespace OriCoop
         public static void SendTestSignal(string s) { SendReliable(MsgTest, w => w.Write(s)); }
 
         // Say goodbye when the game closes, so the partner sees it at once instead of after the timeout.
-        public static void Shutdown()
+        public static void Shutdown() { Shutdown("closed the game"); }
+
+        // T-201: the partner is told "partner quit the game"; this side's own trace and status say that the local player
+        // left and why (OwnDisconnectReason), instead of repeating the text meant for the partner. The connection code
+        // (NetPeer, shared with the server) is not involved: NetPlay remembers which connection it closed itself.
+        static NetPeer s_leftPeer;
+        static string s_leftWhy = "";
+        public static string OwnDisconnectReason(NetPeer peer, string reason)
         {
-            if (s_hub != null) { try { s_hub.Disconnect("partner quit the game"); } catch { } return; }
-            if (Peer != null && Peer.State == PeerState.Connected) { try { Peer.Disconnect("partner quit the game"); Peer.Flush(); } catch { } }
+            return SessionMachine.OwnDisconnectReason(reason, peer != null && peer == s_leftPeer, s_leftWhy);
+        }
+        static void Shutdown(string why)
+        {
+            if (s_hub != null) { try { s_hub.Disconnect(SessionMachine.PartnerGoodbye); } catch { } return; }
+            if (Peer != null && Peer.State == PeerState.Connected)
+            {
+                s_leftPeer = Peer; s_leftWhy = why;
+                try { Peer.Disconnect(SessionMachine.PartnerGoodbye); Peer.Flush(); } catch { }
+            }
         }
         const int Redundancy = 4;                 // frames per packet (current + 3 previous)
 
         // XInput button bits (same as P2Input).
         const int A = 0x1000, B = 0x2000, X = 0x4000, Y = 0x8000, BACK = 0x20, LB = 0x100, RB = 0x200, LS = 0x40, RS = 0x80,
             DUP = 1, DDOWN = 2, DLEFT = 4, DRIGHT = 8;
-        const int FlagLT = 1, FlagRT = 2, FlagNeutral = 4;
+        // T-199: FlagFaceKnown says FlagFaceLeft is meaningful (a frame from an older build has neither: facing is then
+        // left to the puppet's own replay, as before). Two spare bits of the same byte: the frame's size is unchanged.
+        const int FlagLT = 1, FlagRT = 2, FlagNeutral = 4, FlagFaceKnown = 8, FlagFaceLeft = 16;
 
         public struct Frame
         {
@@ -164,6 +181,7 @@ namespace OriCoop
             public uint PlayTick, NewestTick;
             public bool HavePlay;
             public Frame Last;
+            public bool HaveFace, FaceLeft;   // T-199: the owner's facing in the frame played last
             public int MissingRun;
             public readonly float[] Late = new float[120], SortTmp = new float[120];
             public int LateN, LateI;
@@ -233,6 +251,17 @@ namespace OriCoop
         public static string RemoteScene { get { return Primary == null ? "" : Primary.Scene; } }
         static bool s_sentInGameplay; static string s_sentScene; static bool s_statusDirty = true;
         static float s_retryAt;
+        // T-148: the transport knows that trying again cannot work (the C-server refused the join). The session stays as it
+        // is, without a connection: Problem holds the reason (Phase.Retrying, so the join / host page shows it with its
+        // retry and back rows) and nothing reconnects until Begin (retry) or End (back).
+        static bool s_holdRetry;
+        public static bool RetryHeld { get { return s_holdRetry; } }
+        public static void HoldRetry(string reason)
+        {
+            if (!Enabled) return;
+            s_holdRetry = true;
+            Problem = reason ?? "";
+        }
 
         // ---- send side ----
         static uint s_localTick;
@@ -367,7 +396,7 @@ namespace OriCoop
             }
             if (P2Context.P2 != null) Plugin.DespawnNow("online play starting");
             OnlineRoomScreen.Reset();
-            Problem = ""; StartedAt = Time.realtimeSinceStartup; s_retryAt = 0f; s_showStats = false;
+            Problem = ""; StartedAt = Time.realtimeSinceStartup; s_retryAt = 0f; s_holdRetry = false; s_showStats = false;
             s_modeNow = host ? "host" : "join";
             Plugin.Log.LogInfo("online co-op: started from the menu: " + s_modeNow + " via " + transport);
         }
@@ -380,9 +409,10 @@ namespace OriCoop
             OnlineRoomScreen.Reset();
             s_rtTransport = s_rtAddress = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;
+            s_holdRetry = false;
             if (!Enabled) return;
             bool wasConnected = Connected || s_session.Started || s_remotes.Count > 0;
-            Shutdown();
+            Shutdown(why);
             if (wasConnected)
             {
                 RemoveRemote(why);
@@ -726,7 +756,10 @@ namespace OriCoop
 
         static void OnDisconnected(string reason)
         {
-            Plugin.Log.LogWarning("net: disconnected: " + reason); if (!IsHost) Problem = reason;
+            // T-201: creating a C-server room is a client connection too: while it has no seat yet (still on the menu), a failed
+            // connection shows its reason on the host page instead of "preparing" for ever. A held refusal keeps its reason.
+            Plugin.Log.LogWarning("net: disconnected: " + reason);
+            if (!s_holdRetry && (!IsHost || (s_factorySession && WaitingForSeat))) Problem = reason;
             RemoveRemote("connection lost (" + reason + ")");
             foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values)) Leave(remote, reason);
             EndSession();
@@ -777,7 +810,7 @@ namespace OriCoop
             if (UsesSteam && !PumpSteam()) return;
             if (!HasHub && (Peer == null || Peer.State == PeerState.Disconnected || (Peer.State == PeerState.Idle && !s_pendingConnect)))
             {
-                if (Time.realtimeSinceStartup >= s_retryAt) Open();
+                if (!s_holdRetry && Time.realtimeSinceStartup >= s_retryAt) Open();
                 if (!HasHub && Peer == null) return;
             }
             SubsystemGuard.Run("OnlineLocalPlayers.Tick", s_extraTick);
@@ -851,6 +884,8 @@ namespace OriCoop
             GameController gc = GameController.Instance;
             if (gc == null || gc.IsLoadingGame) return false;
             if (GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen()) return false;
+            // T-203: the new-game prologue is not co-op gameplay: no checkpoint leaves a host in the middle of it.
+            if (GameStateMachine.Instance != null && GameStateMachine.Instance.CurrentState == GameStateMachine.State.Prologue) return false;
             return true;
         }
 
@@ -873,7 +908,7 @@ namespace OriCoop
             {
                 remote.InGameplay = r.ReadBoolean(); remote.Scene = r.ReadString(); remote.LastStatus = m;
                 Plugin.Log.LogInfo("net: P" + Sender + " " + (remote.InGameplay ? "in gameplay (" + remote.Scene + ")" : "not in gameplay"));
-                if (!remote.InGameplay) { remote.Buffer.Clear(); remote.HavePlay = false; remote.HaveRemotePos = false; }
+                if (!remote.InGameplay) { remote.Buffer.Clear(); remote.HavePlay = false; remote.HaveRemotePos = false; remote.HaveFace = false; }
                 CopyDeviceStatus(remote);
             }
             else if (type == MsgTest)
@@ -963,6 +998,8 @@ namespace OriCoop
                 if (Core.Input.Glide.IsPressed || Core.Input.Grab.IsPressed) f.Flags |= FlagRT;
             }
             else f.Flags |= FlagNeutral;
+            f.Flags |= FlagFaceKnown;
+            if (p1.FaceLeft) f.Flags |= FlagFaceLeft;
             f.Pos = p1.Position;
             f.Vel = new Vector2(p1.Speed.x, p1.Speed.y);
 
@@ -1065,6 +1102,8 @@ namespace OriCoop
                 f = remote.Last;
                 if (remote.MissingRun > 6) { HoldNeutral(remote); return; }
             }
+            if ((f.Flags & FlagFaceKnown) != 0) { remote.HaveFace = true; remote.FaceLeft = (f.Flags & FlagFaceLeft) != 0; }
+            ApplyFacing(remote);
             if ((f.Flags & FlagNeutral) != 0) { HoldNeutral(remote); return; }
             P2Input.Fill(remote.Puppet.Input, f.Buttons, DQ(f.LX), DQ(f.LY), DQ(f.RX), DQ(f.RY), (f.Flags & FlagLT) != 0, (f.Flags & FlagRT) != 0, false);
         }
@@ -1085,6 +1124,41 @@ namespace OriCoop
         }
 
         static void HoldNeutral(RemoteState remote) { P2Input.Fill(remote.Puppet.Input, 0, 0, 0, 0, 0, false, false, false); }
+
+        // T-199: a puppet replays its owner's inputs through the game's own states, and its facing was whatever that
+        // replay produced. The replay is not exact (the puppet's wall contact, landing and animation ends differ a
+        // little from the owner's), and a wall jump locks the sprite mirror while its animation plays: when the
+        // puppet's lock ended later than the owner's, or it missed a wall jump, it kept facing the old way (playtest
+        // 4: "the character does not turn during wall jumps"). The owner's facing now travels in every frame and is
+        // put on the puppet past the mirror's lock, when the frame is played and again before each rendered frame.
+        static readonly System.Reflection.FieldInfo s_fFaceLeft = HarmonyLib.AccessTools.Field(typeof(CharacterSpriteMirror), "m_faceLeft");
+        internal static readonly bool s_mutateNoFacing = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_FACING") == "1";
+        public static int FacingFixes;
+
+        static void ApplyFacing(RemoteState remote)
+        {
+            if (s_mutateNoFacing || !remote.HaveFace || remote.Puppet == null || remote.Puppet.Sein == null) return;
+            CharacterSpriteMirror mirror = remote.Puppet.Sein.PlatformBehaviour.Visuals.SpriteMirror;
+            if (mirror == null || mirror.FaceLeft == remote.FaceLeft) return;
+            s_fFaceLeft.SetValue(mirror, remote.FaceLeft);
+            mirror.UpdateMaterial();
+            FacingFixes++;
+        }
+
+        // Net test (FACE): the owner's facing in the frame the first partner's copy played last.
+        internal static bool PartnerFacing(out bool left)
+        {
+            RemoteState remote = Primary;
+            left = remote != null && remote.FaceLeft;
+            return remote != null && remote.HaveFace;
+        }
+
+        // Runner.LateUpdate: after the puppets' own states ran this frame.
+        public static void LateTick()
+        {
+            if (!Enabled) return;
+            foreach (RemoteState remote in s_remotes.Values) ApplyFacing(remote);
+        }
 
         // "Write-back": the owner's position is the truth. Small errors are pulled in gradually (invisible),
         // big ones (door, respawn, teleport, long loss) jump.
@@ -1125,7 +1199,7 @@ namespace OriCoop
                 if (!RemoteInGameplay) s += "  (partner not in gameplay)";
                 if (RemoteHello && RemoteVersion != ModVersion) s += "  VERSION MISMATCH " + RemoteVersion;
             }
-            else if (Peer != null && Peer.State == PeerState.Disconnected) s += " (" + Peer.DisconnectReason + ")";
+            else if (Peer != null && Peer.State == PeerState.Disconnected) s += " (" + OwnDisconnectReason(Peer, Peer.DisconnectReason) + ")";
             return s;
         }
 

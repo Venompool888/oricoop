@@ -417,8 +417,81 @@ static class RoomTests
         Equal("welcome", reply.Message);
         Equal("1", http.Requests[0].GetString("proto"));
         Equal("OriCoop", http.Requests[0].GetString("client"));
-        Equal(15000, http.Timeouts[0]);
+        // T-200: hello only asks whether the service is there (the 我的房间 page waits for it): its own short timeout,
+        // never longer than the general one; every other call keeps the general timeout.
+        Equal(5000, http.Timeouts[0]);
+        http.Reply("info", "ok", "1");
+        client.Info(new RoomAuth { Room = "room", Steam = "player", Token = "token" });
+        Equal(15000, http.Timeouts[1]);
+        client.TimeoutMs = 2000;
+        http.Reply("hello", "ok", "1");
+        client.Hello();
+        Equal(2000, http.Timeouts[2]);
         http.Done();
+    }
+
+    // T-200 (playtest 4): requests abandoned by leaving the 我的房间 page stay queued behind the one that is running. A job
+    // nobody waits for when its turn comes is not run (its reply is "cancelled"); the jobs after it run as usual.
+    static void JobsSkipUnwanted()
+    {
+        using (RoomJobs jobs = new RoomJobs())
+        using (ManualResetEvent started = new ManualResetEvent(false))
+        using (ManualResetEvent release = new ManualResetEvent(false))
+        {
+            int abandonedRan = 0;
+            bool waiting = true;
+            List<string> replies = new List<string>();
+            Action<RoomReply> record = delegate(RoomReply reply) { replies.Add(reply.Ok ? reply.Message : "error " + reply.Error); };
+            jobs.Add(delegate
+            {
+                started.Set();
+                release.WaitOne(5000, false);   // still waiting for the server's answer
+                return new RoomReply { Ok = true, Message = "first", Fields = new RoomWire.Fields() };
+            }, record);
+            jobs.Add(delegate
+            {
+                abandonedRan++;
+                return new RoomReply { Ok = true, Message = "abandoned", Fields = new RoomWire.Fields() };
+            }, record, delegate { return waiting; });
+            jobs.Add(delegate { return new RoomReply { Ok = true, Message = "next", Fields = new RoomWire.Fields() }; },
+                record, delegate { return true; });
+            Check(started.WaitOne(5000, false), "the first job did not start");
+            waiting = false;                    // the page was left while the first request was on its way
+            release.Set();
+            DateTime until = DateTime.UtcNow.AddSeconds(5);
+            while (replies.Count < 3 && DateTime.UtcNow < until) { jobs.Pump(); Thread.Sleep(1); }
+            Equal(3, replies.Count);
+            Equal("first", replies[0]);
+            Equal("error cancelled", replies[1]);
+            Equal("next", replies[2]);
+            Equal(0, abandonedRan);
+        }
+    }
+
+    // T-200: the 我的房间 page stops waiting for the room service's first refresh after the limit, counted without a break.
+    static void BusyWatchLimit()
+    {
+        RoomBusyWatch watch = new RoomBusyWatch(8);
+        Equal(8.0, watch.LimitSeconds);
+        Check(!watch.Expired(false, 0), "expired while nothing waits");
+        Check(!watch.Expired(true, 10), "expired when the wait started");
+        Check(!watch.Expired(true, 17.9), "expired before the limit");
+        Check(watch.Expired(true, 18), "not expired at the limit");
+        Check(!watch.Expired(true, 18.1), "expired twice for one wait");
+        Check(!watch.Expired(false, 19), "expired after the wait ended");
+        Check(!watch.Expired(true, 30), "a new wait expired at once");
+        Check(!watch.Expired(true, 37), "expired before the new wait's limit");
+        Check(!watch.Expired(false, 37.5), "expired on the break");
+        Check(!watch.Expired(true, 37.6), "a wait after a break expired at once");
+        Check(!watch.Expired(true, 45.5), "a break did not restart the count");
+        Check(watch.Expired(true, 45.6), "not expired after the restarted count");
+        // The page reopened in the same frame it was left (the wait never paused): the new refresh gets its own limit.
+        Check(!watch.Expired(true, 50), "expired when the next wait started");
+        Check(!watch.Expired(true, 57), "expired before the limit");
+        watch.Restart();
+        Check(!watch.Expired(true, 57.5), "a restarted wait expired at once");
+        Check(!watch.Expired(true, 65.4), "a restart did not restart the count");
+        Check(watch.Expired(true, 65.5), "not expired after the restart's limit");
     }
 
     static void ClientCreate()
@@ -953,6 +1026,8 @@ static class RoomTests
         Run("client real HTTP oversized reply", ClientRealHttpOversized);
         Run("jobs serial worker and pump", JobsSerialAndPump);
         Run("jobs work exception", JobsException);
+        Run("jobs skip abandoned requests", JobsSkipUnwanted);
+        Run("busy watch limit", BusyWatchLimit);
         Run("session offline and busy", SessionOfflineAndBusy);
         Run("session hello", SessionHello);
         Run("session enter error", SessionEnterError);

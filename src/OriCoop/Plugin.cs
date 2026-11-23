@@ -192,7 +192,8 @@ namespace OriCoop
         {
             void FixedUpdate() { SubsystemGuard.Run("CoopTrace.FixedTick", s_traceFixed); Instance.DoFixedUpdate(); }
             void Update() { SubsystemGuard.Run("CoopTrace.Tick", s_traceUpdate); Instance.DoUpdate(); }
-            void LateUpdate() { Instance.DoLateUpdate(); SubsystemGuard.Run("StorySync.ApplyIntro", StorySync.ApplyIntro); }
+            void LateUpdate() { Instance.DoLateUpdate(); SubsystemGuard.Run("StorySync.ApplyIntro", StorySync.ApplyIntro); SubsystemGuard.Run("NetPlay.LateTick", s_netLate); }
+            static readonly Action s_netLate = NetPlay.LateTick;   // T-199: puppet facing
             void OnGUI() { Instance.DoGUI(); }
             void OnDestroy() { Log.LogWarning("OriCoopRunner destroyed"); }
             void OnApplicationQuit() { Pads.PsHid.Shutdown(); NetPlay.Shutdown(); CoopTrace.Event("scene", "quit"); CoopTrace.Flush(); }

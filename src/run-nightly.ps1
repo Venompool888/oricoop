@@ -58,6 +58,8 @@ $Mutations = @(
     @{ Name = 'MUTATE_HIDE_ICONS';      Env = @{ ORICOOP_MUTATE_HIDE_ICONS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = "shows the game's own button icon" }   # T-173
     @{ Name = 'MUTATE_ORB_MENUS';       Env = @{ ORICOOP_MUTATE_ORB_MENUS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = 'room page orb shows only the save' }   # T-173
     @{ Name = 'MUTATE_PAUSE_ROOM_ANY';  Env = @{ ORICOOP_MUTATE_PAUSE_ROOM_ANY = '1' }; Script = @('run-titlejoin.ps1'); Expect = '^(host|join|guest): LAN: the pause menu has no room entry' }   # T-189
+    @{ Name = 'MUTATE_NO_SHARED_PROLOGUE'; Env = @{ ORICOOP_MUTATE_NO_SHARED_PROLOGUE = '1' }; Script = @('run-titlejoin.ps1', '-Prologue', 'skip'); Expect = "^guest: plays the host's prologue along" }   # T-203
+    @{ Name = 'MUTATE_PROLOGUE_GUEST_CONTROL'; Env = @{ ORICOOP_MUTATE_PROLOGUE_GUEST_CONTROL = '1' }; Script = @('run-titlejoin.ps1', '-Prologue', 'skip'); Expect = '^guest: its own right \+ jump keys do not move Naru' }   # T-203
     @{ Name = 'MUTATE_NO_COOP_FOLDER';  Env = @{ ORICOOP_MUTATE_NO_COOP_FOLDER = '1' }; Script = @('run-titlejoin.ps1'); Expect = 'inside OriCoop-coop|single-player save' }   # T-043
     @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^fresh \S+ menu is exactly' }   # T-173 rewrote run-rooms: check 7 (the fresh my-rooms menu rows) is the first to see the page's rows
     @{ Name = 'MUTATE_ROOM_NAME_HASH';  Env = @{ ORICOOP_MUTATE_ROOM_NAME_HASH = '1' };  Script = @('run-rooms.ps1'); Expect = '^room name (is two English|has no MessageBox markup)' }   # T-173's create flow: run-rooms checks 18 / 19
@@ -70,8 +72,14 @@ $Mutations = @(
     @{ Name = 'TEST_THROW';             Env = @{ ORICOOP_TEST_THROW = 'mutation' };      Script = @('run-test.ps1', '-Scenarios', 'move');     Expect = '^move: |TestThrow' }
     @{ Name = 'P3_OFF (CUT)';           Env = @{ ORICOOP_P3_OFF = '1'; ORICOOP_NET_ONLY = 'P3' }; Script = @('run-nettest.ps1');               Expect = '^CUT ' }
     @{ Name = 'MUTATE_LEVER_DROP_HOLD (CUT lever)'; Env = @{ ORICOOP_MUTATE_LEVER_DROP_HOLD = '1'; ORICOOP_PHASES = 'CUT' }; Script = @('run-nettest.ps1'); Expect = '^T-194 guest pulls: the player who pulled walks away from the lever' }   # T-194 (the real lever grab closes CUT)
+    @{ Name = 'MUTATE_STONE_RAW_APPLY (CUT map stone)'; Env = @{ ORICOOP_MUTATE_STONE_RAW_APPLY = '1'; ORICOOP_PHASES = 'CUT' }; Script = @('run-nettest.ps1'); Expect = '^T-204 guest activates, story stays local: spirit flame is not locked for the partner' }   # T-204
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
     @{ Name = 'PHYS_OFF (P)';           Env = @{ ORICOOP_PHYS_OFF = '1' };               Script = @('run-nettest.ps1');                        Expect = '^P\w* ' }
+    @{ Name = 'MUTATE_NO_FACING (FACE)'; Env = @{ ORICOOP_MUTATE_NO_FACING = '1'; ORICOOP_PHASES = 'MOVE' }; Script = @('run-nettest.ps1'); Expect = '^FACE after each wall jump' }   # T-199
+    @{ Name = 'MUTATE_PUPPET_STONE_AIR (PH)'; Env = @{ ORICOOP_MUTATE_PUPPET_STONE_AIR = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PH the partner (standing|riding)' }   # T-198
+    @{ Name = 'MUTATE_STONE_DROP_HELPER (PE)'; Env = @{ ORICOOP_MUTATE_STONE_DROP_HELPER = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PE ' }   # T-197
+    @{ Name = 'MUTATE_STONE_STALE_STATE (PF)'; Env = @{ ORICOOP_MUTATE_STONE_STALE_STATE = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PF (push \d|a session reset)' }   # T-197
+    @{ Name = 'MUTATE_STONE_KEEP_DOWNED_GRAB (PG)'; Env = @{ ORICOOP_MUTATE_STONE_KEEP_DOWNED_GRAB = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PG (a downed player|the downed partner)' }   # T-197
     @{ Name = 'WORLDOBJ_OFF (WO)';      Env = @{ ORICOOP_WORLDOBJ_OFF = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');        Expect = '^WO' }
     @{ Name = 'WOBJ_NO_DEFER (WO5D)';   Env = @{ ORICOOP_WOBJ_NO_DEFER = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');       Expect = '^WO5D ' }
     @{ Name = 'MUTATE_WOBJ_KEEP_FIRED (R3)'; Env = @{ ORICOOP_MUTATE_WOBJ_KEEP_FIRED = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R3 the reload forgets one-shot' }   # T-144
@@ -87,7 +95,12 @@ $Mutations = @(
     @{ Name = 'MUTATE_WORLD_WHOLE_BLOB (3P)'; Env = @{ ORICOOP_MUTATE_WORLD_WHOLE_BLOB = '1' }; Script = @('run-nettest.ps1', '-Clients', '3'); Expect = '^3P P\d keeps every seat''s same-RTT world event' }   # T-168
     @{ Name = 'MUTATE_SHARE_TRIGGERS (KURO)'; Env = @{ ORICOOP_MUTATE_SHARE_TRIGGERS = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_KURO = '1' }; Script = @('run-nettest.ps1'); Expect = '^KURO chain: (stories ended|no letterbox|own Ori walks|own Ori back at the spirit tree|03 and 04 each ran once)' }   # T-183
     @{ Name = 'MUTATE_MIRROR_TRIGGER_RUNS (KURO)'; Env = @{ ORICOOP_MUTATE_MIRROR_TRIGGER_RUNS = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_KURO = '1' }; Script = @('run-nettest.ps1'); Expect = '^KURO chain: 03 and 04 each ran once' }   # T-183
+    @{ Name = 'MUTATE_SWARM_LOCAL (E5s)'; Env = @{ ORICOOP_MUTATE_SWARM_LOCAL = '1'; ORICOOP_PHASES = 'E5' }; Script = @('run-nettest.ps1'); Expect = '^E5L?s a Swarm is tracked by enemy sync' }   # T-195
     @{ Name = 'MUTATE_STREAM_IN_STORY (KURO)'; Env = @{ ORICOOP_MUTATE_STREAM_IN_STORY = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_KURO = '1' }; Script = @('run-nettest.ps1'); Expect = '^KURO chain: (03 and 04 each ran once|own Ori back at the spirit tree|no letterbox)' }   # T-183 (KURO=1 holds the host's 03 2 s so it is behind)
+    @{ Name = 'MUTATE_GATE_FIRE_BUTTON (SEIN)'; Env = @{ ORICOOP_MUTATE_GATE_FIRE_BUTTON = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_SEIN = '1' }; Script = @('run-nettest.ps1'); Expect = '^SEIN 2 the pickup story started' }   # T-196
+    @{ Name = 'MUTATE_GATE_NO_ADOPT (SEIN)'; Env = @{ ORICOOP_MUTATE_GATE_NO_ADOPT = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_SEIN = '1' }; Script = @('run-nettest.ps1'); Expect = '^SEIN 2 the pickup story started' }   # T-196
+    @{ Name = 'MUTATE_STORY_ENDS_ON_GAP (SEIN)'; Env = @{ ORICOOP_MUTATE_STORY_ENDS_ON_GAP = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_SEIN = '1' }; Script = @('run-nettest.ps1'); Expect = '^SEIN 3 (a story was announced|the script ran through to its last wait|no guard repair)' }   # T-196
+    @{ Name = 'MUTATE_SEQ_PROGRESS_SHARED (SEIN)'; Env = @{ ORICOOP_MUTATE_SEQ_PROGRESS_SHARED = '1'; ORICOOP_MUTATE_STORY_ENDS_ON_GAP = '1'; ORICOOP_NET_ONLY = 'P3'; ORICOOP_P3_SEIN = '1' }; Script = @('run-nettest.ps1'); Expect = '^SEIN 4 (input is free|own Ori walks)' }   # T-196 (the playtest chain: early end, then the guest's step replaces the host's and the host stays in the character animation)
 )
 if (-not $NoMutations) {
     $mdir = Join-Path $env:TEMP ('oricoop-mutations-' + [DateTime]::Now.ToString('yyyyMMdd-HHmmss'))

@@ -23,6 +23,17 @@ namespace OriCoop.Net
     {
         public enum Phase { Off, Starting, Waiting, Connecting, Connected, Retrying }
 
+        // T-201: a side that leaves tells its partner PartnerGoodbye, and the connection keeps that text as its
+        // disconnect reason on both sides. In this side's own trace and status it must not read as "the partner quit":
+        // for a connection this side closed itself the reason is "left: <why>". Any other reason is kept as it is.
+        public const string PartnerGoodbye = "partner quit the game";
+        public const string LocalLeavePrefix = "left: ";
+        public static string OwnDisconnectReason(string connectionReason, bool leftHere, string why)
+        {
+            if (leftHere && connectionReason == PartnerGoodbye) return LocalLeavePrefix + (why ?? "");
+            return connectionReason ?? "";
+        }
+
         public class Remote
         {
             public int Seat;

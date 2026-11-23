@@ -4,8 +4,19 @@
 # and keeps a co-op copy in a slot.  -Transport direct (default, LAN host mode) | cserver (remote test C-server).
 # Steam cannot run here (the test copy has no Steam client session); its pages are covered by run-test.
 # -FullSlots: the guest has 10 unrelated saves (every slot full): it is asked which slot keeps the co-op copy.
-param([ValidateSet('direct', 'cserver')][string]$Transport = 'direct', [int]$TimeoutSec = 300, [switch]$Force, [switch]$FullSlots, [int]$Width = 800, [int]$Height = 450)
+# -Prologue skip|leave (T-203, TitlePrologueTest.cs): the host starts a NEW game on an empty slot while the guest
+#   waits; the prologue plays on both. skip (LAN or -Transport cserver): in step, only the host's input counts, the
+#   host's skip ends it for both, both load into the first scene with the host's save. leave (LAN only): the guest
+#   leaves mid-prologue, joins again late (waiting screen), the host skips, the late guest loads the host's save.
+#   hostquit (LAN only): the host quits to the title mid-prologue; the guest's copy ends after the 10 s link-drop
+#   grace, its join is given up with "the host left", both titles are usable.
+param([ValidateSet('direct', 'cserver')][string]$Transport = 'direct', [int]$TimeoutSec = 300, [switch]$Force, [switch]$FullSlots, [int]$Width = 800, [int]$Height = 450,
+    [ValidateSet('', 'skip', 'leave', 'hostquit')][string]$Prologue = '')
 $ErrorActionPreference = 'Stop'
+if ($Prologue) {
+    if ($Prologue -ne 'skip' -and $Transport -ne 'direct') { throw "-Prologue $Prologue runs on the LAN join page only: use -Transport direct" }
+    if (-not $PSBoundParameters.ContainsKey('TimeoutSec')) { $TimeoutSec = 540 }   # the prologue runs about a minute before Naru is playable
+}
 . (Join-Path $PSScriptRoot 'test-launch.ps1')   # quiet launch + owner watchdog (docs\testing-rules.md)
 if ($Transport -eq 'cserver') {
     $remote = Get-RemoteTestServer 'cserver'
@@ -14,7 +25,9 @@ if ($Transport -eq 'cserver') {
 Start-TestRun -Force:$Force
 $testDir = $TL_TestDir
 New-Item -ItemType Directory -Force $testDir | Out-Null
-Get-ChildItem $testDir -Filter 'titlejoin*' -ErrorAction SilentlyContinue | Remove-Item -Force
+# Files only: a folder another test keeps there under a titlejoin* name (seen: titlejoin-fake-steam) is not this run's
+# to remove, and Remove-Item stops the whole run on a folder that has children.
+Get-ChildItem $testDir -Filter 'titlejoin*' -File -ErrorAction SilentlyContinue | Remove-Item -Force
 $hostOut = Join-Path $testDir 'titlejoin-host.txt'
 $guestOut = Join-Path $testDir 'titlejoin-guest.txt'
 # Host: the pristine saves. Guest: no saves at all (no slot files, links or backups).
@@ -38,6 +51,7 @@ function Client-Spec([string]$role, [string]$appData, [string]$resultPath) {
         ORICOOP_SLOT = '1'; ORICOOP_TEST_OUT = $resultPath }
     if ($Transport -eq 'cserver') { $vars['ORICOOP_NET_CSERVER'] = $remote }
     if ($FullSlots) { $vars['ORICOOP_TITLEJOIN_FULL'] = '1' }
+    if ($Prologue) { $vars['ORICOOP_TITLEJOIN_PROLOGUE'] = $Prologue }
     @{ Tag = ('titlejoin-' + $role); Arguments = "-screen-fullscreen 0 -screen-width $Width -screen-height $Height"; Vars = $vars }
 }
 
@@ -63,5 +77,6 @@ foreach ($r in @($hostOut, $guestOut)) {
     if (Test-Path $r) { $lines = @(Get-Content $r); $lines; if (-not ($lines -match '\] RESULT PASS [1-9]\d*/\d+$')) { $passed = $false } }
     else { 'no result file: ' + (Get-NoResultReason); $passed = $false }
 }
-if ($passed) { "TITLEJOIN $Transport PASS" } else { "TITLEJOIN $Transport FAIL" }
+$what = $(if ($Prologue) { "${Transport}_prologue_$Prologue" } else { $Transport })   # one word: run-affected reads "TITLEJOIN <word> PASS"
+if ($passed) { "TITLEJOIN $what PASS" } else { "TITLEJOIN $what FAIL" }
 Exit-TestRun   # release the test copy only now, after the results were read

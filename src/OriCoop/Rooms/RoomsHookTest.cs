@@ -275,6 +275,56 @@ namespace OriCoop.Rooms
             Check(Idle && (bool)Get(panel, "online"), "room service hello (" + when + ")");
         }
 
+        // T-200 (playtest 4: 我的房间 stayed on 连接中 for half a minute on both PCs). The selected server's room service takes
+        // the connection and never answers, and the page is opened twice: left at once, then opened again, as the players
+        // did. The second visit must stop waiting within a few seconds (v0.2.5: its hello waited behind the first visit's
+        // abandoned one, 15 s each), say that the server cannot be reached and offer 再试一次; with the service back, 再试一次
+        // brings the menu. Starts and ends on the 自建服务器 page.
+        IEnumerator SilentService()
+        {
+            string real = Environment.GetEnvironmentVariable("ORICOOP_ROOMS_SERVER");
+            MethodInfo rowPressed = typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic);
+            System.Net.Sockets.TcpListener silent = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+            silent.Start();   // connections are taken by the system, nothing ever reads or answers them
+            try
+            {
+                Environment.SetEnvironmentVariable("ORICOOP_ROOMS_SERVER", "http://127.0.0.1:" + ((System.Net.IPEndPoint)silent.LocalEndpoint).Port + "/");
+                rowPressed.Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });
+                if (!Check(NativeModeMenu.LastPage == "roomsmenu" && !Idle, "我的房间 asks the silent room service (" + NativeModeMenu.TestRoomState() + ")")) yield break;
+                yield return Wait(() => false, 1);
+                bool backed = false;
+                yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
+                if (!Check(backed && NativeModeMenu.LastPage == "servermode", "我的房间 can be left while it waits for the room service")) yield break;
+                float opened = Time.realtimeSinceStartup;
+                rowPressed.Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });
+                // Idle and the menu redrawn (the rows are refreshed a few times a second).
+                yield return Wait(() => Idle && Array.Exists(NativeModeMenu.TestRoomRows(), x => RowIs(x, "myrooms.create")), 14);
+                float waited = Time.realtimeSinceStartup - opened;
+                string[] rows = NativeModeMenu.TestRoomRows();
+                if (!Check(Idle && waited < 12 && !(bool)Get(panel, "online") && rows.Length == 4 && RowIs(rows[0], "myrooms.retry")
+                    && RowIs(rows[1], "myrooms.create") && RowIs(rows[2], "myrooms.join") && RowIs(rows[3], "common.back"),
+                    "我的房间 on a server whose room service never answers stops waiting and offers 再试一次 (" + waited.ToString("F1") + " s; "
+                    + NativeModeMenu.TestRoomState() + "; " + string.Join(" | ", rows) + ")")) yield break;
+                string tip = NativeModeMenu.LastTooltip;
+                Check(tip.Contains(OriCoop.Authority.CServerConfig.Address), "the 再试一次 row names the server that did not answer ('" + tip + "')");
+                Environment.SetEnvironmentVariable("ORICOOP_ROOMS_SERVER", real);
+                bool pressed = false;
+                yield return Wait(() => pressed = NativeModeMenu.TestRoomPress(RowText("myrooms.retry")), 5);
+                yield return Wait(() => Idle && (bool)Get(panel, "online") && NativeModeMenu.TestRoomRows().Length == 3, 15);
+                rows = NativeModeMenu.TestRoomRows();
+                if (!Check(pressed && Idle && (bool)Get(panel, "online") && rows.Length == 3 && RowIs(rows[0], "myrooms.create"),
+                    "再试一次 reaches the room service once it answers again (" + NativeModeMenu.TestRoomState() + "; " + string.Join(" | ", rows) + ")")) yield break;
+                backed = false;
+                yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
+                Check(backed && NativeModeMenu.LastPage == "servermode", "我的房间 Back after the retry returns to the 自建服务器 page");
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("ORICOOP_ROOMS_SERVER", real);
+                silent.Stop();
+            }
+        }
+
         IEnumerator Run()
         {
             // T-159: rooms play through the C-server (ORICOOP_NET_CSERVER, read by CServerConfig.Address).
@@ -308,6 +358,8 @@ namespace OriCoop.Rooms
             bool backed = false;
             yield return Wait(() => backed = NativeModeMenu.TestRoomBack(), 5);
             if (!Check(backed && NativeModeMenu.LastPage == "servermode", "我的房间 Back returns to the 自建服务器 page")) yield break;
+            yield return SilentService();
+            if (done) yield break;
             typeof(NativeModeMenu).GetMethod("TitlePressed", BindingFlags.Static | BindingFlags.NonPublic)
                 .Invoke(null, new object[] { NativeModeMenu.TestServerModeRoomsRow });
             yield return Wait(() => Idle && Array.Exists(NativeModeMenu.TestRoomRows(), x => RowIs(x, "myrooms.create")), 25);

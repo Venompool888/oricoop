@@ -115,11 +115,12 @@ namespace OriCoop
             Ready = false;
         }
 
-        static readonly Action s_coopSavesTick = CoopSaves.Tick, s_guestJoinTick = GuestJoin.Tick;
+        static readonly Action s_coopSavesTick = CoopSaves.Tick, s_guestJoinTick = GuestJoin.Tick, s_prologueTick = SharedPrologue.Tick;
 
         public static void Tick()
         {
             SubsystemGuard.Run("CoopSaves.Tick", s_coopSavesTick);
+            SubsystemGuard.Run("SharedPrologue.Tick", s_prologueTick);   // T-203: before the join, which waits while it is busy
             SubsystemGuard.Run("GuestJoin.Tick", s_guestJoinTick);
             if (!Services.Net.Connected || !s_started || s_disabled) return;
             CheckPromotion();

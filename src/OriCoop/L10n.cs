@@ -158,6 +158,14 @@ namespace OriCoop
             "myrooms.join.desc", "输入朋友给你的邀请码加入他的房间。", "Join a friend's room with the invite code they gave you.",
             "myrooms.list", "房间列表", "Room list",
             "myrooms.list.desc", "你建过或加入过的房间，选中直接进入。", "Rooms you made or joined; pick one to go in.",
+            // T-200: the 我的房间 menu says which server it asks and what it found; a server that does not answer gets a retry row.
+            "myrooms.connecting.desc", "正在连接 {0} 的房间服务器，最多等几秒。", "Connecting to the room service of {0}; this takes a few seconds at most.",
+            "myrooms.retry", "连不上，再试一次", "Can't connect, try again",
+            "myrooms.retry.desc", "连不上 {0} 的房间服务器：服务器可能没开，或者连不到它。按确认再试一次。", "Can't reach the room service of {0}: the server may be down, or the network does not reach it. Confirm to try again.",
+            "myrooms.status.rooms", "服务器 {0}：你有 {1} 个房间", "Server {0}: {1} room(s) of yours",
+            "myrooms.status.none", "服务器 {0}：还没有你的房间", "Server {0}: no rooms of yours yet",
+            "myrooms.status.offline", "服务器 {0}：连不上房间服务器", "Server {0}: can't reach the room service",
+            "myrooms.status.other", "另有 {0} 个房间在别的服务器上（到 服务器管理 → 服务器列表 换服务器）", "{0} more room(s) are on other servers (switch in Server management -> Server list)",
             "myrooms.server", "服务器", "Server",
             "myrooms.server_n", "服务器 {0} · {1}", "Server {0} - {1}",
             "myrooms.code", "邀请码", "Invite code",
@@ -179,7 +187,10 @@ namespace OriCoop
             "csroom.rename", "改名", "Rename",
             "csroom.list.loading", "正在读取房间列表…", "Loading the room list...",
             "csroom.list.none", "这台服务器上还没有房间", "No rooms on this server yet",
-            "csroom.list.failed", "读不到房间列表，服务器可能没开或版本太旧", "Can't load the room list: the server may be down or too old",
+            "csroom.list.failed", "读取失败，再读一次", "Couldn't load, try again",   // T-201: the status row (press = read again)
+            "csroom.list.failed.noanswer", "服务器没有回应：可能没开，或者连不到它。按确认再读一次；也可以返回换一台服务器。", "The server did not answer: it may be down, or the network does not reach it. Confirm to try again, or go back and pick another server.",
+            "csroom.list.failed.old", "服务器的回应读不了：服务器版本可能太旧。按确认再读一次。", "The server's reply could not be read: the server may be too old. Confirm to try again.",
+            "csroom.list.failed.address", "找不到这个服务器地址：检查地址，或返回换一台服务器。", "The server address could not be resolved: check it, or go back and pick another server.",
             "csroom.local", "本机", "This PC",   // T-189
             "csroom.remote", "远程", "Online",   // T-189
             "csroom.act.copy_code", "复制邀请码", "Copy code",   // T-189
@@ -384,6 +395,10 @@ namespace OriCoop
             "session.waiting_help", "主机进入游戏后会自动开始", "This starts once the host is in the game",
             "session.loading_help", "完成后你会出现在主机身边", "You'll appear next to the host when it's done",
             "session.progress", "{0}%", "{0}%",
+            "session.waiting_prologue", "主机正在观看开场剧情…", "The host is watching the opening...",
+            "session.waiting_prologue_help", "开场剧情结束后会自动加入", "You'll join when the opening ends",
+            "prologue.skip_p1_only", "只有 P1 可以跳过序章", "Only P1 can skip the prologue",
+            "guest.host_left", "主机已离开", "The host left",
             "guest.ended", "联机已断开", "Online play ended",
             "guest.no_save", "没有收到主机存档，请确认主机已进入游戏", "The host's save didn't arrive: make sure the host is in the game",
             "guest.no_screen", "找不到存档界面，无法载入主机存档", "Couldn't load the host's save (no save-slot screen)",
@@ -530,6 +545,7 @@ namespace OriCoop
             "lobby.join.cancel.desc", "停止连接，回到上一页", "Stop connecting and go back.",
             "lobby.save.note", "\n联机进度会自动保存到你的电脑", "\nCo-op progress is saved on your PC automatically.",
             "lobby.error.timeout", "连接超时", "Connection timed out",
+            "lobby.error.noanswer", "服务器没有回应：可能没开，或者连不到它", "The server did not answer: it may be down, or the network does not reach it",   // T-201
             "lobby.error.room", "找不到这个房间", "Room not found",
             "lobby.error.full", "房间已满", "Room is full",
             "lobby.error.address", "找不到这个地址", "Cannot find that address",

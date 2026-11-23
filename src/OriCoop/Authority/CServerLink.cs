@@ -18,6 +18,10 @@ namespace OriCoop.Authority
         static CServerClient s_stale;
         // T-173: kicked out (CServerClient.RetryAllowed false): no reconnect until NetPlay.End has closed the session.
         static bool s_endedForGood;
+        // T-148: this NetPlay session got a seat at least once (in the room or in the game), so a later refusal ends it.
+        static bool s_seated;
+        // T-148 test hook: connections opened since the game started (a refused menu join must stay at one).
+        internal static int ConnectAttempts;
 
         public static CServerClient Client { get { return s_client; } }
         public static string LastFailure = "";      // L10n key of the last join failure ("" = none)
@@ -28,7 +32,7 @@ namespace OriCoop.Authority
             s_installed = true;
             IAuthority touch = AuthoritySource.Current;  // registers the 0xB0-0xBA handlers now (needed before CsWelcome)
             NetPlay.TransportFactory = Create;
-            NetPlay.Stopped = delegate { Teardown(); s_endedForGood = false; };   // leaving the room: free the socket, routing and arbiter role (T-031)
+            NetPlay.Stopped = delegate { Teardown(); s_endedForGood = false; s_seated = false; };   // leaving the room: free the socket, routing and arbiter role (T-031)
             // T-113: before NetPlay.End says goodbye, free our seats on the server so a rejoin (or anyone) gets them now.
             NetPlay.Leaving = delegate
             {
@@ -87,6 +91,7 @@ namespace OriCoop.Authority
             c.Private = RoomServiceSession;   // T-173 (review F10): its room info never reaches the public room list
             c.SeatAssigned += delegate(int seat)
             {
+                s_seated = true;
                 NetPlay.RoomCodeOverride = c.Code;
                 s_lastCode = c.Code; s_lastToken = c.Token; s_lastCreated = c.Created;
                 NetPlay.AssignSeat(c.PrimarySeat);
@@ -109,22 +114,33 @@ namespace OriCoop.Authority
                 // the client ends the refused connection) joins fresh instead of reusing the dead token forever.
                 if (c.PrimarySeat == 0 && (key == "server.err.token" || key == "server.err.noroom")) { s_lastToken = null; s_lastCode = ""; s_lastCreated = false; }
             };
+            // T-148 (playtest 4): the server refused this client for good (no such room, full, other version, kicked). Trying
+            // again gets the same answer, so the reconnect stops here, inside Receive: NetPlay reopens a dropped connection
+            // on its next Update, before this peer's Disconnected event is delivered (the handler below never ran for a
+            // refused join, and the refusal was retried about twice a second while the join page showed "connecting").
+            //  - no seat yet in this session (a join or create from the menu): the session is held with the reason as
+            //    NetPlay.Problem; the join / host page shows it with retry and back;
+            //  - seated before (a reconnect in the room or in the game; T-173: kicked): tell the player once and end
+            //    online play a frame later, outside Receive.
+            c.Refused += delegate(string key)
+            {
+                bool end = CServerClient.RefusalEndsSession(s_seated);
+                NetPlay.HoldRetry(key);
+                Plugin.Log.LogInfo("cserver: refused (" + key + "): " + (end ? "ending online play" : "no automatic retry, the page shows the reason"));
+                if (!end) return;
+                s_endedForGood = true; s_lastToken = null; s_lastCode = ""; s_lastCreated = false;
+                NetHud.Toast(L10n.T(key));
+                if (Plugin.Instance != null) Plugin.Instance.StartCoroutine(EndForGood(key));
+            };
             // Not SessionEnded: that fires when the last partner leaves, but in server mode the room stays open.
             c.Peer.Disconnected += delegate(string why)
             {
                 if (s_client != c) return;
                 Plugin.Log.LogInfo("cserver: disconnected (" + why + ")");
                 Unroute(); s_client = null; s_stale = c;
-                if (!CServerClient.RetryAllowed(c.RefusedWith))
-                {
-                    // T-173: kicked (or refused as kicked): tell the player once and end online play for good, instead of
-                    // NetPlay retrying a rejoin the server refuses forever while the room page stays open.
-                    s_endedForGood = true; s_lastToken = null; s_lastCode = ""; s_lastCreated = false;
-                    NetHud.Toast(L10n.T(c.RefusedWith));
-                    if (Plugin.Instance != null) Plugin.Instance.StartCoroutine(EndForGood(c.RefusedWith));
-                }
             };
             s_client = c;
+            ConnectAttempts++;
             NetRoute.UseServer(c);
             AuthoritySource.UseServer(c.Authority, c.Receive);
             Plugin.Log.LogInfo("cserver: connecting (" + (rejoin ? "rejoin " + code : isHost ? "new room" : "join " + code) + ")");

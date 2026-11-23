@@ -16,6 +16,8 @@ namespace OriCoop
     //   - BeginNoSlot: the title 加入 path never shows the save slots (TitleMenu / NativeModeMenu / SteamInviteHook).
     //     The co-op copy goes to the linked slot, else the first empty one; all full -> NeedSlotChoice, the caller
     //     shows the slots and calls UseSlot(i) (slot i is backed up, then overwritten).
+    // T-203: when the host starts a NEW game while this guest waits, the guest plays the host's prologue along
+    // (SharedPrologue) instead of looking at the transfer screen; the wait below simply goes on until that is over.
     // Then: the transfer screen shows "waiting" (SessionScreens); once the checkpoint is in, the game's own
     // load-from-title action (SaveSlotsUI.UsedSaveSlotPressedAction) runs and its PerformLoad reads the host's
     // checkpoint bytes (SaveSync.BeginTitleLoad); SaveSync's FinishLoading hook places the guest beside the host.
@@ -24,6 +26,7 @@ namespace OriCoop
     public static class GuestJoin
     {
         const float WaitLimit = 90f;
+        internal static float TestWaitLimit;   // test only (TitlePrologueTest): a shorter "no save" limit; 0 = WaitLimit
         static bool s_waiting, s_noSlot, s_toldTitleWait;
         static SaveSlotsUI s_ui;         // slot mode: the slot list to give back on abort
         static int s_slot = -1;          // slot mode: the picked empty slot; no-slot mode: UseSlot choice
@@ -89,6 +92,12 @@ namespace OriCoop
             if (!Services.Net.Enabled) { if (s_waiting) Abort("guest.ended", "session ended"); Loading = false; return; }
             if (!s_waiting) return;
             if (NeedSlotChoice) { s_since = Services.Clock.RealTime; return; }   // the player is choosing; no timeout
+            // T-203: this PC plays the host's new-game prologue along (SharedPrologue), or is putting that copy away:
+            // the title is not up, nothing loads. The wait itself goes on.
+            if (SharedPrologue.Busy) { s_since = Services.Clock.RealTime; return; }
+            // T-203: the host is still in its prologue: its save cannot come yet, so this is not the "no save" case
+            // (playtest 4: 85 s of prologue against the 90 s limit).
+            if (SharedPrologue.HostPlaying && !SaveSync.HavePendingCheckpoint) s_since = Services.Clock.RealTime;
             // The title's load action only works once the title is up: run while it still boots (screen Undefined),
             // it sets the Game state but no scene loads and no Ori appears (nettest -GuestNoSlot, 2026-11-15).
             if (SaveSync.HavePendingCheckpoint && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.Undefined)
@@ -110,8 +119,9 @@ namespace OriCoop
                 Load(CoopSaves.SessionSlot >= 0 ? CoopSaves.SessionSlot : FallbackSlot());
                 return;
             }
-            if (Services.Clock.RealTime - s_since > WaitLimit)
-                Abort("guest.no_save", "no checkpoint in " + WaitLimit + " s");
+            float limit = TestWaitLimit > 0f ? TestWaitLimit : WaitLimit;
+            if (Services.Clock.RealTime - s_since > limit)
+                Abort("guest.no_save", "no checkpoint in " + limit + " s");
         }
 
         // No co-op copy kept (the host has no save file yet): any slot index works, a guest never writes its slot.
@@ -153,6 +163,9 @@ namespace OriCoop
                 Fail(ui, "guest.load_failed", e.Message);
             }
         }
+
+        // T-203: the host left while its new-game prologue played: no save exists and none will come.
+        internal static void HostLeft() { if (s_waiting) Abort("guest.host_left", "the host left during its prologue"); }
 
         static void Abort(string key, string why) { Fail(s_ui, key, why); }
 

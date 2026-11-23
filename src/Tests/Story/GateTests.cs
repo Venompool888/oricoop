@@ -75,6 +75,26 @@ static partial class StoryTests
             t.SetInside("fired", 1, true, 1); t.MarkFired("fired", 1);
             List<string> keys = new List<string>(t.ActiveKeys(1.6f)); Equal(1, keys.Count); Equal("live", keys[0]);
         });
+        // T-196 (playtest 4, Sein's pickup): the gate fired at 0 and the native trigger refused it, so no story began.
+        // Expected from the ticket: the area takes presses again after 3 s instead of swallowing them for 15 s.
+        Check("gate fizzle: a fire no story followed is released after 3 s (boundary both sides)", delegate {
+            GateTable t = new GateTable(); t.SetInside("a", 1, true, 10); t.MarkFired("a", 10);
+            Equal(false, t.Fizzled("a", 12.9f, 4f)); Equal(true, t.Fizzled("a", 13f, 4f)); Equal(true, t.Fizzled("a", 13.1f, 4f));
+            Equal(1, t.FizzledKeys(13f, 4f).Count); Equal("a", t.FizzledKeys(13f, 4f)[0]);
+            t.Release("a"); Equal(false, t.RecentlyFired("a", 13f)); Equal(false, t.Fizzled("a", 13f, 4f));
+            t.SetInside("a", 2, true, 13f); Equal(1, t.Count("a", 13f));
+        });
+        Check("gate fizzle: a fire whose story began (or ended) after it is not released", delegate {
+            GateTable t = new GateTable(); t.MarkFired("a", 10);
+            Equal(false, t.Fizzled("a", 13f, 10.6f)); Equal(false, t.Fizzled("a", 14.9f, 10f));
+            Equal(true, t.Fizzled("a", 13f, 9.99f));   // the last story was before the fire
+            Equal(0, t.FizzledKeys(13f, 10.6f).Count); Equal(true, t.RecentlyFired("a", 13f));
+        });
+        Check("gate fizzle: never a story (-1), unknown area, and an expired mark", delegate {
+            GateTable t = new GateTable(); t.MarkFired("a", 10);
+            Equal(true, t.Fizzled("a", 13f, -1f)); Equal(false, t.Fizzled("b", 13f, -1f));
+            Equal(false, t.Fizzled("a", 25f, -1f)); Equal(false, t.RecentlyFired("a", 25f));
+        });
         Check("gate hold fills once after 15 tenths", delegate {
             HoldMeter m = new HoldMeter(); Equal(1.5f, HoldMeter.FillSeconds);
             for (int i = 0; i < 14; i++) Equal(false, m.Update(true, 0.1f));

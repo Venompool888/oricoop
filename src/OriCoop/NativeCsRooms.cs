@@ -21,7 +21,9 @@ namespace OriCoop
             string address = CServerConfig.Address ?? "";
             int generation = s_csRooms.BeginFetch(address, UnityEngine.Time.realtimeSinceStartup, 5.0);
             if (generation < 0) return;
-            System.Threading.ThreadPool.QueueUserWorkItem(delegate
+            // T-201: a thread of its own, not the thread pool: the pool is shared with the HTTP calls of the room service,
+            // and a call hanging on an unreachable server keeps its pool thread for the whole connect timeout.
+            System.Threading.Thread worker = new System.Threading.Thread(delegate()
             {
                 string error = "no address";
                 List<CsRoomListEntry> rooms = null;
@@ -32,8 +34,11 @@ namespace OriCoop
                 }
                 catch (Exception e) { error = e.Message; }
                 if (rooms == null) Plugin.Log.LogInfo("cs rooms: list failed: " + error);
-                if (!s_csRooms.Complete(generation, rooms)) Plugin.Log.LogInfo("cs rooms: dropped a list for a previous server");
+                if (!s_csRooms.Complete(generation, rooms, error)) Plugin.Log.LogInfo("cs rooms: dropped a list for a previous server");
             });
+            worker.IsBackground = true;
+            worker.Name = "OriCoop room list";
+            worker.Start();
         }
 
         static void CsRoomListRows(List<string[]> r, bool zh)
@@ -50,9 +55,13 @@ namespace OriCoop
             }
             if (rooms.Count == 0)
             {
+                // T-201: a failed read says so and why, and stays "failed" while the page reads again in the background;
+                // pressing the row reads again at once (CsRoomListPressed), Back leaves the page.
                 int state = s_csRooms.State;
-                string key = state == CsRoomListCache.Failed ? "csroom.list.failed" : state == CsRoomListCache.Loaded ? "csroom.list.none" : "csroom.list.loading";
-                r.Add(new[] { L10n.T(key, zh), L10n.T("csroom.list.create.desc", zh) });
+                if (state == CsRoomListCache.Failed)
+                    r.Add(new[] { L10n.T("csroom.list.failed", zh), L10n.T(CsRoomListCache.FailureKey(s_csRooms.Error), zh) });
+                else
+                    r.Add(new[] { L10n.T(state == CsRoomListCache.Loaded ? "csroom.list.none" : "csroom.list.loading", zh), L10n.T("csroom.list.create.desc", zh) });
             }
         }
 

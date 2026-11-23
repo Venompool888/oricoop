@@ -2,6 +2,7 @@ OriCoop\Seams\Seams.cs
 OriCoop\Enemies\EnemyAuthority.cs
 OriCoop\Enemies\EnemyWire.cs
 OriCoop\Enemies\VictimHits.cs
+OriCoop\Enemies\SwarmFamily.cs
 OriCoop\Authority\IAuthority.cs
 OriCoop\Authority\EnemyLeasePolicy.cs
 OriCoop\Authority\CsWire.cs

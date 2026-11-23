@@ -37,6 +37,22 @@ namespace OriCoop.Story
         }
         public void MarkFired(string key, float now) { fired[key] = now; gates.Remove(key); }
         public bool RecentlyFired(string key, float now) { float at; return fired.TryGetValue(key, out at) && now - at < 15f; }
+        // T-196: a fire that no story followed did nothing (the native trigger refused it). Its 15 s of "recently
+        // fired" would swallow every further attempt without a word (playtest 4, Sein's pickup: dead for 15 s).
+        // lastStoryAt: when a story last began or ended on this PC (same clock as now; negative = never).
+        public const float FizzleSeconds = 3f;
+        public bool Fizzled(string key, float now, float lastStoryAt)
+        {
+            float at;
+            return fired.TryGetValue(key, out at) && now - at >= FizzleSeconds && now - at < 15f && lastStoryAt < at;
+        }
+        public List<string> FizzledKeys(float now, float lastStoryAt)
+        {
+            List<string> keys = new List<string>();
+            foreach (string key in fired.Keys) if (Fizzled(key, now, lastStoryAt)) keys.Add(key);
+            return keys;
+        }
+        public void Release(string key) { fired.Remove(key); }
         public IEnumerable<string> ActiveKeys(float now)
         { foreach (string key in gates.Keys) if (Count(key, now) > 0 && !RecentlyFired(key, now)) yield return key; }
     }

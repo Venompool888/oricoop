@@ -65,7 +65,7 @@ namespace OriCoop
                 if (NetPlay.Connected && Now >= resend) { Send(Local[step]); resend = Now + 1f; }
                 yield return null;
             }
-            string label = step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
+            string label = step >= 700 ? "SEIN " : step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
             h.Check(Remote.ContainsKey(step), label + "barrier " + step + " received");
             h.Check(Acknowledged.Contains(step), label + "barrier " + step + " acknowledged");
             if (Remote.ContainsKey(step)) h.Check(!Remote[step].Failed, label + "partner step " + step + " completed");
@@ -77,7 +77,7 @@ namespace OriCoop
         internal static IEnumerator Step(TestHarness h, int step, IEnumerator routine)
         {
             int failures = Failures(h); bool failed = false;
-            string label = step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
+            string label = step >= 700 ? "SEIN " : step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
             Stack<IEnumerator> stack = new Stack<IEnumerator>(); stack.Push(routine);
             try
             {
@@ -356,6 +356,177 @@ namespace OriCoop
                 yield return Step(h, 132, LeverGrabAgain(h, "guest", false, 133));
             }
             finally { Bot(); P2Input.BotRT = false; }
+        }
+        // ---- T-204 (sweep after T-194): the map stone. Both players stand at it (the game highlights it for each PC's
+        // own Ori: spirit flame locked, the orb parked in the stone); one activates it with a map fragment through the
+        // game's own input path. Afterwards nobody may be left with spirit flame locked or the orb in the stone.
+        // Case 1: the stone's story is replayed on the partner's PC (it releases the partner by itself, with or without
+        // T-204). Case 2: the story stays local, as it does for 12 s after a lever push and 20 s after an ability
+        // pedestal on a PC (CutsceneGuard.PedestalWindow; the test opens that window directly instead of pulling a lever
+        // first): the partner only gets the stone's saved state through WorldSync and nothing released it before T-204.
+        const string StoneScene = "sunkenGladesSpiritCavernSaveRoomB";   // found by the stonefind probe below
+        static readonly Vector3 StonePosition = new Vector3(-80.5f, -247.2f, 0f);
+        static MapStone s_stone;
+        static MapStone FindStone()
+        {
+            foreach (MapStone stone in Resources.FindObjectsOfTypeAll<MapStone>())
+            {
+                if (stone == null || !stone.gameObject.activeInHierarchy) continue;
+                for (Transform t = stone.transform; t != null; t = t.parent)
+                {
+                    SceneRoot root = t.GetComponent<SceneRoot>();
+                    if (root != null && root.MetaData != null && root.MetaData.SceneName == StoneScene) return stone;
+                }
+            }
+            return null;
+        }
+        static bool FlameLocked { get { return Own.Abilities.SpiritFlame != null && Own.Abilities.SpiritFlame.LockShootingSpiritFlame; } }
+        static string StoneState()
+        {
+            return "stone=" + (s_stone == null ? "null" : s_stone.CurrentState.ToString()) + " flameLocked=" + FlameLocked
+                + " orbInStone=" + (Characters.Ori != null && Characters.Ori.InsideMapstone) + " orb=" + (Characters.Ori == null ? "null" : Characters.Ori.CurrentState.ToString())
+                + " dist=" + (s_stone == null ? "?" : Vector3.Distance(Own.Position, s_stone.transform.position).ToString("F1"))
+                + " ground=" + Own.PlatformBehaviour.PlatformMovement.IsOnGround + " fragments=" + Own.Inventory.MapStones
+                + " released=" + CutsceneGuard.StoneHighlightsReleased;
+        }
+        static IEnumerator StoneSetup(TestHarness h, int step)
+        {
+            Bot(); P2Input.BotRT = false;
+            Plugin.Teleport(Own, StonePosition + Vector3.right * (NetPlay.IsHost ? -1f : 1f));
+            Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(new Rect(StonePosition.x - 20f, StonePosition.y - 20f, 40f, 40f), true, false, false);
+            float end = Now + 20f;
+            while (Now < end)
+            {
+                s_stone = FindStone();
+                if (s_stone != null && !GameController.Instance.IsLoadingGame) break;
+                yield return null;
+            }
+            Sample p = new Sample { Step = step, Found = s_stone != null };
+            Local[step] = p; Send(p);
+            yield return Barrier(h, step);
+            h.Check(s_stone != null && Remote.ContainsKey(step) && Remote[step].Found, "T-204 map stone found on both");
+        }
+        static IEnumerator StoneActivate(TestHarness h, string label, bool host, bool storyStaysLocal, int step)
+        {
+            int failures = Failures(h); bool activator = NetPlay.IsHost == host;
+            string who = activator ? "the player who activated it" : "the partner who stood at it";
+            yield return Settle();
+            // A fresh stone on both PCs (the second case uses the same stone again). Both PCs take it back at the same
+            // moment; wait out that exchange, or the host's own change less than 0.5 s old beats the guest's activation
+            // (WorldRelay.LocalWinsSeconds) and the stone is simply not activated.
+            if (s_stone.CurrentState == MapStone.State.Activated)
+            {
+                s_stone.CurrentState = MapStone.State.Normal;
+                yield return Wait(2f);
+            }
+            Plugin.Teleport(Own, s_stone.transform.position + Vector3.right * (NetPlay.IsHost ? -1f : 1f));
+            float end = Now + 8f;
+            while (Now < end && (s_stone.CurrentState != MapStone.State.Highlighted || !FlameLocked)) yield return null;
+            h.Check(s_stone.CurrentState == MapStone.State.Highlighted && FlameLocked,
+                "T-204 " + label + ": standing at the map stone highlights it here and locks spirit flame (" + StoneState() + ")");
+            // Map fragments are a shared pool the host owns (ProgressSync): the host gets one, the guest's follows.
+            if (NetPlay.IsHost && Own.Inventory.MapStones < 1) Own.Inventory.MapStones = 1;
+            end = Now + 8f;
+            while (Now < end && Own.Inventory.MapStones < 1) yield return null;
+            yield return Barrier(h, step);
+            int mirrored = StorySync.StartsMirrored;
+            if (storyStaysLocal) CutsceneGuard.TestLocalOnlyWindow(12f);
+            if (activator)
+            {
+                h.Check(Own.Inventory.MapStones >= 1, "T-204 " + label + ": a map fragment to use (" + StoneState() + ")");
+                end = Now + 6f;
+                while (Now < end && s_stone.CurrentState != MapStone.State.Activated)
+                {
+                    NetTestHarness.BotButtons = ((int)(Now * 5f)) % 2 == 0 ? P2Input.BTN_X : 0;   // tap spirit flame
+                    yield return null;
+                }
+                NetTestHarness.BotButtons = 0;
+                h.Check(s_stone.CurrentState == MapStone.State.Activated, "T-204 " + label + ": the spirit flame button activates the stone (" + StoneState() + ")");
+            }
+            // Its story (and whatever it opens) runs; then both must be free.
+            bool freeAgain = false, activatedHere = false;
+            float start = Now, freeSince = -1f;
+            end = Now + 30f;
+            while (Now < end)
+            {
+                activatedHere |= s_stone.CurrentState == MapStone.State.Activated;
+                // The stone's story opens the world map on every PC that plays it; each player closes it (Cancel).
+                bool map = GameMapUI.Instance != null && GameMapUI.Instance.IsVisible, tap = ((int)(Now * 4f)) % 2 == 0;
+                NetTestHarness.BotButtons = !tap ? 0 : OpenBoxes() > 0 ? P2Input.BTN_A : map ? P2Input.BTN_B : 0;
+                if ((StorySync.TakeoverMaskPublic() & 191) != 0 || Letterbox.ShowLetterboxes || !activatedHere || map || SessionRules.LocalLocked) freeSince = -1f;
+                else if (freeSince < 0) freeSince = Now;
+                if (Now - start >= 2f && freeSince >= 0 && Now - freeSince >= 3f) { freeAgain = true; break; }
+                yield return null;
+            }
+            NetTestHarness.BotButtons = 0;
+            if (storyStaysLocal)
+            {
+                CutsceneGuard.TestLocalOnlyWindow(0f);
+                if (!activator) h.Check(StorySync.StartsMirrored == mirrored, "T-204 " + label + ": the stone's story was not replayed here (" + (StorySync.StartsMirrored - mirrored) + " replayed)");
+            }
+            Sample p = new Sample { Step = step + 1, Direction = (int)s_stone.CurrentState };
+            Local[step + 1] = p; Send(p);
+            yield return Barrier(h, step + 1);
+            h.Check(Remote.ContainsKey(step + 1) && s_stone.CurrentState == MapStone.State.Activated && Remote[step + 1].Direction == (int)MapStone.State.Activated,
+                "T-204 " + label + ": the stone is activated on both (" + StoneState() + ")");
+            h.Check(freeAgain, "T-204 " + label + ": free again after the stone's story");
+            h.Check(!FlameLocked, "T-204 " + label + ": spirit flame is not locked for " + who + " (" + StoneState() + ")");
+            h.Check(Characters.Ori != null && !Characters.Ori.InsideMapstone, "T-204 " + label + ": the orb is not left in the stone for " + who + " (" + StoneState() + ")");
+            if (Failures(h) > failures) h.Note("T-204 " + label + " state: " + Diag() + " " + StoneState());
+        }
+        static IEnumerator MapStoneRun(TestHarness h)
+        {
+            yield return Step(h, 150, StoneSetup(h, 151));
+            if (s_stone == null) yield break;
+            try
+            {
+                yield return Step(h, 154, StoneActivate(h, "host activates", true, false, 155));
+                yield return Step(h, 158, StoneActivate(h, "guest activates, story stays local", false, true, 159));
+            }
+            finally { Bot(); CutsceneGuard.TestLocalOnlyWindow(0f); }
+        }
+        // ---- T-204: where are the map stones? (probe, ORICOOP_P3_LEVER=stonefind; host only, notes in the result file)
+        static IEnumerator StoneProbe(TestHarness h)
+        {
+            if (NetPlay.IsHost)
+            {
+                string want = Environment.GetEnvironmentVariable("ORICOOP_STONE_SCENES");
+                if (string.IsNullOrEmpty(want)) want = "sunkenGlades";
+                HashSet<int> seen = new HashSet<int>();
+                foreach (RuntimeSceneMetaData scene in Core.Scenes.Manager.AllScenes)
+                {
+                    bool match = false;
+                    foreach (string part in want.Split(',')) if (scene.Scene.StartsWith(part, StringComparison.OrdinalIgnoreCase)) match = true;
+                    if (!match) continue;
+                    // The scene manager unloads what is far from the player: go there first.
+                    Vector2 center = scene.SceneBounds.center;
+                    Plugin.Teleport(Own, new Vector3(center.x, center.y, 0));
+                    Core.Scenes.Manager.AdditivelyLoadScenesInsideRect(scene.SceneBounds, true, false, false);
+                    float end = Now + 8f; bool started = false;
+                    while (Now < end && !started)
+                    {
+                        foreach (SceneManagerScene active in Core.Scenes.Manager.ActiveScenes)
+                            if (active != null && active.MetaData == scene && active.HasStartBeenCalled) started = true;
+                        yield return null;
+                    }
+                    yield return Wait(0.5f);
+                    if (!started) h.Note("STONE probe: " + scene.Scene + " did not load in 8 s");
+                    foreach (MapStone stone in Resources.FindObjectsOfTypeAll<MapStone>())
+                    {
+                        if (stone == null || !seen.Add(stone.GetInstanceID())) continue;
+                        string root = "?";
+                        for (Transform t = stone.transform; t != null; t = t.parent)
+                        {
+                            SceneRoot sr = t.GetComponent<SceneRoot>();
+                            if (sr != null && sr.MetaData != null) { root = sr.MetaData.SceneName; break; }
+                        }
+                        h.Note("STONE found while loading " + scene.Scene + ": scene=" + root + " name=" + stone.name + " pos=" + stone.transform.position
+                            + " radius=" + stone.Radius + " state=" + stone.CurrentState + " active=" + stone.gameObject.activeInHierarchy);
+                    }
+                }
+                h.Note("STONE probe done: " + seen.Count + " map stone(s)");
+            }
+            yield return Barrier(h, 140);
         }
         static IEnumerator ResetPedestal(TestHarness h, int step)
         {
@@ -1006,6 +1177,7 @@ namespace OriCoop
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_LOOK") == "1") { yield return LookRun(h); yield break; }
             string kuro = Environment.GetEnvironmentVariable("ORICOOP_P3_KURO");
             if (kuro == "1" || kuro == "chain") { yield return NetKuroTest.Run(h); yield break; }
+            if (Environment.GetEnvironmentVariable("ORICOOP_P3_SEIN") == "1") { yield return NetSeinTest.Run(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_SCAN") == "1") { yield return NetStoryScan.Run(h); yield break; }
             // Keep Remote/Acknowledged: the partner's first barrier can arrive before this end reaches P3 (one run per
             // process, so nothing stale is in there).
@@ -1019,6 +1191,8 @@ namespace OriCoop
             {
                 Bot(); NetPlay.SetSim(0, 0, 0, 0); yield return Barrier(h, 1);
                 if (leverMode == "hold") { yield return LeverHoldRun(h); yield break; }
+                if (leverMode == "stonefind") { yield return StoneProbe(h); yield break; }
+                if (leverMode == "stone") { yield return MapStoneRun(h); yield break; }
                 if (!NetPlay.IsHost && Remote.ContainsKey(1)) original = Remote[1].Ability;
                 if (!leverOnly)
                 {
@@ -1068,6 +1242,8 @@ namespace OriCoop
                 yield return Barrier(h, 70);
                 // T-194: a real lever grab, after the reload above (fresh scene state, nothing left of the pedestal).
                 yield return LeverHoldRun(h);
+                // T-204: the map stone, same reason (a partner's state read into the live object).
+                yield return MapStoneRun(h);
             }
             finally
             {

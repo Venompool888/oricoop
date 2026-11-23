@@ -249,6 +249,31 @@ static partial class StoryTests
             Equal(true, StoryLedger<Run>.LocalEnded(r, false, true, 0.51f));
             Equal(true, StoryLedger<Run>.LocalEnded(r, true, true, 60f));
         });
+        // T-196 (playtest 4): Sein's pickup script has 52 actions; its last takeover action is "27. Show Story Text"
+        // (index 26). "08 Sein Run To Target" released its lock 0.88 s in, while the sequence stood at index 8 and
+        // "11 Lock player input" was one physics frame away. Expected: the story is not over there.
+        Check("story local end: Sein pickup's lock gap at 0.88 s does not end a running sequence with takeover ahead", delegate {
+            Run r = new Run { Began = 0f, SawLock = true };
+            Equal(true, StoryLedger<Run>.TakeoverAhead(true, 8, 26));
+            Equal(true, StoryLedger<Run>.LocalEnded(r, false, true, 0.88f));          // the rule before T-196
+            Equal(false, StoryLedger<Run>.LocalEnded(r, false, true, true, 0.88f));
+            Equal(false, StoryLedger<Run>.LocalEnded(r, false, true, true, 21f));
+        });
+        Check("story local end: takeover-ahead boundaries (last takeover run, none, sequence stopped)", delegate {
+            Equal(true, StoryLedger<Run>.TakeoverAhead(true, 25, 26));
+            Equal(false, StoryLedger<Run>.TakeoverAhead(true, 26, 26));    // the story text has been shown: locks decide
+            Equal(false, StoryLedger<Run>.TakeoverAhead(true, 27, 26));
+            Equal(false, StoryLedger<Run>.TakeoverAhead(true, 0, -1));     // a sequence without takeover actions
+            Equal(false, StoryLedger<Run>.TakeoverAhead(false, 8, 26));    // stopped: never keeps a story alive
+        });
+        Check("story local end: with nothing ahead the old rules hold; the 60 s cap always applies", delegate {
+            Run r = new Run { Began = 0f, SawLock = true };
+            Equal(true, StoryLedger<Run>.LocalEnded(r, false, true, false, 21.9f));    // step 51 unlocked, 52 runs
+            Equal(false, StoryLedger<Run>.LocalEnded(r, true, true, false, 15f));      // lock still on after the text
+            Equal(true, StoryLedger<Run>.LocalEnded(r, false, false, true, 5f));       // not running: "ahead" is ignored
+            Equal(false, StoryLedger<Run>.LocalEnded(r, true, true, true, 59.9f));
+            Equal(true, StoryLedger<Run>.LocalEnded(r, true, true, true, 60f));
+        });
         Check("story deferred end timeout", delegate {
             Run r = new Run { Began = 1f, EndAt = 2f };
             Equal(false, StoryLedger<Run>.RemoteFinished(r, true, 11.99f));
@@ -427,6 +452,30 @@ static partial class StoryTests
             Equal(LeverHold.None, load); Equal(false, LeverHold.Kept(load)); Equal(false, LeverHold.Grabbed(load)); Equal(false, LeverHold.InRange(load));
             int write = LeverHold.Capture(true, false, true, true);    // WorldSync capturing the lever's bytes
             Equal(LeverHold.None, write); Equal(false, LeverHold.Kept(write)); Equal(false, LeverHold.Grabbed(write)); Equal(false, LeverHold.InRange(write));
+        });
+        // T-204: map stone. Only "Activated" is shared; "Highlighted" is the PC's own (its Ori stands at the stone).
+        Check("map stone: the partner activates it while my Ori stands at it: activated, my highlight released", delegate {
+            Equal(MapStoneApply.Activated, MapStoneApply.Resolve(MapStoneApply.Highlighted, MapStoneApply.Activated));
+            Equal(true, MapStoneApply.ReleaseHighlight(MapStoneApply.Highlighted, MapStoneApply.Activated));
+        });
+        Check("map stone: the partner activates it while I am away: activated, nothing to release", delegate {
+            Equal(MapStoneApply.Activated, MapStoneApply.Resolve(MapStoneApply.Normal, MapStoneApply.Activated));
+            Equal(false, MapStoneApply.ReleaseHighlight(MapStoneApply.Normal, MapStoneApply.Activated));
+            Equal(MapStoneApply.Activated, MapStoneApply.Resolve(MapStoneApply.Activated, MapStoneApply.Activated));
+            Equal(false, MapStoneApply.ReleaseHighlight(MapStoneApply.Activated, MapStoneApply.Activated));
+        });
+        Check("map stone: the partner's Normal / Highlighted never changes my own highlight", delegate {
+            Equal(MapStoneApply.Highlighted, MapStoneApply.Resolve(MapStoneApply.Highlighted, MapStoneApply.Normal));
+            Equal(false, MapStoneApply.ReleaseHighlight(MapStoneApply.Highlighted, MapStoneApply.Normal));
+            Equal(MapStoneApply.Highlighted, MapStoneApply.Resolve(MapStoneApply.Highlighted, MapStoneApply.Highlighted));
+            Equal(MapStoneApply.Normal, MapStoneApply.Resolve(MapStoneApply.Normal, MapStoneApply.Highlighted));   // not my Ori at it
+            Equal(MapStoneApply.Normal, MapStoneApply.Resolve(MapStoneApply.Normal, MapStoneApply.Normal));
+            Equal(false, MapStoneApply.ReleaseHighlight(MapStoneApply.Normal, MapStoneApply.Highlighted));
+        });
+        Check("map stone: an activated stone the partner has not activated (rollback) is usable again", delegate {
+            Equal(MapStoneApply.Normal, MapStoneApply.Resolve(MapStoneApply.Activated, MapStoneApply.Normal));
+            Equal(MapStoneApply.Normal, MapStoneApply.Resolve(MapStoneApply.Activated, MapStoneApply.Highlighted));
+            Equal(false, MapStoneApply.ReleaseHighlight(MapStoneApply.Activated, MapStoneApply.Normal));
         });
     }
 }

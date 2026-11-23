@@ -62,6 +62,8 @@ namespace OriCoop.Rules
         public bool SaveDisabled { get { return (bool)Disabled.GetValue(null); } }
         public bool GuestWaiting { get { return GuestJoin.Waiting; } }
         public bool GuestNeedsSlot { get { return GuestJoin.NeedSlotChoice; } }
+        public bool PrologueWatching { get { return SharedPrologue.Watching; } }
+        public bool HostInPrologue { get { return SharedPrologue.HostPlaying; } }
         public bool IncomingProgress(out int have, out int total)
         {
             have = total = 0;

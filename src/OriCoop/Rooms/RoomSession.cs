@@ -94,6 +94,12 @@ namespace OriCoop.Rooms
 
         public void Call(Func<RoomReply> work, Action<RoomReply> done)
         {
+            Call(work, done, null);
+        }
+
+        // wanted: see RoomJobs.Add (T-200); null = always run.
+        public void Call(Func<RoomReply> work, Action<RoomReply> done, Func<bool> wanted)
+        {
             jobs.Add(work, delegate(RoomReply reply)
             {
                 if (reply.Error == "bad_token" && Password != null)
@@ -121,13 +127,13 @@ namespace OriCoop.Rooms
                                 }
                                 auth.Token = rebound.Fields.GetString("token");
                                 store.SaveToken(auth.Room, auth.Token);
-                                Call(work, done);
+                                Call(work, done, wanted);
                             });
                     });
                     return;
                 }
                 done(reply);
-            });
+            }, wanted);
         }
 
         void Fail(string error)

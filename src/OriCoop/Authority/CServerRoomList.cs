@@ -62,11 +62,18 @@ namespace OriCoop.Authority
         int generation, state, shownFrame;
         bool shownTaken;
         double next;
+        // T-201: a fetch is running. Kept apart from `state` (what the page shows): the refresh every few seconds no longer
+        // turns "read failed" or "no rooms yet" back into "loading" each time it starts.
+        bool fetching, reloadAsked;
+        string error = "";   // why the last fetch failed ("" after a good one)
 
         public int State { get { lock (gate) return state; } }
+        public bool Fetching { get { lock (gate) return fetching; } }
+        public string Error { get { lock (gate) return error; } }
 
         // Main thread: the server the page shows now. Returns the generation to fetch for, or -1 when no fetch is due
-        // (one is running for this server, or the last one is younger than intervalSeconds).
+        // (one is running for this server, or the last one is younger than intervalSeconds). The state turns to Loading
+        // only for a server's first read and for a read the player asked for (ReloadNow).
         public int BeginFetch(string address, double now, double intervalSeconds)
         {
             lock (gate)
@@ -76,23 +83,28 @@ namespace OriCoop.Authority
                 {
                     server = address; generation++; rooms = null; shown = new List<CsRoomListEntry>(); shownTaken = false;
                     recent.Clear();
-                    state = Idle; next = 0;
+                    state = Idle; next = 0; fetching = false; reloadAsked = false; error = "";
                 }
-                if (state == Loading || now < next) return -1;
-                state = Loading; next = now + intervalSeconds;
+                if (fetching || now < next) return -1;
+                fetching = true; next = now + intervalSeconds;
+                if (state == Idle || reloadAsked) state = Loading;
+                reloadAsked = false;
                 return generation;
             }
         }
 
-        public void ReloadNow() { lock (gate) next = 0; }
+        public void ReloadNow() { lock (gate) { next = 0; reloadAsked = true; } }
 
-        // Worker: the result (null = failed) of the fetch BeginFetch returned `fetchGeneration` for. Dropped (false)
-        // when the page switched server since; a failure keeps the server's last good list.
-        public bool Complete(int fetchGeneration, List<CsRoomListEntry> result)
+        public bool Complete(int fetchGeneration, List<CsRoomListEntry> result) { return Complete(fetchGeneration, result, null); }
+
+        // Worker: the result (null = failed, with why) of the fetch BeginFetch returned `fetchGeneration` for. Dropped
+        // (false) when the page switched server since; a failure keeps the server's last good list.
+        public bool Complete(int fetchGeneration, List<CsRoomListEntry> result, string failure)
         {
             lock (gate)
             {
                 if (fetchGeneration != generation) return false;
+                fetching = false;
                 if (result != null)
                 {
                     rooms = result;
@@ -100,8 +112,19 @@ namespace OriCoop.Authority
                     if (recent.Count > RecentLists) recent.RemoveAt(recent.Count - 1);
                 }
                 state = result != null ? Loaded : Failed;
+                error = result != null ? "" : failure ?? "";
                 return true;
             }
+        }
+
+        // T-201: the text (L10n key) that explains a failed read: the address does not resolve, the reply could not be
+        // read (an older server), or nothing came back at all (down, unreachable, timed out).
+        public static string FailureKey(string failure)
+        {
+            string f = (failure ?? "").ToLowerInvariant();
+            if (f.Contains("no address") || f.Contains("resolve")) return "csroom.list.failed.address";
+            if (f.Contains("protocol")) return "csroom.list.failed.old";
+            return "csroom.list.failed.noanswer";
         }
 
         // Main thread, when the page's rows are built: the rooms those rows show from now on. Every call with the same

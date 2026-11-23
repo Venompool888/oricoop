@@ -29,7 +29,11 @@ namespace OriCoop.Rooms
         readonly RoomActionLatch action = new RoomActionLatch();   // the running 我的房间 create/join/enter
         long serverOffset;   // room service clock - local clock, from the latest info / open_code (review F28)
         RoomConfirmRetry confirm;   // 开始 pressed, confirm not on the server yet (review F24)
-        int revision;
+        volatile int revision;      // also read on the job thread (a queued request of an older revision is skipped, T-200)
+        // T-200: the first refresh (hello + the rooms' info) may keep the page on "connecting" for this long at most.
+        const double RefreshLimitSeconds = 8;
+        readonly RoomBusyWatch refreshWatch = new RoomBusyWatch(RefreshLimitSeconds);
+        bool offlineRetry;          // the room service did not answer: the 我的房间 page offers "try again"
         byte[] copyBytes;
         int overwrite = -1;
 
@@ -49,6 +53,20 @@ namespace OriCoop.Rooms
         internal string Steam { get { return steam; } }
         internal string GameServer { get { return gameServer; } }
         internal RoomAuth Auth { get { return auth; } }
+        // T-200: the selected server's room service did not answer (hello failed or took too long); trying again may help.
+        internal bool OfflineRetry { get { return offlineRetry && !online && !busy; } }
+        // T-200: rooms this PC has records of on other room services (the page shows the selected server's rooms only).
+        internal int OtherServerRooms
+        {
+            get
+            {
+                int count = 0;
+                if (rooms != null)
+                    foreach (RoomBackupInfo room in rooms)
+                        if (room.Server.Length > 0 && room.Server != server) count++;
+                return count;
+            }
+        }
 
         static void EnsureInstance()
         {
@@ -94,6 +112,7 @@ namespace OriCoop.Rooms
             p.openRooms = false;
             p.visible = true;
             p.online = false;
+            p.offlineRetry = false;
             p.serverOffset = 0;
             p.steam = TestValue("ORICOOP_TEST_STEAMID", SteamTransport.LocalSteamId.ToString());
             p.nick = TestValue("ORICOOP_TEST_NICK", SteamTransport.LocalPersonaName);
@@ -124,10 +143,15 @@ namespace OriCoop.Rooms
             p.client = new RoomClient(p.server);
             p.confirm.Client = p.client;
             p.ready.Begin();
+            p.refreshWatch.Restart();
             p.Request(p.client.Hello, delegate(RoomReply reply)
             {
                 p.online = reply.Ok;
-                if (!p.online) { p.message = L10n.T("rooms.offline"); p.FinishRefresh(); }
+                if (!p.online)
+                {
+                    Plugin.Log.LogInfo("my rooms: the room service did not answer (" + reply.Error + ")");
+                    p.message = L10n.T("rooms.offline"); p.offlineRetry = true; p.FinishRefresh();
+                }
                 else if (p.autoOpen != null)
                 {
                     string room = p.autoOpen; p.autoOpen = null;
@@ -231,6 +255,9 @@ namespace OriCoop.Rooms
             Show("password");
         }
 
+        // T-200: a request whose revision is over when its turn comes on the job thread (the page was left, reopened or
+        // cancelled since) is not sent at all: on an unreachable server every abandoned request would otherwise still
+        // wait for its whole timeout, one after the other, before the next visit's hello gets its turn.
         void Request(Func<RoomReply> work, Action<RoomReply> done)
         {
             busy = true;
@@ -240,7 +267,7 @@ namespace OriCoop.Rooms
                 if (request != revision) return;
                 busy = false;
                 done(reply);
-            });
+            }, delegate { return request == revision; });
         }
 
         void RequestAuth(Func<RoomReply> work, Action<RoomReply> done)
@@ -253,7 +280,19 @@ namespace OriCoop.Rooms
                 if (request != revision) return;
                 busy = false;
                 done(reply);
-            });
+            }, delegate { return request == revision; });
+        }
+
+        // T-200: the first refresh took the whole limit (the worker is still waiting for an answer, or for an older
+        // request's timeout): stop waiting. Without a hello answer the page shows "cannot connect" with a retry; with
+        // one, it goes on with the rooms' stored details.
+        void RefreshGaveUp()
+        {
+            Plugin.Log.LogInfo("my rooms: no answer within " + RefreshLimitSeconds + " s (" + (online ? "room details" : "hello") + "), not waiting any longer");
+            revision++;
+            busy = false;
+            if (!online) { message = L10n.T("rooms.offline"); offlineRetry = true; }
+            FinishRefresh();
         }
 
         void SaveInfo(RoomReply reply)
@@ -678,6 +717,7 @@ namespace OriCoop.Rooms
         void Update()
         {
             jobs.Pump();
+            if (refreshWatch.Expired(busy && ready.Running, Time.realtimeSinceStartup)) RefreshGaveUp();
             if (Session != null) Session.Tick(Time.realtimeSinceStartup);
             // In game no room page refreshes: a confirm 开始 did not get through is checked here (review F24).
             if (confirm != null && Session != null) confirm.Tick(Time.realtimeSinceStartup, Session.Active, auth, info);

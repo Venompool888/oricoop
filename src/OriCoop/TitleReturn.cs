@@ -7,6 +7,8 @@ namespace OriCoop
     // NetPlay.Enabled kept the native mode menu off (picking a slot went straight into single player) and every
     // later save load ran as an online session nobody had chosen (found 2026-11-15).
     // Exception: a guest's checkpoint transfer (SaveSync) restarts the game on purpose to load the host's save.
+    // Exception (T-203): a guest putting away its copy of the host's new-game prologue (SharedPrologue) goes back
+    // to the title to wait for the host's save; the player leaving from that prologue's pause menu is still a leave.
     static class TitleReturn
     {
         public static int SessionsEnded;
@@ -21,7 +23,7 @@ namespace OriCoop
         {
             static void Prefix()
             {
-                if (!NetPlay.Enabled || TransferRunning || s_mutate) return;
+                if (!NetPlay.Enabled || TransferRunning || SharedPrologue.OwnRestart || s_mutate) return;
                 SessionsEnded++;
                 NetPlay.End("returned to the title screen");
             }

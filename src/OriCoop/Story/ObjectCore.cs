@@ -25,6 +25,24 @@ namespace OriCoop.Story
         public static bool Grabbed(int state) { return state > 0 && (state & 1) != 0; }
         public static bool InRange(int state) { return state > 0 && (state & 2) != 0; }
     }
+    // T-204: a map stone saves one int: Normal / Highlighted / Activated (MapStone.State). "Highlighted" belongs to the
+    // PC whose own Ori stands at the stone (spirit flame locked, the orb parked in the stone); only "Activated" is
+    // shared. MapStone.Serialize just overwrites the state, so a partner's blob read into the live stone could leave
+    // this PC's highlight on with nothing left to take it off (only Highlighted -> Normal and the activation story do).
+    internal static class MapStoneApply
+    {
+        public const int Normal = 0, Highlighted = 1, Activated = 2;
+        // The state the live stone ends up in when a partner's saved state is read into it.
+        public static int Resolve(int local, int incoming)
+        {
+            if (incoming == Activated) return Activated;
+            if (local == Activated) return Normal;   // un-activated again (the host rolled back): usable from scratch
+            return local;                            // the partner's Normal / Highlighted says nothing about my Ori
+        }
+        // This PC's highlight has to be taken off now: the stone leaves Highlighted without doing it itself.
+        public static bool ReleaseHighlight(int local, int incoming)
+        { return local == Highlighted && Resolve(local, incoming) != Highlighted; }
+    }
     internal sealed class RecentObjects<T>
     {
         readonly Dictionary<T, float> played = new Dictionary<T, float>();

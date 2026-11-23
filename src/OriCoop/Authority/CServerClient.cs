@@ -59,6 +59,17 @@ namespace OriCoop.Authority
         // join are both refused for the rest of the room's life, so NetPlay's retry loop would only be refused again.
         public static bool RetryAllowed(string refusedWith) { return refusedWith != "server.err.kicked"; }
 
+        // T-148 (playtest 4): the server refused this client for good (a join refused after the fallback, or a kick). Raised
+        // inside Receive, with RefusedWith set and before the connection is ended, so the glue can stop the automatic
+        // reconnect at once: NetPlay reopens a dropped connection on its next Update, before the peer's Disconnected event
+        // would be delivered, and so retried a refused join about twice a second for as long as the page stayed open.
+        public event Action<string> Refused;
+
+        // T-148: what follows a refusal. A session that already had a seat (reconnecting in the room or in the game) ends
+        // with the reason; a join or create from the menu that never got a seat stays as it is, with the reason shown and
+        // no automatic retry, until the player picks retry or back.
+        public static bool RefusalEndsSession(bool seatedThisSession) { return seatedThisSession; }
+
         // T-113: join mode for a connection attempt. A guest joining the room it last sat in (menu re-entry with the
         // same code, or NetPlay reconnecting) rejoins its seat with the saved token, falling back to a fresh join.
         public static byte PlanJoin(bool isHost, string code, string lastCode, byte[] lastToken, string roomCodeOverride, out bool rejoin)
@@ -111,7 +122,7 @@ namespace OriCoop.Authority
                         if (JoinFailed != null) JoinFailed(key);
                         // T-148: a refused join left a connected, seatless peer: NetPlay stayed "connecting" (never retried,
                         // no reason shown). End it now with the reason as the disconnect text; NetPlay shows it and retries.
-                        if (PrimarySeat == 0) { RefusedWith = key; Peer.Disconnect(key); }
+                        if (PrimarySeat == 0) { RefusedWith = key; if (Refused != null) Refused(key); Peer.Disconnect(key); }
                     }
                     break;
                 case CsWire.CsRoster:
@@ -137,7 +148,7 @@ namespace OriCoop.Authority
                 case CsWire.CsError:
                     if (message.Text == "server.err.kicked") RefusedWith = message.Text;
                     if (JoinFailed != null) JoinFailed(message.Text);
-                    if (message.Text == "server.err.kicked") Peer.Disconnect(message.Text);
+                    if (message.Text == "server.err.kicked") { if (Refused != null) Refused(message.Text); Peer.Disconnect(message.Text); }
                     break;
                 default:
                     Authority.Receive(csMessage);

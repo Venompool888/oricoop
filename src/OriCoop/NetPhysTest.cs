@@ -24,6 +24,7 @@ namespace OriCoop
             public uint Epoch;
             public bool Owns, Kinematic, Interacting, GrabStarted;
             public uint Sequence;
+            public float Extra;   // one scenario-defined number (PH: share of frames on ground)
         }
 
         static SeinCharacter Own { get { return P2Context.P1; } }
@@ -45,6 +46,7 @@ namespace OriCoop
             sample.Owner = r.ReadInt32(); sample.Seat = r.ReadInt32(); sample.Epoch = r.ReadUInt32(); sample.Owns = r.ReadBoolean();
             sample.Kinematic = r.ReadBoolean(); sample.Interacting = r.ReadBoolean(); sample.Sequence = r.ReadUInt32();
             sample.GrabStarted = r.ReadBoolean();
+            sample.Extra = r.ReadSingle();
             Sample prior;
             if (!s_partnerSteps.TryGetValue(step, out prior) || sample.Sequence > prior.Sequence) s_partnerSteps[step] = sample;
         }
@@ -54,7 +56,7 @@ namespace OriCoop
             return SendSample(step, block, true);
         }
 
-        static Sample SendSample(int step, PushPullBlock block, bool reliable, bool grabStarted = false)
+        static Sample SendSample(int step, PushPullBlock block, bool reliable, bool grabStarted = false, float extra = 0f)
         {
             bool loaded = block != null;
             string key = loaded ? PushBlockSync.StateOf(block).Key : "";
@@ -64,7 +66,7 @@ namespace OriCoop
                 Seat = authority.LocalSeat, Epoch = loaded ? authority.EpochOf(key) : 0, Owns = loaded && authority.Owns(key),
                 Kinematic = !loaded || block.GetComponent<Rigidbody>().isKinematic,
                 Interacting = loaded && Own != null && Own.Abilities.GrabBlock.IsGrabbing && block.IsGrabbed,
-                Sequence = ++s_sampleSequence, GrabStarted = grabStarted };
+                Sequence = ++s_sampleSequence, GrabStarted = grabStarted, Extra = extra };
             s_localSteps[step] = sample;
             NetPlay.Send(MsgBarrier, reliable, w => {
                 w.Write(step); w.Write(sample.Loaded); w.Write(sample.Id);
@@ -72,13 +74,14 @@ namespace OriCoop
                 w.Write(sample.Owner); w.Write(sample.Seat); w.Write(sample.Epoch); w.Write(sample.Owns); w.Write(sample.Kinematic);
                 w.Write(sample.Interacting); w.Write(sample.Sequence);
                 w.Write(sample.GrabStarted);
+                w.Write(sample.Extra);
             });
             return sample;
         }
 
-        static IEnumerator Barrier(TestHarness h, int step, PushPullBlock block, bool grabStarted = false)
+        static IEnumerator Barrier(TestHarness h, int step, PushPullBlock block, bool grabStarted = false, float extra = 0f)
         {
-            SendSample(step, block, true, grabStarted);
+            SendSample(step, block, true, grabStarted, extra);
             float end = Time.realtimeSinceStartup + 30f;
             while (NetPlay.Connected && !s_partnerSteps.ContainsKey(step) && Time.realtimeSinceStartup < end)
             { KeepAlive(); yield return null; }
@@ -108,9 +111,9 @@ namespace OriCoop
                 phase + " exactly one lease owner and simulating body; both PCs agree on OwnerOf and epoch");
         }
 
-        static void Bot(bool push)
+        static void Bot(bool push, int dir = 1)
         {
-            NetTestHarness.BotButtons = 0; NetTestHarness.BotLX = push ? 1f : 0f;
+            NetTestHarness.BotButtons = 0; NetTestHarness.BotLX = push ? dir : 0f;
             P2Input.BotRT = push;
         }
 
@@ -120,13 +123,16 @@ namespace OriCoop
             public int Attempts;
         }
 
-        static bool PusherReady(PushPullBlock block)
+        // dir: +1 = at the left face, pushing right (the default); -1 = at the right face, pushing left. helper: a second
+        // grabber does not own the stone, so the stone's own grab flag (set by its simulating owner) is not asked for.
+        static bool PusherReady(PushPullBlock block, int dir = 1, bool helper = false)
         {
             return Own != null && block != null && Own.PlatformBehaviour.PlatformMovement.IsOnGround
-                && Own.Position.x < BlockBounds(block).center.x && Own.Abilities.GrabBlock.IsGrabbing && block.IsGrabbed;
+                && (dir > 0 ? Own.Position.x < BlockBounds(block).center.x : Own.Position.x > BlockBounds(block).center.x)
+                && Own.Abilities.GrabBlock.IsGrabbing && (helper || block.IsGrabbed);
         }
 
-        static IEnumerator GrabBlock(PushPullBlock block, GrabSetup result)
+        static IEnumerator GrabBlock(PushPullBlock block, GrabSetup result, int dir = 1, bool helper = false)
         {
             float end = Time.realtimeSinceStartup + 3f;
             for (int attempt = 1; attempt <= 3 && Time.realtimeSinceStartup < end; attempt++)
@@ -139,10 +145,10 @@ namespace OriCoop
                 { KeepAlive(); yield return null; }
                 if (Own == null || block == null || Time.realtimeSinceStartup >= attemptEnd) continue;
                 Bounds bb = BlockBounds(block), ob = Own.PlatformBehaviour.PlatformMovement.CapsuleCollider.bounds;
-                PlaceOwn(bb.min.x - ob.extents.x - 0.02f, bb.min.y + 0.04f, block.Position.z);
-                Own.PlatformBehaviour.Visuals.SpriteMirror.FaceLeft = false;
+                PlaceOwn(dir > 0 ? bb.min.x - ob.extents.x - 0.02f : bb.max.x + ob.extents.x + 0.02f, bb.min.y + 0.04f, block.Position.z);
+                Own.PlatformBehaviour.Visuals.SpriteMirror.FaceLeft = dir < 0;
                 float approachedAt = Time.fixedTime;
-                NetTestHarness.BotLX = 1f;
+                NetTestHarness.BotLX = dir;
                 while (Time.fixedTime <= approachedAt && Time.realtimeSinceStartup < attemptEnd)
                 { KeepAlive(); yield return null; }
                 bool pressed = false;
@@ -150,7 +156,7 @@ namespace OriCoop
                 while (Own != null && block != null && Time.realtimeSinceStartup < attemptEnd)
                 {
                     KeepAlive();
-                    if (pressed && PusherReady(block))
+                    if (pressed && PusherReady(block, dir, helper))
                     {
                         if (grabbedAt < 0f) grabbedAt = Time.realtimeSinceStartup;
                         if (Time.realtimeSinceStartup - grabbedAt >= 0.1f)
@@ -159,7 +165,7 @@ namespace OriCoop
                     else grabbedAt = -1f;
                     if (!pressed && Own.Abilities.GrabBlock.InRange && Own.PlatformBehaviour.PlatformMovement.IsOnGround)
                     { NetTestHarness.BotLX = 0f; P2Input.BotRT = true; pressed = true; }
-                    else if (!pressed) NetTestHarness.BotLX = 1f;
+                    else if (!pressed) NetTestHarness.BotLX = dir;
                     yield return null;
                 }
             }
@@ -173,14 +179,15 @@ namespace OriCoop
             return false;
         }
 
-        static PushPullBlock FindBlock(RuntimeSceneMetaData scene)
+        static PushPullBlock FindBlock(RuntimeSceneMetaData scene, bool largest = false)
         {
             PushPullBlock chosen = null;
             for (int i = 0; i < PushPullBlock.All.Count; i++)
             {
                 PushPullBlock block = PushPullBlock.All[i];
                 if (!InScene(scene, block.Position)) continue;
-                if (chosen == null || PushBlockSync.StateOf(block).Id < PushBlockSync.StateOf(chosen).Id) chosen = block;
+                if (chosen == null || (largest ? PushBlockSync.StateOf(block).Id > PushBlockSync.StateOf(chosen).Id
+                    : PushBlockSync.StateOf(block).Id < PushBlockSync.StateOf(chosen).Id)) chosen = block;
             }
             return chosen;
         }
@@ -223,6 +230,7 @@ namespace OriCoop
         // Slug hits knock the fixture airborne even if health is restored. Stone/crush damage still applies.
         static void KeepAlive()
         {
+            WatchTick();
             if (Own == null || Revive.IsDowned(Own)) return;
             Own.Mortality.DamageReciever.MakeInvincibleToEnemies(0.25f);
             if (Own.Mortality.Health.Amount < Own.Mortality.Health.MaxHealth) Own.Mortality.Health.RestoreAllHealth();
@@ -378,6 +386,396 @@ namespace OriCoop
             h.Check(boosted[0] == 0 && boosted[1] >= 1, "PC the push speed-up engaged on this PC only while both pushed (alone " + boosted[0] + ", together " + boosted[1] + ")");
         }
 
+        // ---- co-op stone scenarios from playtest 4 (T-197, T-198), on the scene's second stone (largest id). In the test
+        // save it stands at the right end of a long flat floor (about 18 units free to its left), so pushers stand at
+        // its right face and push left. The host pushes first, the guest is the partner. 60 ms are added on each side
+        // (120 ms RTT, as in the playtest). ORICOOP_P_ONLY=COOP runs only these.
+        const int CoopDir = -1;
+        const float CoopIdle = 16.5f;   // players who only watch wait this far left of the stone's start, beyond its travel
+        static string Pct(float share) { return Mathf.RoundToInt(share * 100f) + "%"; }
+        static readonly System.Reflection.FieldInfo s_groundPlatform = HarmonyLib.AccessTools.Field(typeof(MovingPlatformsController), "m_oldGroundPlatform");
+
+        static bool OnTop(PushPullBlock block)
+        {
+            if (Own == null || block == null || !Own.PlatformBehaviour.PlatformMovement.IsOnGround) return false;
+            Bounds ob = Own.PlatformBehaviour.PlatformMovement.CapsuleCollider.bounds;
+            float surface = PushBlockSync.SurfaceY(block, ob.center.x);
+            return !float.IsNaN(surface) && Mathf.Abs(ob.min.y - surface) <= 0.25f;
+        }
+
+        // Stone watch: KeepAlive runs in every frame of every wait of this phase, so it also records how the watched
+        // stone moves on this PC. Pushes go CoopDir, so a step the other way is a step back.
+        static PushPullBlock s_watch;
+        static float s_watchX, s_watchBack, s_watchStep;
+        static int s_watchSnaps;
+        static void WatchStart(PushPullBlock block)
+        {
+            s_watch = block; s_watchX = block.Position.x; s_watchBack = s_watchStep = 0f; s_watchSnaps = PushBlockSync.Snaps;
+        }
+        static void WatchTick()
+        {
+            if (s_watch == null) return;
+            float x = s_watch.Position.x, step = x - s_watchX;
+            s_watchBack = Mathf.Max(s_watchBack, step * -CoopDir);
+            s_watchStep = Mathf.Max(s_watchStep, Mathf.Abs(step));
+            s_watchX = x;
+        }
+        static int WatchSnaps { get { return PushBlockSync.Snaps - s_watchSnaps; } }
+
+        static void CoopIdlePlace(PushPullBlock block, Vector3 resting, bool host)
+        {
+            Bounds bb = BlockBounds(block);
+            PlaceOwn(resting.x - CoopIdle + (host ? 0f : 1.2f), bb.min.y + 0.5f, block.Position.z);
+        }
+
+        // Both wait far to the left; the stone's owner (or each PC, while nobody owns it) puts it back at its start.
+        static IEnumerator CoopReset(TestHarness h, int step, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        {
+            Bot(false);
+            s_watch = null;
+            CoopIdlePlace(block, resting, host);
+            yield return Wait(0.6f);
+            yield return Barrier(h, step, block);
+            if (PushBlockSync.IsLocalOwner(block) || AuthoritySource.Current.OwnerOf(PushBlockSync.StateOf(block).Key) == 0)
+            {
+                Rigidbody body = block.GetComponent<Rigidbody>();
+                body.position = resting; block.transform.position = resting; body.rotation = restingRot; block.transform.rotation = restingRot;
+                body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero;
+            }
+            yield return Wait(1.2f);
+            float settleEnd = Time.realtimeSinceStartup + 3f;
+            while (Time.realtimeSinceStartup < settleEnd && (block.Position - resting).magnitude > 0.1f) { KeepAlive(); yield return null; }
+        }
+
+        static bool Agree(PushPullBlock block, Sample partner, out string detail)
+        {
+            float dx = Mathf.Abs(block.Position.x - partner.Position.x), dy = Mathf.Abs(block.Position.y - partner.Position.y);
+            detail = "dx=" + F(dx) + ", dy=" + F(dy);
+            return partner.Loaded && dx < 0.3f && dy < 0.3f;
+        }
+
+        // PH (T-198): the guest stands on the stone, first at rest, then while the host pushes it. Oracle: the guest's
+        // own game (is its Ori on ground?); the host's copy of the guest must agree. Before the fix the host saw the
+        // partner in the air (falling pose) all the time, because puppets do not collide with stones.
+        // Moving part: a partner that rides along on its own PC (on ground 75% of the time or more) must be on ground
+        // here as well. When the stone slides out from under it on its own PC (seen when the rider's PC owned the
+        // stone just before the push: it drops to the floor), the two PCs are compared instead: the copy must be on
+        // ground about as often as the partner itself.
+        static IEnumerator Rider(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        {
+            yield return CoopReset(h, 210, block, resting, restingRot, host);
+            bool onTop = false;
+            for (int attempt = 0; !host && attempt < 2 && !onTop; attempt++)
+            {
+                Bounds bb = BlockBounds(block);
+                PlaceOwn(bb.center.x, bb.max.y + 0.4f, block.Position.z);
+                yield return Wait(1.0f);
+                onTop = OnTop(block);
+            }
+            yield return Barrier(h, 211, block, onTop);
+            Sample partner;
+            if (!s_partnerSteps.TryGetValue(211, out partner)) yield break;
+            if (!(host ? partner.GrabStarted : onTop))
+            {
+                h.Check(false, "PH setup: the guest stands on top of the stone (Ori=" + (Own == null ? "none" : V(Own.Position)) + ")");
+                yield break;
+            }
+            for (int part = 0; part < 2; part++)
+            {
+                bool riding = part == 1; int step = 212 + part * 2;
+                GrabSetup setup = new GrabSetup();
+                if (riding && host) yield return GrabBlock(block, setup, CoopDir);
+                if (riding)
+                {
+                    yield return Barrier(h, 220, block, setup.Started);
+                    if (!s_partnerSteps.TryGetValue(220, out partner)) yield break;
+                    if (!(host ? setup.Started : partner.GrabStarted))
+                    {
+                        Bot(false);
+                        h.Check(false, "PH setup: the host grabbed the stone under the rider");
+                        yield break;
+                    }
+                    if (host) Bot(true, CoopDir);
+                }
+                Vector3 start = block.Position;
+                int frames = 0, grounded = 0, onStone = 0;
+                SeinCharacter rider = host ? Puppet : Own;
+                float end = Time.realtimeSinceStartup + (riding ? 2f : 1.5f), offset0 = rider == null ? 0f : rider.Position.x - block.Position.x;
+                while (Time.realtimeSinceStartup < end)
+                {
+                    KeepAlive();
+                    if (rider != null)
+                    {
+                        frames++;
+                        if (rider.PlatformBehaviour.PlatformMovement.IsOnGround) grounded++;
+                        Transform under = s_groundPlatform.GetValue(rider.PlatformBehaviour.PlatformMovement.MovingPlatforms) as Transform;
+                        if (under != null && under.IsChildOf(block.transform)) onStone++;
+                    }
+                    yield return null;
+                }
+                Bot(false);
+                float share = frames == 0 ? 0f : (float)grounded / frames, travel = (block.Position.x - start.x) * CoopDir;
+                if (rider != null) h.Note("PH " + (riding ? "moving" : "resting") + ": rider - stone x " + F(offset0) + " -> " + F(rider.Position.x - block.Position.x)
+                    + ", stone moved " + F(block.Position.x - start.x) + ", rider=" + V(rider.Position) + " stone=" + V(block.Position)
+                    + ", the stone was the rider's ground platform in " + Pct(frames == 0 ? 0f : (float)onStone / frames) + " of frames");
+                yield return Wait(0.5f);
+                yield return Barrier(h, step, block, false, share);
+                if (!s_partnerSteps.TryGetValue(step, out partner)) yield break;
+                if (!riding)
+                {
+                    if (!host) h.Check(share >= 0.9f, "PH the guest's own Ori is on ground standing on the resting stone (" + Pct(share) + " of frames)");
+                    else if (partner.Extra < 0.9f) h.Check(false, "PH cannot judge: the guest itself was not standing on the resting stone (on ground " + Pct(partner.Extra) + " of frames on its own PC)");
+                    else h.Check(share >= 0.9f, "PH the partner standing on the resting stone is on ground on this PC too (" + Pct(share)
+                        + " of frames here, " + Pct(partner.Extra) + " on its own PC; stands reported " + PushBlockSync.PuppetStands + ")");
+                }
+                else if (host)
+                {
+                    h.Check(travel >= 1f, "PH the host's push moved the stone under the partner (" + F(travel) + ")");
+                    if (partner.Extra < 0.3f) h.Note("PH cannot judge the moving part: the guest itself was on ground only " + Pct(partner.Extra) + " of frames");
+                    else if (partner.Extra >= 0.75f) h.Check(share >= 0.75f, "PH the partner riding the stone the host pushes is on ground on this PC too ("
+                        + Pct(share) + " of frames here, " + Pct(partner.Extra) + " on its own PC)");
+                    else h.Check(Mathf.Abs(share - partner.Extra) <= 0.25f, "PH while the stone moves under the partner, its copy here is on ground about as often as the partner itself ("
+                        + Pct(share) + " of frames here, " + Pct(partner.Extra) + " on its own PC)");
+                }
+            }
+            Note(h, "PH end", block);
+        }
+
+        // PE (T-197): both players hold the same face of one stone and push it the same way. The host starts; the
+        // guest joins while the stone moves. Both must keep their hold for the whole push (each PC judges its own Ori;
+        // the partner's copy must show the same), the x1.5 co-push speed must stay on, and the stone must never jump
+        // back. Before the fix the second pusher fell out of the push state within half a second (the grab ray stopped
+        // at the partner's capsule; the hold was dropped when the lease was refused; the takeover prediction made the
+        // stone run ahead and jump back).
+        static IEnumerator PushSameStone(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        {
+            yield return CoopReset(h, 230, block, resting, restingRot, host);
+            GrabSetup first = new GrabSetup();
+            if (host) { yield return GrabBlock(block, first, CoopDir); if (first.Started) Bot(true, CoopDir); }
+            yield return Barrier(h, 231, block, first.Started);
+            Sample partner;
+            if (!s_partnerSteps.TryGetValue(231, out partner)) yield break;
+            if (!(host ? first.Started : partner.GrabStarted))
+            {
+                Bot(false);
+                h.Check(false, "PE setup: the host grabbed the stone and pushes it");
+                yield break;
+            }
+            WatchStart(block);
+            yield return Wait(0.5f);   // the host owns the stone and it moves
+            GrabSetup second = new GrabSetup();
+            if (!host) { yield return GrabBlock(block, second, CoopDir, true); if (second.Started) Bot(true, CoopDir); }
+            yield return Barrier(h, 232, block, second.Started);
+            if (!s_partnerSteps.TryGetValue(232, out partner)) yield break;
+            if (!(host ? partner.GrabStarted : second.Started))
+            {
+                Bot(false); s_watch = null;
+                h.Check(false, "PE setup: the guest grabbed the stone the host is pushing (try " + second.Attempts + ")");
+                yield return Barrier(h, 233, block);
+                yield break;
+            }
+            // The push stays on the first 9 units of the floor (further left it rises, and an Ori that leaves the ground
+            // for a frame lets go, as in the plain game).
+            int frames = 0, own = 0, puppet = 0, boosted = 0;
+            float began = Time.realtimeSinceStartup, end = began + 1.6f;
+            int lastOwner = PushBlockSync.StateOf(block).OwnerSeat; bool lastOwn = true, lastPuppet = true; string events = "";
+            while (Time.realtimeSinceStartup < end && (block.Position.x - resting.x) * CoopDir < 9f)
+            {
+                KeepAlive();
+                frames++;
+                bool ownHolds = Own != null && Own.Abilities.GrabBlock.IsGrabbing, puppetHolds = Puppet != null && Puppet.Abilities.GrabBlock.IsGrabbing;
+                int owner = PushBlockSync.StateOf(block).OwnerSeat;
+                if (ownHolds) own++;
+                if (puppetHolds) puppet++;
+                if (block.PushableSpeedRatio() > 1.49f) boosted++;
+                if ((ownHolds != lastOwn || puppetHolds != lastPuppet || owner != lastOwner) && events.Length < 600)
+                    events += " t=" + F(Time.realtimeSinceStartup - began) + ":own=" + (ownHolds ? 1 : 0) + ",copy=" + (puppetHolds ? 1 : 0) + ",owner=P" + owner
+                        + ",grounded=" + (Own.PlatformBehaviour.PlatformMovement.IsOnGround ? 1 : 0) + ",gap=" + F(Mathf.Abs(Own.Position.x - block.Position.x))
+                        + ",travel=" + F((block.Position.x - resting.x) * CoopDir);
+                lastOwn = ownHolds; lastPuppet = puppetHolds; lastOwner = owner;
+                yield return null;
+            }
+            Bot(false);
+            h.Note("PE holds during the push (own Ori, partner copy, lease owner):" + (events.Length == 0 ? " no change" : events));
+            float ownShare = frames == 0 ? 0f : (float)own / frames, puppetShare = frames == 0 ? 0f : (float)puppet / frames,
+                boostShare = frames == 0 ? 0f : (float)boosted / frames, travel = (block.Position.x - resting.x) * CoopDir;
+            yield return Wait(1.0f);
+            float back = s_watchBack; int snaps = WatchSnaps; s_watch = null;
+            yield return Barrier(h, 233, block, false, ownShare);
+            if (!s_partnerSteps.TryGetValue(233, out partner)) yield break;
+            string who = host ? "first pusher (host)" : "second pusher (guest)";
+            h.Check(ownShare >= 0.9f, "PE the " + who + " keeps hold of the stone while both push it (" + Pct(ownShare) + " of the push)");
+            if (partner.Extra < 0.9f) h.Check(false, "PE cannot judge the partner's pose: it did not keep hold on its own PC (" + Pct(partner.Extra) + ")");
+            else h.Check(puppetShare >= 0.75f, "PE the partner is shown holding the stone here (" + Pct(puppetShare) + " of frames, " + Pct(partner.Extra) + " on its own PC)");
+            h.Check(boostShare >= 0.6f, "PE both pushing the same way keeps the x1.5 speed on (" + Pct(boostShare) + " of frames)");
+            h.Check(back <= 1f && snaps == 0, "PE the stone never jumps back on this PC (largest step back " + F(back) + ", snaps " + snaps + ")");
+            string detail;
+            h.Check(Agree(block, partner, out detail), "PE the stone ends in the same place on both PCs (" + detail + ")");
+            if (host) h.Check(travel >= 2f, "PE the stone moved (" + F(travel) + ")");
+            h.Note("PE: partner copies took hold again " + PushBlockSync.PuppetRegrabs + " times on this PC; owner P" + PushBlockSync.StateOf(block).OwnerSeat
+                + ", own Ori grabbing " + (Own != null && Own.Abilities.GrabBlock.IsGrabbing) + " at the end");
+            Note(h, "PE end", block);
+        }
+
+        // PF (T-197): the lease goes host -> guest -> host, each pushing the stone on alone. A PC that follows the new
+        // owner still has the state that owner published two leases ago: before the fix the stone jumped back there
+        // (3 units or more here, 31 in the playtest) and returned when the owner's first new state arrived. Then the
+        // owner's stones are reset the way a partner's rejoin does: its stone must stay where it is (playtest: both
+        // PCs saw it jump from -246 to -279).
+        static IEnumerator Handover(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        {
+            yield return CoopReset(h, 240, block, resting, restingRot, host);
+            Sample partner; string detail;
+            for (int k = 0; k < 3; k++)
+            {
+                bool pusher = (k % 2 == 0) == host; int step = 241 + k * 3;
+                CoopIdlePlace(block, resting, host);
+                yield return Wait(0.4f);
+                yield return Barrier(h, step, block);
+                WatchStart(block);
+                Vector3 start = block.Position;
+                GrabSetup setup = new GrabSetup();
+                if (pusher) { yield return GrabBlock(block, setup, CoopDir); if (setup.Started) Bot(true, CoopDir); }
+                yield return Barrier(h, step + 1, block, setup.Started);
+                if (!s_partnerSteps.TryGetValue(step + 1, out partner)) yield break;
+                if (!(pusher ? setup.Started : partner.GrabStarted))
+                {
+                    Bot(false); s_watch = null;
+                    h.Check(false, "PF setup: push " + (k + 1) + " grabbed the stone");
+                    yield break;
+                }
+                yield return Wait(1.5f);
+                Bot(false);
+                yield return Wait(1.0f);
+                float back = s_watchBack, travel = (block.Position.x - start.x) * CoopDir; int snaps = WatchSnaps; s_watch = null;
+                yield return Barrier(h, step + 2, block);
+                if (!s_partnerSteps.TryGetValue(step + 2, out partner)) yield break;
+                string whose = pusher ? "own push" : "the partner's push";
+                h.Check(back <= 1f && snaps == 0, "PF push " + (k + 1) + " (" + whose + "): the stone never jumps back on this PC (largest step back " + F(back) + ", snaps " + snaps + ")");
+                h.Check(Agree(block, partner, out detail), "PF after push " + (k + 1) + " the stone is in the same place on both PCs (" + detail + ")");
+                if (pusher) h.Check(travel >= 1.5f, "PF push " + (k + 1) + " moved the stone (" + F(travel) + ")");
+            }
+            yield return Barrier(h, 250, block);
+            WatchStart(block);
+            if (host) PushBlockSync.TestSessionReset();
+            yield return Wait(1.5f);
+            float moved = s_watchStep; int jumped = WatchSnaps; s_watch = null;
+            yield return Barrier(h, 251, block);
+            if (!s_partnerSteps.TryGetValue(251, out partner)) yield break;
+            h.Check(moved <= 1f && jumped == 0, "PF a session reset on the stone's owner leaves the stone where it is on this PC (largest step " + F(moved) + ", snaps " + jumped + ")");
+            h.Check(Agree(block, partner, out detail), "PF after the session reset the stone is in the same place on both PCs (" + detail + ")");
+            Note(h, "PF end", block);
+        }
+
+        // PG (T-197): the host goes down while it pushes the stone. A downed Ori is suspended, and the game's grab
+        // state only updates on a running Ori, so the stone stayed grabbed (slippery material, no release friction)
+        // and slid away on a slope. The downed player must let go, on both PCs. The guest then revives the host.
+        static IEnumerator DownedHolder(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        {
+            yield return CoopReset(h, 260, block, resting, restingRot, host);
+            GrabSetup hold = new GrabSetup();
+            if (host) { yield return GrabBlock(block, hold, CoopDir); if (hold.Started) Bot(true, CoopDir); }
+            yield return Barrier(h, 261, block, hold.Started);
+            Sample partner;
+            if (!s_partnerSteps.TryGetValue(261, out partner)) yield break;
+            if (!(host ? hold.Started : partner.GrabStarted))
+            {
+                Bot(false);
+                h.Check(false, "PG setup: the host grabbed the stone and pushes it");
+                yield break;
+            }
+            // No KeepAlive from here: its invincibility has to run out before the hit, and a downed Ori needs none.
+            float until = Time.realtimeSinceStartup + 0.7f;
+            while (Time.realtimeSinceStartup < until) yield return null;
+            if (host) Own.Mortality.DamageReciever.OnRecieveDamage(new Damage(1000f, Vector2.zero, Own.Position, DamageType.Spikes, null));
+            until = Time.realtimeSinceStartup + 1.2f;
+            while (Time.realtimeSinceStartup < until) yield return null;   // the bot keeps the grab key and the stick held, as the player did
+            if (host)
+            {
+                PlatformMovement pm = Own.PlatformBehaviour.PlatformMovement;
+                h.Check(Revive.IsDowned(Own), "PG setup: the host went down while pushing the stone");
+                h.Check(!Own.Abilities.GrabBlock.IsGrabbing && !block.IsGrabbed && !PushBlockSync.Ignores(block, pm),
+                    "PG a downed player lets go of the stone (still grabbing=" + Own.Abilities.GrabBlock.IsGrabbing + ", stone grabbed=" + block.IsGrabbed
+                    + ", stone ignores its Ori=" + PushBlockSync.Ignores(block, pm) + ", suspended releases " + PushBlockSync.SuspendedReleases + ")");
+            }
+            else
+            {
+                h.Check(Revive.DownedOf(2) != null, "PG setup: the host is shown downed on the guest's PC");
+                bool holds = Puppet != null && (Puppet.Abilities.GrabBlock.IsGrabbing || PushBlockSync.Ignores(block, Puppet.PlatformBehaviour.PlatformMovement));
+                h.Check(!holds, "PG the downed partner's copy lets go of the stone on this PC too");
+            }
+            Bot(false);
+            yield return Barrier(h, 262, block);
+            // Clean-up, so the phases after this one have two players: the guest revives the host (hold Spirit Flame at
+            // the skull). If that does not work here, the host gets itself up (hold Y); which way worked is only noted.
+            for (int attempt = 0; !host && attempt < 3 && Revive.DownedOf(2) != null; attempt++)
+            {
+                Revive.Downed d = Revive.DownedOf(2);
+                Plugin.Teleport(Own, d.Marker + new Vector3(attempt == 1 ? -0.8f : 0.8f, 0f, 0f));
+                SessionRules.PositionChanged();
+                yield return Wait(0.8f);
+                NetTestHarness.BotButtons = P2Input.BTN_X; NetTestHarness.BotLX = 0f;
+                TestClock.Window reviving = new TestClock.Window(3f);
+                while (Revive.DownedOf(2) != null && reviving.Open) yield return null;
+                NetTestHarness.BotButtons = 0;
+                h.Note("PG guest revive try " + (attempt + 1) + ": skull=" + V(d.Marker) + " Ori=" + V(Own.Position) + " partner copy=" + (Puppet == null ? "none" : V(Puppet.Position))
+                    + " progress=" + d.Progress.ToString("F2") + " partner still down=" + (Revive.DownedOf(2) != null));
+            }
+            if (host)
+            {
+                until = Time.realtimeSinceStartup + 16f;
+                while (Revive.IsDowned(Own) && Time.realtimeSinceStartup < until) yield return null;
+                bool byGuest = !Revive.IsDowned(Own);
+                if (!byGuest)
+                {
+                    Revive.TestHoldSelf = true;
+                    TestClock.Window self = new TestClock.Window(6f);
+                    while (Revive.IsDowned(Own) && self.Open) yield return null;
+                    Revive.TestHoldSelf = false;
+                }
+                yield return Wait(1.5f);
+                h.Note("PG host up again: " + (byGuest ? "revived by the guest" : "by holding Y itself"));
+                h.Check(!Revive.IsDowned(Own), "PG the host is up again after the scenario (both play on)");
+            }
+            yield return Barrier(h, 263, block);
+            Note(h, "PG end", block);
+        }
+
+        static IEnumerator Coop(TestHarness h, RuntimeSceneMetaData scene, bool host)
+        {
+            Bot(false);
+            PushPullBlock block = FindBlock(scene, true);
+            yield return Barrier(h, 200, block);
+            Sample partner;
+            if (!s_partnerSteps.TryGetValue(200, out partner)) yield break;
+            bool same = block != null && partner.Loaded && partner.Id == PushBlockSync.StateOf(block).Id;
+            h.Check(same, "PH both PCs chose the same second stone (largest id)");
+            if (!same) yield break;
+            NetPlay.SetSim(60, 0, 0, 0);
+            Vector3 resting = block.Position; Quaternion restingRot = block.transform.rotation;
+            h.Note("--- co-op stone scenarios on " + PushBlockSync.StateOf(block).Name + " at " + V(resting));
+            // ORICOOP_P_COOP=PE,PH,... picks the scenarios and their order (default: PE first, on the untouched stone, as
+            // two players meet it in the game; then PH, PF, PG).
+            string order = Environment.GetEnvironmentVariable("ORICOOP_P_COOP");
+            if (string.IsNullOrEmpty(order)) order = "PE,PH,PF,PG";
+            try
+            {
+                foreach (string scenario in order.Split(','))
+                {
+                    if (scenario == "PH") yield return Rider(h, block, resting, restingRot, host);
+                    else if (scenario == "PE") yield return PushSameStone(h, block, resting, restingRot, host);
+                    else if (scenario == "PF") yield return Handover(h, block, resting, restingRot, host);
+                    else if (scenario == "PG") yield return DownedHolder(h, block, resting, restingRot, host);
+                    else h.Check(false, "P co-op scenario '" + scenario + "' exists (PH, PE, PF, PG)");
+                }
+                yield return CoopReset(h, 290, block, resting, restingRot, host);
+            }
+            finally
+            {
+                s_watch = null; Bot(false); NetPlay.SetSim(0, 0, 0, 0);
+            }
+        }
+
         public static IEnumerator Run(TestHarness h)
         {
             s_localSteps.Clear(); s_partnerSteps.Clear(); NetPlay.On(MsgBarrier, OnBarrier);
@@ -419,6 +817,12 @@ namespace OriCoop
                     h.Check(!block.GetComponent<Rigidbody>().isKinematic, "P unowned stone keeps native simulation before interaction");
                 Vector3 resting = block.Position; Quaternion restingRot = block.transform.rotation;
                 int guestSeat = host ? Players.First.Seat : Players.LocalSeat;
+                if (Environment.GetEnvironmentVariable("ORICOOP_P_ONLY") == "COOP")
+                {
+                    h.Note("P: ORICOOP_P_ONLY=COOP, only the co-op stone scenarios");
+                    yield return Coop(h, scene, host);
+                    yield break;
+                }
 
                 int previousPusher = 0; uint previousEpoch = 0;
                 for (int run = 1; run <= 7; run++)
@@ -646,6 +1050,7 @@ namespace OriCoop
                 yield return Barrier(h, 92, block);
                 yield return BothInteract(h, block, resting, restingRot, host, guestSeat);
                 yield return PushTogether(h, block, resting, restingRot, host);
+                yield return Coop(h, scene, host);
             }
             finally
             {

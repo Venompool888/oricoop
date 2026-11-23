@@ -171,6 +171,8 @@ namespace OriCoop
                     : HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join"));
                 Check(roleReady, m_tr + ": host / join page on the title (" + Labels + ")");
                 if (!roleReady || m_fails != 0) { Finish(); yield break; }
+                if (PrologueMode.Length > 0)   // T-203: the shared new-game prologue (TitlePrologueTest.cs)
+                { yield return StartCoroutine(m_role == "host" ? PrologueHostRun() : PrologueJoinRun(savesAtStart)); Finish(); yield break; }
                 if (m_role == "host") yield return StartCoroutine(Host());
                 else yield return StartCoroutine(Join(savesAtStart));
                 if (SignMode && m_fails == 0) yield return StartCoroutine(SignOnline());          // TitleInputTest.cs
@@ -264,6 +266,7 @@ namespace OriCoop
                 List<string> saved = OriCoop.Authority.CServerConfig.Servers;
                 Check(CServerListLabelsMatch() && saved.Count == before + 1 && saved[saved.Count - 1] == m_cserverAddress &&
                     CServerSavedOnDisk(m_cserverAddress), "cserver: Save appends to the persisted list");
+                yield return StartCoroutine(DeadServerList());   // T-201: first a saved server that does not answer
                 yield return StartCoroutine(Row(saved.Count - 1, 0.5f));
                 // T-171: the room list = 创建房间 / 加入房间, then the rooms (or one status row).
                 Check(LastPage == "role" && LastLabels.Count >= 3 && HasKey(LastLabels.GetRange(0, 2), "csroom.list.create") && HasKey(LastLabels.GetRange(0, 2), "csroom.list.join")
@@ -411,6 +414,83 @@ namespace OriCoop
                 yield return StartCoroutine(TWait(0.4f));
             }
 
+            // T-201 (playtest 4: "the menu froze" on a server's room list while its reads timed out). A saved server that does
+            // not answer: the page says the read failed and why, stays like that while it reads again by itself (it used
+            // to flip back to "loading" every five seconds), and the menu keeps working: the status row reads again at
+            // once, 加入房间 opens the code page, Back returns to the server list. Starts and ends on the server list.
+            IEnumerator DeadServerList()
+            {
+                int deadPort;
+                using (OriCoop.Net.UdpTransport unused = new OriCoop.Net.UdpTransport(0)) deadPort = unused.LocalPort;
+                string dead = "127.0.0.1:" + deadPort;
+                if (!OriCoop.Authority.CServerConfig.AddServer(dead)) { Check(false, "cserver: a second server can be saved"); yield break; }
+                RefreshTexts(true);
+                yield return StartCoroutine(TWait(0.4f));
+                yield return StartCoroutine(Row(OriCoop.Authority.CServerConfig.Servers.IndexOf(dead), 0.5f));
+                Check(LastPage == "role" && OriCoop.Authority.CServerConfig.Address == dead && LastLabels.Count == 3 && HasKey(LastLabels, "csroom.list.loading"),
+                    "cserver: a server's room list opens with 'loading' (" + Labels + ")");
+                yield return StartCoroutine(WaitFor(delegate { return HasKey(LastLabels, "csroom.list.failed"); }, 8f));
+                s_mgr.SetCurrentItem(2);
+                yield return StartCoroutine(TWait(0.5f));
+                Check(LastLabels.Count == 3 && HasKey(LastLabels, "csroom.list.failed")
+                    && (LastTooltip == L10n.T("csroom.list.failed.noanswer", true) || LastTooltip == L10n.T("csroom.list.failed.noanswer", false)),
+                    "cserver: a server that does not answer shows 'read failed' and says why (" + Labels + "; '" + LastTooltip + "')");
+                Shot("list_failed");
+                bool flipped = false;
+                float end = Time.realtimeSinceStartup + 6.5f;   // the page reads again by itself 5 s after the first read began
+                while (Time.realtimeSinceStartup < end) { if (!HasKey(LastLabels, "csroom.list.failed")) flipped = true; yield return null; }
+                Check(!flipped, "cserver: the room list stays on 'read failed' while the page reads again by itself (" + Labels + ")");
+                yield return StartCoroutine(Row(2, 0.2f));      // the status row: read again now
+                yield return StartCoroutine(WaitFor(delegate { return HasKey(LastLabels, "csroom.list.loading"); }, 5f));
+                bool reading = HasKey(LastLabels, "csroom.list.loading");
+                yield return StartCoroutine(WaitFor(delegate { return HasKey(LastLabels, "csroom.list.failed"); }, 8f));
+                Check(reading && HasKey(LastLabels, "csroom.list.failed"), "cserver: pressing 'read failed' reads again, then fails again (" + Labels + ")");
+                yield return StartCoroutine(Row(1, 0.6f));      // 加入房间
+                Check(LastPage == "entry", "cserver: after the failed reads 加入房间 still opens the code page (" + Labels + ")");
+                yield return StartCoroutine(Back(0.6f));
+                Check(LastPage == "role", "cserver: Back from the code page returns to the room list (" + Labels + ")");
+                yield return StartCoroutine(Back(0.6f));
+                Check(LastPage == "serverlist", "cserver: Back from a failed room list returns to the server list (" + Labels + ")");
+                OriCoop.Authority.CServerConfig.RemoveServer(OriCoop.Authority.CServerConfig.Servers.IndexOf(dead));
+                RefreshTexts(true);
+                yield return StartCoroutine(TWait(0.4f));
+            }
+
+            // T-148 (playtest 4: an invite code of a room that was gone was retried 409 times in seven minutes while the
+            // page showed "connecting"): the join is refused once, the join page shows the reason with retry / back, and
+            // nothing connects again until the player picks one. On the entry page, C-server transport.
+            IEnumerator RefusedJoin()
+            {
+                const string gone = "222222";
+                s_mgr.SetCurrentItem(0);
+                yield return StartCoroutine(TWait(0.4f));
+                yield return StartCoroutine(DialType(gone));
+                RefreshTexts(true);
+                yield return StartCoroutine(TWait(0.5f));
+                int before = OriCoop.Authority.CServerLink.ConnectAttempts;
+                yield return StartCoroutine(Row(1, 0.5f));   // 连接
+                yield return StartCoroutine(WaitFor(delegate { return NetPlay.Problem == "server.err.noroom"; }, 12f));
+                Check(NetPlay.Problem == "server.err.noroom" && NetPlay.CurrentPhase == NetPlay.Phase.Retrying,
+                    "guest: a room that does not exist is refused with its reason (problem '" + NetPlay.Problem + "', " + NetPlay.CurrentPhase + ")");
+                yield return StartCoroutine(TWait(4f));       // v0.2.5 connected again about twice a second here
+                int attempts = OriCoop.Authority.CServerLink.ConnectAttempts - before;
+                Check(attempts == 1 && NetPlay.RetryHeld, "guest: the refused join is not retried by itself (" + attempts + " connection(s) in 4 s)");
+                string reason = LastTooltip;
+                Check(LastPage == "joining" && LastLabels.Count == 2 && HasKey(LastLabels, "common.retry") && HasKey(LastLabels, "common.back")
+                    && (reason == L10n.T("server.err.noroom", true) || reason == L10n.T("server.err.noroom", false)),
+                    "guest: the join page says the room does not exist and offers retry / back (" + Labels + "; '" + reason + "')");
+                Shot("join_refused");
+                yield return StartCoroutine(TWait(0.3f));
+                yield return StartCoroutine(Row(0, 2.5f));   // 再试一次: one more connection, refused again
+                attempts = OriCoop.Authority.CServerLink.ConnectAttempts - before;
+                Check(attempts == 2 && NetPlay.Problem == "server.err.noroom", "guest: retry connects once more and is refused again (" + attempts + " connection(s), problem '" + NetPlay.Problem + "')");
+                yield return StartCoroutine(Row(1, 0.8f));   // 返回
+                Check(LastPage == "entry" && !NetPlay.Enabled, "guest: back from the refused join returns to the code page, online play off (" + Labels + ", " + NetPlay.CurrentPhase + ")");
+                s_entry = ""; s_cursor = 0;                   // the real code is typed into an empty field, as before
+                RefreshTexts(true);
+                yield return StartCoroutine(TWait(0.3f));
+            }
+
             IEnumerator Join(int savesAtStart)
             {
                 bool full = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_FULL") == "1";
@@ -431,6 +511,7 @@ namespace OriCoop
                 }
                 else
                 {
+                    yield return StartCoroutine(RefusedJoin());   // T-148: first the code of a room that does not exist
                     string code = "";
                     float wait = Time.realtimeSinceStartup + 90f;
                     while (Time.realtimeSinceStartup < wait && code.Length != 6)
@@ -499,6 +580,9 @@ namespace OriCoop
                 Check(csChecked, "guest: the server room page (房间管理页) opened on the joined PC and was checked (transport " + m_tr + ")");
                 Check(NetPlay.LocalInGameplay() && SaveSync.Ready, "guest: in game with the host's save (net=" + NetPlay.CurrentPhase + ", status=" + GuestStatus + ", aborts=" + GuestJoin.Aborts + " " + GuestJoin.LastAbort + ")");
                 Check(SaveSync.JoinedHost && SaveSync.GuestJoinDistance < 3f, "guest: placed beside the host (distance " + SaveSync.GuestJoinDistance.ToString("F2") + ")");
+                // T-203: a host that loads an existing save has no prologue: nothing of the shared prologue runs here.
+                Check(SharedPrologue.LocalStarts == 0 && !SharedPrologue.HostPlaying && !SharedPrologue.Busy,
+                    "guest: existing save: no prologue copy was started (" + SharedPrologue.LocalStarts + ")");
                 if (!full) Check(TitleChoice == TitleNone && !LastSlotPick.StartsWith("title-") && !LastSlotPick.StartsWith("guest-slot"), "guest: no save slot was picked (" + LastSlotPick + ")");
                 yield return StartCoroutine(TWait(4f));
                 CheckPrimaryInput("guest", -1, "T-188 keyboard/mouse used on the menus stays keyboard/mouse in game");

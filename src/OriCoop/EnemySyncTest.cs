@@ -19,6 +19,7 @@ namespace OriCoop
             public int Seat, OwnerSeat; public uint Epoch; public bool Owner, Dead;
             public float Tick, Angle;
             public EnemyTickPosition[] Samples = new EnemyTickPosition[0];
+            public string Extra = "";   // T-195: the Swarm family report (SwarmReport)
         }
         static string s_comparisonKey;
         static uint s_comparisonEpoch;
@@ -47,7 +48,7 @@ namespace OriCoop
             p.Samples = new EnemyTickPosition[count];
             for (int i = 0; i < count; i++) p.Samples[i] = new EnemyTickPosition(r.ReadSingle(),
                 new EnemyVector(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()));
-            p.Angle = r.ReadSingle();
+            p.Angle = r.ReadSingle(); p.Extra = r.ReadString();
         }
         static IEnumerator Wait(float seconds) { float end = Now + seconds; while (Now < end) yield return null; }
         static bool FamilyAhead(int step)
@@ -56,14 +57,14 @@ namespace OriCoop
                 if (received > step + s_offset && received >= 100 + s_offset && received < 240 + s_offset) return true;
             return false;
         }
-        static IEnumerator Barrier(TestHarness h, int step, string key, bool family = false, float timeout = 30f)
+        static IEnumerator Barrier(TestHarness h, int step, string key, bool family = false, float timeout = 30f, string extra = null)
         {
             CaptureOwnerPosition(key);
             EnemySync.Probe p = EnemySync.Inspect(key); Vector3 origin = s_barrierAt.HasValue ? s_barrierAt.Value : p.Origin;
             Packet report = new Packet { Key = key ?? "", Owner = p.Owner, Dead = p.Dead, Position = p.Position,
                 Ready = p.Present && (family || p.Mirrored) && p.Known && !p.Dead && ExpectedRole(p),
                 Seat = Players.LocalSeat, OwnerSeat = p.OwnerSeat, Epoch = p.Epoch,
-                Tick = p.Owner ? NetPlay.LocalTick : p.RenderTick, Angle = p.Angle,
+                Tick = p.Owner ? NetPlay.LocalTick : p.RenderTick, Angle = p.Angle, Extra = extra ?? "",
                 Samples = NetRoute.ServerMode && key == s_comparisonKey && p.Owner && p.Epoch == s_comparisonEpoch
                     ? s_ownerPositions.ToArray() : new EnemyTickPosition[0] };
             s_localSteps[step + s_offset] = report;
@@ -78,7 +79,7 @@ namespace OriCoop
                 w.Write(report.Tick); w.Write((ushort)report.Samples.Length);
                 foreach (EnemyTickPosition sample in report.Samples)
                 { w.Write(sample.Tick); w.Write(sample.Position.X); w.Write(sample.Position.Y); w.Write(sample.Position.Z); }
-                w.Write(p.Angle);
+                w.Write(p.Angle); w.Write(extra ?? "");
             });
             float end = Now + timeout;
             while (NetPlay.Connected && !Has(step) && Now < end && (!family || !FamilyAhead(step)))
@@ -384,6 +385,185 @@ namespace OriCoop
                 Own.Mortality.DamageReciever.IsImmortal = immortal; Plugin.Teleport(Own, saved);
             }
         }
+        // T-195: a splitting Swarm (scene of the playtest report). The mirror kills the first one; after every split both
+        // PCs must show the same pieces; the two PCs then take turns killing pieces until none is left on either PC.
+        // ORICOOP_MUTATE_SWARM_LOCAL=1 (Swarms outside enemy sync, as before the fix) must fail it.
+        static readonly string[] SwarmScenes = { "upperGladesSwarmIntroduction" };
+        static readonly HashSet<string> s_swarmUsed = new HashSet<string>();
+        sealed class PieceSample { public string Key = ""; public bool Alive, Dead, Mirrored; public float Health; public Vector3 Position; }
+        static readonly System.Globalization.CultureInfo Plain = System.Globalization.CultureInfo.InvariantCulture;
+        // "node:alive:dead:health:x:y:mirrored:key;" for every piece of the family this PC has heard of.
+        static string SwarmReport(string root)
+        {
+            System.Text.StringBuilder text = new System.Text.StringBuilder();
+            foreach (string key in EnemySync.SwarmPieces(root))
+            {
+                EnemySync.Probe p = EnemySync.Inspect(key);
+                text.Append(p.Node).Append(':').Append(p.Present && !p.Dead ? 1 : 0).Append(':').Append(p.Dead ? 1 : 0).Append(':')
+                    .Append((float.IsNaN(p.Health) ? 0f : p.Health).ToString("F1", Plain)).Append(':')
+                    .Append(p.Position.x.ToString("F2", Plain)).Append(':').Append(p.Position.y.ToString("F2", Plain)).Append(':')
+                    .Append(p.Mirrored ? 1 : 0).Append(':').Append(key).Append(';');
+            }
+            return text.ToString();
+        }
+        static Dictionary<int, PieceSample> ParseSwarm(string report)
+        {
+            Dictionary<int, PieceSample> pieces = new Dictionary<int, PieceSample>();
+            foreach (string entry in (report ?? "").Split(';'))
+            {
+                string[] f = entry.Split(new[] { ':' }, 8); if (f.Length < 8) continue;
+                PieceSample p = new PieceSample(); p.Alive = f[1] == "1"; p.Dead = f[2] == "1"; p.Health = float.Parse(f[3], Plain);
+                p.Position = new Vector3(float.Parse(f[4], Plain), float.Parse(f[5], Plain), 0f); p.Mirrored = f[6] == "1"; p.Key = f[7];
+                pieces[int.Parse(f[0], Plain)] = p;
+            }
+            return pieces;
+        }
+        // depth 0 = every level.
+        static int SwarmCount(Dictionary<int, PieceSample> pieces, int depth, bool dead)
+        {
+            int count = 0;
+            foreach (KeyValuePair<int, PieceSample> piece in pieces)
+                if ((depth == 0 || SwarmFamily.Depth(piece.Key) == depth) && (dead ? piece.Value.Dead : piece.Value.Alive)) count++;
+            return count;
+        }
+        static IEnumerator Swarm(TestHarness h)
+        {
+            const int step = 70; Packet chosen = new Packet(); Vector3 saved = Own.Position;
+            bool immortal = Own.Mortality.DamageReciever.IsImmortal;
+            Own.Mortality.DamageReciever.IsImmortal = true;
+            // The pieces drop experience; an Ori that levels up from it blasts every enemy around it (DamageType.LevelUp).
+            // Those deaths sync like any other, but they would kill pieces before the two PCs compare: no blast in here.
+            GameObject blast = Own.Level.OnLevelUpGameObject; Own.Level.OnLevelUpGameObject = null;
+            try
+            {
+                string key = "";
+                if (NetPlay.IsHost && Core.Scenes.Manager != null)
+                    foreach (RuntimeSceneMetaData scene in Core.Scenes.Manager.AllScenes)
+                    {
+                        if (key != "" || Array.IndexOf(SwarmScenes, scene.Scene) < 0) continue;
+                        Vector3 point = scene.PlaceholderPosition;
+                        h.Note(s_tag + "s search Swarm scene=" + scene.Scene + " position=" + point);
+                        float until = Now + 10f;
+                        while (key == "" && Now < until)
+                        {
+                            EnemySync.LoadTestArea(point); Plugin.Teleport(Own, point);
+                            yield return Wait(0.5f);
+                            key = EnemySync.FindTestSwarm(point, s_swarmUsed);
+                            if (key == "" && s_swarmUsed.Count > 0) key = EnemySync.FindTestSwarm(point, null);   // a later pass: the same family again
+                        }
+                    }
+                yield return Barrier(h, step, key);
+                if (!Has(step)) yield break;
+                chosen.Key = NetPlay.IsHost ? key : Part[step].Key;
+                h.Check(!string.IsNullOrEmpty(chosen.Key), s_tag + "s a Swarm is tracked by enemy sync");
+                if (string.IsNullOrEmpty(chosen.Key)) yield break;
+                s_swarmUsed.Add(chosen.Key);
+                chosen.Origin = NetPlay.IsHost ? EnemySync.Inspect(chosen.Key).Origin : Part[step].Origin;
+                float side = NetPlay.IsHost ? -6f : 6f;
+                Place(chosen.Origin, side);
+                yield return FamilyPresence(chosen);   // its owner brings the first one back if an earlier pass killed it
+                yield return Ready(h, chosen, step + 1, side);
+                if (!chosen.Ready) yield break;
+                string levels = EnemySync.SwarmLevels(chosen.Key); int depths = levels == "" ? 0 : levels.Split(',').Length;
+                h.Note(s_tag + "s Swarm splits into " + levels + " " + EnemySync.Describe(chosen.Key));
+                h.Check(depths > 0, s_tag + "s the Swarm's pieces are named on this peer (" + levels + ")");
+                if (depths == 0) yield break;
+                int deaths = EnemySync.DeathEffects, total = 0, vanishing = (1 << (depths + 1)) - 1;   // the last node of the last level
+                yield return Barrier(h, step + 2, chosen.Key);
+                if (!Has(step + 2)) yield break;
+                bool agreed = Agreement(chosen.Key, step + 2);
+                h.Check(agreed, s_tag + "s peers agree on one owner/epoch before the kill");
+                if (!agreed) yield break;
+                // The mirror kills the first one: the split happens on the owner and must show on the mirror too.
+                if (!LocalReport(step + 2).Owner) EnemySync.TestAttack(chosen.Key, 1000f, false);
+                for (int depth = 1; depth <= depths; depth++)
+                {
+                    int expected = 1 << depth, barrier = step + 1 + depth * 2; total += expected;
+                    float end = Now + 6f;
+                    while (Now < end && SwarmCount(ParseSwarm(SwarmReport(chosen.Key)), depth, false) < expected) yield return null;
+                    yield return Wait(0.7f);   // thrown pieces land; both PCs then sample at the same barrier
+                    yield return Barrier(h, barrier, chosen.Key);
+                    if (!Has(barrier)) yield break;
+                    yield return Barrier(h, barrier + 1, chosen.Key, false, 30f, SwarmReport(chosen.Key));
+                    if (!Has(barrier + 1)) yield break;
+                    Dictionary<int, PieceSample> mine = ParseSwarm(LocalReport(barrier + 1).Extra), theirs = ParseSwarm(Part[barrier + 1].Extra);
+                    bool same = true, mirrored = true; float apart = 0f, health = 0f;
+                    foreach (KeyValuePair<int, PieceSample> piece in mine)
+                    {
+                        PieceSample other;
+                        if (!theirs.TryGetValue(piece.Key, out other)) { same &= !piece.Value.Alive; continue; }
+                        same &= piece.Value.Alive == other.Alive && piece.Value.Key == other.Key;
+                        if (!piece.Value.Alive || !other.Alive) continue;
+                        apart = Mathf.Max(apart, Vector3.Distance(piece.Value.Position, other.Position));
+                        health = Mathf.Max(health, Mathf.Abs(piece.Value.Health - other.Health));
+                        mirrored &= piece.Value.Mirrored && other.Mirrored;   // from the reports: by now the partner may be killing
+                    }
+                    foreach (KeyValuePair<int, PieceSample> piece in theirs) if (piece.Value.Alive && !mine.ContainsKey(piece.Key)) same = false;
+                    int alive = SwarmCount(mine, depth, false);
+                    h.Note(s_tag + "s level " + depth + " alive=" + alive + " partnerAlive=" + SwarmCount(theirs, depth, false) + " apart=" + F(apart)
+                        + " owner=" + LocalReport(barrier + 1).Owner + " report=" + LocalReport(barrier + 1).Extra);
+                    h.Check(!EnemySync.Inspect(chosen.Key).Present && SwarmCount(mine, 0, false) == alive, s_tag + "s level " + depth + ": the split one is gone on this peer");
+                    h.Check(alive == expected, s_tag + "s level " + depth + ": " + expected + " pieces on this peer (" + alive + ")");
+                    h.Check(same, s_tag + "s level " + depth + ": both peers show the same pieces");
+                    h.Check(mirrored && health < 0.01f && apart < 6f, s_tag + "s level " + depth + ": pieces mirrored, same health, positions differ <6 (" + F(apart) + ")");
+                    h.Check(Agreement(chosen.Key, barrier + 1), s_tag + "s level " + depth + ": peers agree on one owner/epoch");
+                    // Both PCs kill: the owner the odd nodes, the mirror the even ones.
+                    bool odd = LocalReport(barrier + 1).Owner != Part[barrier + 1].Owner ? LocalReport(barrier + 1).Owner : NetPlay.IsHost;
+                    // A copy the mirror lost (as when it loads the scene late) comes back from the owner's next state.
+                    PieceSample lost;
+                    if (depth == 1 && !odd && mine.TryGetValue(SwarmFamily.Child(SwarmFamily.Root, 0), out lost))
+                    {
+                        int copies = EnemySync.SwarmPiecesMirrored;
+                        if (!EnemySync.Inspect(lost.Key).Owner && EnemySync.TestDropPiece(lost.Key))
+                        {
+                            float back = Now + 3f;
+                            while (Now < back && !(EnemySync.SwarmPiecesMirrored > copies && EnemySync.Inspect(lost.Key).Present)) yield return null;
+                            h.Check(EnemySync.SwarmPiecesMirrored > copies && EnemySync.Inspect(lost.Key).Present,
+                                s_tag + "s a copy lost on the mirror is rebuilt from the owner's next state");
+                        }
+                        else h.Note(s_tag + "s lost-copy check skipped: this peer owns the piece now");
+                    }
+                    foreach (KeyValuePair<int, PieceSample> piece in mine)
+                    {
+                        if (SwarmFamily.Depth(piece.Key) != depth || (piece.Key % 2 == 1) != odd || !EnemySync.Inspect(piece.Value.Key).Present) continue;
+                        // The last piece is not killed: its owner loses it without a death (as after a checkpoint restore).
+                        if (depth == depths && piece.Key == vanishing && EnemySync.Inspect(piece.Value.Key).Owner && EnemySync.TestDropPiece(piece.Value.Key)) continue;
+                        try { EnemySync.TestAttack(piece.Value.Key, 1000f, false); }
+                        catch (InvalidOperationException e) { h.Note(s_tag + "s kill skipped: " + e.Message); }
+                    }
+                }
+                float done = Now + 6f;
+                while (Now < done)
+                {
+                    Dictionary<int, PieceSample> now = ParseSwarm(SwarmReport(chosen.Key));
+                    if (now.Count >= total && SwarmCount(now, 0, false) == 0) break;
+                    yield return null;
+                }
+                yield return Wait(0.5f);
+                yield return Barrier(h, step + 11, chosen.Key);
+                if (!Has(step + 11)) yield break;
+                yield return Barrier(h, step + 12, chosen.Key, false, 30f, SwarmReport(chosen.Key));
+                if (!Has(step + 12)) yield break;
+                Dictionary<int, PieceSample> last = ParseSwarm(LocalReport(step + 12).Extra), partner = ParseSwarm(Part[step + 12].Extra);
+                h.Note(s_tag + "s end pieces=" + total + " deadHere=" + SwarmCount(last, 0, true) + " deadPartner=" + SwarmCount(partner, 0, true)
+                    + " puppetDeathEffects=" + (EnemySync.DeathEffects - deaths) + " split=" + EnemySync.SwarmPiecesSpawned + " copied=" + EnemySync.SwarmPiecesMirrored);
+                h.Check(SwarmCount(last, 0, false) == 0 && SwarmCount(partner, 0, false) == 0, s_tag + "s no piece left alive on either peer");
+                bool ended = last.Count == total && partner.Count == total;
+                foreach (KeyValuePair<int, PieceSample> piece in last)
+                { PieceSample other; ended &= partner.TryGetValue(piece.Key, out other) && other.Dead == piece.Value.Dead && (piece.Value.Dead || piece.Key == vanishing); }
+                h.Check(ended, s_tag + "s all " + total + " pieces ended the same way on both peers (died: " + SwarmCount(last, 0, true) + ")");
+                // The last piece vanished on its owner without dying: gone on the mirror too, and not counted as a kill.
+                PieceSample gone, goneThere;
+                if (last.TryGetValue(vanishing, out gone) && partner.TryGetValue(vanishing, out goneThere) && !gone.Dead && !goneThere.Dead)
+                    h.Check(!gone.Alive && !goneThere.Alive, s_tag + "s a piece that vanished on its owner is removed on the mirror");
+                else h.Note(s_tag + "s vanish check skipped: the owner changed, the last piece was killed instead");
+                h.Check(!EnemySync.Inspect(chosen.Key).Present, s_tag + "s the first Swarm stays dead on this peer");
+            }
+            finally
+            {
+                Own.Mortality.DamageReciever.IsImmortal = immortal; Own.Level.OnLevelUpGameObject = blast; Plugin.Teleport(Own, saved);
+            }
+        }
         static IEnumerator Hard(TestHarness h)
         {
             DifficultyMode old = DifficultyController.Instance.Difficulty;
@@ -621,14 +801,23 @@ namespace OriCoop
             if (Own == null || P2Context.P2 == null) { h.Check(false, s_tag + " needs both Oris"); yield break; }
             NetTestHarness.BotLX = 0f; NetTestHarness.BotButtons = 0;
             s_offset = 0; s_tag = "E5";
-            yield return Jumper(h); yield return DamageOnce(h); yield return Death(h); yield return Hard(h);
+            // ORICOOP_E5_ONLY=SWARM: only the Swarm scenario (T-195), with and without lag; a shortcut while working on it.
+            if (Environment.GetEnvironmentVariable("ORICOOP_E5_ONLY") == "SWARM")
+            {
+                yield return Swarm(h);
+                s_offset = 1000; s_tag = "E5L"; NetPlay.SetSim(100, 0, 0f, 0f);
+                try { yield return Wait(1f); yield return Swarm(h); }
+                finally { NetPlay.SetSim(0, 0, 0f, 0f); s_offset = 0; s_tag = "E5"; }
+                yield break;
+            }
+            yield return Jumper(h); yield return DamageOnce(h); yield return Death(h); yield return Swarm(h); yield return Hard(h);
             // E6 (every enemy family, ~5 min with E6L) is opt-in: ORICOOP_NET_E6=1, with ORICOOP_HARNESS_SEC raised (default suite budget 420 s).
             bool e6 = Environment.GetEnvironmentVariable("ORICOOP_NET_E6") == "1";
             Dictionary<string, Packet> families = new Dictionary<string, Packet>(); s_tag = "E6";
             if (e6) { yield return SweepFamilies(h, families); yield return EveryFamily(h, families); }
             // Same scenarios at 200 ms RTT (100 ms each way), the playtest relay's latency.
             s_offset = 1000; s_tag = "E5L"; NetPlay.SetSim(100, 0, 0f, 0f);
-            try { yield return Wait(1f); yield return Jumper(h); yield return DamageOnce(h); yield return Death(h);
+            try { yield return Wait(1f); yield return Jumper(h); yield return DamageOnce(h); yield return Death(h); yield return Swarm(h);
                 if (e6) { s_tag = "E6L"; yield return EveryFamily(h, families); } }
             finally { NetPlay.SetSim(0, 0, 0f, 0f); s_offset = 0; s_tag = "E5"; }
         }

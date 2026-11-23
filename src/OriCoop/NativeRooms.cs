@@ -108,25 +108,32 @@ namespace OriCoop
                 && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ROOMS_NATIVE_OFF") == "1";
             if (!mutated)
             {
-                if (p.Busy) RoomRow(rows, L10n.T("rooms.connecting", zh), p.Message, null);
+                // T-200: while the 我的房间 menu waits for the room service it says which server it is asking (RoomsPanel
+                // stops waiting after a few seconds); a server that did not answer gets a "try again" row.
+                if (p.Busy)
+                    RoomRow(rows, L10n.T("rooms.connecting", zh),
+                        s_page == PageRoomsMenu && p.Message.Length == 0 ? RF("myrooms.connecting.desc", zh, p.GameServer ?? "") : p.Message, null);
                 else
                 {
-                    if (p.Message.Length > 0)
+                    if (s_page == PageRoomsMenu && p.OfflineRetry)
+                        RoomRow(rows, L10n.T("myrooms.retry", zh), RF("myrooms.retry.desc", zh, p.GameServer ?? ""), delegate { RoomsPanel.Open(); });
+                    else if (p.Message.Length > 0)
                         RoomRow(rows, RF("rooms.title", zh, p.ServiceName), p.Message, null);
                     if (s_page == PageRoomsMenu)
                     {
                         // T-173 (owner's sketch): 新建房间 / 加入房间 / 房间列表; no 房间列表 while the player has no rooms.
                         int count = Rooms.MyRooms.RoomCount;   // rooms on the selected server only (review: other servers' rooms cannot be entered here)
+                        string status = MyRoomsStatus(p, count, zh);   // T-200: which server, how many rooms, or that it cannot be reached
                         foreach (Ui.MyRoomsMenuItem item in Ui.MyRoomsMenu.Items(count))
                         {
                             if (item == Ui.MyRoomsMenuItem.Create)
-                                RoomRow(rows, L10n.T("myrooms.create", zh), L10n.T(p.Online ? "myrooms.create.desc" : "rooms.offline", zh),
+                                RoomRow(rows, L10n.T("myrooms.create", zh), L10n.T(p.Online ? "myrooms.create.desc" : "rooms.offline", zh) + status,
                                     delegate { if (p.Online) BeginMyRoomCreate(); });
                             else if (item == Ui.MyRoomsMenuItem.Join)
-                                RoomRow(rows, L10n.T("myrooms.join", zh), L10n.T("myrooms.join.desc", zh),
+                                RoomRow(rows, L10n.T("myrooms.join", zh), L10n.T("myrooms.join.desc", zh) + status,
                                     delegate { MyRoomsPages.Show(MyRoomsPages.Page.Join, BackToMyRoomsMenu); });
                             else
-                                RoomRow(rows, L10n.T("myrooms.list", zh), L10n.T("myrooms.list.desc", zh),
+                                RoomRow(rows, L10n.T("myrooms.list", zh), L10n.T("myrooms.list.desc", zh) + status,
                                     delegate { MyRoomsPages.Show(MyRoomsPages.Page.List, BackToMyRoomsMenu); });
                         }
                     }
@@ -216,6 +223,19 @@ namespace OriCoop
             }
             RoomRow(rows, L10n.T("common.back", zh), L10n.T("common.back.desc", zh), RoomBack);
             return rows.ToArray();
+        }
+
+        // T-200: one more tooltip line for the 我的房间 menu rows: the server the page asked and what it found there (rooms,
+        // none yet, or no answer), plus a note when this PC has rooms on other servers (the page lists the selected one's).
+        static string MyRoomsStatus(RoomsPanel p, int count, bool zh)
+        {
+            string server = p.GameServer ?? "";
+            if (server.Length == 0 || !p.Available) return "";
+            string text = "\n" + (!p.Online ? RF("myrooms.status.offline", zh, server)
+                : count > 0 ? RF("myrooms.status.rooms", zh, server, count) : RF("myrooms.status.none", zh, server));
+            int other = p.OtherServerRooms;
+            if (other > 0) text += "\n" + RF("myrooms.status.other", zh, other);
+            return text;
         }
 
         static string RoomDescription(RoomsPanel p, RoomBackupInfo room, bool zh)

@@ -791,6 +791,7 @@ namespace OriCoop
             try
             {
                 if (!CoopTrace.On("net", 1)) return;
+                reason = NetPlay.OwnDisconnectReason(s_peer, reason);   // T-201: a local leave reads "left: <why>", not the text sent to the partner
                 if (CoopTrace.Changed("hooks.net.disconnect", reason)) CoopTrace.Event("net", "disconnect", "reason", reason);
             }
             catch { }
@@ -813,7 +814,7 @@ namespace OriCoop
             string state = NetPlay.CurrentPhase + ":" + (peer == null ? "-" : peer.State.ToString());
             if (CoopTrace.Changed("hooks.net.state", state))
                 CoopTrace.Event("net", "connection", "phase", NetPlay.CurrentPhase, "state", peer == null ? "-" : peer.State.ToString(),
-                    "reason", peer == null ? "" : peer.DisconnectReason);
+                    "reason", peer == null ? "" : NetPlay.OwnDisconnectReason(peer, peer.DisconnectReason));
             if (!NetPlay.Enabled || !CoopTrace.On("net", 2) || !CoopTrace.Every("net.sample", 1f)) return;
             CoopTrace.Sample("net", "state", "rtt_ms", NetPlay.RttMs, "loss_percent", NetPlay.LossPercent,
                 "ReliablePending", peer == null ? 0 : peer.Stats.ReliablePending, "ReliableResends", peer == null ? 0L : peer.Stats.ReliableResends,

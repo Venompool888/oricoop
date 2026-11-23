@@ -160,7 +160,7 @@ static class EnemyTests
             Check(states[1].OwnerSeat == 1 && states[1].Epoch == 3, "rejoin refresh");
         });
     }
-    static int Main() { VictimHitsTests.Run(Run); AuthorityTests(); EnemyOwnerPolicyTests.Run(Run); WireTests(); Console.WriteLine("Enemies: " + count + " cases, " + failures + " failed"); return failures == 0 ? 0 : 1; }
+    static int Main() { VictimHitsTests.Run(Run); SwarmFamilyTests.Run(Run); AuthorityTests(); EnemyOwnerPolicyTests.Run(Run); WireTests(); Console.WriteLine("Enemies: " + count + " cases, " + failures + " failed"); return failures == 0 ? 0 : 1; }
     static byte[] Bytes(Action<BinaryWriter> write)
     { MemoryStream s = new MemoryStream(); BinaryWriter w = new BinaryWriter(s); write(w); w.Flush(); return s.ToArray(); }
     static BinaryReader Reader(byte[] bytes) { return new BinaryReader(new MemoryStream(bytes)); }
@@ -209,6 +209,24 @@ static class EnemyTests
             bool late = false;
             for (int f = 0; f <= 90; f++) { float t = f / 60f; bool allowed = sim.Allows(1, 1, 2, t, 150f, true); if (t >= 1f) late |= allowed; }
             Check(!late, "a never granted takeover is dropped within 1 s");
+        });
+        // T-197: a stone copy that is not simulated here only moves to a state of the lease as it is now. Playtest 4: the
+        // partner took the lease back (epoch 4) and this PC's last state from it was two epochs old (epoch 2): the
+        // stone jumped 31 units to where the partner had left it, then back when the first epoch-4 state arrived.
+        Run("stone follower ignores states of older lease epochs", delegate {
+            Check(OriCoop.Authority.StoneLeaseSimulation.FollowsState(4, 4, false, 3), "the owner's state of the current epoch is followed");
+            Check(!OriCoop.Authority.StoneLeaseSimulation.FollowsState(2, 4, false, 3), "the same owner's state from two epochs ago is not");
+            Check(!OriCoop.Authority.StoneLeaseSimulation.FollowsState(3, 4, false, 0), "the previous owner's state is not followed once the lease moved on");
+            Check(!OriCoop.Authority.StoneLeaseSimulation.FollowsState(0, 1, false, 0), "no state yet in a first epoch: stay");
+        });
+        // T-197: a PC that just got the lease waits a moment before simulating; it may take the state the previous
+        // owner handed over, nothing older (playtest 4, rejoin: owner at epoch 6 moved its stone to an epoch-3 state).
+        Run("stone owner waiting takes only the handed-over state", delegate {
+            Check(OriCoop.Authority.StoneLeaseSimulation.FollowsState(2, 3, true, 1), "state of the owner right before us, lease just arrived");
+            Check(!OriCoop.Authority.StoneLeaseSimulation.FollowsState(2, 3, true, 3), "the same state after we simulated in our epoch (session reset)");
+            Check(!OriCoop.Authority.StoneLeaseSimulation.FollowsState(3, 6, true, 6), "a state three epochs old (the playtest's rejoin)");
+            Check(!OriCoop.Authority.StoneLeaseSimulation.FollowsState(3, 5, true, 0), "a release (owner 0) lies between that state and our lease");
+            Check(!OriCoop.Authority.StoneLeaseSimulation.FollowsState(6, 6, true, 0), "our own epoch: nobody else publishes in it");
         });
         // T-049: two players pushing the same stone the same way move it faster (x1.5); anything else keeps normal speed.
         Run("co-push same direction speeds up", delegate {

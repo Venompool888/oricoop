@@ -239,6 +239,8 @@ namespace OriCoop
             string lower = (raw ?? "").ToLowerInvariant();
             // T-148: a refused C-server join ends with its L10n key (server.err.noroom / full / version / token) as the reason.
             if (lower.StartsWith("server.err.")) return raw;
+            // T-201: the server never answered the connection request (down, wrong address, or the network drops it).
+            if (lower.Contains("no answer")) return "lobby.error.noanswer";
             if (timedOut || lower.Contains("timeout") || lower.Contains("timed out")) return "lobby.error.timeout";
             if (lower.Contains("not found") || lower.Contains("no such room")) return "lobby.error.room";
             if (lower.Contains("full")) return "lobby.error.full";
@@ -1092,7 +1094,9 @@ namespace OriCoop
         static void LayoutServerRows(int count)
         {
             if (s_mgr == null || s_items.Count < 2) return;
-            bool list = s_page == PageServerList || s_page == PageServerRemove || (IsRoomsPage && s_page != PageRoomsMenu);
+            // T-200: the 我的房间 menu has five rows when the server did not answer and this PC has rooms (try again / new /
+            // join / list / back): more than the orb's fixed places, so it scrolls like a list then.
+            bool list = s_page == PageServerList || s_page == PageServerRemove || (IsRoomsPage && (s_page != PageRoomsMenu || count > MaxItems));
             s_mgr.ItemDirection = list ? CleverMenuItemSelectionManager.Direction.TopToBottom : s_itemDirection;
             int focus = Mathf.Clamp(s_mgr.Index, 0, Math.Max(0, count - 1));
             if (focus < s_listTop) s_listTop = focus;

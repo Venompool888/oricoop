@@ -486,6 +486,32 @@ namespace OriCoop.Rooms
         }
     }
 
+    // T-200 (playtest 4): how long the 我的房间 page may show "connecting" while the room service's first refresh runs.
+    // The refresh is a chain of jobs on one worker thread, each bounded only by its HTTP timeout, so the page itself
+    // gives up after LimitSeconds without a break and shows "cannot connect" with a retry. Call Expired every frame;
+    // it is true once per wait that lasted the whole limit.
+    public sealed class RoomBusyWatch
+    {
+        readonly double limit;
+        double since = -1;
+
+        public RoomBusyWatch(double limitSeconds) { limit = limitSeconds; }
+
+        public double LimitSeconds { get { return limit; } }
+
+        // A new refresh starts (the page was reopened): its wait counts from now, also when the previous one never paused.
+        public void Restart() { since = -1; }
+
+        public bool Expired(bool waiting, double now)
+        {
+            if (!waiting) { since = -1; return false; }
+            if (since < 0) { since = now; return false; }
+            if (now - since < limit) return false;
+            since = -1;
+            return true;
+        }
+    }
+
     // T-173 (review F23): callers waiting for the room service's first refresh. End always answers every waiter, so a
     // refresh chain cut short (a dropped reply) can never leave them queued for good; Drop forgets them (cancel).
     public sealed class RoomReadyGate

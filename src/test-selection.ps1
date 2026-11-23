@@ -18,6 +18,10 @@ $TS_Suites = [ordered]@{
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
     'titlejoin-cs' = @('run-titlejoin.ps1', '-Transport', 'cserver')   # T-171/T-173: the C-server room pages (房间管理页) run only here
+    'titlejoin-prologue' = @('run-titlejoin.ps1', '-Prologue', 'skip')         # T-203: new game, the prologue on both PCs, the host's skip
+    'titlejoin-prologue-leave' = @('run-titlejoin.ps1', '-Prologue', 'leave')  # T-203: the guest leaves mid-prologue, joins again late
+    'titlejoin-prologue-cs' = @('run-titlejoin.ps1', '-Transport', 'cserver', '-Prologue', 'skip')   # T-203: the same over the C-server room page (playtest 4's path)
+    'titlejoin-prologue-hostquit' = @('run-titlejoin.ps1', '-Prologue', 'hostquit')   # T-203: the host quits mid-prologue
     'rooms'       = @('run-rooms.ps1')
 }
 $TS_AllSuites = @($TS_Suites.Keys)
@@ -44,7 +48,7 @@ $TS_MultiSeat = @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3')
 # --- module -> suites (see docs\modules.md for what each module contains)
 $TS_ModuleSuites = @{
     'M0' = $TS_AllSuites
-    'M1' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'coopsave')
+    'M1' = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-cs', 'coopsave')   # T-148: a refused C-server join (no retry loop, reason on the join page) is checked only by titlejoin over the C-server
     'M2' = @('local', 'net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3', 'coopsave')   # seats / authority: every multi-seat suite (T-165)
     'M3' = @('net', 'net-3p', 'net-3p-cs')   # T-115: guest-to-guest world messages ride the P2P host's forward table; T-165: digests on three over the C-server
     'M4' = @('net', 'net-3p', 'net-4p')   # T-165: 4P enemy owner and duplicate hit
@@ -60,12 +64,20 @@ $TS_FileSuites = [ordered]@{
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
     'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-cs')
+    # T-203: the shared new-game prologue. Its own code and test run the two prologue suites, the existing-save join
+    # (titlejoin: nothing of it may start there) and, for the input hook and the intro hold it stands next to, net + local.
+    'SharedPrologue'   = @('titlejoin-prologue', 'titlejoin-prologue-leave', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit', 'titlejoin', 'net', 'local')
+    'PrologueCore'     = @('titlejoin-prologue', 'titlejoin-prologue-leave', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit')
+    'TitlePrologueTest' = @('titlejoin-prologue', 'titlejoin-prologue-leave', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit')
+    'GameIntroHost'    = $TS_ModuleSuites['M5'] + @('titlejoin-prologue')                               # its module + the intro input hold stands back for the prologue
+    'SessionScreens'   = $TS_ModuleSuites['M6'] + @('titlejoin-prologue', 'titlejoin-prologue-leave')   # its module + the transfer screen during / after the prologue
+    'TitleReturn'      = $TS_ModuleSuites['M2'] + @('titlejoin-prologue', 'titlejoin-prologue-leave')   # its module + a guest's own return to the title / leaving mid-prologue
     # T-165: the co-op save lineage (phase L) runs after every net suite: the late guest's commit and the promoted host's
     # save only with 3-4 players, and SaveSync's reload in the 4P wipe. These save files (M7) select every multi-seat suite,
     # and the direct 'net' suite: SaveSync / GuestJoin are shared core (every phase, src\phase-map.psd1), but M7's only
     # 2-player suite is net-newgame, which runs just INTRO,MOVE,W before a merge (T-096), so R, S4, P, WO, CAM, CUT never ran.
     'CoopSaveTest'     = @('coopsave') + $TS_MultiSeat; 'SaveSync' = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
-    'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
+    'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('net', 'coopsave', 'titlejoin', 'titlejoin-prologue', 'titlejoin-prologue-leave', 'net-newgame', 'rooms') + $TS_MultiSeat
     'LoadRestart'      = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
     # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
     'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')
@@ -74,6 +86,7 @@ $TS_FileSuites = [ordered]@{
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
     'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
     'RoomLeaveFlow'    = @('titlejoin', 'titlejoin-cs', 'rooms')   # T-176: the leave flow's real-game checks run in titlejoin cserver
+    'CServerRoomList'  = @('titlejoin', 'titlejoin-cs'); 'NativeCsRooms' = @('local', 'titlejoin', 'titlejoin-cs')   # T-201: a room list that cannot be read (the server list's room page): titlejoin cserver
     'MenuSoulFlameGuard' = @('net'); 'MenuSoulFlameTest' = @('net')   # T-179 skill tree B: net phase S4
     'TitleAnyKey'      = @('local', 'titlejoin'); 'TitleAnyKeyTest' = @('local')   # T-180 stuck key on press-any-key: run-test's title scenario
     'ImeGuard'         = @('local')   # T-181 IME off: checked in run-test's lifecycle scenario

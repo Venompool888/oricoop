@@ -22,6 +22,7 @@ namespace OriCoop
         public static float Progress { get; private set; }      // 0..1 while receiving, -1 when unknown
         public static int FocusEvents, SuppressedResumeScreens, BackgroundFixes, SaveScreensShown;
         public static bool Blocking { get { return Phase != SavePhase.None; } }
+        public static string WaitingText = "";                  // the transfer screen's headline as last drawn (tests)
         static bool s_failureShown, s_reflectionWarned;
         static float s_failedAt, s_phaseSince;
 
@@ -74,6 +75,9 @@ namespace OriCoop
             // Exception: a guest that picked an empty slot waits on the title for the host's save (GuestJoin.cs).
             // (Not while it asks which slot to overwrite: that slot list must stay visible and usable.)
             if (!Services.Session.LocalInGameplay && !(Host.GuestWaiting && !Host.GuestNeedsSlot)) return SavePhase.None;
+            // T-203: the host's new-game prologue plays on this PC too (SharedPrologue): that is what the player sees,
+            // with the host's input; the transfer screen comes back when it is over.
+            if (Host.PrologueWatching) return SavePhase.None;
             if (pending) return SavePhase.Loading;
             int have, total;
             if (Host.IncomingProgress(out have, out total) && total > 4)
@@ -89,7 +93,15 @@ namespace OriCoop
             [HarmonyPriority(Priority.First)]
             static bool Prefix(bool focusStatus)
             {
-                if (!Services.Net.Enabled) return true;
+                if (!Services.Net.Enabled)
+                {
+                    // T-201: offline the vanilla handler runs. After "exit to main menu" the game keeps running without
+                    // focus (vanilla PreventFocusPause), and vanilla menus take no input while GameController.IsFocused is
+                    // false, so the title menu looks alive but does not react. One log line per change tells that case
+                    // apart from a menu that really stopped taking input.
+                    Services.Log.Info("window focus " + (focusStatus ? "gained" : "lost") + " (offline): menus take input only while the game window has the focus");
+                    return true;
+                }
                 // Vanilla shows the resume screen (SuspendAll) and turns runInBackground off two
                 // frames later, which freezes Unity and times the partner out. Online: neither.
                 Application.runInBackground = true;
@@ -242,7 +254,10 @@ namespace OriCoop
                 return;
             }
             string text;
-            if (Phase == SavePhase.Waiting) { text = Host.Text("session.waiting"); }
+            // T-203: a player who arrived after the host's prologue began waits for its end, and is told so.
+            bool prologue = Phase == SavePhase.Waiting && Host.HostInPrologue;
+            if (prologue) { text = Host.Text("session.waiting_prologue"); }
+            else if (Phase == SavePhase.Waiting) { text = Host.Text("session.waiting"); }
             else if (Phase == SavePhase.Receiving) { text = Host.Text("session.receiving"); }
             else { text = Host.Text("session.loading"); }
             Color ink = new Color(Ink.r, Ink.g, Ink.b, fade), dim = new Color(InkDim.r, InkDim.g, InkDim.b, fade);
@@ -262,7 +277,9 @@ namespace OriCoop
                 float a = Mathf.Max(x, x + p), b = Mathf.Min(x + w, x + p + seg);
                 if (b > a) Fill(new Rect(a, y, b - a, bh), new Color(Glow.r, Glow.g, Glow.b, 0.8f * fade));
             }
-            string help = Phase == SavePhase.Waiting ? Host.Text("session.waiting_help") : Host.Text("session.loading_help");
+            string help = prologue ? Host.Text("session.waiting_prologue_help")
+                : Phase == SavePhase.Waiting ? Host.Text("session.waiting_help") : Host.Text("session.loading_help");
+            WaitingText = text;
             Text(new Rect(0, Screen.height - 110f * scale, Screen.width, 28f * scale), help, s_bodyZh, ink);
         }
 

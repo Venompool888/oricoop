@@ -11,6 +11,7 @@ namespace OriCoop.Rooms
         {
             public Func<RoomReply> Work;
             public Action<RoomReply> Done;
+            public Func<bool> Wanted;
             public RoomReply Reply;
         }
 
@@ -29,9 +30,18 @@ namespace OriCoop.Rooms
 
         public void Add(Func<RoomReply> work, Action<RoomReply> done)
         {
+            Add(work, done, null);
+        }
+
+        // T-200: `wanted` tells, when the job's turn comes, whether anyone still waits for it (it runs on the worker
+        // thread: read plain fields only). A job nobody waits for is not run; its reply is the error "cancelled".
+        // Requests abandoned by leaving a page (each can wait for its whole HTTP timeout on an unreachable server) no
+        // longer make the next request wait for all of them.
+        public void Add(Func<RoomReply> work, Action<RoomReply> done, Func<bool> wanted)
+        {
             lock (pending) pending.Enqueue(new Job
             {
-                Work = work, Done = done
+                Work = work, Done = done, Wanted = wanted
             });
             ready.Set();
         }
@@ -53,7 +63,12 @@ namespace OriCoop.Rooms
                 }
                 try
                 {
-                    job.Reply = job.Work();
+                    if (job.Wanted != null && !job.Wanted())
+                        job.Reply = new RoomReply
+                        {
+                            Error = "cancelled", Fields = new RoomWire.Fields()
+                        };
+                    else job.Reply = job.Work();
                 }
                 catch (Exception)
                 {

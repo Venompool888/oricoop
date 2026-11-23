@@ -33,6 +33,7 @@ namespace OriCoop
             public readonly Dictionary<int, float> RemotePushAts = new Dictionary<int, float>();
             public bool HasRemote;
             public uint StateEpoch, StateVersion;
+            public uint SimEpoch;   // T-197: the lease epoch this PC last simulated the stone in as its owner (kept over session resets)
             public Vector3 RemotePos, RemoteVel;
             public float RemoteRotZ, RemoteAngularZ, RemoteAt;
             public float SentAt = -10f;
@@ -63,6 +64,16 @@ namespace OriCoop
         static readonly System.Reflection.FieldInfo s_fBody = AccessTools.Field(typeof(PushPullBlock), "m_rigidbody");
         static readonly System.Reflection.FieldInfo s_fOrigin = AccessTools.Field(typeof(PushPullBlock), "m_originalPosition");
         static readonly System.Reflection.FieldInfo s_fGrabbed = AccessTools.Field(typeof(PushPullBlock), "m_isGrabbed");
+        static readonly System.Reflection.FieldInfo s_fPushable = AccessTools.Field(typeof(SeinGrabBlock), "m_pushable");
+        static readonly System.Reflection.FieldInfo s_fDistance = AccessTools.Field(typeof(SeinGrabBlock), "m_distanceToBlock");
+        static readonly System.Reflection.MethodInfo s_mRelease = AccessTools.Method(typeof(SeinGrabBlock), "ReleaseBlock");
+        static readonly System.Reflection.MethodInfo s_mGrab = AccessTools.Method(typeof(SeinGrabBlock), "GrabBlock");
+        static readonly System.Reflection.MethodInfo s_mSetInRange = AccessTools.PropertySetter(typeof(SeinGrabBlock), "InRange");
+        // T-197 mutations (the PE / PF / PG checks of net phase P must fail): the second grabber is dropped as before;
+        // a copy follows / is seeded from a state of an older lease epoch; a suspended Ori keeps its grab.
+        internal static readonly bool s_mutateDropHelper = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_DROP_HELPER") == "1";
+        internal static readonly bool s_mutateStaleState = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_STALE_STATE") == "1";
+        internal static readonly bool s_mutateKeepDownedGrab = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_KEEP_DOWNED_GRAB") == "1";
         static float GetIgnoreTime(PushPullBlock b) { return (float)s_fIgnore.GetValue(b); }
         static void SetIgnoreTime(PushPullBlock b, float t) { s_fIgnore.SetValue(b, t); }
         static Collider[] s_colliders(PushPullBlock b) { return (Collider[])s_fColliders.GetValue(b); }
@@ -72,7 +83,7 @@ namespace OriCoop
         static int s_layerDefault = -1, s_layerIgnore = -1;
 
         // counters for tests / logs
-        public static int StatesSent, StatesApplied, PuppetCallsIgnored, Denied, PushOuts, PuppetPushOuts, Snaps;
+        public static int StatesSent, StatesApplied, PuppetCallsIgnored, Denied, PushOuts, PuppetPushOuts, Snaps, SuspendedReleases;
         public static bool Enabled = true;
 
         static void Log(string msg)
@@ -163,9 +174,16 @@ namespace OriCoop
             if (!Online) return true;
             DynamicLease lease = DynamicLease.For(st.Key);
             float now = Time.realtimeSinceStartup;
+            bool pushing = now < st.InteractionUntil;
+            // T-197: no takeover prediction while the owner itself pushes. The arbiter keeps an active owner, so the
+            // prediction only let this PC's copy run ahead for 2 RTT and jump back when the lease was refused; the Ori
+            // lost the stone in that jump. This Ori holds the stone the owner moves (Allow) until the owner stops.
+            if (pushing && !s_mutateDropHelper && lease.Owner != 0 && !lease.Owns && lease.RemoteActive
+                && lease.StateEpoch == lease.Epoch && now - lease.ReceivedAt < OwnerPushWindow) pushing = false;
             return st.Simulation.Allows(lease.Owner, lease.Epoch, AuthoritySource.Current.LocalSeat,
-                now, NetPlay.RttMs, now < st.InteractionUntil);
+                now, NetPlay.RttMs, pushing);
         }
+        const float OwnerPushWindow = 0.3f;   // the owner publishes 20 states a second
 
         public static St StateOf(PushPullBlock b) { return b == null ? null : InstOf(b).St; }
         public static bool IsLocalOwner(PushPullBlock b) { return b != null && LocalOwns(InstOf(b).St) && Simulates(InstOf(b).St); }
@@ -213,17 +231,43 @@ namespace OriCoop
             st.Hits.RemoveAll(hit => hit.Until < Time.realtimeSinceStartup);
             if (st.Lease.Data == null) return;
             if (st.HasRemote && st.StateEpoch == st.Lease.StateEpoch && st.StateVersion == st.Lease.StateVersion) return;
-            using (BinaryReader r = new BinaryReader(new MemoryStream(st.Lease.Data)))
-            {
-                Vector3 position = new Vector3(r.ReadSingle(), r.ReadSingle(), b.Position.z); float rotation = r.ReadSingle();
-                Vector3 velocity = new Vector3(r.ReadSingle(), r.ReadSingle(), 0f);
-                float angular = r.ReadSingle();
-                if (!LeaseMath.Finite(position) || !LeaseMath.Finite(rotation)
-                    || !LeaseMath.Finite(velocity) || !LeaseMath.Finite(angular)) return;
-                st.RemotePos = position; st.RemoteRotZ = rotation; st.RemoteVel = velocity; st.RemoteAngularZ = angular;
-            }
+            Pose pose;
+            if (!Decode(st.Lease.Data, b.Position.z, out pose)) return;
+            st.RemotePos = pose.Position; st.RemoteRotZ = pose.RotZ; st.RemoteVel = pose.Velocity; st.RemoteAngularZ = pose.AngularZ;
             st.HasRemote = true; st.RemoteAt = st.Lease.ReceivedAt;
             st.StateEpoch = st.Lease.StateEpoch; st.StateVersion = st.Lease.StateVersion; StatesApplied++;
+        }
+
+        struct Pose { public Vector3 Position, Velocity; public float RotZ, AngularZ; }
+
+        // A published stone state (SendState's bytes); false when it is short or not finite.
+        static bool Decode(byte[] data, float z, out Pose pose)
+        {
+            pose = new Pose();
+            if (data == null || data.Length < 24) return false;
+            using (BinaryReader r = new BinaryReader(new MemoryStream(data)))
+            {
+                pose.Position = new Vector3(r.ReadSingle(), r.ReadSingle(), z); pose.RotZ = r.ReadSingle();
+                pose.Velocity = new Vector3(r.ReadSingle(), r.ReadSingle(), 0f);
+                pose.AngularZ = r.ReadSingle();
+            }
+            return LeaseMath.Finite(pose.Position) && LeaseMath.Finite(pose.RotZ) && LeaseMath.Finite(pose.Velocity) && LeaseMath.Finite(pose.AngularZ);
+        }
+
+        // T-197: where a copy that starts to simulate (scene loaded, session reset) is put: the newest state anyone
+        // published, this PC's own included. Before, only the partner's last state counted, so the PC that pushed the
+        // stone last put it back where the partner had left it earlier (playtest 4: both PCs saw the stone go from
+        // -246 to -279 when the guest rejoined, and the two PCs disagreed by 12 units after walking back in).
+        static bool SeedPose(St st, float z, out Pose pose)
+        {
+            pose = new Pose();
+            if (s_mutateStaleState)
+            {
+                pose.Position = st.RemotePos; pose.RotZ = st.RemoteRotZ; pose.Velocity = st.RemoteVel; pose.AngularZ = st.RemoteAngularZ;
+                return st.HasRemote;
+            }
+            StateUpdate latest = AuthoritySource.Current.LatestState(st.Key);
+            return latest != null && Decode(latest.Data, z, out pose);
         }
 
         // ---------------------------------------------------------------- per-pair collision
@@ -276,7 +320,9 @@ namespace OriCoop
 
         static void SetIgnore(PushPullBlock b, PlatformMovement pm, bool ignore)
         {
-            if (b == null || pm == null || !Ready(b) || !pm.gameObject.activeInHierarchy) return;
+            if (b == null || pm == null || !Ready(b)) return;
+            // An Ori that is switched off (a downed partner's hidden copy) can still be taken off the list (T-197).
+            if (ignore && !pm.gameObject.activeInHierarchy) return;
             Inst i = InstOf(b);
             bool has = i.Ignored.Contains(pm);
             if (has == ignore) return;
@@ -362,12 +408,170 @@ namespace OriCoop
             if (Simulates(st))
             {
                 st.Seeded = true;
-                if (rb != null && rb.isKinematic) { rb.isKinematic = false; if (st.HasRemote && LeaseMath.Finite(st.RemoteVel)) rb.velocity = st.RemoteVel; }
+                if (rb != null && rb.isKinematic) { rb.isKinematic = false; if (HandedOver(st) && LeaseMath.Finite(st.RemoteVel)) rb.velocity = st.RemoteVel; }
                 return true;
             }
             Denied++;
-            SetIgnore(b, pm, false);
+            // T-197: the owner is pushing, so this Ori's grab does not move the stone (the owner's simulation does, faster
+            // when both push the same way: CoPush). It still holds the stone: keep ignoring it, as the game does for a
+            // grabbing Ori, so the copy that follows the owner cannot shove it out of its hold. Before, the hold was
+            // dropped here and the player fell out of the push state (playtest 4).
+            SetIgnore(b, pm, !s_mutateDropHelper && (what == "grab" || what == "push"));
             return false;
+        }
+
+        // The last remote state is the one the lease came from (the previous epoch, or this one while predicting): its
+        // velocity carries over when we start to simulate. An older state's velocity is not the stone's any more (T-197).
+        static bool HandedOver(St st)
+        {
+            return st.HasRemote && (s_mutateStaleState || st.StateEpoch + 1 >= DynamicLease.For(st.Key).Epoch);
+        }
+
+        // Is this Ori holding this stone (game state: SeinGrabBlock)?
+        static bool HeldBy(SeinCharacter s, PushPullBlock b)
+        {
+            if (s == null || s.Abilities == null || s.Abilities.GrabBlock == null || !s.Abilities.GrabBlock.IsGrabbing) return false;
+            return ReferenceEquals(s_fPushable.GetValue(s.Abilities.GrabBlock), b);
+        }
+        static bool HeldByLocal(PushPullBlock b)
+        {
+            if (HeldBy(P2Context.P1, b)) return true;
+            foreach (Puppet p in Players.Remotes) if (p.IsLocal && HeldBy(p.Sein, b)) return true;
+            return false;
+        }
+
+        // T-197: the game's own "which stone is in front of me" ray (SeinGrabBlock.DetectPushPullBlock), with two changes
+        // for co-op. 1) Another Ori (or its light spirit) between this one and the stone does not hide the stone: two
+        // players at the same face stand inside each other, and the game's ray stopped at the partner's capsule, so
+        // the grab ended as soon as the two drifted apart. 2) An Ori that already holds a stone someone else moves (a
+        // helper, or any puppet) may be a little further away than the game's 0.9: its copy of the stone lags the
+        // owner's by the network delay.
+        const float HoldSlack = 0.8f;
+        static readonly List<Transform> s_oriRoots = new List<Transform>();
+        static bool s_grabRayFailed;
+
+        static bool OriCollider(Collider c)
+        {
+            foreach (Transform root in s_oriRoots) if (root != null && c.transform.IsChildOf(root)) return true;
+            // Every Ori's light spirit (the game's class Ori) floats around it and has a collider of its own; the
+            // partner's spirit drifting in front of the stone face ended a grab the same way as the partner itself.
+            return c.GetComponentInParent<global::Ori>() != null;
+        }
+
+        static IPushable Detect(SeinGrabBlock grab) { return Detect(grab, false); }
+
+        static IPushable Detect(SeinGrabBlock grab, bool holdingReach)
+        {
+            s_fDistance.SetValue(grab, 0f);
+            PlatformMovement pm = grab.PlatformMovement;
+            float x = pm.transform.localScale.x;
+            bool left = grab.FaceLeft;
+            Ray ray = new Ray(pm.HeadPosition, pm.LocalToWorld(left ? -Vector2.right : Vector2.right));
+            bool near = false;
+            for (int n = 0; n < PushPullBlock.All.Count; n++)
+                if (Vector3.Distance(PushPullBlock.All[n].Position, ray.origin) < 10f) near = true;
+            if (!near) return null;
+            float reach = x * grab.ReachDistance;
+            PushPullBlock held = grab.IsGrabbing ? s_fPushable.GetValue(grab) as PushPullBlock : null;
+            if (holdingReach || (Online && held != null && Ready(held) && (Players.RemoteContext || IsPuppet(pm) || !Simulates(InstOf(held).St)))) reach += HoldSlack;
+            s_oriRoots.Clear();
+            if (P2Context.P1 != null) s_oriRoots.Add(P2Context.P1.transform);
+            foreach (Puppet p in Players.Remotes) if (p.Sein != null) s_oriRoots.Add(p.Sein.transform);
+            if (P2Context.P2 != null) s_oriRoots.Add(P2Context.P2.transform);
+            RaycastHit best = new RaycastHit(); bool found = false;
+            foreach (RaycastHit hit in Physics.RaycastAll(ray, reach))
+            {
+                if (hit.collider == null || OriCollider(hit.collider)) continue;
+                if (!found || hit.distance < best.distance) { best = hit; found = true; }
+            }
+            if (!found || !best.collider.attachedRigidbody
+                || Vector3.Dot(left ? Vector3.right : Vector3.left, best.normal) <= Mathf.Cos(Mathf.PI / 4f)) return null;
+            PushPullBlock block = best.collider.attachedRigidbody.GetComponent<PushPullBlock>();
+            if (!block) return null;
+            s_fDistance.SetValue(grab, best.distance);
+            return block;
+        }
+
+        [HarmonyPatch(typeof(SeinGrabBlock), "DetectPushPullBlock")]
+        static class GrabRay
+        {
+            static bool Prefix(SeinGrabBlock __instance, ref IPushable __result)
+            {
+                if (!Enabled || s_mutateDropHelper || s_grabRayFailed || __instance == null || __instance.Sein == null) return true;
+                try { __result = Detect(__instance); return false; }
+                catch (Exception e)
+                {
+                    s_grabRayFailed = true;   // the game's own ray from now on
+                    Plugin.Log.LogWarning("[phys] grab ray: " + e);
+                    return true;
+                }
+            }
+        }
+
+        // T-197: a puppet's grab is the game's own state, replayed from its owner's inputs, and the game starts a grab only
+        // on a new press of the grab key. A puppet that lost its hold for one frame (a position correction, a late
+        // landing) therefore stayed out of the push pose until its owner let go and grabbed again: "the other player
+        // does not see me pushing". While its owner reports that it pushes this stone (CoPush, every 0.1 s), a puppet
+        // that stands at the stone takes hold of it again.
+        public static int PuppetRegrabs;
+
+        [HarmonyPatch(typeof(SeinGrabBlock), "UpdateCharacterState")]
+        static class PuppetRegrab
+        {
+            static void Postfix(SeinGrabBlock __instance)
+            {
+                if (!Enabled || s_mutateDropHelper || !Online || __instance == null || __instance.IsGrabbing || __instance.Sein == null) return;
+                try { Regrab(__instance); }
+                catch (Exception e) { if (CoopTraceEvery("regrab", 5f)) Plugin.Log.LogWarning("[phys] regrab: " + e.Message); }
+            }
+        }
+
+        static void Regrab(SeinGrabBlock grab)
+        {
+            SeinCharacter s = grab.Sein;
+            PlatformMovement pm = grab.PlatformMovement;
+            if (s.IsSuspended || pm == null || !pm.IsOnGround || !IsPuppet(pm)) return;
+            // Only while its owner holds the grab key (Core.Input is the puppet's own input here): the game lets go on
+            // the key's release edge, and a hold taken after that edge would never end.
+            if (!Core.Input.Glide.IsPressed && !Core.Input.Grab.IsPressed) return;
+            int seat = Players.SeatOf(s);
+            float now = Time.realtimeSinceStartup;
+            PushPullBlock pushed = null;
+            foreach (KeyValuePair<PushPullBlock, Inst> pair in s_inst)
+            {
+                St st = pair.Value.St; int dir; float at;
+                if (pair.Key == null || st == null || !st.RemotePushDirs.TryGetValue(seat, out dir) || dir == 0
+                    || !st.RemotePushAts.TryGetValue(seat, out at) || now - at > CoPushRule.Fresh) continue;
+                pushed = pair.Key; break;
+            }
+            if (pushed == null || !Ready(pushed) || !ReferenceEquals(Detect(grab, true), pushed)) return;
+            s_fPushable.SetValue(grab, pushed);
+            s_mSetInRange.Invoke(grab, new object[] { true });
+            s_mGrab.Invoke(grab, null);
+            PuppetRegrabs++;
+            if (CoopTraceEvery("regrab" + seat, 1f)) Log("puppet P" + seat + " takes hold of " + InstOf(pushed).St.Name + " again (its owner reports pushing it)");
+        }
+
+        // T-197: SeinGrabBlock stops updating while its Ori is suspended (downed; in co-op the world keeps running), so
+        // the stone stayed "grabbed": slippery moving material, no release friction. On a slope it slid away faster
+        // and faster with nobody pushing (playtest 4: "it falls really fast"). The game itself lets go when a
+        // checkpoint is restored; do the same when the holder is suspended and the stone is not.
+        static void ReleaseSuspended(PushPullBlock b)
+        {
+            if (s_mutateKeepDownedGrab || b.IsSuspended) return;
+            s_oris.Clear();
+            if (P2Context.P1 != null) s_oris.Add(P2Context.P1);
+            foreach (Puppet p in Players.Remotes) if (p.Sein != null) s_oris.Add(p.Sein);
+            if (!NetPlay.Enabled && P2Context.P2 != null && !s_oris.Contains(P2Context.P2)) s_oris.Add(P2Context.P2);
+            foreach (SeinCharacter s in s_oris)
+            {
+                // Suspended, switched off (a downed partner's copy is hidden) or downed: its grab state is frozen.
+                if (s == null || !HeldBy(s, b) || !(s.IsSuspended || !s.gameObject.activeInHierarchy || Revive.IsDowned(s))) continue;
+                s_mRelease.Invoke(s.Abilities.GrabBlock, null);
+                SuspendedReleases++;
+                Log("release " + InstOf(b).St.Name + ": its holder " + Who(s.PlatformBehaviour.PlatformMovement) + " is suspended");
+                CoopTrace.Event("phys", "block.release.suspended", "id", InstOf(b).St.Id, "by", Who(s.PlatformBehaviour.PlatformMovement));
+            }
         }
 
         // T-049: which way our Ori moves the stone: Push goes the way it faces, Pull the other way; 0 = only holding.
@@ -623,6 +827,7 @@ namespace OriCoop
             Inst i = InstOf(b);
             St st = i.St;
             bool online = Online;
+            ReleaseSuspended(b);
             ApplyCoPush(b, st, online);
             if (online)
             {
@@ -630,12 +835,13 @@ namespace OriCoop
                 Rigidbody rb = s_body(b);
                 if (Simulates(st))
                 {
-                    if (!st.Seeded && st.HasRemote && rb != null)
+                    Pose seed;
+                    if (!st.Seeded && rb != null && SeedPose(st, rb.position.z, out seed))
                     {
-                        Quaternion rotation = Quaternion.Euler(0f, 0f, st.RemoteRotZ);
-                        if (LeaseMath.Finite(st.RemotePos) && LeaseMath.Finite(rotation))
+                        Quaternion rotation = Quaternion.Euler(0f, 0f, seed.RotZ);
+                        if (LeaseMath.Finite(seed.Position) && LeaseMath.Finite(rotation))
                         {
-                            rb.position = st.RemotePos; b.transform.position = st.RemotePos;
+                            rb.position = seed.Position; b.transform.position = seed.Position;
                             rb.rotation = rotation;
                         }
                     }
@@ -646,13 +852,14 @@ namespace OriCoop
                         if (rb != null && rb.isKinematic)
                         {
                             rb.isKinematic = false;
-                            if (st.HasRemote && LeaseMath.Finite(st.RemoteVel) && LeaseMath.Finite(st.RemoteAngularZ))
+                            if (HandedOver(st) && LeaseMath.Finite(st.RemoteVel) && LeaseMath.Finite(st.RemoteAngularZ))
                             { rb.velocity = st.RemoteVel; rb.angularVelocity = new Vector3(0f, 0f, st.RemoteAngularZ); }
                         }
                         Log("simulating " + st.Name + " here (owner P" + st.OwnerSeat + " epoch " + st.Epoch + ")");
                     }
                     if (LocalOwns(st))
                     {
+                        st.SimEpoch = st.Lease.Epoch;
                         while (st.Hits.Count > 0)
                         {
                             PendingHit hit = st.Hits[0]; st.Hits.RemoveAt(0);
@@ -663,14 +870,20 @@ namespace OriCoop
                 }
                 else if (rb != null)
                 {
-                    if (st.WasLocalOwner)
+                    // owns: the lease is ours, in the short wait before we simulate (StoneLeaseSimulation's readyAt). Our
+                    // Ori's grab stays as it is (T-197: it was cleared here, at the moment the lease arrived).
+                    bool owns = LocalOwns(st);
+                    if (st.WasLocalOwner && (!owns || s_mutateStaleState))
                     {
-                        SetIgnore(b, LocalPm, false);
+                        // T-197: an own Ori that still holds the stone keeps ignoring it (see Allow).
+                        if (s_mutateDropHelper || !HeldByLocal(b)) SetIgnore(b, LocalPm, false);
                         s_fGrabbed.SetValue(b, false);
+                        st.WasLocalOwner = false; Log("following " + st.Name + " (owner P" + st.OwnerSeat + " epoch " + st.Epoch + ")");
                     }
-                    if (st.WasLocalOwner) { st.WasLocalOwner = false; Log("following " + st.Name + " (owner P" + st.OwnerSeat + " epoch " + st.Epoch + ")"); }
                     rb.isKinematic = true;
-                    if (st.HasRemote)
+                    // T-197: only a state of the lease as it is now moves the copy; with an older one the stone jumped
+                    // to where the partner had left it earlier and back when the new owner's first state arrived.
+                    if (st.HasRemote && (s_mutateStaleState || StoneLeaseSimulation.FollowsState(st.StateEpoch, st.Lease.Epoch, owns, st.SimEpoch)))
                     {
                         float age = FollowAge(Time.realtimeSinceStartup - st.RemoteAt, NetPlay.RttMs);
                         Vector3 target = st.RemotePos + st.RemoteVel * age;
@@ -695,6 +908,7 @@ namespace OriCoop
             }
             if (online) KeepPuppetsOut(b, i);
             PushOutOris(b, i);
+            if (online) StandPuppets(b, i);
         }
 
         internal static float FollowAge(float age, float rttMs)
@@ -704,7 +918,8 @@ namespace OriCoop
 
         // A puppet's position is its owner's truth plus corrections written every step; letting it touch the stone in
         // the physics step made the stone stick / get dragged (the owner's game) and jitter. Puppets ignore stones in
-        // the simulation; push-out keeps them on top visually, and their ground rays still see the stone.
+        // the simulation; push-out keeps them on top visually, and StandPuppets tells them when they stand on one
+        // (their own ground detection is the ignored sweep / contact: T-198).
         static void KeepPuppetsOut(PushPullBlock b, Inst i)
         {
             float now = Time.realtimeSinceStartup;
@@ -720,6 +935,44 @@ namespace OriCoop
                 foreach (Collider c in cols) if (c != null && c.enabled && c.gameObject.activeInHierarchy) Physics.IgnoreCollision(c, cap, true);
             }
         }
+
+        // T-198: puppets ignore stones in the physics step (KeepPuppetsOut), and the game finds an Ori's ground with that
+        // same sweep / contact. A partner standing on a stone was therefore never "on ground" on this PC: gravity kept
+        // pulling it, the position correction kept lifting it back, and its state machine played the falling pose (on its
+        // own PC it stood). Report the stone under a puppet's feet to its movement the way the game's own ground hit does
+        // (moving platform + ground contact), once per step.
+        internal static readonly bool s_mutatePuppetAir = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PUPPET_STONE_AIR") == "1";
+        public static int PuppetStands;
+        const float StandAbove = 0.15f, StandBelow = 0.3f, StandGroundAngle = 60f;
+
+        static void StandPuppets(PushPullBlock b, Inst i)
+        {
+            if (s_mutatePuppetAir) return;
+            foreach (Puppet p in Players.Remotes)
+            {
+                if (p.IsLocal || p.Sein == null || !p.Sein.gameObject.activeInHierarchy) continue;
+                PlatformMovement pm = p.Sein.PlatformBehaviour.PlatformMovement;
+                // An Ori that grabs or bashes this stone is beside it, not on it.
+                if (pm == null || !pm.gameObject.activeInHierarchy || pm.IsSuspended || i.Ignored.Contains(pm)) continue;
+                CapsuleCollider cap = pm.GetComponent<CapsuleCollider>();
+                if (cap == null) continue;
+                Bounds ob = cap.bounds;
+                RaycastHit top;
+                if (!Top(b, ob.center.x, out top) || top.collider == null) continue;
+                float feet = ob.min.y - top.point.y;
+                // Standing band: resting on the surface (the two PCs' copies of the stone differ a little). A puppet that
+                // moves up (jumping off) is left alone; PlatformMovement.IsOnGround says no for it anyway.
+                if (!LeaseMath.Finite(feet) || feet > StandAbove || feet < -StandBelow || pm.LocalSpeedY > 0.0001f) continue;
+                Vector2 normal = pm.WorldToLocal(top.normal);
+                if (!PlatformMovement.IsGround(normal, top.collider, StandGroundAngle)) continue;
+                if (pm.MovingPlatforms != null) pm.MovingPlatforms.OnGroundMovingPlatform(top.collider.transform);
+                pm.OnCollisionGround(normal, top.collider);
+                PuppetStands++;
+            }
+        }
+
+        // Net test (PF): what a partner joining or leaving does to this PC's stones.
+        internal static void TestSessionReset() { ResetOwnership("test"); }
 
         static void ResetOwnership(string why)
         {
@@ -828,10 +1081,16 @@ namespace OriCoop
         // Surface height of the block's top at x (NaN if x is not over the block).
         public static float SurfaceY(PushPullBlock b, float x)
         {
-            bool any; Bounds bb = BlockBounds(b, out any);
             RaycastHit h;
-            if (!any || !Hit(b, new Vector3(x, bb.max.y + 1f, bb.center.z), Vector3.down, bb.size.y + 2f, out h)) return float.NaN;
-            return h.point.y;
+            return Top(b, x, out h) ? h.point.y : float.NaN;
+        }
+
+        // The point of the block's top surface at x (false if x is not over the block).
+        static bool Top(PushPullBlock b, float x, out RaycastHit h)
+        {
+            bool any; Bounds bb = BlockBounds(b, out any);
+            h = new RaycastHit();
+            return any && Hit(b, new Vector3(x, bb.max.y + 1f, bb.center.z), Vector3.down, bb.size.y + 2f, out h);
         }
 
         // How far an Ori is inside the block (0 = not inside) and the smallest move that gets it out.

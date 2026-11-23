@@ -36,6 +36,10 @@ namespace OriCoop
             return (float)StraightLineTime.GetValue(cam.StraightLineMotion) >= 1f;
         }
         public static bool PedestalWindow { get { return Time.realtimeSinceStartup < s_pedestalUntil; } }
+        // Test only (T-204): the window a lever push (12 s) or an ability pedestal (20 s) opens on every PC that plays
+        // it; stories started inside it stay local and are not replayed for partners. 0 closes it.
+        internal static void TestLocalOnlyWindow(float seconds)
+        { if (TestHarness.Enabled) s_pedestalUntil = seconds > 0f ? Time.realtimeSinceStartup + seconds : -1f; }
         static float CameraDistance(SeinCharacter own)
         {
             if (UI.Cameras.Current == null || UI.Cameras.Current.Camera == null || own == null) return 0f;
@@ -164,6 +168,32 @@ namespace OriCoop
                 LeverHoldsKept++;
                 Log("lever hold kept through a world apply " + new MoonGuid(__instance.MoonGuid) + " grabbed=" + LeverHold.Grabbed(__state)
                     + " inRange=" + LeverHold.InRange(__state) + " direction=" + __instance.Direction);
+            }
+        }
+        // T-204 (sweep after T-194): the map stone has the same kind of problem. Its saved state is one int that mixes
+        // the shared "Activated" with this PC's own "Highlighted" (my Ori stands at it: spirit flame locked with
+        // "mapStone", the orb parked in the stone), and MapStone.Serialize just overwrites it. A partner activating the
+        // stone while my Ori stood at it left my highlight on with nothing to take it off (only the activation story's
+        // UnhighlightMapStoneAction does, on the PC that plays it): no spirit flame until a reload. A live world apply
+        // now merges the two (Story/ObjectCore.cs MapStoneApply) and releases my highlight when the stone leaves it.
+        // Test-only mutation ORICOOP_MUTATE_STONE_RAW_APPLY=1: the partner's state is applied as it comes (pre-T-204).
+        static readonly bool s_mutateStoneRawApply = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_RAW_APPLY") == "1";
+        public static int StoneHighlightsReleased;
+        [HarmonyPatch(typeof(MapStone), "Serialize")]
+        static class MapStoneKeepsOwnHighlight
+        {
+            static void Prefix(MapStone __instance, Archive ar, out int __state)
+            { __state = s_mutateStoneRawApply || !StoryHost.Current.WorldApplying || !ar.Reading ? -1 : (int)__instance.CurrentState; }
+            static void Postfix(MapStone __instance, int __state)
+            {
+                if (__state < 0) return;
+                int incoming = (int)__instance.CurrentState, resolved = MapStoneApply.Resolve(__state, incoming);
+                if (MapStoneApply.ReleaseHighlight(__state, incoming))
+                {
+                    __instance.Unhighlight(); StoneHighlightsReleased++;
+                    Log("map stone " + new MoonGuid(__instance.MoonGuid) + " activated by a partner while this Ori stood at it: highlight released");
+                }
+                __instance.CurrentState = (MapStone.State)resolved;
             }
         }
         public static void LocalActivation(GetAbilityPedestal pedestal)

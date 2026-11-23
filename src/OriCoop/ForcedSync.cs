@@ -38,7 +38,12 @@ namespace OriCoop
         static readonly List<PendingFire> Pending = new List<PendingFire>();
         static readonly HoldMeter Meter = new HoldMeter();
         static readonly FieldInfo WasTriggered = AccessTools.Field(typeof(CutsceneTrigger), "m_wasTriggered");
-        static bool s_firing;
+        static bool s_firing, s_buttonMet;
+        // Test-only mutations (T-196, before the fix): the native fire checks the trigger's button again; only a
+        // player whose own trigger attempt passed counts as present.
+        static readonly bool MutateFireChecksButton = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GATE_FIRE_BUTTON") == "1";
+        static readonly bool MutateNoAdopt = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GATE_NO_ADOPT") == "1";
+        public static int Adopted, Fizzles;
         static GameText s_top, s_bottom;
         static GlowRing s_ring;
         public static string LocalGateKey { get; private set; }
@@ -141,6 +146,35 @@ namespace OriCoop
             if (gate.Inside != any) { gate.Inside = any; gate.LeftAt = any ? -1f : Now; }
             return any;
         }
+        // T-196: an area somebody waits at counts every player standing in it, not only those whose own trigger attempt
+        // started the wait. Sein's pickup trigger needs a key press: the partner standing next to it was not counted
+        // until it pressed too, and the first player read "1/2" with everyone there.
+        static bool Adopt(Gate gate)
+        {
+            if (MutateNoAdopt || gate.Local || gate.Count <= 0 || s_table.RecentlyFired(gate.Key, Now)) return false;
+            Resolve(gate);
+            if (gate.Object == null) return false;
+            foreach (int seat in Players.LocalSeats)
+            {
+                SeinCharacter ori = Players.OriOf(seat);
+                if (ori == null || !Inside(gate, ori.Position)) continue;
+                gate.Local = true; Adopted++;
+                Plugin.Log.LogInfo("gate joined by standing in it key=" + gate.Key + " seat=" + seat);
+                return true;
+            }
+            return false;
+        }
+        // T-196: a fire no story followed (the native trigger refused it) must not leave the area dead for 15 s.
+        // The rule is GateTable.Fizzled (unit tests "gate fizzle"); seen live when a fire is refused.
+        static void ReleaseFizzled()
+        {
+            foreach (string key in s_table.FizzledKeys(Now, StorySync.LastStoryActivity))
+            {
+                s_table.Release(key); Fizzles++;
+                Plugin.Log.LogInfo("gate fire had no effect (no story began within " + GateTable.FizzleSeconds.ToString("0") + " s); released key=" + key);
+                CoopTrace.Event("story", "gate.fizzled", "key", key);
+            }
+        }
         static void Presence(Gate gate, int seat, bool inside)
         {
             if (inside == gate.SeatSent[seat] && (!inside || Now < gate.SeatRefresh[seat])) return;
@@ -230,7 +264,23 @@ namespace OriCoop
                 try
                 {
                     Trigger trigger = gate.Object as Trigger;
-                    if (trigger != null) trigger.DoTrigger(true);
+                    if (trigger != null)
+                    {
+                        // The trigger's own condition, with its button counted as pressed (GateButton); then the native
+                        // trigger without a second look at the condition (Active / DontTriggerWhileRunning still apply).
+                        bool met;
+                        s_buttonMet = !MutateFireChecksButton;
+                        try { met = trigger.Condition == null || trigger.Condition.Validate(null); }
+                        finally { s_buttonMet = false; }
+                        ActionWithDuration duration = trigger.ActionToRun as ActionWithDuration;
+                        if (!met || !trigger.Active || trigger.DontTriggerWhileRunning && duration != null && duration.IsPerforming)
+                        {
+                            Plugin.Log.LogInfo("gate fire refused by the trigger key=" + gate.Key + " active=" + trigger.Active
+                                + " running=" + (duration != null && duration.IsPerforming) + " condition=" + met);
+                            CoopTrace.Event("story", "gate.refused", "key", gate.Key, "active", trigger.Active, "condition", met);
+                        }
+                        if (met) trigger.DoTrigger(false);
+                    }
                     else
                     {
                         CutsceneTrigger cutscene = (CutsceneTrigger)gate.Object;
@@ -257,8 +307,10 @@ namespace OriCoop
                 return;
             }
             string selected = null; List<string> gone = new List<string>();
+            ReleaseFizzled();
             foreach (Gate gate in Gates.Values)
             {
+                Adopt(gate);
                 if (gate.Local)
                 {
                     bool inside = LocalPresence(gate, false);
@@ -348,6 +400,15 @@ namespace OriCoop
                     || shouldCheckCondition && __instance.Condition != null && !__instance.Condition.Validate(null)) return true;
                 Remember(__instance); Blocked++; return false;
             }
+        }
+        // T-196: a trigger with a button condition (Sein's "press to pick up") reaches Remember only while a player
+        // presses it, so the gate has already counted the press. The native fire comes 0.6 s later, when nobody may be
+        // holding the button any more: the trigger refused and the fire was lost without a word (playtest 4). While the
+        // gate fires, the trigger's button counts as pressed; its other conditions are checked as before.
+        [HarmonyPatch(typeof(ButtonPressedCondition), "Validate")]
+        static class GateButton
+        {
+            static void Postfix(ref bool __result) { if (s_buttonMet) __result = true; }
         }
         [HarmonyPatch(typeof(CutsceneTrigger), "OnTriggerEnter")]
         static class CutsceneArea

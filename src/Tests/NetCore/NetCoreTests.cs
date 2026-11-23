@@ -501,6 +501,15 @@ static class NetCoreTests
             Equal(501u, FrameBufferTrim.TrimIdle(buffer, 500, 501, FrameBufferTrim.IdleKeep));
             buffer[510] = 1; Equal(501u, FrameBufferTrim.TrimIdle(buffer, 510, 501, FrameBufferTrim.IdleKeep)); Equal(1, buffer.Count);
         });
+        // T-201: after a local leave this side's log said "partner quit the game" (the text sent to the partner).
+        Run("a connection this side closed reads 'left: <why>' here, any other reason is kept", delegate {
+            string goodbye = SessionMachine.PartnerGoodbye;
+            Check(SessionMachine.OwnDisconnectReason(goodbye, true, "returned to the title screen") == "left: returned to the title screen", "local leave");
+            Check(SessionMachine.OwnDisconnectReason(goodbye, false, "returned to the title screen") == goodbye, "the partner really quit");
+            Check(SessionMachine.OwnDisconnectReason("timed out", true, "returned to the title screen") == "timed out", "another reason on a closed connection");
+            Check(SessionMachine.OwnDisconnectReason(null, false, null) == "", "no reason");
+            Check(SessionMachine.OwnDisconnectReason(goodbye, true, null) == "left: ", "no why");
+        });
         Console.WriteLine("NetCore: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }

@@ -42,6 +42,8 @@ namespace OriCoop.Rules
         bool SaveDisabled { get; }
         bool GuestWaiting { get; }
         bool GuestNeedsSlot { get; }
+        bool PrologueWatching { get; }   // T-203: the host's new-game prologue plays on this PC too (no transfer screen)
+        bool HostInPrologue { get; }     // T-203: the host is in its new-game prologue right now
         bool IncomingProgress(out int have, out int total);
         bool L10nProbeOn { get; }
         string Text(string key);

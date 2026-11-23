@@ -70,6 +70,9 @@ namespace OriCoop.Rooms
         readonly IRoomHttp http;
         public int TimeoutMs = 15000;
         public int TransferTimeoutMs = 120000;
+        // T-200: "hello" only asks whether the room service is there, and the 我的房间 page waits for the answer: a short
+        // timeout of its own (never longer than TimeoutMs), so an unreachable server shows as such after a few seconds.
+        public int ProbeTimeoutMs = 5000;
         public string ClientVersion = "OriCoop";
 
         public RoomClient(string baseUrl) : this(new RoomHttp(baseUrl))
@@ -89,7 +92,8 @@ namespace OriCoop.Rooms
                 request.Set("client", ClientVersion);
                 bool transfer = op == "upload" || op == "download" || op == "create"
                     || op == "new_save" || op == "restore";
-                byte[] bytes = http.Post(op, request, transfer ? TransferTimeoutMs : TimeoutMs);
+                int timeout = transfer ? TransferTimeoutMs : op == "hello" ? Math.Min(ProbeTimeoutMs, TimeoutMs) : TimeoutMs;
+                byte[] bytes = http.Post(op, request, timeout);
                 RoomWire.Fields f = RoomWire.Fields.Decode(bytes);
                 return new RoomReply
                 {

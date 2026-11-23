@@ -316,6 +316,14 @@ namespace OriCoop.Story
         }
         public static bool LocalEnded(T item, bool locked, bool running, float now)
         { return now - item.Began >= 60f || (!locked && now - item.Began > 0.5f && (item.SawLock || !running)); }
+        // T-196: a story sequence that still has a takeover step ahead (a lock, the letterbox, a story text) is not
+        // over because no lock is on right now. Sein's pickup: "08 Sein Run To Target" releases its lock, "11 Lock
+        // player input" comes one physics frame later; the story was declared over 0.9 s into a 22 s script.
+        public static bool LocalEnded(T item, bool locked, bool running, bool takeoverAhead, float now)
+        { return now - item.Began >= 60f || !(running && takeoverAhead) && LocalEnded(item, locked, running, now); }
+        // index: the last action the sequence has run (ActionSequence.Index); lastTakeover: the index of its last
+        // takeover action (-1: none).
+        public static bool TakeoverAhead(bool running, int index, int lastTakeover) { return running && index < lastTakeover; }
         public static bool RemoteFinished(T item, bool running, float now)
         { return now - item.Began >= 60f || item.EndAt >= 0 && (!running || now - item.EndAt >= 10f); }
     }

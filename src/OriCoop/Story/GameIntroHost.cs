@@ -150,6 +150,7 @@ namespace OriCoop.Story
         }
         internal static void InitIntroNetwork()
         {
+            SharedPrologue.Init();   // T-203
             Services.Net.On(IntroMessage, delegate(BinaryReader r) {
                 if (Services.Net.IsHost || Services.Net.Sender != Services.Net.HostSeat) return;
                 remoteIntro = IntroWire.Read(r);
@@ -171,6 +172,9 @@ namespace OriCoop.Story
             [HarmonyPriority(Priority.Last)]
             static void Postfix()
             {
+                // T-203: while this guest plays the host's prologue along, SharedPrologue replaces the gameplay input
+                // with the host's and leaves the menu buttons to this player (its pause menu: options, leave).
+                if (SharedPrologue.OwnsInput) return;
                 if (!StorySync.IntroHeld(Players.LocalSeat)) return;
                 Core.Input.Horizontal = Core.Input.Vertical = 0;
                 Core.Input.HorizontalAnalogLeft = Core.Input.VerticalAnalogLeft = 0;

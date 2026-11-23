@@ -746,13 +746,43 @@ namespace OriCoop
             ISerializable live = Find(scene, id);
             if (live == null || Excluded(live) || s_bad.Contains(key)) return;
             if (!CanApplyDoor(live, bytes)) return;
+            ActionSequence story = StorySequenceOf(live);
+            if (story != null && story.IsRunning) { ProgressKept(story, key, "sequence.progress.kept"); return; }
+            int storyIndex = story != null ? story.Index : 0;
             // T-183: a deferred or item-rewritten GameController carries the trigger list of when it was made.
             if (live is GameController) bytes = LocalTriggers(live, key, bytes);
             Archive archive = ReadArchive(bytes); Applying = true;
             try { live.Serialize(archive); }
             catch (Exception e) { Disable(key, live, e); }
             finally { Applying = false; archive.MemoryStream.Close(); }
+            if (story != null && story.IsRunning)
+            { story.Index = storyIndex; story.IsRunning = false; ProgressKept(story, key, "sequence.progress.not-started"); }
             s_known[key] = CanonicalHash(live, bytes);
+        }
+
+        // T-196: ActionSequenceSerializer saves only "which step, running or not". Applied to a story sequence that runs
+        // here, a partner's value moved it to the partner's step without running the steps in between, or stopped it
+        // (playtest 4, Sein's pickup: the guest's resumed copy got past "29. Stop Character Animation" first, the host
+        // jumped there and its Ori stood in the character animation for 55 s). Two rules for a story sequence:
+        // - while it runs here it keeps its own progress;
+        // - the partner's progress never starts it here. Only its own trigger or StorySync's mirror does: a copy that
+        //   had ended (the mirror was cut, or its player closed the story text first) was started again at the
+        //   partner's step and ran the tail of the script a second time.
+        // A partner's "not running" value is still taken by a copy that is not running here.
+        // Test-only mutation ORICOOP_MUTATE_SEQ_PROGRESS_SHARED: the partner's progress replaces it again.
+        static readonly bool s_mutateSharedProgress = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SEQ_PROGRESS_SHARED") == "1";
+        public static int SequenceProgressKept;
+        static ActionSequence StorySequenceOf(ISerializable live)
+        {
+            ActionSequenceSerializer progress = live as ActionSequenceSerializer;
+            if (progress == null || s_mutateSharedProgress) return null;
+            ActionSequence sequence = progress.GetComponent<ActionSequence>();
+            return sequence != null && StorySync.IsStorySequence(sequence) ? sequence : null;
+        }
+        static void ProgressKept(ActionSequence sequence, string key, string what)
+        {
+            SequenceProgressKept++;
+            CoopTrace.Event("story", what, "id", sequence.name, "index", sequence.Index, "key", key);
         }
 
         static byte[] LocalTriggers(ISerializable live, string key, byte[] bytes)

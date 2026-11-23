@@ -2154,6 +2154,8 @@ namespace OriCoop
                 }
                 if (!PhaseOn("MOVE")) { s_tracking = false; goto AfterMove; }
                 Mark(h, "MOVE");
+                if (Environment.GetEnvironmentVariable("ORICOOP_MOVE_ONLY") == "FACE")   // only the wall-jump facing scenario (T-199)
+                { s_tracking = false; yield return Safely(h, "FACE", NetFacingTest.Run(h)); goto AfterMove; }
                 yield return Movement(h, "A", host);
                 yield return Wait(1.5f);
                 yield return Movement(h, "B", !host);
@@ -2271,6 +2273,7 @@ namespace OriCoop
                 if (!host) h.Check(errorAfter < 0.5f, "E LastError < 0.5 (" + F(errorAfter) + ")");
                 s_tracking = false;
                 h.Check(s_ownWritten > 0 && s_remoteWritten > 0, "F own and puppet track rows recorded");
+                yield return Safely(h, "FACE", NetFacingTest.Run(h));   // partner facing during wall jumps (NetFacingTest.cs, T-199)
             AfterMove:
                 if (PhaseOn("W") && Mark(h, "W")) yield return SharedWorld(h);
                 if (PhaseOn("E3") && Mark(h, "E3")) yield return Safely(h, "E3", SharedEnemies(h));

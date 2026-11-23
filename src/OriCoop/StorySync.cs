@@ -38,7 +38,19 @@ namespace OriCoop
             public float FreeSince = -1f, FreeLast = -1f;
             public ActionSequence Sequence;
             public CutsceneController Controller;
+            public int LastTakeover = -1;   // T-196: index of the sequence's last takeover action (LastTakeoverIndex)
         }
+        // T-196: the last action of a sequence that takes the player over (lock, letterbox, story text, ...; -1: none).
+        // While a running sequence has not reached it, its story is not over (StoryLedger.LocalEnded).
+        static int LastTakeoverIndex(ActionSequence sequence)
+        {
+            if (sequence == null || sequence.Actions == null) return -1;
+            for (int i = sequence.Actions.Count - 1; i >= 0; i--)
+                if (sequence.Actions[i] != null && IsTakeoverAction(sequence.Actions[i])) return i;
+            return -1;
+        }
+        // Test-only mutation: a story ends at the first frame without a lock again (before T-196).
+        static readonly bool MutateEndsOnGap = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STORY_ENDS_ON_GAP") == "1";
         static readonly StoryLedger<Story> Ledger = new StoryLedger<Story>();
         static readonly Dictionary<string, float> Seen = Ledger.Seen;
         static readonly Dictionary<string, float> Performed = new Dictionary<string, float>();
@@ -522,6 +534,7 @@ namespace OriCoop
             if (!Ledger.PrepareLocal(story, StoryHost.Current.LocalSeat, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
             LastStoryActivity = Time.realtimeSinceStartup;
             story.SawLock = NativeLocked(); Ledger.TrackLocal(story, Services.Net.IsHost);
+            story.LastTakeover = LastTakeoverIndex(story.Sequence);
             Services.Net.Send(StartMessage, true, delegate(BinaryWriter w) {
                 StoryWire.WriteStart(w, new StoryStart { Token = story.Token, Kind = story.Kind,
                     Scene = story.Scene.ToByteArray(), Id = story.Id.ToByteArray(), Path = story.Path, State = story.State,
@@ -764,7 +777,8 @@ namespace OriCoop
             {
                 if (locked) story.SawLock = true;
                 bool running = story.Sequence != null && story.Sequence.IsRunning;
-                if (StoryLedger<Story>.LocalEnded(story, locked, running, now)) ended.Add(TokenKey(story.Sender, story.Token));
+                bool ahead = !MutateEndsOnGap && StoryLedger<Story>.TakeoverAhead(running, running ? story.Sequence.Index : 0, story.LastTakeover);
+                if (StoryLedger<Story>.LocalEnded(story, locked, running, ahead, now)) ended.Add(TokenKey(story.Sender, story.Token));
             }
             foreach (ulong token in ended) SendEnd(token);
             ended.Clear();

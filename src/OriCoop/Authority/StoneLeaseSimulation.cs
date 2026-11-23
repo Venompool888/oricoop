@@ -16,6 +16,20 @@ namespace OriCoop.Authority
             return !active && owner == 0;
         }
 
+        // T-197: may a copy that is not simulated here move to the last state it received? stateEpoch: the lease epoch
+        // that state was published in; leaseEpoch: the lease now; ownsLease: the lease is this PC's own and it is in
+        // the short wait before it simulates; simulatedEpoch: the epoch this PC last simulated the stone in as owner.
+        // - Following another owner: only what that owner published in the current epoch. Anything older is where the
+        //   stone was before this PC (or anyone) moved it since.
+        // - Own lease, waiting: only the state handed over by the owner right before us (its epoch + 1 is ours), and
+        //   only before we simulated in this epoch ourselves (after a session reset the wait happens again, and by
+        //   then that state is old). After a release (owner 0 takes an epoch of its own) or an older owner, this PC's
+        //   own copy is the newer one.
+        public static bool FollowsState(uint stateEpoch, uint leaseEpoch, bool ownsLease, uint simulatedEpoch)
+        {
+            return ownsLease ? stateEpoch + 1 == leaseEpoch && simulatedEpoch != leaseEpoch : stateEpoch == leaseEpoch;
+        }
+
         public bool Allows(int nextOwner, uint nextEpoch, int localSeat, float now, float rttMs, bool active)
         {
             if (active && !interacting && nextOwner != 0 && nextOwner != localSeat && localSeat != 0)

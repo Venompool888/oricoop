@@ -16,7 +16,7 @@ namespace OriCoop
     // 34 lifecycle, 35 symbols, 36 damage, 37 projectile hit, 38 projectile spawn.
     // P2P uses the legacy arbiter; C-server uses the granted lease owner and epoch.
     // A guest NEVER infers authority from silence.
-    public static class EnemySync
+    public static partial class EnemySync
     {
         const byte Presence = 30, Authority = 31, Handoff = 32, Snapshots = 33,
             Life = 34, Symbols = 35, Hit = 36, OriHit = 37, Shot = 38, EnemyFx = 67;
@@ -40,6 +40,9 @@ namespace OriCoop
             public readonly List<Body> Bodies = new List<Body>();
             public readonly HashSet<ulong> Hits = new HashSet<ulong>();
             public readonly HashSet<ulong> Applied = new HashSet<ulong>();
+            // T-195 (EnemySync.Swarm.cs): a piece a Swarm split into. Root = the family's placeholder actor, Node = its
+            // place in the family tree (SwarmFamily). Pieces have no placeholder; they follow Root's owner.
+            public Actor Root; public int Node; public GameObject Prefab; public float PieceLoot; public bool PiecesIndexed;
         }
         sealed class Body { public Rigidbody Rigidbody; public bool Kinematic, Gravity; }
         sealed class DamageStamp { public ulong Id; public bool Puppet; }
@@ -145,7 +148,7 @@ namespace OriCoop
             foreach (Actor a in s_actors.Values) { EnemyAuthority.Policy.Release(a.Key); RestoreBodies(a); }
             EnemyAuthority.Policy = null;
             foreach (ProjectileIdentity p in s_copies) if (p != null) InstantiateUtility.Destroy(p.gameObject);
-            ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear();
+            ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
             s_symbols.Clear(); s_remoteSymbols.Clear(); s_pendingHits.Clear(); s_shots.Clear(); s_victimHits.Clear(); s_copies.Clear();
             s_session = false; s_active = null; s_attackDepth = 0; s_spawning = s_applying = s_puppetDeath = false;
             s_fxPrefabs.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
@@ -163,7 +166,11 @@ namespace OriCoop
         static Actor ReadId(BinaryReader r)
         {
             MoonGuid scene = new MoonGuid(r), id = new MoonGuid(r); string key = Key(scene, id); Actor a;
-            if (!s_actors.TryGetValue(key, out a)) { a = new Actor(); a.Key = key; a.Scene = scene; a.Id = id; s_actors.Add(key, a); }
+            if (!s_actors.TryGetValue(key, out a))
+            {
+                a = new Actor(); a.Key = key; a.Scene = scene; a.Id = id; s_actors.Add(key, a);
+                Piece piece; if (s_pieces.TryGetValue(key, out piece)) Adopt(a, piece);
+            }
             RefreshOwnership(a);
             return a;
         }
@@ -199,22 +206,24 @@ namespace OriCoop
 
         static readonly Type[] MirroredTypes = { typeof(JumperEnemy), typeof(RammingEnemy), typeof(SpitterEnemy),
             typeof(AcidSlugEnemy), typeof(StarSlugEnemy), typeof(DropSlugEnemy), typeof(DashOwlEnemy),
-            typeof(FishEnemy), typeof(KamikazeSootEnemy) };
+            typeof(FishEnemy), typeof(KamikazeSootEnemy), typeof(SwarmEnemy) };
         // Owner-only classes run a local copy on each peer, with nearest-player targeting and death bursts:
         // ShootingSpider has rope joints; FloatingRockLaserEnemy/TurretEnemy have three animators and a laser;
         // MortarWormEnemy/JumpShootShark have hidden groups and private shot flags; ArmouredRammingEnemy
-        // replaces itself with RammingEnemy. SwarmEnemy runtime children have no baked identity and are excluded.
-        // Other classes remain opt-in. Jumper stomp state is included in full handoffs.
+        // replaces itself with RammingEnemy. Other classes remain opt-in. Jumper stomp state is included in full handoffs.
+        // SwarmEnemy (T-195): the pieces it splits into have no baked identity; EnemySync.Swarm.cs names them after
+        // their place in the family tree. A Swarm has left/right run animations instead of a sprite mirror.
         static bool Supported(Enemy e)
         {
-            if (e.Animation == null || e.Animation.SpriteMirror == null || e.Controller == null) return false;
-            return Array.IndexOf(MirroredTypes, e.GetType()) >= 0;
+            if (e.Animation == null || e.Controller == null) return false;
+            if (e is SwarmEnemy) return !s_mutateSwarmLocal;
+            return e.Animation.SpriteMirror != null && Array.IndexOf(MirroredTypes, e.GetType()) >= 0;
         }
         static bool EnemyPlaceholder(RespawningPlaceholder p)
         {
             string n = p.GetType().Name;
             return (n.IndexOf("EnemyPlaceholder", StringComparison.Ordinal) >= 0 || p is JumpShootSharkPlaceholder || p is ShootingSpiderPlaceholder)
-                && n.IndexOf("Swarm", StringComparison.Ordinal) < 0;
+                && !(s_mutateSwarmLocal && p is SwarmEnemyPlaceholder);
         }
         static Actor Track(RespawningPlaceholder p)
         {
@@ -236,6 +245,7 @@ namespace OriCoop
             // placeholder establishes initial host authority before any body can be frozen.
             if (!EnemyAuthority.Policy.UsesLeases && Services.Net.IsHost && !a.Known) { a.Known = true; a.OwnerSeat = 1; }
             RefreshOwnership(a);
+            IndexPieces(a, p as SwarmEnemyPlaceholder);
             Bind(a); return a;
         }
         static Actor For(Component component)
@@ -252,7 +262,12 @@ namespace OriCoop
         }
         static void Bind(Actor a)
         {
-            Enemy e = a.Placeholder == null ? null : a.Placeholder.CurrentEntity as Enemy;
+            // A split piece (T-195) has no placeholder: it keeps the entity it was given until that is destroyed.
+            Enemy e = a.Root != null ? (PieceGone(a.Entity) ? null : a.Entity) : a.Placeholder == null ? null : a.Placeholder.CurrentEntity as Enemy;
+            Attach(a, e);
+        }
+        static void Attach(Actor a, Enemy e)
+        {
             if (object.ReferenceEquals(a.Entity, e)) return;
             RestoreBodies(a);
             if (a.EntityInstanceId != 0) s_entities.Remove(a.EntityInstanceId);
@@ -269,11 +284,15 @@ namespace OriCoop
             if (!Supported(e)) Warn("owner-only class=" + e.GetType().Name + " (outside mirrored class/variant allowlist or missing animation/controller)");
             if (Mine(a) && !s_spawning)
             {
-                a.Generation++; a.Hits.Clear(); a.Applied.Clear(); a.Latest = Capture(a, true);
+                a.Generation++;
+                // T-195: a PC that was away for a family's earlier lives never counted this piece; the placeholder's
+                // own generation (one per life, known to every PC) keeps the piece's generation ahead of theirs.
+                if (a.Root != null && a.Generation < a.Root.Generation) a.Generation = a.Root.Generation;
+                a.Hits.Clear(); a.Applied.Clear(); a.Latest = Capture(a, true);
                 SendLife(a, a.Generation == 1 ? (byte)1 : (byte)3);
             }
             else if (Supported(e)) FreezeBodies(a);
-            Trace("spawn", a, "mirrored=" + Supported(e));
+            Trace("spawn", a, "mirrored=" + Supported(e) + (a.Root != null ? " node=" + a.Node : ""));
         }
         static void FreezeBodies(Actor a)
         {
@@ -346,15 +365,18 @@ namespace OriCoop
                 BinaryReader r = new BinaryReader(ar.MemoryStream); s.Killed = r.ReadBoolean(); s.NeedsRespawn = r.ReadBoolean();
                 s.Respawn = Mathf.Max(0, r.ReadSingle() - GameController.Instance.GameTime);
             }
+            // T-195: a split piece has no placeholder to remember that this life of it died.
+            else if (a.Root != null) s.Killed = a.Latest.Killed && a.Latest.Generation == a.Generation;
             Enemy e = a.Entity;
             s.Alive = e != null && e.DamageReciever != null && !e.DamageReciever.NoHealthLeft && !s.Killed;
             if (e != null)
             {
                 if (controller && e is JumperEnemy) s.ShouldStomp = (bool)s_shouldStomp.GetValue(e);
-                FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy;
+                FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy; SwarmEnemy swarm = e as SwarmEnemy;
                 // T-027: surface crawlers (star slugs; TraceGroundMovement) turn the whole body to the wall/ceiling they walk on.
+                // T-195: a Swarm tilts its feet to the slope or its jump (SwarmEnemy.UpdateRotation, not run on a mirror).
                 Transform visual = fish != null ? fish.Rotation : owl != null && owl.SpriteRotation != null ? owl.SpriteRotation.transform
-                    : e.GetComponent<TraceGroundMovement>() != null ? e.transform : null;
+                    : swarm != null ? swarm.FeetTransform : e.GetComponent<TraceGroundMovement>() != null ? e.transform : null;
                 if (visual != null) { s.HasVisualAngle = true; s.VisualAngle = visual.eulerAngles.z; }
                 s.Position = e.Position; s.Left = e.Animation != null && e.Animation.SpriteMirror != null && e.FaceLeft; s.Health = e.DamageReciever == null ? 0 : e.DamageReciever.Health;
                 s.DealerActive = e.DamageDealer != null && e.DamageDealer.Activated; s.TargetActive = e.Targetting != null && e.Targetting.Activated;
@@ -413,6 +435,7 @@ namespace OriCoop
             if (s.Killed && a.DeathTime < 0) a.DeathTime = Now;
             if (!s.Killed) a.DeathTime = -1;
             if (reset) a.RestoreController = s.Controller;
+            if (a.Root != null) { ReceivePiece(a, s); return; }
             if (a.Placeholder == null || Mine(a)) return;
             SetPlaceholder(a, s);
             if (s.Killed)
@@ -496,6 +519,7 @@ namespace OriCoop
         { return EnemyAuthority.Policy.DesiredOwner(a.Key, delegate { return DesiredOwner(a); }); }
         static void RefreshOwnership(Actor a)
         {
+            if (a.Root != null) { FollowFamily(a); return; }
             if (!a.RefreshPolicy(a.Key)) return;
             a.Buffer.Clear();
             if (a.NeedsInitialLeaseState(s_host.LocalSeat))
@@ -593,6 +617,7 @@ namespace OriCoop
             foreach (uint key in symbols) s_remoteSymbols.Remove(key);
             foreach (Actor a in new List<Actor>(s_actors.Values))
             {
+                if (a.Root != null) continue;   // T-195: a split piece follows its family's placeholder actor
                 int left = a.SeatLeft(seat, Services.Net.IsHost, delegate { return Now; });
                 if (EnemyAuthority.Policy.UsesLeases) { RefreshOwnership(a); continue; }
                 if (!Services.Net.IsHost) continue;
@@ -680,10 +705,11 @@ namespace OriCoop
         static void ApplyPose(Actor a, State s, Vector3 position)
         {
             Enemy e = a.Entity; if (e == null) return;
-            e.Position = position; e.FaceLeft = s.Left;
+            e.Position = position; if (e.Animation != null && e.Animation.SpriteMirror != null) e.FaceLeft = s.Left;
             if (s.HasVisualAngle)
             {
-                FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy;
+                FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy; SwarmEnemy swarm = e as SwarmEnemy;
+                if (swarm != null && swarm.FeetTransform != null) swarm.FeetTransform.eulerAngles = new Vector3(0f, 0f, s.VisualAngle);
                 if (fish != null && fish.Rotation != null)
                 { Vector3 angles = fish.Rotation.eulerAngles; angles.z = s.VisualAngle; fish.Rotation.eulerAngles = angles; }
                 if (owl != null && owl.SpriteRotation != null)
@@ -839,6 +865,10 @@ namespace OriCoop
         {
             if (!Active || a == null) return true;
             DamageStamp stamp = Stamp(d); if (stamp.Puppet) return false;
+            // T-195: enemies touching each other (Swarm pieces do, every frame) never change health
+            // (EntityDamageReciever returns early on DamageType.Enemy), so they stay out of the owner's hit history,
+            // which every full state carries.
+            if (d.Type == DamageType.Enemy && Mine(a)) return true;
             if (Mine(a)) { if (!AcceptOwnerHit(a, stamp.Id)) return false; a.LastHit = stamp.Id; return true; }
             if (!PlayerDamage(d.Type) || !Remember(a, stamp.Id)) return false;
             // Unknown authority and frozen transfers queue rather than lose an attack.
@@ -918,7 +948,7 @@ namespace OriCoop
             {
                 __state = null; Actor a = Active ? For(__instance) : null;
                 bool allowed = !(Active && __instance.Entity is Enemy && Stamp(damage).Puppet) && Route(a, damage);
-                if (a != null && allowed)
+                if (a != null && allowed && damage.Type != DamageType.Enemy)   // T-195: no log line per frame for touching Swarm pieces
                 {
                     __state = new HitObservation(); __state.Actor = a; __state.Before = __instance.Health;
                     __state.Amount = damage.Amount; __state.Type = damage.Type; __state.Id = s_applying ? a.LastHit : Stamp(damage).Id;
@@ -1230,6 +1260,7 @@ namespace OriCoop
         {
             foreach (Actor a in s_actors.Values) a.Loaded = false;
             foreach (RespawningPlaceholder p in RespawningPlaceholder.All.ToArray()) if (p != null) Track(p);
+            ScanPieces();
             int count = 0;
             foreach (UnityEngine.Object o in UnityEngine.Object.FindObjectsOfType(typeof(Enemy)))
             {
@@ -1328,6 +1359,7 @@ namespace OriCoop
                 s_scanAt = Now + 0.25f; Scan();
                 foreach (Actor a in new List<Actor>(s_actors.Values))
                 {
+                    if (a.Root != null) continue;   // T-195: a split piece has no presence, lease or grant of its own
                     if (!a.Loaded && a.Placeholder != null)
                     {
                         if (Mine(a)) a.Latest = Capture(a, true);
@@ -1359,7 +1391,7 @@ namespace OriCoop
                     if (a.Loaded && a.Placeholder != null && a.Placeholder.CurrentEntity == null && !a.Placeholder.EntityIsDead
                         && RemoteDistance(a.Origin) < 26f)
                     { a.Placeholder.Spawn(); Bind(a); }
-                    if (a.Entity == null || a.Placeholder == null || !a.Loaded) continue;
+                    if (a.Entity == null || (a.Placeholder == null && a.Root == null) || !a.Loaded) continue;
                     float distance = RemoteDistance(a.Entity.Position);
                     if (float.IsPositiveInfinity(distance)) distance = 50f;
                     if (distance < 28f && !a.Entity.InsideFrustum) a.Entity.OnFrustumEnter();
@@ -1388,7 +1420,7 @@ namespace OriCoop
         public struct Probe
         {
             public bool Present, Known, Owner, Dead, HasSnapshot, Mirrored, PlaceholderLoaded; public uint Epoch, Generation;
-            public int OwnerSeat;
+            public int OwnerSeat, Node;   // Node: 0, or a split Swarm piece's place in its family tree (T-195)
             public string ClassName, StateName, LiveState, SceneName, LastRemoval, LastDeath;
             public float Health, DeathTime, RenderTick, Angle; public Vector3 Position, OwnerPosition, Origin;
         }
@@ -1411,7 +1443,7 @@ namespace OriCoop
             foreach (Actor a in s_actors.Values)
             {
                 string cls = a.ClassName != "" ? a.ClassName : a.Placeholder != null ? a.Placeholder.GetType().Name.Replace("Placeholder", "") : "";
-                if (cls == "") continue;
+                if (cls == "" || a.Root != null) continue;
                 Type t = AccessTools.TypeByName(cls);
                 known.Add(a.Key + "|" + cls + "|" + (t != null && Array.IndexOf(MirroredTypes, t) >= 0));
             }
@@ -1477,7 +1509,7 @@ namespace OriCoop
             p.LiveState = a.Entity != null && a.Entity.Controller != null && a.Entity.Controller.StateMachine.CurrentState != null
                 ? a.Entity.Controller.StateMachine.CurrentState.GetType().Name : "";
             p.Position = a.Entity == null ? a.Latest.Position : a.Entity.Position; p.OwnerPosition = a.Latest.Position; p.HasSnapshot = a.Buffer.Count > 0; p.DeathTime = a.DeathTime; p.RenderTick = a.RenderTick;
-            p.Angle = a.Entity != null ? a.Entity.transform.eulerAngles.z : 0f; return p;
+            p.Angle = a.Entity != null ? a.Entity.transform.eulerAngles.z : 0f; p.Node = a.Node; return p;
         }
         public static string Describe(string key)
         {
