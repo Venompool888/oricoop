@@ -51,4 +51,45 @@ partial class SaveTests
         Check(!seats.HasUnsent, "a seat already in the world would get the checkpoint again (forced reload)");
         Check(!seats.Loaded(3), "a seat already in the world would get a second world snapshot");
     }
+
+    // T-213 (10): a guest that becomes the host sends its save to a seat that is still waiting for its first one.
+    static void PromotedHostSendsToWaitingSeat()
+    {
+        SeatReadiness seats = new SeatReadiness();
+        // As a guest: seat 3 joined after this player's own join and announced its load; seat 4 joined and has not yet.
+        seats.SawJoin(3); seats.SawLoaded(3); seats.SawJoin(4);
+        Check(!seats.HasUnsent, "a guest's notes about the other guests counted as host-side unsent seats");
+        seats.Promote(new int[] { 1, 3, 4 });
+        Check(seats.ReadyForSeat(1, true, true) && seats.ReadyForSeat(3, true, true), "seats already in the world were not ready after the promotion");
+        Check(seats.HasUnsent && !seats.IsSent(4), "a seat still waiting for its first save was marked sent: it would wait for ever");
+        Check(seats.IsSent(1) && seats.IsSent(3), "a seat already in the world would get the checkpoint again (forced reload)");
+        Check(!seats.ReadyForSeat(4, true, true), "a seat still waiting for its first save was ready (its Ori would be spawned)");
+        seats.MarkSent(4);
+        Check(seats.Loaded(4) && seats.ReadyForSeat(4, true, true), "the waiting seat's load was not accepted after the new host's checkpoint");
+    }
+
+    // T-213 review (1): the new guest's hello and the role change arrive in one receive loop: the hello is handled
+    // as the host (Join: unsent) before the promotion runs. The promotion must not turn that seat into "ready".
+    static void PromotionKeepsSeatJoinedAfterRoleChange()
+    {
+        SeatReadiness seats = new SeatReadiness();
+        seats.Join(4);
+        seats.Promote(new int[] { 1, 4 });
+        Check(seats.HasUnsent && !seats.IsSent(4), "a seat that joined between the role change and the promotion was marked sent: it would wait for its first save for ever");
+        Check(!seats.ReadyForSeat(4, true, true), "a seat that joined between the role change and the promotion was ready before it had a save");
+        Check(seats.IsSent(1) && seats.ReadyForSeat(1, true, true), "a seat already in the world was not ready after the promotion");
+    }
+
+    static void WaitingSeatMarkEnds()
+    {
+        SeatReadiness seats = new SeatReadiness();
+        seats.SawJoin(4); seats.Leave(4); seats.Promote(new int[] { 4 });   // another player on seat 4 by then: unknown, taken as playing
+        Check(!seats.HasUnsent, "a seat that left kept its waiting mark for the next player on it");
+        seats = new SeatReadiness();
+        seats.SawJoin(3); seats.Clear(); seats.Promote(new int[] { 3 });
+        Check(!seats.HasUnsent, "waiting marks survived the session reset");
+        seats = new SeatReadiness();
+        seats.SawJoin(3); seats.Promote(new int[] { 3 }); seats.MarkSent(3); seats.Loaded(3); seats.Promote(new int[] { 3 });
+        Check(!seats.HasUnsent, "a waiting mark was used twice");
+    }
 }

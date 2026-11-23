@@ -397,6 +397,8 @@ namespace OriCoop
             "session.progress", "{0}%", "{0}%",
             "session.waiting_prologue", "主机正在观看开场剧情…", "The host is watching the opening...",
             "session.waiting_prologue_help", "开场剧情结束后会自动加入", "You'll join when the opening ends",
+            "session.catching_up", "正在跟上主机的进度…", "Catching up with the host...",
+            "session.catching_up_help", "很快就能和主机一起观看", "You'll be watching with the host in a moment",
             "prologue.skip_p1_only", "只有 P1 可以跳过序章", "Only P1 can skip the prologue",
             "guest.host_left", "主机已离开", "The host left",
             "guest.ended", "联机已断开", "Online play ended",

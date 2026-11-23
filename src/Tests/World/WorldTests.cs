@@ -82,6 +82,32 @@ static class WorldTests
         });
         // T-144: rock trigger fires on A (A sends, B runs it) -> wipe, both PCs reload the checkpoint -> A passes again:
         // A must send again and B must run it again (before: A skipped the send, B refused the id; rock only on A).
+        // T-207 (1): the partner's Sein pickup script runs (step 27, running); its progress reaches this PC, which
+        // then dies and reloads. Expected from the ticket: this PC's checkpoint does not get the partner's step.
+        Run("T-207.1 a partner's story-sequence progress is not written into this PC's checkpoint", delegate {
+            StoryProgressKeys keys = new StoryProgressKeys();
+            Check(!keys.StoreInCheckpoint("scene:pickup", true, true), "loaded story progress stays out of the checkpoint");
+            Check(keys.Known("scene:pickup") && keys.Count == 1, "its key is remembered");
+            Check(!keys.StoreInCheckpoint("scene:pickup", false, false), "the same object after its scene unloaded: still out");
+            Check(!keys.StoreInCheckpoint("scene:pickup", true, true), "and again once it is loaded");
+        });
+        Run("T-207.1 other world objects go into the checkpoint as before", delegate {
+            StoryProgressKeys keys = new StoryProgressKeys();
+            Check(keys.StoreInCheckpoint("scene:door", true, false), "a loaded door is stored");
+            Check(keys.StoreInCheckpoint("scene:ambient-sequence", true, false), "a loaded non-story sequence's progress is stored (world state)");
+            Check(keys.StoreInCheckpoint("far:unknown", false, false), "an object never seen loaded is stored (cannot be told apart)");
+            Check(keys.Count == 0, "none of them is remembered as story progress");
+            keys.StoreInCheckpoint("scene:pickup", true, true); keys.Clear();
+            Check(keys.StoreInCheckpoint("scene:pickup", false, false), "after a clear (new session) nothing is remembered");
+        });
+        // Review finding 7: this PC ran the story itself (its progress object was loaded and seen by the scan), left the
+        // scene, and only then the partner's progress for it arrives for the first time.
+        Run("T-207 review 7: story progress seen loaded in the scan stays out of the checkpoint after its scene unloaded", delegate {
+            StoryProgressKeys keys = new StoryProgressKeys();
+            keys.Remember("scene:pickup");                                   // WorldSync.Capture saw it loaded
+            Check(!keys.StoreInCheckpoint("scene:pickup", false, false), "the first partner blob arrives after the scene unloaded: not stored");
+            Check(keys.StoreInCheckpoint("scene:other", false, false), "an object never seen loaded is still stored");
+        });
         Run("one-shot hazard fires on both PCs again after a checkpoint reload", delegate {
             OneShotTriggers a = new OneShotTriggers(), b = new OneShotTriggers();
             const int rock = 77;

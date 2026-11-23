@@ -37,7 +37,14 @@ namespace OriCoop.Authority
             NetPlay.Leaving = delegate
             {
                 if (s_client == null) return;
-                try { s_client.ReleaseAll(); Plugin.Log.LogInfo("cserver: leaving, released seat P" + s_client.PrimarySeat); }
+                try
+                {
+                    // T-213: wait (at most 0.4 s, normally one round trip) for the server to have the release before
+                    // NetPlay.End says goodbye; arriving together, the goodbye won and the seat stayed held for 60 s.
+                    int seat = s_client.PrimarySeat;
+                    bool acknowledged = s_client.ReleaseAll(400, null);
+                    Plugin.Log.LogInfo("cserver: leaving, released seat P" + seat + (acknowledged ? "" : " (no acknowledgement from the server within 0.4 s: the seat may stay held for a minute)"));
+                }
                 catch (Exception e) { Plugin.Log.LogWarning("cserver: release on leave: " + e.Message); }
             };
             NetPlay.SendToOverride = delegate(int seat, byte type, bool reliable, Action<BinaryWriter> body)

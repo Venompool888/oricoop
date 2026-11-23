@@ -359,11 +359,20 @@ static partial class StoryTests
             ulong before = s.Hash(); Equal(0x26c03cb01738c923UL, before); s.Points++; Equal(false, before == s.Hash());
         });
         Check("progress action wire round trip", delegate {
-            ProgressAction a = new ProgressAction { Sequence = 42, Kind = ActionKind.MaxEnergy, Guid = Id(4), Amount = -8, Extra = 17 };
+            ProgressAction a = new ProgressAction { Sequence = 42, Kind = ActionKind.MaxEnergy, Guid = Id(4), Amount = -8, Extra = 17,
+                Scene = Id(9), HasSpot = true, X = 1.5f, Y = -2.25f };
             byte[] bytes = Wire(a.Write);
-            BytesEqual(Wire(delegate(BinaryWriter w) { w.Write(42U); w.Write((byte)ActionKind.MaxEnergy); w.Write(Id(4)); w.Write(-8); w.Write(17); }), bytes);
+            BytesEqual(Wire(delegate(BinaryWriter w) { w.Write(42U); w.Write((byte)ActionKind.MaxEnergy); w.Write(Id(4)); w.Write(-8); w.Write(17);
+                w.Write(Id(9)); w.Write(true); w.Write(1.5f); w.Write(-2.25f); }), bytes);
             ProgressAction b = ProgressAction.Read(Reader(bytes)); Equal(a.Sequence, b.Sequence); Equal(a.Kind, b.Kind);
             BytesEqual(a.Guid, b.Guid); Equal(a.Amount, b.Amount); Equal(a.Extra, b.Extra);
+            BytesEqual(a.Scene, b.Scene); Equal(true, b.HasSpot); Equal(1.5f, b.X); Equal(-2.25f, b.Y);
+        });
+        Check("T-214 progress action place: zero scene bytes mean 'scene not known'", delegate {
+            ProgressAction a = new ProgressAction { Guid = Id(1) };
+            Equal("", ProgressAction.Read(Reader(Wire(a.Write))).Place.Scene);
+            a.Scene = Id(3);
+            Equal(true, ProgressAction.Read(Reader(Wire(a.Write))).Place.Scene.Length > 0);
         });
         Check("progress action fifo", delegate {
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); ProgressAction a = new ProgressAction { Sequence = 2 }, b = new ProgressAction { Sequence = 1 };
@@ -394,6 +403,40 @@ static partial class StoryTests
         Check("progress pickup guid duplicate suppression", delegate {
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); Equal(true, q.RecordPickup(new Guid(Id(1)))); Equal(false, q.RecordPickup(new Guid(Id(1))));
             Equal(true, q.RecordPickup(new Guid(Id(2)))); q.ClearPickups(); Equal(true, q.RecordPickup(new Guid(Id(1))));
+        });
+        Check("T-214 progress stall: a guest's normal checkpoint load and an empty room are not stalls", delegate {
+            Equal(false, ProgressStall.Host(-1f, true, 0, 0f));      // nothing unsent
+            Equal(false, ProgressStall.Host(2f, true, 0, 0f));       // a guest is ready, the change is 2 s old
+            Equal(true, ProgressStall.Host(4f, true, 0, 0f));        // a guest is ready and nothing went out for 4 s
+            Equal(false, ProgressStall.Host(500f, false, 0, 0f));    // no guest in the room
+            Equal(false, ProgressStall.Host(12f, false, 2, 12f));    // P2 is loading the checkpoint (12 s so far)
+            Equal(true, ProgressStall.Host(70f, false, 2, 70f));     // P2 has not reported its load for 70 s
+        });
+        Check("T-214 progress stall: a load outstanding for over a minute is reported whoever else is ready", delegate {
+            Equal(true, ProgressStall.Host(-1f, true, 3, 61f));      // P2 is ready and up to date; P3 has not reported its load for 61 s
+            Equal(true, ProgressStall.Host(1f, true, 3, 61f));
+            Equal(false, ProgressStall.Host(-1f, true, 3, 12f));     // P3 is inside a normal load
+            Equal(true, ProgressStall.Host(-1f, false, 2, 70f));     // nothing to send, but P2 never reported its load
+            Equal(true, ProgressStall.Host(4f, true, 3, 12f));       // a ready guest and nothing went out for 4 s
+        });
+        // T-214: the GUID alone is not a pickup's identity (one prefab, many copies).
+        Check("T-214 pickup ledger: the same prefab GUID in another scene, or elsewhere in the scene, is another pickup", delegate {
+            ProgressQueue<Guid> q = new ProgressQueue<Guid>(); Guid orb = new Guid(Id(1));
+            PickupPlace cave = new PickupPlace { Scene = "A", HasSpot = true, X = 10f, Y = 5f };
+            Equal(true, q.RecordPickup(orb, cave));
+            Equal(false, q.RecordPickup(orb, new PickupPlace { Scene = "A", HasSpot = true, X = 10.2f, Y = 5.1f }));   // two players touch the same orb
+            Equal(true, q.RecordPickup(orb, new PickupPlace { Scene = "B", HasSpot = true, X = 10f, Y = 5f }));        // the same prefab in another scene
+            Equal(true, q.RecordPickup(orb, new PickupPlace { Scene = "A", HasSpot = true, X = 14f, Y = 5f }));        // a second copy in the same scene
+            Equal(true, q.HasPickup(orb, cave));
+            Equal(false, q.HasPickup(orb, new PickupPlace { Scene = "C", HasSpot = true, X = 10f, Y = 5f }));
+            q.ClearPickups(); Equal(true, q.RecordPickup(orb, cave));
+        });
+        Check("T-214 pickup ledger: a place that is not known falls back to the GUID", delegate {
+            ProgressQueue<Guid> q = new ProgressQueue<Guid>(); Guid orb = new Guid(Id(1));
+            Equal(true, q.RecordPickup(orb, new PickupPlace { Scene = "A", HasSpot = true, X = 1f, Y = 1f }));
+            Equal(false, q.RecordPickup(orb));                                                                           // no place at all
+            Equal(false, q.RecordPickup(orb, new PickupPlace { Scene = "", HasSpot = true, X = 1.1f, Y = 1f }));       // scene not known, same spot
+            Equal(true, q.RecordPickup(orb, new PickupPlace { Scene = "", HasSpot = true, X = 30f, Y = 1f }));         // scene not known, another spot
         });
         Check("skill status ack to guest only", delegate {
             Equal(false, ProgressWire.ReadSkillStatus(Reader(Wire(delegate(BinaryWriter w) { ProgressWire.WriteSkillStatus(w, false); }))));

@@ -51,12 +51,60 @@ namespace OriCoop
             if (c == null) return;
             GameplayCamera cam = UI.Cameras.Current;
             Transform camTarget = cam != null ? cam.Target : null;
+            bool returned = false;
             P2Context.Enter(puppet);
-            try { c.BackToPlayerController(); }
+            try
+            {
+                if (TestFailReturns > 0) { TestFailReturns--; throw new System.NullReferenceException("test: BackToPlayerController failed"); }
+                c.BackToPlayerController();
+                returned = true;
+            }
             catch (System.Exception e) { Plugin.Log.LogWarning("companion return (" + why + "): " + e.Message); }
             finally { P2Context.Exit(); }
             // Ori.ChangeState(Hovering) also points the camera at "the current character" (P2 here); undo that.
             if (cam != null && camTarget != null) cam.Target = camTarget;
+            NoteReturn(puppet, returned, why);
+        }
+
+        // T-213 (8): the game's BackToPlayerController threw once on a companion created in the same call (playtest 4, a
+        // null reference). Nothing tried again: the companion stayed in the state it was in instead of following its Ori,
+        // until the visual check happened to see a symptom (8 units away, or 4 s on a scripted move). A return that
+        // threw is now tried again a quarter of a second later, up to 8 times.
+        sealed class ReturnRetry { public float At; public int Tries; public string Why; }
+        static readonly Dictionary<Puppet, ReturnRetry> s_returnRetry = new Dictionary<Puppet, ReturnRetry>();
+        static readonly bool s_mutateNoReturnRetry = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_COMPANION_RETRY") == "1";
+        public static int CompanionReturnFailures, CompanionReturnRetries;
+        internal static int TestFailReturns;   // test only: the next N returns throw, as the game's call did
+
+        static void NoteReturn(Puppet puppet, bool returned, string why)
+        {
+            if (returned) { s_returnRetry.Remove(puppet); return; }
+            CompanionReturnFailures++;
+            foreach (Puppet old in new List<Puppet>(s_returnRetry.Keys)) if (old.Sein == null) s_returnRetry.Remove(old);   // puppets that are gone
+            ReturnRetry retry;
+            if (!s_returnRetry.TryGetValue(puppet, out retry)) { retry = new ReturnRetry(); retry.Why = why; s_returnRetry[puppet] = retry; }
+            retry.Tries++; retry.At = Time.unscaledTime + 0.25f;
+            if (retry.Tries > 8)
+            {
+                s_returnRetry.Remove(puppet);
+                Plugin.Log.LogWarning("companion return (" + retry.Why + "): gave up after 8 tries");
+            }
+        }
+
+        // The puppet is being removed (Plugin.DespawnPuppet): a return that was to be tried again goes with it. Before,
+        // the entry kept the removed puppet until the next return failed.
+        public static void ForgetReturn(Puppet puppet) { if (puppet != null) s_returnRetry.Remove(puppet); }
+        public static int ReturnRetriesKept { get { return s_returnRetry.Count; } }
+
+        // Every frame for each puppet (Plugin, before the visual check): tries a return that threw again.
+        public static void RetryReturn(Puppet puppet)
+        {
+            ReturnRetry retry;
+            if (s_mutateNoReturnRetry || puppet == null || s_returnRetry.Count == 0 || !s_returnRetry.TryGetValue(puppet, out retry)) return;
+            if (puppet.Sein == null || puppet.Companion == null) { s_returnRetry.Remove(puppet); return; }
+            if (Time.unscaledTime < retry.At) return;
+            CompanionReturnRetries++;
+            ReturnCompanion(puppet, retry.Why + ", try " + (retry.Tries + 1));
         }
 
         public static void SetCompanionActive(bool on)

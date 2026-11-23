@@ -204,6 +204,11 @@ namespace OriCoop
             Services.Net.Send(PedestalMessage, true, delegate(BinaryWriter w) { ObjectWire.WritePedestal(w, id.ToByteArray()); });
             PedestalPlaysSent++; Log("pedestal play sent " + id);
         }
+        // Test-only mutation (before T-212 item 7): a loaded save keeps the "played in the last 30 s" record.
+        static readonly bool s_mutateKeepPlayed = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_KEEP_PLAYED_ON_LOAD") == "1";
+        public static int PlayedClears;
+        internal static void TestMarkPlayed(MoonGuid id) { Played.Mark(id, Time.realtimeSinceStartup); }
+        internal static bool TestPlayedRecently(MoonGuid id) { return Played.Recent(id, Time.realtimeSinceStartup, 30f); }
         static void ReceivePedestal(BinaryReader r)
         {
             MoonGuid id = GameStoryHost.ReadGuid(ObjectWire.ReadPedestal(r)); PedestalPlaysReceived++; Log("pedestal play received " + id);
@@ -230,7 +235,8 @@ namespace OriCoop
         }
         public static void Tick()
         {
-            if (!Online) { s_freeSince = -1f; Traces.Clear(); s_traceTargetKnown = false; return; }
+            if (!Online) { s_freeSince = -1f; Traces.Clear(); s_traceTargetKnown = false; TickAfterSession(); return; }
+            s_onlineAt = Time.realtimeSinceStartup; s_wasOnline = true;
             GameController gc = GameController.Instance; SeinCharacter own = Own;
             if (Game.UI.SeinUI != null) Trace("ShowUI", Game.UI.SeinUI.ShowUI.ToString());
             Trace("letterbox", Letterbox.ShowLetterboxes.ToString());
@@ -286,6 +292,34 @@ namespace OriCoop
             // Free for 3 s: repair. Still locked 30-120 s after the last story ended: a half-run story left it so.
             if (s_freeSince >= 0 && now - s_freeSince >= 3f || since >= 30f && since <= 120f)
                 Repair(now, false, since <= 120f);
+        }
+        // T-212 (1): the session ended while a mirrored story had faded to black (StorySync.Reset stops the mirror, its
+        // FadeFromBlack never runs). Offline nothing looked at the screen any more and it stayed black. For
+        // SessionEndRepair.Window seconds after the last online frame the stuck-black repair keeps running.
+        // Test-only mutation ORICOOP_MUTATE_NO_POST_SESSION_FADE: offline the screen is left alone again.
+        static readonly bool s_mutateNoPostSessionFade = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_POST_SESSION_FADE") == "1";
+        static float s_onlineAt = -1f, s_offlineBlackSince = -1f;
+        // Review finding 9: was the screen fading to black or black in the frame the session ended? Only that black can
+        // be the stopped mirror's; once it is gone, a later black is the game's own and is not touched.
+        static bool s_wasOnline, s_blackAtSessionEnd;
+        public static int PostSessionFades;
+        static bool FadingOrBlack()
+        { return UI.Fader != null && (UI.Fader.CurrentState == FaderB.State.FadeStay || UI.Fader.CurrentState == FaderB.State.FadeToBlack); }
+        // Test only (run-test "afterblack"): as if a session had just ended on this PC.
+        internal static void TestSessionEnded() { s_onlineAt = Time.realtimeSinceStartup; s_offlineBlackSince = -1f; s_wasOnline = false; s_blackAtSessionEnd = FadingOrBlack(); }
+        static void TickAfterSession()
+        {
+            if (s_wasOnline) { s_wasOnline = false; s_blackAtSessionEnd = FadingOrBlack(); }   // the first offline frame
+            if (s_blackAtSessionEnd && !FadingOrBlack()) s_blackAtSessionEnd = false;         // that black is over
+            float now = Time.realtimeSinceStartup, since = s_onlineAt < 0f ? -1f : now - s_onlineAt;
+            GameController gc = GameController.Instance;
+            bool black = !s_mutateNoPostSessionFade && SessionEndRepair.Watching(since) && UI.Fader != null
+                && UI.Fader.CurrentState == FaderB.State.FadeStay && gc != null && !gc.IsLoadingGame;
+            if (!black) { s_offlineBlackSince = -1f; return; }
+            if (s_offlineBlackSince < 0f) s_offlineBlackSince = now;
+            if (!SessionEndRepair.Due(since, now - s_offlineBlackSince, s_blackAtSessionEnd)) return;
+            UI.Fader.FadeOut(0.5f); s_offlineBlackSince = -1f; Repairs++; PostSessionFades++;
+            Log("repair black fade after the session ended (black for " + SessionEndRepair.Stuck.ToString("0") + " s, " + since.ToString("0.0") + " s after the session)");
         }
         static string MoveBlockers(SeinCharacter own)
         {
@@ -402,7 +436,14 @@ namespace OriCoop
                 yield return AccessTools.Method(typeof(SaveGameController), "OnFinishedLoading");
                 yield return AccessTools.Method(typeof(RestoreCheckpointController), "FinishLoading");
             }
-            static void Postfix() { if (Online && !StoryHost.Current.Inside) Repair(Time.realtimeSinceStartup, true, false); }
+            static void Postfix()
+            {
+                ForcedSync.CheckpointRestored();   // T-212 (6)
+                // T-212 (7): the pedestal cutscene was played, then a save from before it was loaded; a partner's next
+                // activation within 30 s was taken for the same play and not shown here.
+                if (!s_mutateKeepPlayed) { Played.Clear(); PlayedClears++; }
+                if (Online && !StoryHost.Current.Inside) Repair(Time.realtimeSinceStartup, true, false);
+            }
         }
         [HarmonyPatch(typeof(GameController), "CreateCheckpoint")]
         static class SaveRepair

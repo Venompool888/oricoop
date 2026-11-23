@@ -13,7 +13,7 @@ namespace OriCoop
     [BepInPlugin("local.oricoop", "Ori Local Co-op", Version)]
     public class Plugin : BaseUnityPlugin
     {
-        public const string Version = "0.2.5";   // one place: the BepInEx id, the startup log line
+        public const string Version = "0.2.6";   // one place: the BepInEx id, the startup log line
         public static BepInEx.Logging.ManualLogSource Log;
         public static Plugin Instance;
         public static Harmony H;
@@ -421,6 +421,7 @@ namespace OriCoop
         }
         void CheckOnlineVisual()
         {
+            P2Extras.RetryReturn(m_latePuppet);   // T-213: a companion return that threw is tried again
             P2Context.Enter(m_latePuppet);
             try { if (!m_parked) VisualInvariants.Check(P2Context.P1, m_latePuppet.Sein); }
             finally { P2Context.Exit(); }
@@ -455,7 +456,7 @@ namespace OriCoop
             if (Players.Remotes.Count > 1) CoopCamera.ApplyGroup(P2Context.P1, LeashOverride <= 0f && !m_parked, GroupLeash);
             else CoopCamera.Apply(P2Context.P1, P2Context.P2, LeashOverride <= 0f && !Revive.AnyDowned);
         }
-        void CheckLocalVisual() { VisualInvariants.Check(P2Context.P1, P2Context.P2); }
+        void CheckLocalVisual() { P2Extras.RetryReturn(Players.First); VisualInvariants.Check(P2Context.P1, P2Context.P2); }
         void UpdateLocalHud() { P2Hud.Update(P2Context.P2); }
         void UpdateLateCamera() { UpdateCamera(P2Context.P1, P2Context.P2); }
 
@@ -643,6 +644,7 @@ namespace OriCoop
             }
             P2Hud.Destroy(puppet);
             P2Context.Reset(puppet);
+            P2Extras.ForgetReturn(puppet);
             Players.Remotes.Remove(puppet);
             if (!NetPlay.Enabled && puppet.Seat > 2)
             {
