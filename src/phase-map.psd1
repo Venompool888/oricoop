@@ -63,6 +63,9 @@
         @{ Switch = 'ORICOOP_MUTATE_BOTTOMHUD_P1VALUES'; File = 'src\OriCoop\BottomHud.cs'; Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_BOTTOMHUD_LAYOUT'; File = 'src\OriCoop\BottomHud.cs'; Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_SIGNPOST';       File = 'src\OriCoop\P2Extras.cs';       Suite = 'local';     Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_STEAM_NO_ACCEPT'; File = 'src\OriCoop\SteamTransport.cs'; Suite = 'titlejoin-steam'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PENDING'; File = 'src\OriCoop\SteamTransport.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 a given-up lobby operation blocks every retry
+        @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PROBLEM'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 the host's Problem stays after its lobby is up again
         @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_ORB_MENUS';      File = 'src\OriCoop\CsRoomPage.cs';     Suite = 'titlejoin-cs'; Phase = '' }   # T-173 room page orb copy keeps the difficulty picker
         @{ Switch = 'ORICOOP_MUTATE_HIDE_ICONS';     File = 'src\OriCoop\NativeGui.cs';      Suite = 'titlejoin-cs'; Phase = '' }   # T-173 game button icons in native labels stay hidden
