@@ -1,0 +1,8 @@
+OriCoop\Net\Transport.cs
+OriCoop\Net\NetPeer.cs
+OriCoop\Authority\CServerClient.cs
+OriCoop\Authority\CsWire.cs
+OriCoop\Authority\Arbiter.cs
+OriCoop\Authority\AuthorityClient.cs
+OriCoop\Authority\IAuthority.cs
+OriCoop\Authority\INetRouteServer.cs
