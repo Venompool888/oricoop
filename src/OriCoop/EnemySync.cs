@@ -217,13 +217,26 @@ namespace OriCoop
             if (e.Animation == null || e.Controller == null) return false;
             if (s_testUnsupported != null) { Actor tested; if (s_entities.TryGetValue(e.GetInstanceID(), out tested) && tested.Key == s_testUnsupported) return false; }
             if (e is SwarmEnemy) return !s_mutateSwarmLocal;
-            return e.Animation.SpriteMirror != null && EnemyVisuals.MirroredClass(e.GetType().Name);
+            return e.Animation.SpriteMirror != null && MirroredType(e.GetType());
+        }
+        // Per-type answers of the class checks that read Type.Name, which builds a new string on every call in this
+        // game's Mono. Supported runs several times per enemy per frame (Tick -> Puppet, the animation, sight and
+        // simulation patches); a type's name and base classes never change, so each type is looked at once.
+        static readonly Dictionary<Type, bool> s_mirroredTypes = new Dictionary<Type, bool>();
+        static readonly Dictionary<Type, bool> s_placeholderTypes = new Dictionary<Type, bool>();
+        static bool MirroredType(Type t)
+        {
+            bool mirrored; if (s_mirroredTypes.TryGetValue(t, out mirrored)) return mirrored;
+            mirrored = EnemyVisuals.MirroredClass(t.Name); s_mirroredTypes.Add(t, mirrored); return mirrored;
         }
         static bool EnemyPlaceholder(RespawningPlaceholder p)
         {
-            string n = p.GetType().Name;
-            return (n.IndexOf("EnemyPlaceholder", StringComparison.Ordinal) >= 0 || p is JumpShootSharkPlaceholder || p is ShootingSpiderPlaceholder)
+            Type t = p.GetType(); bool enemy;
+            if (s_placeholderTypes.TryGetValue(t, out enemy)) return enemy;
+            string n = t.Name;
+            enemy = (n.IndexOf("EnemyPlaceholder", StringComparison.Ordinal) >= 0 || p is JumpShootSharkPlaceholder || p is ShootingSpiderPlaceholder)
                 && !(s_mutateSwarmLocal && p is SwarmEnemyPlaceholder);
+            s_placeholderTypes.Add(t, enemy); return enemy;
         }
         static Actor Track(RespawningPlaceholder p, bool sameLife = false)
         {
