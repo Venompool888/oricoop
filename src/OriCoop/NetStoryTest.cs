@@ -932,12 +932,15 @@ namespace OriCoop
             bool host = NetPlay.IsHost;
             PlatformMovement guestMovement = host ? null : Own.PlatformBehaviour.PlatformMovement;
             bool wasSuspended = guestMovement != null && guestMovement.IsSuspended;
+            List<GameMapTeleporter> teleporters = TeleporterController.Instance.Teleporters;
+            GameMapTeleporter mapWell = teleporters[teleporters.Count - 1];
+            bool wasActivated = mapWell.Activated;
             try
             {
                 AccessTools.Field(playType, "Animation").SetValue(play, Own.Abilities.Idle.IdleAnimation);
-                // Opening the teleport menu marks the well used without performing OnOpenedAction.
-                used.SetValue(well, true);
-                if (!host) { StorySync.EnterLocalOnly(opened); StorySync.ExitLocalOnly(); }
+                // The game registers native pedestals in the scene save registry. Exercise its real world replication.
+                SaveSceneManager.Master.AddSaveObject(well, new MoonGuid(WellId));
+                mapWell.Activated = false;
                 go.transform.position = host ? start : NetPlay.LatestRemotePos;
                 Vector3 away = go.transform.position + Vector3.right * 20f;
                 if (!host)
@@ -948,39 +951,43 @@ namespace OriCoop
                     guestMovement.IsSuspended = true;
                     Plugin.Teleport(Own, away);
                 }
-                int plays = s_wellCalls;
+                yield return Wait(1.5f);   // let both world scans establish the unopened baseline
                 yield return Barrier(h, 71);
-                if (!host) h.Check(Vector3.Distance(Own.Position, go.transform.position) > 12f, "S4 well: guest starts outside gather range");
-                if (host) save.Invoke(well, null);
-                float end = Now + 4f;
-                while (s_wellCalls == plays && Now < end) yield return null;
-                h.Check(s_wellCalls == plays + 1, "S4 well: first activation plays once on each PC despite the used flag");
-                if (!host) h.Check(Vector3.Distance(Own.Position, go.transform.position) < 4f, "S4 well: first activation gathers the guest");
-                // The generic story dedupe lasts three seconds; a re-save must stay local even after it expires.
-                yield return Wait(3.3f);
-                if (!host) Plugin.Teleport(Own, away);
-                yield return Barrier(h, 72);
-                Vector3 before = Own.Position;
-                int restores = TestHarness.RestoreCheckpointCalls;
-                plays = s_wellCalls;
-                int sent = StorySync.StartsSent, anims = CutsceneAnimSync.Sent, ownPlays = CutsceneAnimSync.OwnPlays;
-                if (!host) h.Check(Mathf.Abs(before.x - go.transform.position.x) > 12f, "S4 well: guest is away again before re-save");
-                if (host) save.Invoke(well, null);
-                yield return TestClock.WaitGame(0.8f);
-                yield return Barrier(h, 73);
-                h.Check(s_wellCalls == plays + (host ? 1 : 0), "S4 well: re-save plays only on the saver");
-                h.Check(StorySync.StartsSent == sent && CutsceneAnimSync.Sent == anims, "S4 well: re-save broadcasts no story or animation");
-                if (!host)
+                h.Check(!(bool)used.GetValue(well) && !mapWell.Activated, "S4 well: starts unopened");
+                for (int visit = 0; visit < 2; visit++)
                 {
-                    float moved = Own != null ? Vector3.Distance(Own.Position, before) : float.PositiveInfinity;
-                    int restored = TestHarness.RestoreCheckpointCalls - restores, played = CutsceneAnimSync.OwnPlays - ownPlays;
-                    h.Note("S4 well: guest re-save movement=" + F(moved) + " checkpoint restores=" + restored + " animations=" + played);
-                    h.Check(Alive && restored == 0 && moved < 0.5f && played == 0,
-                        "S4 well: re-save does not teleport or animate the guest");
+                    string label = visit == 0 ? "S4 well: first activation " : "S4 well: re-save ";
+                    Vector3 before = Own.Position;
+                    int restores = TestHarness.RestoreCheckpointCalls, plays = s_wellCalls;
+                    int sent = StorySync.StartsSent, anims = CutsceneAnimSync.Sent, ownPlays = CutsceneAnimSync.OwnPlays;
+                    if (!host) h.Check(Vector3.Distance(before, go.transform.position) > 12f, label + "starts outside gather range");
+                    yield return Barrier(h, 72 + 2 * visit);
+                    if (host)
+                    {
+                        TeleporterController.Activate(mapWell.Identifier);   // native SavePedestal.Highlight on approach
+                        save.Invoke(well, null);
+                    }
+                    float end = Now + 4f;
+                    while ((!(bool)used.GetValue(well) || !mapWell.Activated) && Now < end) yield return null;
+                    yield return TestClock.WaitGame(0.8f);  // include the opening's delayed animation
+                    yield return Barrier(h, 73 + 2 * visit);
+                    h.Check((bool)used.GetValue(well) && mapWell.Activated, label + "activates the native pedestal and map destination on both PCs");
+                    h.Check(s_wellCalls == plays + (host ? 1 : 0), label + "plays only on the saver");
+                    h.Check(StorySync.StartsSent == sent && CutsceneAnimSync.Sent == anims, label + "broadcasts no story or animation");
+                    if (!host)
+                    {
+                        float moved = Own != null ? Vector3.Distance(Own.Position, before) : float.PositiveInfinity;
+                        int restored = TestHarness.RestoreCheckpointCalls - restores, played = CutsceneAnimSync.OwnPlays - ownPlays;
+                        h.Note(label + "guest movement=" + F(moved) + " checkpoint restores=" + restored + " animations=" + played);
+                        h.Check(Alive && restored == 0 && moved < 0.5f && played == 0, label + "does not teleport or animate the guest");
+                    }
+                    if (visit == 0) yield return Wait(3.3f);   // beyond the generic story dedupe
                 }
             }
             finally
             {
+                mapWell.Activated = wasActivated;
+                if (SaveSceneManager.Master != null) SaveSceneManager.Master.UnregisterGameObject(go);
                 UnityEngine.Object.Destroy(go);
                 if (guestMovement != null) guestMovement.IsSuspended = wasSuspended;
                 if (Own != null) Plugin.Teleport(Own, start);

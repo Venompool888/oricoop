@@ -44,7 +44,7 @@ static partial class StoryTests
         });
         IntroCases();
         StoryCases();
-        Check("spirit well: only the first opening of each sequence in the room is a team story", delegate {
+        Check("spirit well: net12 snapshot records each opened well once", delegate {
             SpiritWellActivations wells = new SpiritWellActivations();
             Equal(true, wells.TryActivate("scene A:opening"));
             Equal(false, wells.TryActivate("scene A:opening"));
