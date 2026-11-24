@@ -94,6 +94,7 @@ $Mutations = @(
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
     @{ Name = 'PHYS_OFF (P)';           Env = @{ ORICOOP_PHYS_OFF = '1' };               Script = @('run-nettest.ps1');                        Expect = '^P\w* ' }
     @{ Name = 'MUTATE_NO_FACING (FACE)'; Env = @{ ORICOOP_MUTATE_NO_FACING = '1'; ORICOOP_PHASES = 'MOVE' }; Script = @('run-nettest.ps1'); Expect = '^FACE after each wall jump' }   # T-199
+    @{ Name = 'MUTATE_STANDIN_SLIDES (MOVE WALL)'; Env = @{ ORICOOP_MUTATE_STANDIN_SLIDES = '1'; ORICOOP_PHASES = 'MOVE' }; Script = @('run-nettest.ps1'); Expect = '^WALL a stand-in pull through the floor' }   # T-251
     @{ Name = 'MUTATE_FAIL_KEEPS_REMOTES (G)'; Env = @{ ORICOOP_MUTATE_FAIL_KEEPS_REMOTES = '1'; ORICOOP_PHASES = 'MOVE' }; Script = @('run-nettest.ps1'); Expect = '^G a failed transport (removes|ends)' }   # T-213
     @{ Name = 'MUTATE_NO_STREAM_RESTART (G)'; Env = @{ ORICOOP_MUTATE_NO_STREAM_RESTART = '1'; ORICOOP_PHASES = 'MOVE' }; Script = @('run-nettest.ps1'); Expect = '^G a stale frame far ahead' }   # T-213
     @{ Name = 'MUTATE_PUPPET_STONE_AIR (PH)'; Env = @{ ORICOOP_MUTATE_PUPPET_STONE_AIR = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PH the partner (standing|riding)' }   # T-198

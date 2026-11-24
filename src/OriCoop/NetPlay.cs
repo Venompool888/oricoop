@@ -187,7 +187,7 @@ namespace OriCoop
             public int LateN, LateI;
             public float DelayChangedAt, LatenessSpreadMs, OneWayMs;
             public int TargetDelay = 3;
-            public long FramesPlayed, FramesMissing, FramesLate, Snaps, SkipAheads;
+            public long FramesPlayed, FramesMissing, FramesLate, Snaps, SkipAheads, WallSnaps, Holds;
             public float LastError, AvgError, MaxErrorRecent;
             public Vector3 LatestRemotePos;
             public bool HaveRemotePos;
@@ -329,6 +329,7 @@ namespace OriCoop
             s_menuAddress = cfg.Bind("OnlineMenu", "LastAddress", "", "Last address typed in the in-game online menu (prefill only).");
             s_menuRoom = cfg.Bind("OnlineMenu", "LastRoomCode", "", "Last room code typed in the in-game online menu (prefill only).");
             FrameBufferTrim.MutateNoRestart = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_STREAM_RESTART") == "1";
+            StandInCorrection.MutateNoWallSnap = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STANDIN_SLIDES") == "1";
             SteamTransport.Trace += m => Plugin.Log.LogInfo("net: Steam: " + m);
             NetPeer.Trace = m => Plugin.Log.LogInfo("net: peer: " + m);
             // T-159: the relay is gone. An old [Net] Transport = relay (its RelayServer / RoomCode keys stay in the file
@@ -1165,29 +1166,24 @@ namespace OriCoop
 
             Frame f;
             bool have = remote.Buffer.TryGetValue(remote.PlayTick, out f);
-            if (have)
+            // T-251: StandInCorrection.NextStep caps the repeat of the last input on lost ticks too, not only when starved.
+            StandInCorrection.Step step = StandInCorrection.NextStep(have, remote.NewestTick > remote.PlayTick, ref remote.MissingRun);
+            if (step == StandInCorrection.Step.Play)
             {
                 remote.Buffer.Remove(remote.PlayTick);
-                remote.MissingRun = 0;
                 remote.Last = f;
                 remote.PlayTick++;
                 remote.FramesPlayed++;
                 Correct(remote, p2, f);
             }
-            else if (remote.NewestTick > remote.PlayTick)
-            {
-                // This step is lost (all redundant copies missing): repeat the last input, move on.
-                remote.FramesMissing++;
-                remote.MissingRun++;
-                f = remote.Last; remote.PlayTick++;
-            }
             else
             {
-                // Starved: nothing newer yet. Repeat the last input briefly, then let go of the buttons.
-                remote.FramesLate++;
-                remote.MissingRun++;
+                // Lost (all redundant copies missing): repeat the last input, move on. Starved (nothing newer yet):
+                // repeat it and wait. Both only briefly, then let go of the buttons.
+                bool lost = StandInCorrection.Lost(step);
                 f = remote.Last;
-                if (remote.MissingRun > 6) { HoldNeutral(remote); return; }
+                if (lost) { remote.FramesMissing++; remote.PlayTick++; } else remote.FramesLate++;
+                if (StandInCorrection.Holds(step)) { NoteHold(remote, lost); HoldNeutral(remote); return; }
             }
             if ((f.Flags & FlagFaceKnown) != 0) { remote.HaveFace = true; remote.FaceLeft = (f.Flags & FlagFaceLeft) != 0; }
             ApplyFacing(remote);
@@ -1213,6 +1209,53 @@ namespace OriCoop
         }
 
         static void HoldNeutral(RemoteState remote) { P2Input.Fill(remote.Puppet.Input, 0, 0, 0, 0, 0, false, false, false); }
+
+        // T-251: the stand-in stops repeating its owner's last input (a stall or a long run of lost frames). Once per stall.
+        static void NoteHold(RemoteState remote, bool lost)
+        {
+            if (remote.MissingRun != StandInCorrection.RepeatSteps + 1) return;
+            remote.Holds++;
+            CoopTrace.Event("net", "standin.hold", "seat", remote.Seat, "missing", remote.MissingRun, "path", lost ? "lost" : "starved",
+                "play", remote.PlayTick, "newest", remote.NewestTick);
+        }
+
+        // T-251: the wall test of StandInCorrection.Decide. A line through the level's colliders (the layers the
+        // character's own movement tests), in the stand-in's depth; triggers, enemies and characters are not walls.
+        sealed class WallProbe : StandInCorrection.IWallProbe
+        {
+            public SeinCharacter Who;
+            public bool Blocked(float fromX, float fromY, float toX, float toY)
+            {
+                if (Who == null || Who.Controller == null) return false;
+                float z = Who.Position.z;
+                return WallBetween(new Vector3(fromX, fromY, z), new Vector3(toX, toY, z), Who.Controller.RayTestLayerMask);
+            }
+        }
+        static readonly WallProbe s_walls = new WallProbe();
+
+        internal static bool WallBetween(Vector3 from, Vector3 to, int mask)
+        {
+            if (!Physics.Linecast(from, to, mask, QueryTriggerInteraction.Ignore)) return false;
+            Vector3 d = to - from; float length = d.magnitude;
+            if (length < 0.0001f) return false;
+            foreach (RaycastHit hit in Physics.RaycastAll(from, d / length, length, mask, QueryTriggerInteraction.Ignore))
+            {
+                Collider c = hit.collider;
+                if (c == null || c.isTrigger || c.GetComponentInParent<Entity>() != null || c.GetComponentInParent<SeinCharacter>() != null) continue;
+                return true;
+            }
+            return false;
+        }
+
+        // Net test (MOVE WALL): Correct's decision with the game's own wall probe for a character.
+        internal static StandInCorrection.Fix TestDecide(SeinCharacter who, Vector3 from, Vector3 to)
+        {
+            s_walls.Who = who;
+            try { return StandInCorrection.Decide((to - from).magnitude, s_snapDist.Value, from.x, from.y, to.x, to.y, s_walls); }
+            finally { s_walls.Who = null; }
+        }
+        internal static long WallSnaps { get { return Primary == null ? 0 : Primary.WallSnaps; } }
+        internal static long Holds { get { return Primary == null ? 0 : Primary.Holds; } }
 
         // T-199: a puppet replays its owner's inputs through the game's own states, and its facing was whatever that
         // replay produced. The replay is not exact (the puppet's wall contact, landing and animation ends differ a
@@ -1250,22 +1293,32 @@ namespace OriCoop
         }
 
         // "Write-back": the owner's position is the truth. Small errors are pulled in gradually (invisible),
-        // big ones (door, respawn, teleport, long loss) jump.
+        // big ones (door, respawn, teleport, long loss) jump. T-251: so does a small one whose pull would cross a
+        // wall (the pull writes the position with no collision: under loss it dragged the stand-in through walls).
         static void Correct(RemoteState remote, SeinCharacter p2, Frame f)
         {
-            Vector3 err = f.Pos - p2.Position;
+            Vector3 from = p2.Position;
+            Vector3 err = f.Pos - from;
             float e = err.magnitude;
             remote.LastError = e;
             remote.AvgError = remote.AvgError * 0.98f + e * 0.02f;
             remote.MaxErrorRecent = Mathf.Max(remote.MaxErrorRecent * 0.995f, e);
-            if (e > s_snapDist.Value)
+            s_walls.Who = p2;
+            StandInCorrection.Fix fix = StandInCorrection.Decide(e, s_snapDist.Value, from.x, from.y, f.Pos.x, f.Pos.y, s_walls);
+            s_walls.Who = null;
+            if (fix == StandInCorrection.Fix.Snap)
             {
+                bool wall = e <= s_snapDist.Value;
                 Plugin.Teleport(p2, f.Pos - new Vector3(0f, 0.5f, 0f));
                 p2.Speed = new Vector3(f.Vel.x, f.Vel.y, 0f);
                 remote.Snaps++;
+                if (wall) remote.WallSnaps++;
+                if (CoopTrace.Every("net.standin.snap." + remote.Seat, 0.25f))
+                    CoopTrace.Event("net", "standin.snap", "seat", remote.Seat, "reason", wall ? "wall" : "far", "err", e, "from", from, "to", f.Pos,
+                        "snaps", remote.Snaps, "wall_snaps", remote.WallSnaps, "lost", remote.FramesMissing, "skips", remote.SkipAheads);
                 return;
             }
-            if (e > 0.01f) p2.Position = p2.Position + err * Mathf.Clamp01(s_blend.Value);
+            if (fix == StandInCorrection.Fix.Blend) p2.Position = p2.Position + err * Mathf.Clamp01(s_blend.Value);
             Vector3 v = p2.Speed;
             p2.Speed = new Vector3(Mathf.Lerp(v.x, f.Vel.x, 0.3f), Mathf.Lerp(v.y, f.Vel.y, 0.3f), v.z);
         }

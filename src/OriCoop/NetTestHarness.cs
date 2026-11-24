@@ -2515,7 +2515,7 @@ namespace OriCoop
 
                 h.Note("phase C lossy 60,20,10,2");
                 NetPlay.SetSim(60, 20, 10, 2);
-                long snaps = NetPlay.Snaps, played = NetPlay.FramesPlayed;
+                long snaps = NetPlay.Snaps, played = NetPlay.FramesPlayed, wallSnaps = NetPlay.WallSnaps, holds = NetPlay.Holds;
                 PhaseSample sample = new PhaseSample(); s_sample = sample;
                 float start = Time.realtimeSinceStartup;
                 // RTT includes the partner's simulated lag, and the two copies don't enter or leave phase C at the
@@ -2536,7 +2536,7 @@ namespace OriCoop
                 float rtt = rttSamples.Count > 0 ? rttSamples[rttSamples.Count / 2] : (NetPlay.Peer == null ? -1 : NetPlay.Peer.Stats.RttMs);
                 float loss = NetPlay.Peer == null ? -1 : NetPlay.Peer.Stats.LossPercent;
                 h.Note("C oneWayFromPartner=" + F(NetPlay.OneWayMs) + " ms (same-PC clock) spread=" + F(NetPlay.LatenessSpreadMs) + " targetDelay=" + NetPlay.TargetDelay);
-                h.Note("C RTT=" + F(rtt) + " loss=" + F(loss) + " AvgError=" + F(sample.Mean) + " snaps=" + (NetPlay.Snaps - snaps) + " played=" + (NetPlay.FramesPlayed - played) + " " + NetPlay.StatusLine());
+                h.Note("C RTT=" + F(rtt) + " loss=" + F(loss) + " AvgError=" + F(sample.Mean) + " snaps=" + (NetPlay.Snaps - snaps) + " (wall " + (NetPlay.WallSnaps - wallSnaps) + ") holds=" + (NetPlay.Holds - holds) + " played=" + (NetPlay.FramesPlayed - played) + " " + NetPlay.StatusLine());
                 // C-server: RTT is to the server (each client simulates only its own link), so the range starts lower.
                 float rttMin = OriCoop.Authority.NetRoute.ServerMode ? 50f : 100f;
                 h.Check(rtt >= rttMin && rtt <= 260, "C RTT " + rttMin + "..260 (" + F(rtt) + ")");
@@ -2623,6 +2623,7 @@ namespace OriCoop
                 }
                 h.Note("E snaps=" + (NetPlay.Snaps - snaps) + " LastError=" + F(errorAfter));
                 if (!host) h.Check(errorAfter < 0.5f, "E LastError < 0.5 (" + F(errorAfter) + ")");
+                NetStandInTest.Run(h);   // T-251 stand-in pulls jump instead of crossing walls (instant, NetStandInTest.cs)
                 s_tracking = false;
                 h.Check(s_ownWritten > 0 && s_remoteWritten > 0, "F own and puppet track rows recorded");
                 yield return Safely(h, "FACE", NetFacingTest.Run(h));   // partner facing during wall jumps (NetFacingTest.cs, T-199)
