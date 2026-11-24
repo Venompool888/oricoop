@@ -902,9 +902,9 @@ namespace OriCoop
                 else if (remote.Puppet != null && (!remote.InGameplay || !inGame))
                 { Plugin.DespawnPuppet(remote.Puppet); remote.Puppet = null; }
             }
-            SubsystemGuard.Run("PartnerFx.Tick", s_fxTick);   // T-213: soul links kept until their owner's Ori is here
+            SubsystemGuard.Run("Revive.TickRoomFlame", s_roomFlameTick);
         }
-        static readonly Action s_fxTick = PartnerFx.Tick;
+        static readonly Action s_roomFlameTick = Revive.TickRoomFlame;
 
         static string LocalScene(bool inGame)
         {

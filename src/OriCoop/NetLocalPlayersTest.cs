@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Reflection;
 using Game;
 using HarmonyLib;
 using UnityEngine;
@@ -173,41 +172,34 @@ namespace OriCoop
             }
         }
 
-        // T-138: the extra local player's soul link (the save flame; T-029's message 80) appears beside it on every
-        // device. Its own device casts it the way the extra's own update does: in the extra's context.
-        static readonly FieldInfo s_extraFlameField = typeof(SeinSoulFlame).GetField("m_soulFlame", BindingFlags.Instance | BindingFlags.NonPublic);
-        static SoulFlame FlameOf(SeinCharacter s) { return s == null || s.SoulFlame == null ? null : s_extraFlameField.GetValue(s.SoulFlame) as SoulFlame; }
-
         static IEnumerator LocalExtraSoulLink(TestHarness h)
         {
             bool owner = Players.LocalSeat == 2;
-            SoulFlame before = FlameOf(Players.OriOf(localExtra));
-            int sent = PartnerFx.SoulLinksSent, shown = PartnerFx.SoulLinksShown;
-            yield return ThreeRound(h, 603, ClientCount);   // every device has its "before" flame
+            int notices = PartnerFx.SoulLinksReceived, sent = PartnerFx.SoulLinksSent;
+            yield return ThreeRound(h, 603, ClientCount);
             SeinCharacter extra = Players.OriOf(localExtra);
             h.Check(extra != null, "locals: the extra's Ori exists for the soul link");
             if (extra == null) yield break;
             if (owner)
             {
-                Puppet puppet = PuppetAt(localExtra);
-                P2Context.Enter(puppet);
-                try { typeof(SeinSoulFlame).GetMethod("CastSoulFlame", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(extra.SoulFlame, null); }
+                extra.Energy.RestoreAllEnergy();
+                P2Context.Enter(PuppetAt(localExtra));
+                try { NetReviveTest.CastSoulLink(extra); }
                 finally { P2Context.Exit(); }
-                SoulFlame mine = FlameOf(extra);
-                h.Check(mine != null && mine != before && Vector3.Distance(mine.Position, extra.Position) < 0.5f,
-                    "locals: the extra casts a soul link at its own position (T-138)");
-                h.Check(PartnerFx.SoulLinksSent == sent + 1, "locals: the extra's soul link is sent to the other devices ("
-                    + (PartnerFx.SoulLinksSent - sent) + ")");
+                h.Check(NetReviveTest.NativeLinkAt(Own, extra.Position) && extra.SoulFlame.InsideCheckpointMarker,
+                    "locals: an extra casts and can use the primary's native link at the extra's spot");
+                h.Check(PartnerFx.SoulLinksSent == sent + 1, "locals: the extra sends one cast notice");
             }
-            else
-            {
-                float end = Time.realtimeSinceStartup + 5f; SoulFlame seen = null;
-                while (Time.realtimeSinceStartup < end) { seen = FlameOf(extra); if (seen != null && seen != before) break; yield return null; }
-                bool appeared = seen != null && seen != before;
-                float d = appeared ? Vector3.Distance(seen.Position, extra.Position) : -1f;
-                h.Check(appeared && seen.gameObject.activeInHierarchy && d < 2f && PartnerFx.SoulLinksShown > shown,
-                    "locals: the extra's soul link flame appears beside it on this device (T-138, " + (appeared ? F(d) : "none") + ")");
-            }
+            float end = Time.realtimeSinceStartup + 8f;
+            while ((Revive.RoomFlamePending || Revive.LinkSeat != localExtra || !NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition))
+                && Time.realtimeSinceStartup < end) yield return null;
+            yield return TestClock.WaitGame(Time.fixedDeltaTime);
+            string flameState;
+            bool onlyOne = NetReviveTest.OnlyNativeFlame(Own, out flameState);
+            h.Check(Revive.HaveLink && Revive.LinkSeat == localExtra && NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition) && onlyOne,
+                "locals: each device has one native flame on its primary Ori, at the extra's accepted save point (seat=" + Revive.LinkSeat
+                + ", point=" + Revive.LinkPosition.ToString("F3") + ", " + flameState + ")");
+            if (!owner) h.Check(PartnerFx.SoulLinksReceived == notices + 1, "locals: the extra's cast notice arrives");
         }
 
         // T-202 (#285): the extra local player (a second player on one PC) goes down and holds its own Y: it comes back

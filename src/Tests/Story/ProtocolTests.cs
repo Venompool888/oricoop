@@ -77,6 +77,8 @@ static partial class StoryTests
     {
         public readonly StoryLedger<Run> Ledger = new StoryLedger<Run>();
         public readonly Bus Bus;
+        public readonly SpiritWellActivations Wells = new SpiritWellActivations();
+        public bool LocallyPlayed;
         readonly Clock clock;
         public StoryPeer(Bus bus, Clock c)
         {
@@ -91,8 +93,11 @@ static partial class StoryTests
         void StartReceived(BinaryReader r)
         {
             byte[] bytes = Bytes(r); StoryStart data = StoryWire.ReadStart(r);
-            Run run = new Run { Sender = Bus.Sender, Token = data.Token, Key = data.Path, Classified = data.Classified };
-            if (!Ledger.CanReceive(run, Bus.IsHost, clock.RealTime)) return;
+            Run run = new Run { Sender = Bus.Sender, Token = data.Token, Key = data.Path, Classified = data.Classified,
+                WellActivation = data.WellActivation };
+            if (!StoryLedger<Run>.MirrorInsideWindow(LocallyPlayed, false, run.WellActivation)
+                || !Ledger.CanReceive(run, Bus.IsHost, clock.RealTime)) return;
+            if (run.WellActivation) Wells.TryActivate(run.Key);
             if (!Bus.IsHost)
             {
                 List<ulong> superseded = new List<ulong>();
@@ -116,12 +121,13 @@ static partial class StoryTests
             if (Bus.IsHost) Bus.Relay(Bus.Sender, 52, bytes);
             Run run; if (Ledger.Remote.TryGetValue(key, out run)) Ledger.Skip(run);
         }
-        public ulong Start(string key)
+        public ulong StartWell(string key) { return Wells.TryActivate(key) ? Start(key, true) : 0; }
+        public ulong Start(string key, bool wellActivation = false)
         {
             Run run = new Run { Key = key, Classified = true };
             if (!Ledger.PrepareLocal(run, Bus.Seat, Bus.IsHost, clock.RealTime)) return 0;
             Ledger.TrackLocal(run, Bus.IsHost);
-            StoryStart data = new StoryStart { Token = run.Token, Scene = Id(1), Id = Id(2), Path = key, State = "", Classified = true };
+            StoryStart data = new StoryStart { Token = run.Token, Scene = Id(1), Id = Id(2), Path = key, WellActivation = wellActivation };
             Bus.Send(50, true, delegate(BinaryWriter w) { StoryWire.WriteStart(w, data); });
             return StoryLedger<Run>.TokenKey(run.Sender, run.Token);
         }
@@ -205,6 +211,24 @@ static partial class StoryTests
             ulong key = p3.Start("a"); Equal(true, h.Ledger.Remote.ContainsKey(key)); Equal(true, g.Ledger.Remote.ContainsKey(key));
             Equal(true, p4.Ledger.Remote.ContainsKey(key)); Equal(3, p4.Ledger.Remote[key].Sender);
             p3.Skip(key); Equal(true, p4.Ledger.Remote[key].Skipped); p3.End(key); Equal(0, p4.Ledger.Remote.Count);
+        });
+        Check("spirit well: a guest's first activation overrides the host's local-only state and reaches the other guest", delegate {
+            Network n = new Network(); Clock c = new Clock(); StoryPeer host = Peer(n, c, 1), saver = Peer(n, c, 2), other = Peer(n, c, 3);
+            host.LocallyPlayed = other.LocallyPlayed = true;
+            host.Wells.TryActivate("well");
+            ulong key = saver.StartWell("well");
+            Equal(true, host.Ledger.Remote[key].WellActivation);
+            Equal(true, other.Ledger.Remote[key].WellActivation);
+            Equal(2, other.Ledger.Remote[key].Sender);
+            saver.End(key); c.RealTime = 4f;
+            Equal(0UL, other.StartWell("well"));
+        });
+        Check("spirit well: a late joiner learns opened wells without losing a newer activation", delegate {
+            SpiritWellActivations host = new SpiritWellActivations(), guest = new SpiritWellActivations();
+            host.TryActivate("first"); guest.TryActivate("second");
+            guest.Merge(Reader(Wire(host.Write)));
+            Equal(false, guest.TryActivate("first"));
+            Equal(false, guest.TryActivate("second"));
         });
         // T-066: a story the other PC started that this PC cannot find is retried every 0.1 s for 2 s; each failed try
         // used to load the scenes around it again (20 loads). The scene load is the expensive part: few, spread out.
@@ -313,7 +337,8 @@ static partial class StoryTests
             }), wire);
             StoryStart copy = StoryWire.ReadStart(Reader(wire));
             Equal(s.Token, copy.Token); Equal(s.Kind, copy.Kind); BytesEqual(s.Scene, copy.Scene); BytesEqual(s.Id, copy.Id);
-            Equal(s.Path, copy.Path); Equal(s.State, copy.State); Equal(s.Y, copy.Y); Equal(false, copy.Classified);
+            Equal(s.Path, copy.Path); Equal(s.State, copy.State); Equal(s.Y, copy.Y);
+            Equal(false, copy.Classified); Equal(false, copy.WellActivation);
             Array.Resize(ref wire, wire.Length - 1); Equal(true, StoryWire.ReadStart(Reader(wire)).Classified);
         });
     }

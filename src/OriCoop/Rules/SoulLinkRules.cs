@@ -7,6 +7,14 @@ namespace OriCoop.Rules
         public const float CellHealth = 4f;          // one health cell
         public const float SelfHoldSeconds = 2f;     // hold Y / Q to revive at the latest soul link
 
+        public static bool NativeMarkerChanged(ReviveWire.Link point, ReviveWire.Marker? own)
+        {
+            if (!point.MarkerKnown) return false;
+            if (!point.Flame.HasValue || !own.HasValue) return point.Flame.HasValue != own.HasValue;
+            ReviveWire.Marker next = point.Flame.Value, before = own.Value;
+            return next.Scene != before.Scene || next.X != before.X || next.Y != before.Y || next.Z != before.Z;
+        }
+
         // Death save (wheelchair): the creator keeps half its current health, but never drops below one cell
         // (or below what it has, if that is less than a cell). Energy is not touched.
         public static float DeathSaveHealth(float health)

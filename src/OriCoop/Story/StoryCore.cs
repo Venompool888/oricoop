@@ -4,6 +4,23 @@ using System.IO;
 
 namespace OriCoop.Story
 {
+    internal sealed class SpiritWellActivations
+    {
+        readonly HashSet<string> opened = new HashSet<string>();
+        public bool TryActivate(string key) { return opened.Add(key); }
+        public void Clear() { opened.Clear(); }
+        public void Write(BinaryWriter w)
+        {
+            w.Write(opened.Count);
+            foreach (string key in opened) w.Write(key);
+        }
+        public void Merge(BinaryReader r)
+        {
+            int count = r.ReadInt32();
+            for (int i = 0; i < count; i++) opened.Add(r.ReadString());
+        }
+    }
+
     internal struct StoryPoint
     {
         public float X, Y, Z;
@@ -193,11 +210,12 @@ namespace OriCoop.Story
         public byte[] Scene, Id;
         public string Path = "", State = "";
         public float X, Y, Z;
-        public bool Classified = true;
+        public bool Classified = true, WellActivation;
     }
 
     internal static class StoryWire
     {
+        const byte Classified = 1, WellActivation = 2;
         public static byte[] ReadId(BinaryReader r)
         {
             byte[] id = new byte[16];
@@ -207,7 +225,8 @@ namespace OriCoop.Story
         public static void WriteStart(BinaryWriter w, StoryStart s)
         {
             w.Write(s.Token); w.Write(s.Kind); w.Write(s.Scene); w.Write(s.Id);
-            w.Write(s.Path); w.Write(s.State); w.Write(s.X); w.Write(s.Y); w.Write(s.Z); w.Write(s.Classified);
+            w.Write(s.Path); w.Write(s.State); w.Write(s.X); w.Write(s.Y); w.Write(s.Z);
+            w.Write((byte)((s.Classified ? Classified : 0) | (s.WellActivation ? WellActivation : 0)));
         }
         public static StoryStart ReadStart(BinaryReader r)
         {
@@ -215,7 +234,9 @@ namespace OriCoop.Story
             s.Token = r.ReadUInt32(); s.Kind = r.ReadByte(); s.Scene = ReadId(r); s.Id = ReadId(r);
             s.Path = r.ReadString(); s.State = r.ReadString();
             s.X = r.ReadSingle(); s.Y = r.ReadSingle(); s.Z = r.ReadSingle();
-            s.Classified = r.BaseStream.Position >= r.BaseStream.Length || r.ReadBoolean();
+            byte flags = r.BaseStream.Position < r.BaseStream.Length ? r.ReadByte() : Classified;
+            s.Classified = (flags & Classified) != 0;
+            s.WellActivation = (flags & WellActivation) != 0;
             if (s.Kind > 1 || s.Path.Length > 4096 || s.State.Length > 4096
                 || float.IsNaN(s.X) || float.IsInfinity(s.X) || float.IsNaN(s.Y) || float.IsInfinity(s.Y)
                 || float.IsNaN(s.Z) || float.IsInfinity(s.Z)) throw new InvalidDataException("invalid StoryStart");
@@ -232,7 +253,7 @@ namespace OriCoop.Story
         public int Sender;
         public float Began, NextResolve, EndAt = -1f, NextSceneLoad;
         public int SceneLoads;
-        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
+        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true, WellActivation;
         public bool TripWait;   // T-185: its mirror start waits for this PC's own scene trip (SceneTripRule)
         public bool StartSent;   // T-212 (4): its start went out to the partners, so its end is owed to them
         public bool EndedEarly;  // T-212 (5): the sender's end arrived before the mirror could start here
@@ -411,7 +432,8 @@ namespace OriCoop.Story
         // It is mirrored unless this PC plays that very story itself: playedByOwnReplay (its sequence / controller was
         // started by this PC's own lever or pedestal replay) or startedHereInWindow (natively here, inside the window,
         // moments ago). Before, the window dropped every start.
-        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow) { return !playedByOwnReplay && !startedHereInWindow; }
+        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow, bool wellActivation = false)
+        { return wellActivation || !playedByOwnReplay && !startedHereInWindow; }
         // remaining: mirrored stories still tracked after the ended one was removed.
         public static StoryCleanup Cleanup(int remaining) { return remaining <= 0 ? StoryCleanup.All : StoryCleanup.StoryOnly; }
         public static bool RemoteFinished(T item, bool running, float now)

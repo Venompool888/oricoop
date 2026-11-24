@@ -75,6 +75,64 @@ static class SoulLinkTests
             Check(!d.Holding && d.Progress == 0f && d.Given == 0f && d.Rescuer == 0, "rescue still running");
         });
 
+        run("room flame: the latest accepted marker replaces the old position for either creator", delegate {
+            ReviveWire.Marker before = Marker(10f), after = Marker(20f);
+            SavePointState state = new SavePointState();
+            state.NoteSave(new ReviveWire.Link { Seat = 1, MarkerKnown = true, Flame = before });
+            state.NoteCheckpoint(new ReviveWire.Link { Seat = 2, MarkerKnown = true, Flame = after });
+            Check(!SoulLinkRules.NativeMarkerChanged(state.Point, before), "a guest proposal moved the marker before adoption");
+            state.NoteSave(state.Checkpoint);
+            Check(SoulLinkRules.NativeMarkerChanged(state.Point, before), "the adopted P2 marker did not replace P1's");
+            state.NoteSave(new ReviveWire.Link { Seat = 1, MarkerKnown = true, Flame = before });
+            Check(SoulLinkRules.NativeMarkerChanged(state.Point, after), "the adopted P1 marker did not replace P2's");
+        });
+        run("room flame: a different scene at the same position still updates the marker", delegate {
+            ReviveWire.Marker before = Marker(10f), after = before;
+            after.Scene = Guid.Empty;
+            Check(SoulLinkRules.NativeMarkerChanged(new ReviveWire.Link { MarkerKnown = true, Flame = after }, before), "scene change ignored");
+        });
+        run("room flame: a well save keeps the same native marker", delegate {
+            ReviveWire.Marker marker = Marker(10f);
+            ReviveWire.Link well = new ReviveWire.Link { X = 25f, MarkerKnown = true, Flame = marker };
+            Check(!SoulLinkRules.NativeMarkerChanged(well, marker), "a well save moved the native marker to its own save point");
+            Check(SoulLinkRules.NativeMarkerChanged(well, null), "missing native marker was not created");
+        });
+        run("room flame: an explicit empty marker clears the old flame, an absent snapshot does not", delegate {
+            ReviveWire.Link point = At(2, 25f, 20f, 6f);
+            ReviveWire.Marker marker = Marker(10f);
+            Check(!SoulLinkRules.NativeMarkerChanged(point, marker), "an old-format RoomLink cleared the marker");
+            point.MarkerKnown = true;
+            Check(SoulLinkRules.NativeMarkerChanged(point, marker), "a checkpoint without a marker left the old one");
+            Check(!SoulLinkRules.NativeMarkerChanged(point, null), "a checkpoint without a marker created one");
+        });
+        run("room flame wire: position and scene round trip separately from the save point", delegate {
+            ReviveWire.Link point = At(2, 25f, 20f, 6f);
+            point.MarkerKnown = true; point.Flame = Marker(10f);
+            ReviveWire.Link decoded = RoundTrip(point);
+            Check(decoded.Seat == 2 && decoded.X == 25f && decoded.Health == 6f, "lost the save point or creator health");
+            Check(decoded.MarkerKnown && decoded.Flame.HasValue && decoded.Flame.Value.X == 10f && decoded.Flame.Value.Y == -4f
+                && decoded.Flame.Value.Z == 0.5f && decoded.Flame.Value.Scene == point.Flame.Value.Scene, "lost the native marker or its scene");
+            point.Flame = null; decoded = RoundTrip(point);
+            Check(decoded.MarkerKnown && !decoded.Flame.HasValue, "lost the explicit empty marker");
+            point.MarkerKnown = false; decoded = RoundTrip(point);
+            Check(!decoded.MarkerKnown, "a legacy link was decoded as a marker snapshot");
+        });
+        run("room link wire: a rejected save is distinct from a zero-health checkpoint", delegate {
+            ReviveWire.Link point = At(1, 10f, 20f, 0f);
+            point.MarkerKnown = true; point.Flame = Marker(10f);
+            Check(!RoundTrip(point).OfferRejected, "a normal checkpoint rejected an offer");
+            point.OfferRejected = true;
+            ReviveWire.Link rejected = RoundTrip(point);
+            Check(rejected.OfferRejected && rejected.MarkerKnown && rejected.Flame.HasValue && rejected.Flame.Value.X == 10f,
+                "the rejection lost the accepted flame");
+            point.Flame = null;
+            rejected = RoundTrip(point);
+            Check(rejected.OfferRejected && rejected.MarkerKnown && !rejected.Flame.HasValue, "the rejection lost the empty marker");
+            point.MarkerKnown = false;
+            rejected = RoundTrip(point);
+            Check(rejected.OfferRejected && !rejected.MarkerKnown, "the rejection requires a known marker");
+        });
+
         // T-202 (#285): a downed player always has a save point to hold Y / Q for.
         run("T-202 no room save yet: the host's latest checkpoint is the save point", delegate {
             SavePointState p = new SavePointState();
@@ -145,8 +203,23 @@ static class SoulLinkTests
         });
     }
 
+    static ReviveWire.Marker Marker(float x)
+    {
+        return new ReviveWire.Marker { X = x, Y = -4f, Z = 0.5f, Scene = new Guid("12345678-1234-1234-1234-123456789abc") };
+    }
+
+    static ReviveWire.Link RoundTrip(ReviveWire.Link point)
+    {
+        using (var stream = new System.IO.MemoryStream())
+        {
+            ReviveWire.WriteLink(new System.IO.BinaryWriter(stream), point);
+            stream.Position = 0;
+            return ReviveWire.ReadLink(new System.IO.BinaryReader(stream));
+        }
+    }
+
     static ReviveWire.Link At(int seat, float x, float y, float health)
     {
-        ReviveWire.Link l; l.Seat = seat; l.X = x; l.Y = y; l.Z = 0f; l.Health = health; return l;
+        return new ReviveWire.Link { Seat = seat, X = x, Y = y, Health = health };
     }
 }
