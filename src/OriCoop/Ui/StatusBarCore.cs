@@ -43,6 +43,12 @@ namespace OriCoop.Ui
 
         public void Set(VitalsSample s)
         {
+            // A value that is not a number (msg 79 from a broken sender) keeps the last one: NaN would stick in the edges
+            // for good and Tick's Math.Sign throws on it every frame.
+            s.Health = Finite(s.Health, m_have ? Now.Health : 0f);
+            s.Energy = Finite(s.Energy, m_have ? Now.Energy : 0f);
+            s.MaxEnergy = Finite(s.MaxEnergy, m_have ? Now.MaxEnergy : 0f);
+            s.SoulFlame = Finite(s.SoulFlame, m_have ? Now.SoulFlame : 0f);
             if (s.MaxHealth < 0) s.MaxHealth = 0;
             s.Health = Clamp(s.Health, 0f, s.MaxHealth);
             if (s.MaxEnergy < 0f) s.MaxEnergy = 0f;
@@ -134,6 +140,7 @@ namespace OriCoop.Ui
             return s;
         }
 
+        static float Finite(float v, float fallback) { return float.IsNaN(v) || float.IsInfinity(v) ? fallback : v; }
         static float Ratio(float a, float max) { return max <= 0f ? 0f : a / max; }
         static float Clamp(float v, float lo, float hi) { return v < lo ? lo : v > hi ? hi : v; }
         static float Toward(float v, float target, float step)
