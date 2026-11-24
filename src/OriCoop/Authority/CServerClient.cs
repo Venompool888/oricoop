@@ -131,8 +131,11 @@ namespace OriCoop.Authority
                     taken = new bool[5]; nicks = new string[5];   // T-171: the room page shows every seat's name
                     foreach (CsRosterEntry entry in message.Roster)
                     {
+                        // Seats are 1-4; a roster entry outside them (a bad or newer server) is ignored instead of throwing
+                        // half-way, which left the roster half-replaced and skipped every online/offline/arbiter event.
+                        if (entry.Seat < 1 || entry.Seat > 4) continue;
                         online[entry.Seat] = entry.Online;
-                        if (entry.Seat >= 1 && entry.Seat <= 4) { taken[entry.Seat] = true; nicks[entry.Seat] = entry.Nick ?? ""; }
+                        taken[entry.Seat] = true; nicks[entry.Seat] = entry.Nick ?? "";
                     }
                     int oldArbiter = ArbiterSeat;
                     ArbiterSeat = 0;
