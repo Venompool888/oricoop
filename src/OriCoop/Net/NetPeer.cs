@@ -58,6 +58,14 @@ namespace OriCoop.Net
         private readonly Queue<Traffic> recvTraffic = new Queue<Traffic>();
         private readonly SentPacket[] sent = new SentPacket[65536];
         private readonly SentPacket[] history = new SentPacket[HistorySize];
+        // Per-frame scratch, reused so a frame's packets do not each allocate an MTU buffer, a writer and lists.
+        // NoFragments is shared and never added to (ack-only packets and acknowledged packets point at it).
+        private static readonly List<Fragment> NoFragments = new List<Fragment>();
+        private readonly MemoryStream sendStream = new MemoryStream(Mtu);
+        private readonly BinaryWriter sendWriter;
+        private readonly List<Fragment> dueScratch = new List<Fragment>();
+        private readonly List<byte[]> plainScratch = new List<byte[]>();
+        private readonly List<WireMessage> wireScratch = new List<WireMessage>();
         private int historyPosition, historyCount, sendBytes, recvBytes;
         private PeerState state;
         private EndPoint remote;
@@ -111,7 +119,7 @@ namespace OriCoop.Net
             internal ushort Index, Count;
             internal byte[] Bytes;
         }
-        private sealed class Traffic
+        private struct Traffic
         {
             internal double Time;
             internal int Bytes;
@@ -121,6 +129,7 @@ namespace OriCoop.Net
         {
             if (transport == null) throw new ArgumentNullException("transport");
             this.transport = transport;
+            sendWriter = new BinaryWriter(sendStream);
         }
 
         internal NetPeer(IDatagramTransport transport, Func<double> nowMs) : this(transport)
@@ -344,30 +353,30 @@ namespace OriCoop.Net
 
         private void SendData(List<Fragment> fragments, List<byte[]> plain)
         {
-            using (MemoryStream stream = new MemoryStream(Mtu))
+            sendStream.SetLength(0);
+            ushort sequence = nextSequence++;
+            BinaryWriter writer = sendWriter;
+            writer.Write(Magic); writer.Write(Data); writer.Write(session);
+            writer.Write(sequence); writer.Write(haveReceived ? latestSequence : (ushort)0);
+            writer.Write(haveReceived ? receivedBits : 0U); writer.Write(unchecked((uint)NowMs));
+            foreach (Fragment fragment in fragments)
             {
-                ushort sequence = nextSequence++;
-                BinaryWriter writer = StartPacket(stream, Data, session);
-                writer.Write(sequence); writer.Write(haveReceived ? latestSequence : (ushort)0);
-                writer.Write(haveReceived ? receivedBits : 0U); writer.Write(unchecked((uint)NowMs));
-                foreach (Fragment fragment in fragments)
-                {
-                    writer.Write(Reliable); writer.Write(fragment.Id); writer.Write(fragment.Index); writer.Write(fragment.Count);
-                    writer.Write((ushort)fragment.Bytes.Length); writer.Write(fragment.Bytes);
-                    if (fragment.LastSent >= 0) stats.ReliableResends++;
-                    fragment.LastSent = NowMs;
-                }
-                foreach (byte[] bytes in plain)
-                {
-                    writer.Write(Unreliable); writer.Write((ushort)bytes.Length); writer.Write(bytes);
-                }
-                TrackPacket(sequence, fragments, fragments.Count != 0 || plain.Count != 0);
-                SendPacket(stream.ToArray(), remote);
+                writer.Write(Reliable); writer.Write(fragment.Id); writer.Write(fragment.Index); writer.Write(fragment.Count);
+                writer.Write((ushort)fragment.Bytes.Length); writer.Write(fragment.Bytes);
+                if (fragment.LastSent >= 0) stats.ReliableResends++;
+                fragment.LastSent = NowMs;
             }
+            foreach (byte[] bytes in plain)
+            {
+                writer.Write(Unreliable); writer.Write((ushort)bytes.Length); writer.Write(bytes);
+            }
+            TrackPacket(sequence, fragments, fragments.Count != 0 || plain.Count != 0);
+            writer.Flush();
+            SendPacket(sendStream.ToArray(), remote);
             ackDirty = false; receivedSinceAck = 0;
         }
 
-        private void SendAck() { SendData(new List<Fragment>(), new List<byte[]>()); }
+        private void SendAck() { plainScratch.Clear(); SendData(NoFragments, plainScratch); }
 
         public void Flush()
         {
@@ -381,17 +390,25 @@ namespace OriCoop.Net
             double resendAfter = Math.Min(1000, Math.Max(50, stats.RttMs + 4 * stats.JitterMs + 20));
             // Keep jittered reliable bursts inside the 32-bit ack history. The fragment
             // window is still 256; several small fragments can share one packet.
-            packetWindow.RemoveAll(delegate(SentPacket p) { return p.Acked || now - p.Time >= resendAfter; });
-            List<Fragment> due = new List<Fragment>();
+            int kept = 0;
+            for (int i = 0; i < packetWindow.Count; i++)
+            {
+                SentPacket p = packetWindow[i];
+                if (!p.Acked && now - p.Time < resendAfter) packetWindow[kept++] = p;
+            }
+            packetWindow.RemoveRange(kept, packetWindow.Count - kept);
+            List<Fragment> due = dueScratch; due.Clear();
             foreach (Fragment f in inFlight) if (f.LastSent < 0 || now - f.LastSent >= resendAfter) due.Add(f);
             int index = 0;
             while (index < due.Count || unreliable.Count != 0)
             {
                 int size = DataHeader;
-                List<Fragment> fragments = new List<Fragment>();
-                List<byte[]> plain = new List<byte[]>();
+                // The fragment list is kept by the packet's history entry (for its ack); the plain list is not.
+                List<Fragment> fragments = NoFragments;
+                List<byte[]> plain = plainScratch; plain.Clear();
                 while (packetWindow.Count < PacketWindow && index < due.Count && size + 11 + due[index].Bytes.Length <= Mtu)
                 {
+                    if (fragments == NoFragments) fragments = new List<Fragment>();
                     Fragment f = due[index++]; fragments.Add(f); size += 11 + f.Bytes.Length;
                 }
                 while (unreliable.Count != 0 && size + 3 + unreliable.Peek().Length <= Mtu)
@@ -401,6 +418,7 @@ namespace OriCoop.Net
                 if (fragments.Count == 0 && plain.Count == 0) break;
                 SendData(fragments, plain);
             }
+            due.Clear();
             if (ackDirty || NowMs - lastSend >= KeepaliveMs) SendAck();
             ReleaseDelayed(); UpdateStats();
         }
@@ -425,7 +443,7 @@ namespace OriCoop.Net
                 if (f.Acked) continue;
                 f.Acked = true; stats.ReliablePending--;
             }
-            item.Fragments = new List<Fragment>();
+            item.Fragments = NoFragments;
         }
 
         private bool ReceiveSequence(ushort sequence)
@@ -455,8 +473,8 @@ namespace OriCoop.Net
 
         private List<WireMessage> ReadMessages(BinaryReader reader, MemoryStream stream)
         {
-            List<WireMessage> messages = new List<WireMessage>();
-            Dictionary<uint, ushort> counts = new Dictionary<uint, ushort>();
+            List<WireMessage> messages = wireScratch; messages.Clear();
+            Dictionary<uint, ushort> counts = null;   // only packets with reliable fragments need it
             while (stream.Position < stream.Length)
             {
                 WireMessage m = new WireMessage(); m.Kind = reader.ReadByte();
@@ -473,7 +491,8 @@ namespace OriCoop.Net
                         throw new InvalidDataException();
                     Assembly assembly; ushort count;
                     if (assemblies.TryGetValue(m.Id, out assembly) && assembly.Pieces.Length != m.Count) throw new InvalidDataException();
-                    if (counts.TryGetValue(m.Id, out count) && count != m.Count) throw new InvalidDataException();
+                    if (counts == null) counts = new Dictionary<uint, ushort>();
+                    else if (counts.TryGetValue(m.Id, out count) && count != m.Count) throw new InvalidDataException();
                     counts[m.Id] = m.Count;
                 }
                 m.Bytes = reader.ReadBytes(length); messages.Add(m);
@@ -596,6 +615,7 @@ namespace OriCoop.Net
                 bool fresh = ReceiveSequence(sequence);
                 if (messages.Count != 0) { ackDirty = true; receivedSinceAck++; }
                 if (fresh) foreach (WireMessage m in messages) Deliver(m);
+                messages.Clear();
                 // Capture ack history during bursts before its 32-bit window rolls over.
                 if (receivedSinceAck >= 8) SendAck();
             }
