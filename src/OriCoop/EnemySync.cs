@@ -1484,6 +1484,7 @@ namespace OriCoop
                 __result = false; return false;
             }
         }
+        static readonly List<Actor> s_candidates = new List<Actor>();
         public static void Tick()
         {
             if (!Active) return;
@@ -1527,7 +1528,7 @@ namespace OriCoop
                 }
             }
             float dt = Mathf.Max(0, Now - s_tokenTime); s_tokenTime = Now; s_tokens = Mathf.Min(Budget / 4f, s_tokens + dt * Budget);
-            List<Actor> candidates = new List<Actor>();
+            List<Actor> candidates = s_candidates; candidates.Clear();   // one list for every frame
             foreach (Actor a in s_actors.Values)
             {
                 if (a.Entity != null && Now >= a.NextTrace && (Vector3.Distance(a.Entity.Position, Local.Position) <= 30f
@@ -1562,6 +1563,7 @@ namespace OriCoop
                 Send(Snapshots, false, delegate(BinaryWriter w) { w.Write((byte)1); WriteId(w, a); w.Write(a.Epoch); WriteState(w, a, s, false); });
                 s_tokens -= EstimatedWireBytesSent - bytes; a.Priority = 0; a.LastSent = Now;
             }
+            candidates.Clear();
             FlushHits(); FlushShots();
             for (int i = s_copies.Count - 1; i >= 0; i--)
             { ProjectileIdentity p = s_copies[i]; if (p == null || Now >= p.Expires || !p.gameObject.activeInHierarchy) { if (p != null && p.gameObject.activeInHierarchy) InstantiateUtility.Destroy(p.gameObject); s_copies.RemoveAt(i); } }
