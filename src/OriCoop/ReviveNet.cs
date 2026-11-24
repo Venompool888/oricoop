@@ -400,6 +400,7 @@ namespace OriCoop
             if (!Services.Net.Enabled || Services.Net.Sender != Services.Net.HostSeat) return;
             FinalDeaths++; NetBothDown++;
             Services.Log.Info("online: host says both Oris are down: checkpoint reload");
+            SaveSync.ExpectWipeCheckpoint();
             ReleaseRemoteDowned();
             KillP1Normally();
         }
