@@ -526,16 +526,15 @@ namespace OriCoop
             if (Players.LocalSeat == 3) AccessTools.Method(typeof(MenuScreenManager), "ShowMenuScreen",
                 new Type[] { typeof(MenuScreenManager.Screens), typeof(bool) }).Invoke(UI.Menu,
                 new object[] { MenuScreenManager.Screens.Pause, false });
-            // T-044: online nothing pauses. P3's menu holds only P3's Ori; the other three keep playing, no banner.
             yield return FourAwait(h, delegate {
-                return Players.LocalSeat != 3 || (UI.Menu != null && UI.Menu.MainMenuVisible && SessionRules.LocalLocked);
+                return Players.LocalSeat != 3 || (UI.Menu != null && UI.Menu.MainMenuVisible && SessionRules.LiveScreen);
             }, 8f, "P3 menu open without a pause");
             Vector3 origin = Own.Position; s_threeTravel = 0; Bot(1, 0);
-            yield return FourTicks(h, 30, delegate { s_threeTravel = Mathf.Max(s_threeTravel, Vector3.Distance(origin, Own.Position)); });
+            yield return FourTicks(h, 30, delegate { s_threeTravel = Mathf.Max(s_threeTravel, Mathf.Abs(Own.Position.x - origin.x)); });
             Bot(0, 0);
             yield return ThreeRound(h, 421, 4);
             h.Check(AllFour(421, p => !p.Paused && !p.BannerP3 && (p.Seat == 3 ? p.Travel < 0.3f : p.Travel > 0.5f) && p.Frames > Three(420, p.Seat).Frames),
-                "4P P3's menu pauses nobody: P3 held, the other three keep moving, no banner");
+                "4P P3's menu blocks only P3's input: the other three keep moving, no banner");
             if (Players.LocalSeat == 3) UI.Menu.HideMenuScreen(true);
             yield return FourAwait(h, delegate { return !SessionRules.InMenu(3) && !SessionRules.LocalPaused && !SessionRules.PausedByPartner; }, 8f, "P3 menu closed");
             origin = Own.Position; Bot(1, 0);
@@ -1571,12 +1570,13 @@ namespace OriCoop
             while (Time.realtimeSinceStartup < end - 0.5f)
             {
                 float now = Time.realtimeSinceStartup;
-                if (now >= nextClose && (SessionRules.LocalLocked || gc.LockInput || gc.LockInputByAction)) { closed += ClosePopups(); nextClose = now + 0.5f; }
+                if (now >= nextClose && (SessionRules.PopupOpen || SessionRules.LocalLocked || gc.LockInput || gc.LockInputByAction))
+                { closed += ClosePopups(); nextClose = now + 0.5f; }
                 yield return null;
             }
             own.Mortality.Health.SetAmount(Mathf.Min(healthBefore, own.Mortality.Health.MaxHealth));
             own.Energy.Current = Mathf.Min(energyBefore, own.Energy.Max);
-            h.Check(!SessionRules.LocalLocked && !gc.LockInput && !gc.LockInputByAction && !StorySync.StoryActive,
+            h.Check(!SessionRules.LocalLocked && !SessionRules.PopupOpen && !gc.LockInput && !gc.LockInputByAction && !StorySync.StoryActive,
                 "W cells: nobody is held once the cell's message is closed (held=" + SessionRules.LocalLocked + " popup=" + SessionRules.PopupOpen
                 + " lockInput=" + gc.LockInput + " byAction=" + gc.LockInputByAction + " story=" + StorySync.StoryActive + " closed=" + closed + ")");
             while (Time.realtimeSinceStartup < end) yield return null;
@@ -1586,7 +1586,7 @@ namespace OriCoop
         // alone left GameController.LockInput set for ~20 s, T-156). Returns how many it closed.
         static int ClosePopups()
         {
-            int closed = 0;
+            int closed = SessionRules.HidePopups();
             foreach (UnityEngine.Object o in UnityEngine.Object.FindObjectsOfType(typeof(InteractiveMessageBox)))
             {
                 InteractiveMessageBox box = o as InteractiveMessageBox;
@@ -1594,7 +1594,7 @@ namespace OriCoop
                     && Traverse.Create(box).Field("m_state").GetValue<InteractiveMessageBox.State>() != InteractiveMessageBox.State.Inactive)
                 { box.EndMessageBox(); closed++; }
             }
-            return closed + SessionRules.HideSkippedPopups();
+            return closed;
         }
 
         static IEnumerator SharedWorld(TestHarness h)
@@ -2698,18 +2698,32 @@ namespace OriCoop
                     }
                     MenuScreenManager menu = UI.Menu;
                     SeinCharacter ori = Own;
-                    bool checkMap = PhaseOn("S4") && menu != null && !menu.MainMenuVisible && GameMapUI.Instance != null && ori != null && !ori.IsSuspended;
-                    if (checkMap)
+                    bool checkMenu = PhaseOn("S4") && menu != null && !menu.MainMenuVisible && ori != null && !ori.IsSuspended;
+                    bool help = false;
+                    if (checkMenu)
                     {
-                        menu.ShowWorldMap(false);
-                        h.Check(SessionRules.LiveMap && !ori.IsSuspended, "G map: the guest's map is live before the disconnect");
+                        menu.ShowMenuScreen();
+                        help = NetStoryTest.TryOpenHelp();
+                        CoopMenu.Open();
+                        yield return null;
+                        h.Check(CoopMenu.IsOpen && SessionRules.LiveScreen && !ori.IsSuspended, "G screens: the guest is live with its screens open");
                     }
                     NetPlay.TestTransportFailure("test: the transport failed");
-                    if (checkMap)
+                    if (checkMenu)
                     {
-                        h.Check(menu.MainMenuVisible && !SessionRules.LiveMap && ori.IsSuspended, "G map: disconnect restores the native pause");
+                        h.Check(menu.MainMenuVisible && !SessionRules.LiveScreen && ori.IsSuspended, "G screens: disconnect restores the native pause");
+                        if (help)
+                        {
+                            h.Check(SessionRules.PopupOpen, "G screens: the help popup stays open after disconnect");
+                            SessionRules.HidePopups();
+                            h.Check(!SessionRules.PopupOpen && ori.IsSuspended, "G screens: hiding the help popup leaves the menu pause in place");
+                        }
+                        h.Check(CoopMenu.IsOpen && GameController.Instance.InputLocked, "G screens: F8 still locks input without the popup");
+                        CoopMenu.Close();
+                        PauseMenuEntry.Release();
                         menu.HideMenuScreen(true);
-                        h.Check(!menu.MainMenuVisible && !ori.IsSuspended, "G map: closing the offline map resumes Ori");
+                        h.Check(!menu.MainMenuVisible && !ori.IsSuspended && !GameController.Instance.InputLocked,
+                            "G screens: closing the offline screens releases their suspends and input lock");
                     }
                     float failGoneBy = Time.realtimeSinceStartup + 1f;
                     while (P2Context.P2 != null && Time.realtimeSinceStartup < failGoneBy) yield return null;

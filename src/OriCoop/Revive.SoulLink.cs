@@ -478,7 +478,8 @@ namespace OriCoop
         {
             if (TestHoldSelf) return true;
             Puppet p = Players.OfSein(s);
-            return p != null ? p.Input.Bash.IsPressed : Core.Input.Bash.IsPressed || Input.GetKey(KeyCode.Q);
+            return p != null ? (Services.Net.Enabled ? p.SelfReviveHeld : p.Input.Bash.IsPressed)
+                : Core.Input.Bash.IsPressed || Input.GetKey(KeyCode.Q);
         }
 
         // T-169 (escape levels, #249) sets this from its own files: while it returns true, holding Y/Q

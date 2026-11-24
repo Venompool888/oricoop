@@ -53,7 +53,10 @@ namespace OriCoop
         }
 
         static readonly LocalWait[] Waits = new LocalWait[GateSeats.MaxSeat + 1];
-        static bool MenuOpen { get { return UI.MainMenuVisible || CoopMenu.IsOpen || SessionRules.LocalPaused; } }
+        static bool MenuOpen(SeinCharacter ori)
+        {
+            return SessionRules.NoPause ? SessionRules.ScreenInputLocked(ori) : UI.MainMenuVisible || CoopMenu.IsOpen || SessionRules.LocalPaused;
+        }
         static bool ExtraUsesKeyboard(int seat)
         {
             return Services.Net.Enabled ? OnlineLocalPlayers.InputOf(seat).Kind == InputDevice.DeviceKind.KeyboardMouse
@@ -103,7 +106,6 @@ namespace OriCoop
         }
         static void UpdateWaits(int[] seats)
         {
-            bool menu = MenuOpen;
             for (int seat = 1; seat <= GateSeats.MaxSeat; seat++)
             {
                 SeinCharacter ori = System.Array.IndexOf(seats, seat) < 0 ? null : Players.OriOf(seat);
@@ -124,7 +126,7 @@ namespace OriCoop
                     continue;
                 }
                 Vector3? target;
-                if (!menu && wait.LeavePressed && !s_table.RecentlyFired(key, Now) && wait.State.TryLeave(Now, out target))
+                if (!MenuOpen(ori) && wait.LeavePressed && !s_table.RecentlyFired(key, Now) && wait.State.TryLeave(Now, out target))
                 {
                     wait.ResetHold(); wait.ConsumeLeave = true;
                     Presence(gate, seat, false);
@@ -143,14 +145,13 @@ namespace OriCoop
 
         static void TickForce(int[] seats)
         {
-            bool menu = MenuOpen;
             foreach (int seat in seats)
             {
                 LocalWait wait = Waits[seat];
                 Gate gate;
                 if (wait == null || wait.State.Key == null || !Gates.TryGetValue(wait.State.Key, out gate)
                     || s_table.RecentlyFired(gate.Key, Now)) continue;
-                if (wait.Meter.Update(!menu && wait.ForceHeld, Time.deltaTime))
+                if (wait.Meter.Update(!MenuOpen(wait.Ori) && wait.ForceHeld, Time.deltaTime))
                 {
                     Forces++; Log("force", gate.Key, seat, gate.Count, gate.Total);
                     Vector3 at = gate.Object.transform.position;
@@ -172,10 +173,15 @@ namespace OriCoop
             if (wait == null) return;
             // Controller B is Soul Flame in gameplay. Its keyboard binding is E, separate from Start and Bash.
             bool leave = extraKeyboard ? MoonInput.GetKey(KeyCode.E) : Input.SoulFlame.IsPressed;
+            if (SessionRules.ScreenInputLocked(ori))
+            {
+                wait.LeaveHeld = leave; wait.LeavePressed = wait.ForceHeld = false;
+                return;
+            }
             bool locked = wait.State.Key != null;
             if (locked)
             {
-                wait.LeavePressed |= leave && !wait.LeaveHeld && !Input.Start.IsPressed && !MenuOpen;
+                wait.LeavePressed |= leave && !wait.LeaveHeld && !Input.Start.IsPressed && !MenuOpen(ori);
                 wait.ForceHeld = extraKeyboard ? MoonInput.GetKey(KeyCode.C) : Input.Bash.IsPressed;
 
                 Input.Horizontal = Input.Vertical = 0f;

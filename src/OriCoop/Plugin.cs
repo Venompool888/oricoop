@@ -325,7 +325,7 @@ namespace OriCoop
                 }
                 m_parked = !p1Available;
                 P2Input.HoldStill = !Revive.IsDowned(p1) && (!p1Available || p1.Controller == null
-                    || !SessionRules.CanMoveIgnoringMap(p1.Controller) || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
+                    || !SessionRules.CanMoveIgnoringScreen(p1.Controller) || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
                 if (m_parked) return;
                 m_mirrorTimer -= Time.unscaledDeltaTime;
                 if (m_mirrorTimer <= 0f)
@@ -698,7 +698,7 @@ namespace OriCoop
             who.Position = pos + new Vector3(0f, 0.5f, 0f);
             VisualInvariants.Grace(1.5f);
             who.Speed = Vector3.zero;
-            // T-112: the own Ori was moved on purpose; an online menu hold (SessionRules.HoldLocal) must not pull it back.
+            // Re-anchor any story hold at the new position.
             if (Players.OfSein(who) == null) SessionRules.PositionChanged();
             // The game brings "the" companion along on its own teleports via the global Characters.Ori, which is
             // P1's. When P2 jumps, bring P2's companion along the same way, as P2.
@@ -742,7 +742,7 @@ namespace OriCoop
         {
             static bool Prefix(SeinDamageReciever __instance)
             {
-                SessionRules.CloseMapOnDeath(__instance.Sein);
+                SessionRules.CloseScreensOnDeath(__instance.Sein);
                 if (P2Context.P2 == null) return true;
                 Puppet puppet = Players.OfInstance(__instance.GetInstanceID());
                 bool isP2 = puppet != null;
