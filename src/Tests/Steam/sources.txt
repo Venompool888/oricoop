@@ -2,3 +2,4 @@ OriCoop\Net\Transport.cs
 OriCoop\Net\SteamApi.cs
 OriCoop\Net\FakeSteamApi.cs
 OriCoop\SteamTransport.cs
+OriCoop\Net\NetPeer.cs
