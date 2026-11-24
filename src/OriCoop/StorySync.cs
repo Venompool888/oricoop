@@ -15,6 +15,7 @@ namespace OriCoop
     public static class StorySync
     {
         const byte StartMessage = 50, EndMessage = 51, SkipMessage = 52;
+        const byte ContinuationMessage = 101;
         static readonly IntroRule Intro = new IntroRule();
         public static bool IntroActive { get { return Intro.Active; } }
         // Test-only mutation: the intro hold also takes the prologue's own character on a guest (the state before T-205).
@@ -44,6 +45,8 @@ namespace OriCoop
             public Vector3 ControlPosition;
             public float FreeSince = -1f, FreeLast = -1f;
             public ActionSequence Sequence;
+            public bool ContinuationConfirmed;
+            public ActionSequence PlayedContinuation;
             public CutsceneController Controller;
             public int LastTakeover = -1;   // T-196: index of the sequence's last takeover action (LastTakeoverIndex)
         }
@@ -101,7 +104,7 @@ namespace OriCoop
         public static bool StorySequenceRunning()
         {
             foreach (Story story in Local.Values)
-                if (story.Sequence != null && story.Sequence.IsRunning || story.Controller != null && story.Controller.CurrentState != null) return true;
+                if (SequenceRunning(story) || story.Controller != null && story.Controller.CurrentState != null) return true;
             foreach (ActionSequence sequence in OwnedSequences) if (sequence != null && sequence.IsRunning) return true;
             foreach (CutsceneController controller in OwnedControllers) if (controller != null && controller.CurrentState != null) return true;
             foreach (ActionSequence sequence in LocalOnly) if (sequence != null && sequence.IsRunning) return true;
@@ -386,6 +389,7 @@ namespace OriCoop
             Services.Net.On(StartMessage, ReceiveStart);
             Services.Net.On(EndMessage, ReceiveEnd);
             Services.Net.On(SkipMessage, ReceiveSkip);
+            Services.Net.On(ContinuationMessage, ReceiveContinuation);
             Services.Net.SessionStarted += WellActivations.Clear;
             Services.Net.SessionEnded += WellActivations.Clear;
             Services.Net.PlayerLeft += RemoveSeat;
@@ -790,6 +794,69 @@ namespace OriCoop
             Accepted.Remove(token);
             EndRemote(token);
         }
+        // A terminal RunActionOnce hands a story to a sibling sequence (Spirit Tree 01 -> 02).
+        // A world delta can mark the one-shot used before the mirror reaches it. Confirm the actual
+        // call on the source and let the mirror finish its parent before filling in a missed call.
+        static ActionSequence ContinuationOf(ActionSequence parent)
+        {
+            if (parent == null || parent.Actions == null || parent.Actions.Count == 0) return null;
+            RunActionOnce last = parent.Actions[parent.Actions.Count - 1] as RunActionOnce;
+            return last != null ? last.Action as ActionSequence : null;
+        }
+        static void NoteContinuation(ActionSequence child)
+        {
+            ActionSequence parent = s_inputSequence;
+            if (parent == null || parent == child || parent.Actions == null || parent.Index != parent.Actions.Count - 1
+                || ContinuationOf(parent) != child) return;
+            foreach (Story story in Remote.Values)
+                if (story.Sequence == parent) { story.PlayedContinuation = child; return; }
+            foreach (Story story in Local.Values)
+                if (story.Sequence == parent && story.StartSent && !story.ContinuationConfirmed)
+                {
+                    story.PlayedContinuation = child;
+                    story.ContinuationConfirmed = true;
+                    Services.Net.Send(ContinuationMessage, true, w => StoryWire.WriteToken(w, story.Token));
+                    return;
+                }
+        }
+        static void ReceiveContinuation(BinaryReader r)
+        {
+            ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r));
+            Story story;
+            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || story.Kind != 0) return;
+            story.ContinuationConfirmed = true;
+            StoryHost.Current.Rebroadcast(r);
+            PlayMissedContinuation(story);
+        }
+        static void PlayMissedContinuation(Story story)
+        {
+            if (!story.ContinuationConfirmed || story.PlayedContinuation != null || !story.Started || story.Watch
+                || story.Sequence == null || story.Sequence.IsRunning) return;
+            ActionSequence child = ContinuationOf(story.Sequence);
+            if (child == null || child == story.Sequence || !child.enabled) return;
+            bool previous = s_mirroring; s_mirroring = true;
+            try
+            {
+                story.PlayedContinuation = child;
+                ActivateMirrorSequence(child);
+                OwnedSequences.Add(child);
+                child.Perform(null);
+                Services.Log.Info("net: played missed story continuation " + child.name);
+            }
+            finally { s_mirroring = previous; }
+        }
+        static bool SequenceRunning(Story story)
+        {
+            return story.Sequence != null && story.Sequence.IsRunning
+                || story.PlayedContinuation != null && story.PlayedContinuation.IsRunning;
+        }
+        static bool InEndedStory(Transform part, Story ended)
+        {
+            if (!Below(part, ended.Sequence) && !Below(part, ended.PlayedContinuation)) return false;
+            foreach (Story other in Remote.Values)
+                if (Below(part, other.Sequence) || Below(part, other.PlayedContinuation)) return false;
+            return true;
+        }
         static void RemoveSeat(int seat)
         {
             List<ulong> tokens = Ledger.RemoteSeatTokens(seat);
@@ -810,15 +877,15 @@ namespace OriCoop
             bool previous = s_mirroring; s_mirroring = true;
             try
             {
-                if (story.Sequence != null)
+                if (story.Sequence != null || story.PlayedContinuation != null)
                 {
                     foreach (ActionSequence sequence in new List<ActionSequence>(OwnedSequences))
-                        if (sequence != null && Below(sequence.transform, story.Sequence)) { TryStop(sequence); OwnedSequences.Remove(sequence); }
+                        if (sequence != null && InEndedStory(sequence.transform, story)) { TryStop(sequence); OwnedSequences.Remove(sequence); }
                     foreach (PauseGameAction pause in new List<PauseGameAction>(OwnedPauses))
-                        if (pause != null && Below(pause.transform, story.Sequence)) { if (pause.IsPerforming) TryStop(pause); OwnedPauses.Remove(pause); }
+                        if (pause != null && InEndedStory(pause.transform, story)) { if (pause.IsPerforming) TryStop(pause); OwnedPauses.Remove(pause); }
                     foreach (ShowStoryTextAction text in new List<ShowStoryTextAction>(StoryTexts.Keys))
                     {
-                        if (text == null || !StoryTexts[text] || !Below(text.transform, story.Sequence)) continue;
+                        if (text == null || !StoryTexts[text] || !InEndedStory(text.transform, story)) continue;
                         MessageBox box = StoryMessageBox.GetValue(text) as MessageBox;
                         try { if (box != null) box.HideMessageScreen(); }
                         catch (Exception e) { Services.Log.Warn("net: mirrored story text exit: " + e.Message); }
@@ -857,6 +924,7 @@ namespace OriCoop
         {
             Story story;
             if (!Remote.TryGetValue(token, out story)) return;
+            if (!force) PlayMissedContinuation(story);
             // T-212 (5): its mirror has not started here yet (scene trip, scene still loading): keep it for a late start.
             if (!force && !MutateNoLateStart && story.Kind == 0 && StoryLedger<Story>.KeepForLateStart(story, Time.realtimeSinceStartup))
             {
@@ -870,7 +938,7 @@ namespace OriCoop
                 }
                 return;
             }
-            if (!force && !CutsceneGuard.Off && story.Sequence != null && story.Sequence.IsRunning && !story.Watch)
+            if (!force && !CutsceneGuard.Off && SequenceRunning(story) && !story.Watch)
             {
                 // The partner's copy ended, ours is still running (it started later). Stopping it half-way left the
                 // screen black (FadeToBlack without FadeFromBlack) or the letterbox down (playtest 19:07, lever).
@@ -946,8 +1014,9 @@ namespace OriCoop
             foreach (Story story in Local.Values)
             {
                 if (locked) story.SawLock = true;
-                bool running = story.Sequence != null && story.Sequence.IsRunning;
-                bool ahead = !MutateEndsOnGap && StoryLedger<Story>.TakeoverAhead(running, running ? story.Sequence.Index : 0, story.LastTakeover);
+                bool running = SequenceRunning(story);
+                bool ahead = story.PlayedContinuation != null && story.PlayedContinuation.IsRunning
+                    || !MutateEndsOnGap && StoryLedger<Story>.TakeoverAhead(running, running ? story.Sequence.Index : 0, story.LastTakeover);
                 if (StoryLedger<Story>.LocalEnded(story, locked, running, ahead, now)) ended.Add(TokenKey(story.Sender, story.Token));
             }
             foreach (ulong token in ended) SendEnd(token);
@@ -955,8 +1024,9 @@ namespace OriCoop
             List<ulong> finished = new List<ulong>();
             foreach (Story story in Remote.Values)
             {
+                PlayMissedContinuation(story);
                 bool running = !(now - story.Began >= 60f) && story.EndAt >= 0
-                    && story.Sequence != null && story.Sequence.IsRunning;
+                    && SequenceRunning(story);
                 if (StoryLedger<Story>.RemoteFinished(story, running, now))
                 { finished.Add(TokenKey(story.Sender, story.Token)); continue; }
                 // T-212 (5): ended by its sender before it started here, and settled without a mirror of its own
@@ -1054,6 +1124,7 @@ namespace OriCoop
                 __state = new StartCall();
                 bool replay = s_mirroring || s_replayActionDepth > 0 || OwnedSequences.Contains(__instance);
                 bool canStart = __instance.enabled && __instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty;
+                if (canStart && Online && !PuppetCall) NoteContinuation(__instance);
                 if (!replay && __instance == s_wellOpening && canStart)
                 {
                     __state.WellActivation = WellActivations.TryActivate(WellKey(SceneOf(__instance), __instance.MoonGuid));
@@ -1206,8 +1277,7 @@ namespace OriCoop
             {
                 // A sequence can intentionally hand a manual lock to its next script, or across a scene trip.
                 ActionMethod last = sequence.Actions[sequence.Actions.Count - 1];
-                RunActionOnce run = last as RunActionOnce;
-                if (run != null) next = run.Action as ActionSequence;
+                next = ContinuationOf(sequence);
                 if (next == sequence || next != null && !next.IsRunning) next = null;
                 sceneTrip = last is LoadSceneAction;
             }
