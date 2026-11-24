@@ -337,11 +337,30 @@ namespace OriCoop
             yield return ThreeRound(h, 592, ClientCount);
             OnlineRoomScreen.Continue();
             Puppet extraPuppet = PuppetAt(localExtra);
+            bool extraOwner = Players.LocalSeat == 2;
             Vector3 start = extraPuppet.Sein.Position;
-            if (Players.LocalSeat == 2) { P2Input.BotActive = true; P2Input.BotLX = 1; }
-            yield return LocalWait(2f);
-            if (Players.LocalSeat == 2) P2Input.BotLX = 0;
-            h.Check(extraPuppet.Sein.Position.x > start.x + 1f, "locals: extra moves by independent input on every observer");
+            bool sampled = false;
+            try
+            {
+                if (extraOwner)
+                {
+                    UI.Menu.ShowAreaMap();
+                    P2Input.BotActive = true; P2Input.BotLX = 1;
+                }
+                for (float end = Time.realtimeSinceStartup + 2f; Time.realtimeSinceStartup < end; )
+                {
+                    sampled |= extraPuppet.Input.Horizontal > 0.5f;
+                    yield return null;
+                }
+                if (extraOwner) h.Check(GameMapUI.Instance.IsVisible && !Own.Controller.CanMove,
+                    "locals: the primary seat has the map open and cannot steer its Ori");
+                h.Check(sampled && extraPuppet.Sein.Position.x > start.x + 1f,
+                    "locals: extra moves by independent input on every observer while its primary seat views the map");
+            }
+            finally
+            {
+                if (extraOwner) { P2Input.BotLX = 0; UI.Menu.HideMenuScreen(true); }
+            }
             yield return ThreeRound(h, 593, ClientCount);
             yield return LocalExtraBars(h);
             yield return LocalExtraSoulLink(h);
@@ -497,7 +516,14 @@ namespace OriCoop
                 "locals: guest's own Ori comes back without a checkpoint reload");
             Bot(0, 0);
             yield return ThreeRound(h, 602, ClientCount);
-            yield return LocalExtraAfterLoad(h);
+            if (NetPlay.IsHost) UI.Menu.ShowAreaMap();
+            try
+            {
+                yield return LocalExtraAfterLoad(h);
+                if (NetPlay.IsHost) h.Check(GameMapUI.Instance.IsVisible && Players.Remotes.Count == ClientCount,
+                    "locals: the host rebuilds the guest's puppets while the map is still open");
+            }
+            finally { if (NetPlay.IsHost) UI.Menu.HideMenuScreen(true); }
             OnlineRoomScreen.Show(delegate { }); yield return LocalWait(0.5f);
             if (Players.LocalSeat == 2) h.Check(OnlineRoomScreen.Click("room.remove." + localExtra), "locals: guest clicks drawn remove button");
             deadline = Time.realtimeSinceStartup + 12f;

@@ -324,7 +324,8 @@ namespace OriCoop
                     }
                 }
                 m_parked = !p1Available;
-                P2Input.HoldStill = !Revive.IsDowned(p1) && (!p1Available || p1.Controller == null || !p1.Controller.CanMove || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
+                P2Input.HoldStill = !Revive.IsDowned(p1) && (!p1Available || p1.Controller == null
+                    || !SessionRules.CanMoveIgnoringMap(p1.Controller) || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
                 if (m_parked) return;
                 m_mirrorTimer -= Time.unscaledDeltaTime;
                 if (m_mirrorTimer <= 0f)
@@ -741,6 +742,7 @@ namespace OriCoop
         {
             static bool Prefix(SeinDamageReciever __instance)
             {
+                SessionRules.CloseMapOnDeath(__instance.Sein);
                 if (P2Context.P2 == null) return true;
                 Puppet puppet = Players.OfInstance(__instance.GetInstanceID());
                 bool isP2 = puppet != null;

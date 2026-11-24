@@ -349,6 +349,28 @@ static class RulesTests
             Check(InviteRules.BannerKey(true, false) == "steam.invite_menu", "online alone: " + InviteRules.BannerKey(true, false));
             Check(InviteRules.BannerKey(false, false) == "steam.invite_menu", "offline in gameplay: " + InviteRules.BannerKey(false, false));
         });
+        Run("online open map keeps Ori live", delegate {
+            Check(MenuPresence.MapRunsLive(true, true, false), "online map still holds Ori");
+        });
+        Run("offline or closed map keeps normal behaviour", delegate {
+            Check(!MenuPresence.MapRunsLive(false, true, false), "offline map overrides the native pause");
+            Check(!MenuPresence.MapRunsLive(true, false, false), "closed map still intercepts input");
+        });
+        Run("online teleporter picker holds Ori like other menus", delegate {
+            Check(!MenuPresence.MapRunsLive(true, true, true), "the picker was treated as a live map");
+        });
+        Run("disconnect in a live map restores a suspend and close resumes it once", delegate {
+            int skipped = 1, vanilla = 0;
+            Check(MenuPresence.RestoreMapSuspends(true, ref skipped, ref vanilla) == 1, "native suspend was not restored");
+            Check(MenuPresence.RestoreMapSuspends(true, ref skipped, ref vanilla) == 0, "native suspend was restored twice");
+            Check(MenuPresence.ConsumeMenuResume(ref skipped, ref vanilla), "map close skipped the restored resume");
+            Check(skipped == 0 && vanilla == 0 && !MenuPresence.ConsumeMenuResume(ref skipped, ref vanilla), "map close left another resume owed");
+        });
+        Run("disconnect outside a live map keeps the skipped suspend", delegate {
+            int skipped = 1, vanilla = 0;
+            Check(MenuPresence.RestoreMapSuspends(false, ref skipped, ref vanilla) == 0, "another menu was suspended");
+            Check(!MenuPresence.ConsumeMenuResume(ref skipped, ref vanilla) && skipped == 0 && vanilla == 0, "close did not consume the skip");
+        });
         // T-044: no pause online.
         Run("popup ledger: offline suspends and resumes natively", delegate {
             PopupLedger<string> l = new PopupLedger<string>();

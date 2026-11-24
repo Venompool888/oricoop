@@ -434,6 +434,17 @@ namespace OriCoop
             if (activator)
             {
                 h.Check(Own.Inventory.MapStones >= 1, "T-204 " + label + ": a map fragment to use (" + StoneState() + ")");
+                int fragments = Own.Inventory.MapStones;
+                UI.Menu.ShowAreaMap();
+                try
+                {
+                    NetTestHarness.BotButtons = P2Input.BTN_X;
+                    yield return TestClock.WaitGame(0.25f);
+                    h.Check(GameMapUI.Instance.IsVisible && !s_stone.Activated && Own.Inventory.MapStones == fragments,
+                        "map: X does not activate the highlighted stone or spend its fragment");
+                }
+                finally { Bot(); UI.Menu.HideMenuScreen(true); }
+                yield return TestClock.WaitGame(0.15f);
                 end = Now + 6f;
                 while (Now < end && s_stone.CurrentState != MapStone.State.Activated)
                 {

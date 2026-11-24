@@ -63,8 +63,26 @@ namespace OriCoop
         public static bool Respawning { get { return s_dead != null; } }
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         static SeinCharacter Own { get { return Host.P1 != null ? Host.P1 : Characters.Sein; } }
-        // The co-op panel (F8) online holds its player like a menu, whether or not a partner is connected yet (T-132).
-        public static bool LocalLocked { get { return Online && (s_menu || Popups.AnyOpen || Respawning || Host.StoryWatching) || Services.Net.Enabled && Host.CoopMenuOpen; } }
+        static bool s_openingTeleportPicker;
+        internal static bool LiveMap { get { return MapRunsLive(UI.Menu, NoPause && !s_paused); } }
+        static bool MapRunsLive(MenuScreenManager menu, bool noPause)
+        {
+            return MenuPresence.MapRunsLive(noPause, menu != null && menu.MainMenuVisible && menu.CurrentScreen == MenuScreenManager.Screens.WorldMap,
+                s_openingTeleportPicker || (GameMapUI.Instance != null && GameMapUI.Instance.ShowingTeleporters));
+        }
+        static bool MapInputLocked(SeinCharacter ori)
+        {
+            if (ori == null) return false;
+            if (ori == Host.P1 || !Host.Inside && ori == Characters.Sein) return LiveMap;
+            Puppet puppet = P2Context.Current;
+            return puppet != null && puppet.Sein == ori && puppet.MapInputLocked;
+        }
+        internal static void CloseMapOnDeath(SeinCharacter ori)
+        {
+            if (ori != null && ori == Own && LiveMap) UI.Menu.HideMenuScreen(true);
+        }
+        // The co-op panel (F8) online holds its player like a menu, whether or not a partner is connected yet.
+        public static bool LocalLocked { get { return Online && ((s_menu && !LiveMap) || Popups.AnyOpen || Respawning || Host.StoryWatching) || Services.Net.Enabled && Host.CoopMenuOpen; } }
 
         public static void Init()
         {
@@ -101,28 +119,32 @@ namespace OriCoop
             Disconnects++; s_menuSeats.Clear(); s_menu = s_paused = s_hold = false; s_report.SessionEnded(); s_held = null;
             Host.ResetStory();
             if (s_dead != null) RespawnGuest(false);
+            MenuScreenManager menu = UI.Menu;
+            MenuDebt d;
+            if (menu != null && Menus.TryGetValue(menu, out d))
+            {
+                int restored = MenuPresence.RestoreMapSuspends(MapRunsLive(menu, !NoPauseOff), ref d.Skipped, ref d.Vanilla);
+                if (restored > 0) s_menu = s_paused = true;
+                while (restored-- > 0) SuspensionManager.SuspendExcluding(d.Excluded);
+            }
             Host.SessionEnded();
-            // Keep the skip ledger until the corresponding close, even when disconnected.
         }
         static void MenuSuspend(HashSet<ISuspendable> excluded, MenuScreenManager menu)
         {
             MenuDebt d;
             if (!Menus.TryGetValue(menu, out d)) { d = new MenuDebt(); Menus.Add(menu, d); }
             d.Excluded = excluded;
-            // T-044: online nothing pauses (pause menu, map, skill tree, inventory): the world and the enemies keep
-            // running on every PC, only this player's Ori is held (LocalLocked) while the screen is open. The skipped
-            // suspend is remembered so its close skips the resume too. Offline the menu pauses as before.
+            // A skipped suspend must also skip its matching resume.
             if (NoPause) { d.Skipped++; SkippedMenuSuspends++; }
             else { d.Vanilla++; SuspensionManager.SuspendExcluding(excluded); }
-            RefreshMenu(); HoldLocal();
+            RefreshMenu();
         }
         static void MenuResume(HashSet<ISuspendable> excluded, MenuScreenManager menu)
         {
             MenuDebt d;
             if (Menus.TryGetValue(menu, out d))
             {
-                if (d.Skipped > 0) d.Skipped--;
-                else if (d.Vanilla > 0) { d.Vanilla--; SuspensionManager.ResumeExcluding(excluded); }
+                if (MenuPresence.ConsumeMenuResume(ref d.Skipped, ref d.Vanilla)) SuspensionManager.ResumeExcluding(excluded);
                 if (d.Skipped + d.Vanilla == 0) Menus.Remove(menu);
             }
             else SuspensionManager.ResumeExcluding(excluded); // A pre-patch open, if injected live.
@@ -345,6 +367,19 @@ namespace OriCoop
         {
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             { return Replace(instructions, "SuspendExcluding", "MenuSuspend"); }
+            // CurrentScreen is not set yet when the native suspend call runs.
+            static void Postfix()
+            {
+                if (LiveMap && Own != null) CancelMapCharges(Own);
+                HoldLocal();
+            }
+        }
+        [HarmonyPatch(typeof(TeleporterController), "Show")]
+        static class OpenTeleportPicker
+        {
+            // ShowWorldMap runs before the map UI switches to ShowingTeleporters.
+            static void Prefix() { s_openingTeleportPicker = true; }
+            static void Finalizer() { s_openingTeleportPicker = false; }
         }
         [HarmonyPatch(typeof(MenuScreenManager), "HideMenuScreen")]
         static class CloseMenu
@@ -421,7 +456,100 @@ namespace OriCoop
         static class LockOwnInput
         {
             static void Postfix(SeinController __instance, ref bool __result)
-            { if (Own != null && __instance == Own.Controller && LocalLocked) __result = true; }
+            {
+                if ((!s_ignoreMapInputLock && MapInputLocked(__instance.Sein)) || (Own != null && __instance == Own.Controller && LocalLocked))
+                    __result = true;
+            }
+        }
+        static bool s_ignoreMapInputLock;
+        internal static bool CanMoveIgnoringMap(SeinController controller)
+        {
+            if (!MapInputLocked(controller.Sein)) return controller.CanMove;
+            s_ignoreMapInputLock = true;
+            try { return controller.CanMove; }
+            finally { s_ignoreMapInputLock = false; }
+        }
+        // Damage, enemy proximity and the map's close button must still see the native CanMove result.
+        [HarmonyPatch]
+        static class LiveMapObservers
+        {
+            static IEnumerable<MethodBase> TargetMethods()
+            {
+                yield return AccessTools.Method(typeof(SeinDamageReciever), "OnRecieveDamage");
+                yield return AccessTools.PropertyGetter(typeof(EntityController), "NearSein");
+                yield return AccessTools.Method(typeof(MenuScreenManager), "FixedUpdate");
+            }
+            static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> code)
+            {
+                MethodInfo from = AccessTools.PropertyGetter(typeof(SeinController), "CanMove");
+                MethodInfo to = AccessTools.Method(typeof(SessionRules), "CanMoveIgnoringMap");
+                foreach (CodeInstruction instruction in code)
+                {
+                    if (instruction.Calls(from)) { instruction.opcode = OpCodes.Call; instruction.operand = to; }
+                    yield return instruction;
+                }
+            }
+        }
+        // Ability states and some world scripts read buttons without checking the controller lock.
+        [HarmonyPatch]
+        static class MapGameplayInput
+        {
+            static readonly InputState Neutral = new InputState();
+            static IEnumerable<MethodBase> TargetMethods()
+            {
+                yield return AccessTools.Method(typeof(SeinInput), "Update");
+                yield return AccessTools.Method(typeof(SeinLogicCycle), "FixedUpdate");
+                yield return AccessTools.Method(typeof(RockTreeSetup), "FixedUpdate");
+                yield return AccessTools.Method(typeof(ForcedSync), "Tick");
+            }
+            [HarmonyPriority(Priority.Last)]
+            static void Prefix(out bool __state)
+            {
+                __state = !Host.Inside && LiveMap;
+                if (__state) Neutral.Swap();
+            }
+            static void Finalizer(bool __state) { if (__state) Neutral.Swap(); }
+        }
+        [HarmonyPatch(typeof(ButtonPressedCondition), "Validate")]
+        static class BlockMapButtonTriggers
+        {
+            static bool Prefix() { return !MapInputLocked(Characters.Sein); }
+        }
+        static void CancelMapCharges(SeinCharacter ori)
+        {
+            SeinAbilities abilities = ori.Abilities;
+            if (abilities.Grenade != null) abilities.Grenade.CancelAiming();
+            // OnExit cancels a partial charge and calls the patched burst for a full charge.
+            if (abilities.ChargeFlame != null) abilities.ChargeFlame.OnExit();
+            if (ori.SoulFlame != null) CancelMapSoulFlame.CancelPendingCast(ori.SoulFlame);
+        }
+        [HarmonyPatch(typeof(SeinChargeFlameAbility), "ReleaseChargeBurst")]
+        static class CancelMapChargeFlame
+        {
+            static bool Prefix(SeinChargeFlameAbility __instance, SeinCharacter ___m_sein)
+            {
+                if (!MapInputLocked(___m_sein)) return true;
+                __instance.RestoreEnergy();
+                __instance.OnRestoreCheckpoint();
+                return false;
+            }
+        }
+        [HarmonyPatch(typeof(SeinSoulFlame), "UpdateCharacterState")]
+        static class CancelMapSoulFlame
+        {
+            static readonly FieldInfo Casting = AccessTools.Field(typeof(SeinSoulFlame), "m_isCasting");
+            static readonly FieldInfo TapTime = AccessTools.Field(typeof(SeinSoulFlame), "m_tapRemainingTime");
+            internal static void CancelPendingCast(SeinSoulFlame flame)
+            {
+                Casting.SetValue(flame, false);
+                TapTime.SetValue(flame, 0f);
+            }
+            static void Prefix(SeinCharacter ___m_sein, ref bool ___m_isCasting, ref float ___m_tapRemainingTime)
+            {
+                if (!MapInputLocked(___m_sein)) return;
+                ___m_isCasting = false;
+                ___m_tapRemainingTime = 0f;
+            }
         }
         [HarmonyPatch(typeof(SeinController), "FixedUpdate")]
         static class KeepOwnStill

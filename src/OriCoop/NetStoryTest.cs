@@ -32,7 +32,7 @@ namespace OriCoop
         static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Characters.Sein; } }
         static float Now { get { return Time.realtimeSinceStartup; } }
         static string F(float value) { return value.ToString("F3"); }
-        static void Bot(float x) { NetTestHarness.BotLX = x; NetTestHarness.BotButtons = 0; }
+        static void Bot(float x, int buttons = 0) { NetTestHarness.BotLX = x; NetTestHarness.BotButtons = buttons; }
         static int Failures(TestHarness h)
         { return ((ICollection)AccessTools.Field(typeof(TestHarness), "m_fails").GetValue(h)).Count; }
         static bool Alive { get { return Own != null && Own.Active && Own.Mortality.Health.Amount > 0; } }
@@ -292,8 +292,6 @@ namespace OriCoop
             h.Check(Vector3.Distance(Own.Position, ownStart) > 0.5f && Vector3.Distance(P2Context.P2.Position, puppetStart) > 0.5f,
                 "S4 both move after closing menu");
         }
-        // T-044: the world map and an ability help popup do not pause online either. The guest opens them while both
-        // walk right: nothing is suspended on either PC, the guest's Ori is held while a screen is open, the host walks on.
         static ShowHelpTextAction FindHelp()
         {
             foreach (ShowHelpTextAction a in Resources.FindObjectsOfTypeAll<ShowHelpTextAction>())
@@ -325,45 +323,217 @@ namespace OriCoop
             foreach (KeyValuePair<string, int> pair in kinds) { parts.Add(pair.Key + "x" + pair.Value); if (parts.Count >= 8) break; }
             return kinds.Count + " kinds: " + string.Join(", ", parts.ToArray());
         }
+        static IEnumerator Map(TestHarness h)
+        {
+            bool host = NetPlay.IsHost;
+            SeinCharacter ori = Own;
+            SeinDamageReciever receiver = ori.Mortality.DamageReciever;
+            bool immortal = receiver.IsImmortal, revive = Revive.Enabled;
+            float health = ori.Mortality.Health.Amount;
+            yield return Barrier(h, 18);
+            float peak = host ? ori.Position.y : P2Context.P2.Position.y;
+            float sentPeak = NetPlay.LatestRemotePos.y, drop = 0f, sentDrop = 0f, scrollStart = 0f;
+            long frames = NetPlay.FramesPlayed;
+            try
+            {
+                Revive.Enabled = true;
+                if (host)
+                {
+                    yield return Wait(0.5f); // Let the guest start sampling before the fall.
+                    int skipped = SessionRules.SkippedMenuSuspends;
+                    ori.Mortality.Health.RestoreAllHealth();
+                    receiver.IsImmortal = false;
+                    receiver.ResetInviciblity();
+                    ori.Position += Vector3.up * 5f;
+                    ori.Speed = Vector3.down * 2f;
+                    UI.Menu.ShowAreaMap();
+                    h.Check(GameMapUI.Instance.IsVisible && GameMapTransitionManager.Instance.InAreaMapMode
+                        && SessionRules.SkippedMenuSuspends > skipped && ori.Speed.y < -1f, "S4 map: P1 opens the area map without suspending or zeroing speed");
+                    scrollStart = AreaMapUI.Instance.Navigation.ScrollPosition.x;
+                    Bot(1);
+                }
+                bool running = true, accelerated = false;
+                for (float end = Now + 3f; Now < end; )
+                {
+                    if (host) accelerated |= ori.Speed.y < -3f;
+                    float y = host ? ori.Position.y : P2Context.P2.Position.y;
+                    peak = Mathf.Max(peak, y); drop = Mathf.Max(drop, peak - y);
+                    float sentY = NetPlay.LatestRemotePos.y;
+                    sentPeak = Mathf.Max(sentPeak, sentY); sentDrop = Mathf.Max(sentDrop, sentPeak - sentY);
+                    running &= Time.timeScale > 0f && !Own.IsSuspended && !Paused(SuspensionCounts());
+                    yield return null;
+                }
+                h.Check(running, "S4 map: gameplay keeps running while P1 has the map open");
+                if (host)
+                {
+                    h.Check(GameMapUI.Instance.IsVisible && accelerated && drop > 2f && ori.PlatformBehaviour.LeftRightMovement.HorizontalInput == 0f,
+                        "S4 map: gravity accelerates P1's fall while map navigation does not steer Ori (drop=" + F(drop) + ")");
+                    h.Check(Mathf.Abs(AreaMapUI.Instance.Navigation.ScrollPosition.x - scrollStart) > 1f,
+                        "S4 map: the stick pans the area map");
+                    h.Check(!GameController.Instance.InputLocked, "S4 map: global input lock stays off");
+                    Bot(0); NetTestHarness.BotLT = true;
+                    TestClock.Window zoom = new TestClock.Window(2.5f);
+                    while (!GameMapTransitionManager.Instance.InWorldMapMode && zoom.Open) yield return null;
+                    NetTestHarness.BotLT = false;
+                    h.Check(GameMapUI.Instance.IsVisible && GameMapTransitionManager.Instance.InWorldMapMode,
+                        "S4 map: the zoom-out input switches to the world map");
+                    float before = ori.Mortality.Health.Amount;
+                    receiver.OnRecieveDamage(new Damage(4f, Vector2.right, ori.Position, DamageType.Enemy, null));
+                    h.Check(GameMapUI.Instance.IsVisible && ori.Mortality.Health.Amount < before,
+                        "S4 map: an enemy hit damages P1 in the world map");
+                    Bot(0, P2Input.BTN_BACK); yield return TestClock.WaitGame(0.2f);
+                    Bot(1); yield return TestClock.WaitGame(0.3f); Bot(0);
+                    h.Check(!GameMapUI.Instance.IsVisible && ori.PlatformBehaviour.LeftRightMovement.HorizontalInput > 0f,
+                        "S4 map: the map button closes it and restores P1's movement input");
+                    yield return TeleporterPicker(h, ori, receiver);
+                    yield return OpenMapWhileAiming(h, ori);
+                    UI.Menu.HideMenuScreen(true);
+                    yield return DownedInMap(h, ori, receiver);
+                }
+                else h.Check(drop > 2f && sentDrop > 2f && NetPlay.FramesPlayed > frames,
+                    "S4 map: P2 receives P1's falling positions and sees the puppet fall (sent=" + F(sentDrop) + ", puppet=" + F(drop) + ")");
+                yield return Barrier(h, 186);
+            }
+            finally
+            {
+                Bot(0); NetTestHarness.BotLT = false;
+                Revive.Enabled = revive;
+                if (Revive.AnyDowned) Revive.ClearAll("S4 map test cleanup", false);
+                if (host)
+                {
+                    if (GameMapUI.Instance.IsVisible) UI.Menu.HideMenuScreen(true);
+                    receiver.IsImmortal = immortal;
+                    ori.Mortality.Health.SetAmount(health);
+                }
+            }
+        }
+        static IEnumerator OpenMapWhileAiming(TestHarness h, SeinCharacter ori)
+        {
+            bool hadGrenade = ori.PlayerAbilities.Grenade.HasAbility;
+            float energy = ori.Energy.Current, cap = ori.Energy.Max;
+            if (!hadGrenade) ori.PlayerAbilities.SetAbility(AbilityType.Grenade, true);
+            SeinGrenadeAttack grenade = ori.Abilities.Grenade;
+            try
+            {
+                ori.Energy.Max = Mathf.Max(cap, grenade.EnergyCost);
+                ori.Energy.RestoreAllEnergy();
+                TestClock.Window settle = new TestClock.Window(2f);
+                while (!grenade.CanAim && settle.Open) yield return null;
+                Bot(0, P2Input.BTN_LB);
+                TestClock.Window aim = new TestClock.Window(1f);
+                while (!grenade.IsAiming && aim.Open) yield return null;
+                h.Check(grenade.IsAiming, "S4 map: P1 is aiming a grenade with LB held");
+                UI.Menu.ShowWorldMap(false);
+                yield return TestClock.WaitGame(0.2f);
+                Bot(0); yield return TestClock.WaitGame(0.2f);
+                h.Check(GameMapUI.Instance.IsVisible && !grenade.IsAiming && Mathf.Approximately(ori.Energy.Current, ori.Energy.Max),
+                    "S4 map: opening it cancels the grenade and refunds its cost instead of throwing it");
+            }
+            finally
+            {
+                Bot(0); grenade.CancelAiming();
+                ori.Energy.Max = cap; ori.Energy.SetCurrent(energy);
+                if (!hadGrenade) ori.PlayerAbilities.SetAbility(AbilityType.Grenade, false);
+            }
+        }
+        static IEnumerator DownedInMap(TestHarness h, SeinCharacter ori, SeinDamageReciever receiver)
+        {
+            bool hadCharge = ori.PlayerAbilities.ChargeFlame.HasAbility;
+            float energy = ori.Energy.Current, cap = ori.Energy.Max;
+            if (!hadCharge) ori.PlayerAbilities.SetAbility(AbilityType.ChargeFlame, true);
+            SeinChargeFlameAbility flame = ori.Abilities.ChargeFlame;
+            try
+            {
+                ori.Energy.Max = Mathf.Max(cap, flame.EnergyCost);
+                ori.Energy.RestoreAllEnergy();
+                Bot(0, P2Input.BTN_X);
+                TestClock.Window charge = new TestClock.Window(flame.ChargeDuration + 1.5f);
+                while (Mathf.Approximately(ori.Energy.Current, ori.Energy.Max) && charge.Open) yield return null;
+                h.Check(flame.IsCharging && ori.Energy.Current < ori.Energy.Max, "S4 map: P1 has fully charged Flame and spent energy");
+
+                int self = Revive.SelfRevives, restores = TestHarness.RestoreCheckpointCalls;
+                Revive.LastSelfHint = null;
+                UI.Menu.ShowWorldMap(false);
+                h.Check(GameMapUI.Instance.IsVisible, "S4 map: world map open before the fatal hit");
+                receiver.OnRecieveDamage(new Damage(1000f, Vector2.zero, ori.Position, DamageType.Enemy, null));
+                h.Check(Revive.IsDowned(ori) && !GameMapUI.Instance.IsVisible && !UI.Menu.MainMenuVisible,
+                    "S4 map: the fatal hit downs P1 and closes the map");
+                h.Check(!flame.IsCharging && Mathf.Approximately(ori.Energy.Current, ori.Energy.Max),
+                    "S4 map: opening the map cancels and refunds Charge Flame before the same-frame fatal hit");
+                Bot(0);
+                TestClock.Window hint = new TestClock.Window(1f);
+                while (Revive.LastSelfHint == null && hint.Open) yield return null;
+                h.Check(Revive.LastSelfHint != null && GameObject.Find("OriCoop_SelfReviveHint_P" + Players.LocalSeat) != null,
+                    "S4 map: the hold-Y/Q self-revive hint appears");
+                Bot(0, P2Input.BTN_Y);
+                TestClock.Window hold = new TestClock.Window(3f);
+                while (Revive.IsDowned(ori) && hold.Open) yield return null;
+                Bot(0);
+                h.Check(!Revive.IsDowned(ori) && Revive.SelfRevives == self + 1 && TestHarness.RestoreCheckpointCalls == restores,
+                    "S4 map: holding Y self-revives P1 without a checkpoint reload");
+            }
+            finally
+            {
+                Bot(0); flame.OnRestoreCheckpoint();
+                ori.Energy.Max = cap; ori.Energy.SetCurrent(energy);
+                if (!hadCharge) ori.PlayerAbilities.SetAbility(AbilityType.ChargeFlame, false);
+            }
+        }
+        static IEnumerator TeleporterPicker(TestHarness h, SeinCharacter ori, SeinDamageReciever receiver)
+        {
+            GameMapTeleporter well = TeleporterController.Instance.Teleporters[0];
+            bool activated = well.Activated;
+            try
+            {
+                well.Activated = true;
+                receiver.ResetInviciblity();
+                float health = ori.Mortality.Health.Amount;
+                ori.Speed = Vector3.down * 2f;
+                int skipped = SessionRules.SkippedMenuSuspends;
+                TeleporterController.Show(well.Identifier);
+                h.Check(GameMapUI.Instance.ShowingTeleporters && SessionRules.LocalLocked && !SessionRules.LiveMap
+                    && SessionRules.SkippedMenuSuspends > skipped && ori.Speed == Vector3.zero,
+                    "S4 map: the spirit well picker holds P1 on open without pausing the game");
+                receiver.OnRecieveDamage(new Damage(1000f, Vector2.zero, ori.Position, DamageType.Enemy, null));
+                h.Check(ori.Mortality.Health.Amount == health && !Revive.IsDowned(ori) && UI.Menu.MainMenuVisible,
+                    "S4 map: the spirit well picker stays open and a fatal hit cannot down P1");
+            }
+            finally
+            {
+                UI.Menu.HideMenuScreen(true);
+                well.Activated = activated;
+            }
+            TestClock.Window close = new TestClock.Window(2f);
+            while (GameMapUI.Instance.ShowingTeleporters && close.Open) yield return null;
+            h.Check(!GameMapUI.Instance.ShowingTeleporters && !SessionRules.LocalLocked,
+                "S4 map: closing the spirit well picker frees P1's input");
+        }
         static IEnumerator NoPauseScreens(TestHarness h)
         {
             bool guest = !NetPlay.IsHost;
-            // Back to the start of S4 (the menu / focus steps walked ~50 units right, into story / tutorial areas).
             yield return PlaceAtStart(h, s_runStart, 180);
-            yield return Barrier(h, 18);
+            yield return Map(h);
+            yield return PlaceAtStart(h, s_runStart, 188);
             string firstSuspended = "";
-            int menus = SessionRules.SkippedMenuSuspends, popups = SessionRules.SkippedPopupSuspends, suspendedFrames = 0;
-            float mapOwn = -1f, popupOwn = -1f, maxPuppet = 0f, hostTravel = 0f;
-            bool mapShown = false, popupShown = false, popupClosed = false; string popupName = "none";
-            Vector3 puppetStart = P2Context.P2.Position, hostStart = Own.Position;
+            int popups = SessionRules.SkippedPopupSuspends, suspendedFrames = 0;
+            float ownTravel = 0f, maxPuppet = 0f;
+            bool popupShown = false, popupClosed = false; string popupName = "none";
+            Vector3 puppetStart = P2Context.P2.Position, ownStart = Own.Position;
             try
             {
-                for (int phase = 0; phase < 2; phase++)
+                Bot(1);
+                if (guest)
                 {
-                    Bot(phase == 0 ? 1 : -1);
-                    if (guest && phase == 0)
-                    {
-                        AccessTools.Method(typeof(MenuScreenManager), "ShowMenuScreen", new Type[] { typeof(MenuScreenManager.Screens), typeof(bool) })
-                            .Invoke(UI.Menu, new object[] { MenuScreenManager.Screens.WorldMap, false });
-                        yield return null; mapShown = UI.Menu.MainMenuVisible;
-                    }
-                    if (guest && phase == 1)
-                    {
-                        UI.Menu.HideMenuScreen(true); yield return Wait(0.3f);
-                        ShowHelpTextAction help = FindHelp();
-                        if (help != null) { popupName = help.name; help.Perform(null); }
-                        yield return null; popupShown = SessionRules.PopupOpen;
-                    }
-                    Vector3 anchor = Own.Position; float own = 0f, start = Now;
-                    while (Now - start < 3f)
-                    {
-                        own = Mathf.Max(own, Vector3.Distance(anchor, Own.Position));
-                        maxPuppet = Mathf.Max(maxPuppet, Vector3.Distance(puppetStart, P2Context.P2.Position));
-                        hostTravel = Mathf.Max(hostTravel, Vector3.Distance(hostStart, Own.Position));
-                        if (Paused(SuspensionCounts())) { suspendedFrames++; if (firstSuspended == "") firstSuspended = "phase" + phase + " " + SuspendedKinds(); }
-                        yield return null;
-                    }
-                    if (phase == 0) mapOwn = own; else popupOwn = own;
+                    ShowHelpTextAction help = FindHelp();
+                    if (help != null) { popupName = help.name; help.Perform(null); }
+                    yield return null; popupShown = SessionRules.PopupOpen;
+                }
+                for (float end = Now + 3f; Now < end; )
+                {
+                    ownTravel = Mathf.Max(ownTravel, Vector3.Distance(ownStart, Own.Position));
+                    maxPuppet = Mathf.Max(maxPuppet, Vector3.Distance(puppetStart, P2Context.P2.Position));
+                    if (Paused(SuspensionCounts())) { suspendedFrames++; if (firstSuspended == "") firstSuspended = SuspendedKinds(); }
+                    yield return null;
                 }
                 if (guest)
                 {
@@ -383,25 +553,22 @@ namespace OriCoop
                 }
             }
             finally { Bot(0); if (guest && UI.Menu != null && UI.Menu.MainMenuVisible) UI.Menu.HideMenuScreen(true); }
-            h.Note("S4 screens map=" + mapShown + " mapOwn=" + F(mapOwn) + " popup=" + popupName + "/" + popupShown + " popupOwn=" + F(popupOwn)
-                + " closed=" + popupClosed + " puppetMax=" + F(maxPuppet) + " ownTravel=" + F(hostTravel) + " suspendedFrames=" + suspendedFrames
-                + " skippedMenus=" + (SessionRules.SkippedMenuSuspends - menus) + " skippedPopups=" + (SessionRules.SkippedPopupSuspends - popups)
+            h.Note("S4 popup=" + popupName + "/" + popupShown + " closed=" + popupClosed
+                + " puppetMax=" + F(maxPuppet) + " ownTravel=" + F(ownTravel) + " suspendedFrames=" + suspendedFrames
+                + " skippedPopups=" + (SessionRules.SkippedPopupSuspends - popups)
                 + (firstSuspended == "" ? "" : " firstSuspended=" + firstSuspended));
-            h.Check(suspendedFrames == 0, "S4 no pause: the game is not paused on this PC while the guest has the map / a help popup open");
+            h.Check(suspendedFrames == 0, "S4 no pause: the game is not paused on this PC while the guest has a help popup open");
             if (guest)
             {
-                h.Check(mapShown && SessionRules.SkippedMenuSuspends > menus, "S4 no pause: the world map opens without suspending");
-                h.Check(mapOwn >= 0f && mapOwn < 0.3f, "S4 no pause: own Ori held while the map is open");
                 h.Check(popupShown && SessionRules.SkippedPopupSuspends > popups, "S4 no pause: an ability help popup opens without suspending");
-                h.Check(popupOwn >= 0f && popupOwn < 0.3f, "S4 no pause: own Ori held while the help popup is open");
+                h.Check(ownTravel < 0.3f, "S4 no pause: own Ori held while the help popup is open");
                 h.Check(popupClosed && !SessionRules.LocalLocked && !GameController.Instance.LockInput,
                     "S4 no pause: closing the popup frees own input (game input lock " + GameController.Instance.LockInput + ")");
                 h.Check(maxPuppet > 2f, "S4 no pause: the host keeps playing on the guest's screen");
             }
-            else h.Check(hostTravel > 2f, "S4 no pause: the host keeps playing while the guest has the map / a popup open");
+            else h.Check(ownTravel > 2f, "S4 no pause: the host keeps playing while the guest has a popup open");
             Publish(h, 19, false); yield return Barrier(h, 19);
-            // Leave both players together at the S4 start, standing: the guest-death step respawns the guest beside the
-            // host's last known position (this step left them ~25 units apart, the host possibly still falling).
+            // The guest-death step respawns the guest beside the host's last known position.
             yield return PlaceAtStart(h, s_runStart, 184);
         }
         // Losing window focus online is not a pause: the game and the network keep running.

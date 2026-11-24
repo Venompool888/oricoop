@@ -19,6 +19,7 @@ namespace OriCoop
         public static bool BotActive;
         public static int BotButtons;
         public static float BotLX;
+        internal static bool BotLT;
         static readonly InputState s_tmp = new InputState();
         static StreamWriter s_track;
         static TestHarness s_harness;
@@ -2322,7 +2323,7 @@ namespace OriCoop
             {
                 if (!TestHarness.Enabled || !NetPlay.Enabled || !BotActive) return true;
                 s_tmp.Swap();
-                P2Input.Fill(s_tmp, BotButtons, BotLX, 0, 0, 0, false, P2Input.BotRT, false);   // BotRT: Glide / grab for phase P
+                P2Input.Fill(s_tmp, BotButtons, BotLX, 0, 0, 0, BotLT, P2Input.BotRT, false);
                 s_tmp.Swap();
                 return false;
             }
@@ -2690,7 +2691,21 @@ namespace OriCoop
                         P2Extras.TestFailReturns = 0;
                         retryNoted = P2Extras.ReturnRetriesKept > 0;
                     }
+                    MenuScreenManager menu = UI.Menu;
+                    SeinCharacter ori = Own;
+                    bool checkMap = PhaseOn("S4") && menu != null && !menu.MainMenuVisible && GameMapUI.Instance != null && ori != null && !ori.IsSuspended;
+                    if (checkMap)
+                    {
+                        menu.ShowWorldMap(false);
+                        h.Check(SessionRules.LiveMap && !ori.IsSuspended, "G map: the guest's map is live before the disconnect");
+                    }
                     NetPlay.TestTransportFailure("test: the transport failed");
+                    if (checkMap)
+                    {
+                        h.Check(menu.MainMenuVisible && !SessionRules.LiveMap && ori.IsSuspended, "G map: disconnect restores the native pause");
+                        menu.HideMenuScreen(true);
+                        h.Check(!menu.MainMenuVisible && !ori.IsSuspended, "G map: closing the offline map resumes Ori");
+                    }
                     float failGoneBy = Time.realtimeSinceStartup + 1f;
                     while (P2Context.P2 != null && Time.realtimeSinceStartup < failGoneBy) yield return null;
                     h.Note("G transport failure: puppet before=" + failHadPuppet + " after=" + (P2Context.P2 != null) + " remotes=" + NetPlay.RemoteSeats.Length
