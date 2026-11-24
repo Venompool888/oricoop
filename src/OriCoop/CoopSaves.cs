@@ -353,6 +353,7 @@ namespace OriCoop
         // (GuestJoin: picked empty slot / no slot / a slot chosen to overwrite).
         static string s_commitCoop, s_commitHostId, s_commitHostName, s_commitSaveId;
         static byte[] s_commitBytes;
+        internal static byte[] CommitBytes { get { return s_commitBytes; } }
         public static bool HaveCommit { get { return s_commitBytes != null; } }
         public static bool NoSlotForCopy;   // last try found no linked or empty slot
 
