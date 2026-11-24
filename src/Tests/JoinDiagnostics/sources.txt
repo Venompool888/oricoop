@@ -1,0 +1,6 @@
+OriCoop/Authority/DiagnosticAddress.cs
+OriCoop/Authority/JoinDiagnosticsFields.cs
+OriCoop/Authority/JoinDiagnosticsKey.cs
+OriCoop/Diagnostics/JoinReportJob.cs
+OriCoop/Diagnostics/DeviceEnvironment.cs
+OriCoop/Diagnostics/WindowsHttps.cs

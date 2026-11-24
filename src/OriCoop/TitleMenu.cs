@@ -861,8 +861,8 @@ namespace OriCoop
 
         static bool ServerManageLabelsMatch()
         {
-            return LastPage == "servermanage" && LastLabels.Count == 3 && HasKey(LastLabels, "server.add")
-                && HasKey(LastLabels, "server.remove") && HasKey(LastLabels, "server.list");
+            return LastPage == "servermanage" && LastLabels.Count == 4 && HasKey(LastLabels, "server.add")
+                && HasKey(LastLabels, "server.remove") && HasKey(LastLabels, "server.list") && HasKey(LastLabels, "diagnostics.title");
         }
 
         // From the 自建服务器 page: 服务器管理 -> 服务器列表.
