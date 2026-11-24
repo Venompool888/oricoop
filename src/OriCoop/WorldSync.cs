@@ -665,6 +665,33 @@ namespace OriCoop
             if (data.PendingScenes.TryGetValue(scene, out pending)) Store(pending, id, bytes);
         }
 
+        // Native inventory only enters the checkpoint in CreateCheckpoint. Keep the corresponding scene
+        // changes in PendingScenes until that same save. Scene streaming reads pending first and a death
+        // discards pending. Applying a guest pickup directly to Scenes used to roll back only the inventory.
+        static void StoreSceneProgress(MoonGuid scene, MoonGuid id, byte[] bytes)
+        {
+            if (scene == MoonGuid.Empty) { StoreCheckpoint(scene, id, bytes); return; }
+            SaveGameData data = Game.Checkpoint.SaveGameData;
+            SaveScene pending;
+            if (!data.PendingScenes.TryGetValue(scene, out pending))
+            {
+                pending = data.InsertPendingScene(scene);
+                SaveScene saved = data.GetScene(scene);
+                // ApplyPendingScenes replaces the whole scene. Retain its other objects. Store replaces
+                // the SaveObject (including its Archive), so the accepted entry keeps its original bytes.
+                if (saved != null) pending.SaveObjects.AddRange(saved.SaveObjects);
+            }
+            Store(pending, id, bytes);
+        }
+
+        static IEnumerable<SaveScene> CurrentScenes()
+        {
+            SaveGameData data = Game.Checkpoint.SaveGameData;
+            foreach (SaveScene pending in data.PendingScenes.Values) yield return pending;
+            foreach (SaveScene saved in data.Scenes.Values)
+                if (!data.PendingScenes.ContainsKey(saved.SceneGUID)) yield return saved;
+        }
+
         static void RememberLocal(MoonGuid scene, MoonGuid id, byte[] bytes, Meaning fallback, string fallbackType)
         {
             string key = Key(scene, id);
@@ -718,7 +745,8 @@ namespace OriCoop
             // T-183: a partner's GameController never replaces this PC's string-trigger list (World/WorldItems.cs).
             if (schema == Meaning.Controller) bytes = LocalTriggers(live, key, bytes);
             // T-207 (1): a partner's story-sequence progress stays out of this PC's checkpoint too (StoryProgressKeys).
-            if (s_storyProgress.StoreInCheckpoint(key, live != null, StorySequenceOf(live) != null)) StoreCheckpoint(scene, id, bytes);
+            if (schema == Meaning.Pickup || schema == Meaning.Door) StoreSceneProgress(scene, id, bytes);
+            else if (s_storyProgress.StoreInCheckpoint(key, live != null, StorySequenceOf(live) != null)) StoreCheckpoint(scene, id, bytes);
             else { StoryProgressNotStored++; CoopTrace.Event("story", "sequence.progress.not-stored", "key", key); }
             if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay() && !TestDeferApply) ApplyLive(scene, id, bytes);
             else if (live != null && !s_bad.Contains(key))
@@ -873,20 +901,20 @@ namespace OriCoop
                 // Reward has already been applied by ProgressSync; do not replay Collected actions.
                 pickup.IsCollected = true; pickup.gameObject.SetActive(false);
                 byte[] bytes = CaptureBytes(pickup);
-                StoreCheckpoint(scene, id, bytes);
+                StoreSceneProgress(scene, id, bytes);
                 RememberLocal(scene, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName);
                 marked = true;
             });
             if (marked) return true;
             // PickupBase.Serialize is exactly float m_currentTime + bool IsCollected (PickupBase.cs:134).
             // Only edit a checkpoint record with that exact schema; unknown custom schemas stay disabled.
-            foreach (SaveScene scene in Game.Checkpoint.SaveGameData.Scenes.Values)
+            foreach (SaveScene scene in CurrentScenes())
                 for (int i = 0; i < scene.SaveObjects.Count; i++)
                 {
                     SaveObject save = scene.SaveObjects[i];
                     if (save.Id != id || save.Data.MemoryStream.Length != 5) continue;
                     byte[] bytes = save.Data.MemoryStream.ToArray(); bytes[4] = 1;
-                    StoreCheckpoint(scene.SceneGUID, id, bytes);
+                    StoreSceneProgress(scene.SceneGUID, id, bytes);
                     RememberLocal(scene.SceneGUID, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName); return true;
                 }
             Plugin.Log.LogWarning("net: unloaded pickup collected flag unavailable for " + id);
@@ -948,7 +976,7 @@ namespace OriCoop
                 if (!Excluded(live) && ReferenceEquals(Find(liveScene, id), live))
                 {
                     byte[] bytes = CaptureBytes(live);
-                    StoreCheckpoint(liveScene, id, bytes);
+                    StoreSceneProgress(liveScene, id, bytes);
                     RememberLocal(liveScene, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName);
                 }
                 return true;
@@ -956,7 +984,7 @@ namespace OriCoop
             if (active != null) return false;
             // Its scene is not loaded here: edit that scene's checkpoint record, if it has one in the PickupBase layout
             // (float m_currentTime + bool IsCollected, PickupBase.cs:134; no subclass overrides it).
-            foreach (SaveScene saved in Game.Checkpoint.SaveGameData.Scenes.Values)
+            foreach (SaveScene saved in CurrentScenes())
             {
                 if (scene != MoonGuid.Empty && saved.SceneGUID != scene) continue;
                 if (Find(saved.SceneGUID, id) != null) continue;   // loaded, but not the copy at that spot: not this record
@@ -965,7 +993,7 @@ namespace OriCoop
                     SaveObject save = saved.SaveObjects[i];
                     if (save.Id != id || save.Data.MemoryStream.Length != 5) continue;
                     byte[] bytes = save.Data.MemoryStream.ToArray(); bytes[4] = 1;
-                    StoreCheckpoint(saved.SceneGUID, id, bytes);
+                    StoreSceneProgress(saved.SceneGUID, id, bytes);
                     RememberLocal(saved.SceneGUID, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName); return true;
                 }
             }
@@ -1197,6 +1225,11 @@ namespace OriCoop
             static void Postfix()
             {
                 if (!NetPlay.Connected || !SaveSync.Ready) return;
+                // A queued live application belongs to the world before the restore. The
+                // refreshed snapshot will supply this seat's items after the restore.
+                foreach (Blob waiting in new List<Blob>(s_deferred.Values))
+                    if (waiting.Schema == Meaning.Pickup || waiting.Schema == Meaning.Door)
+                        s_deferred.Remove(Key(waiting.Scene, waiting.Id));
                 s_known.Clear();
                 ResetDigestRepair();
                 if (!NetPlay.IsHost) s_restorePending = true;
@@ -1204,14 +1237,18 @@ namespace OriCoop
                 {
                     s_snapshotRequests.Request(0);
                     // Known unloaded objects must follow the host's checkpoint rollback as well.
-                    foreach (Blob blob in s_blobs.Values)
+                    foreach (Blob blob in new List<Blob>(s_blobs.Values))
                     {
                         if (Find(blob.Scene, blob.Id) != null) continue;
                         SaveScene scene = Game.Checkpoint.SaveGameData.GetScene(blob.Scene);
-                        if (scene == null) continue;
-                        foreach (SaveObject saved in scene.SaveObjects)
-                            if (saved.Id == blob.Id)
-                            { blob.Bytes = saved.Data.MemoryStream.ToArray(); blob.Hash = CanonicalHash(blob.Schema, blob.Bytes); break; }
+                        SaveObject saved = scene != null ? scene.SaveObjects.Find(value => value.Id == blob.Id) : default(SaveObject);
+                        if (saved.Data != null)
+                        {
+                            blob.Bytes = saved.Data.MemoryStream.ToArray();
+                            blob.Hash = CanonicalHash(blob.Schema, blob.Bytes);
+                        }
+                        else if (blob.Schema == Meaning.Pickup || blob.Schema == Meaning.Door)
+                            s_blobs.Remove(Key(blob.Scene, blob.Id));   // first seen after this checkpoint
                     }
                 }
             }
