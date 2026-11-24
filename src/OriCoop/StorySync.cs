@@ -62,9 +62,7 @@ namespace OriCoop
         static readonly Dictionary<string, float> Seen = Ledger.Seen;
         static readonly Dictionary<string, float> Performed = new Dictionary<string, float>();
         static readonly Dictionary<string, bool> Classification = new Dictionary<string, bool>();
-        sealed class Candidate { public Story Story; public int Before; public float At; }
-        struct StartCall { public bool Root, LocalOnly, LocalWellSave, WellActivation; public int Before; public Vector3 Position; }
-        static readonly Dictionary<string, Candidate> Pending = new Dictionary<string, Candidate>();
+        struct StartCall { public bool Root, LocalOnly, LocalWellSave, WellActivation; public Vector3 Position; }
         static float s_statsAt;
         public static int StartsSeen, StartsSent, StartsMirrored;
         static readonly Dictionary<ulong, Story> Local = Ledger.Local;
@@ -87,8 +85,7 @@ namespace OriCoop
         static string WellKey(MoonGuid scene, MoonGuid sequence) { return scene + ":" + sequence; }
         static int LiveRemotes() { return Ledger.LiveRemotes; }
         // T-175: a story of this PC is running, so it owns the takeover flags, not a mirror: a story it started
-        // (Local) or a local-only native replay (pedestal / lever, CutsceneGuard). Not Pending: those are unclassified
-        // candidates (plant projectile sequences, a mirror's own sub-sequences), not stories of this PC.
+        // (Local) or a local-only native replay (pedestal / lever, CutsceneGuard).
         static bool OwnStoryRunning()
         {
             if (Local.Count > 0 || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0 || CutsceneGuard.PedestalWindow) return true;
@@ -109,9 +106,7 @@ namespace OriCoop
         }
         // Test only (NetKuroTest chain): mirror cleanups that found takeover state left over from an earlier cutscene.
         public static int LeftoverCleanups;
-        public static bool StoryActive { get { return Local.Count + Remote.Count + Pending.Count > 0; } }
-        // Test only (NetKuroTest, T-183): stories this PC runs or mirrors, without the unclassified candidates in Pending
-        // (the spirit tree's plants start a shootProjectile sequence every second or so; each sits in Pending briefly).
+        public static bool StoryActive { get { return RealStories != 0; } }
         public static int RealStories { get { return Local.Count + Remote.Count; } }
         // T-183: a mirror's start of a sequence consumes the string trigger that would start it here (Story/MirrorStarts.cs).
         static readonly MirrorStarts MirrorStartsLog = new MirrorStarts();
@@ -301,9 +296,24 @@ namespace OriCoop
             if (animator is GameplayToCinematicAnimator || animator is MasterTimelineSequence) return true;
             return animator.GetComponentsInChildren<GameplayToCinematicAnimator>(true).Length > 0;
         }
+        // Objective hint presentations may use the same input locks, camera and text as a cutscene.
+        // Other narrative sequences named objectiveSetupAction (e.g. Naru's story) have a different owner.
+        static bool LocalPresentation(ActionSequence sequence)
+        {
+            if (sequence.GetComponentInParent<MenuScreenManager>() != null || sequence.GetComponentInParent<MenuScreen>() != null
+                || sequence.GetComponentInParent<CleverMenuItem>() != null) return true;
+            for (Transform t = sequence.transform; t != null; t = t.parent)
+                if (t.name == "*objectiveSetup") return true;
+            if (sequence.Actions != null)
+                foreach (ActionMethod action in sequence.Actions)
+                    if (action is ReturnToTitleScreenAction && SceneOf(sequence) == MoonGuid.Empty) return true;
+            return false;
+        }
         static bool ContainsStory(Component component, HashSet<Component> visited)
         {
             if (component == null || !visited.Add(component)) return false;
+            ActionSequence sequence = component as ActionSequence;
+            if (sequence != null && LocalPresentation(sequence)) return false;
             if (component is StopActionAction || component is StopTimedActionSequenceAction) return false;
             if (component is LockPlayerInputAction || component is ShowStoryTextAction
                 || component is RegisterSkipCutsceneAction || component is WatchCutsceneAction) return true;
@@ -344,7 +354,6 @@ namespace OriCoop
                         if (ContainsStory(action as ActionMethod, visited)) return true;
                 }
             }
-            ActionSequence sequence = component as ActionSequence;
             if (sequence != null && sequence.Actions == null)
                 foreach (ActionMethod action in sequence.GetComponentsInChildren<ActionMethod>(true))
                     if (ContainsStory(action, visited)) return true;
@@ -361,20 +370,9 @@ namespace OriCoop
                 || GameController.Instance == null || GameController.Instance.IsLoadingGame) return;
             story.Key = KeyOf(story); story.Position = call.Position;
             bool classified = story.Sequence != null ? story.WellActivation || IsStorySequence(story.Sequence) : StoryController(story.Controller);
-            story.Classified = classified;
-            if (classified || (TakeoverMask() & ~call.Before) != 0) { Begin(story); return; }
-            if (!Pending.ContainsKey(story.Key)) Pending[story.Key] = new Candidate { Story = story, Before = call.Before, At = Time.realtimeSinceStartup };
-        }
-        static void ObserveCandidates(float now)
-        {
-            List<string> complete = new List<string>(); int mask = TakeoverMask();
-            foreach (KeyValuePair<string, Candidate> pair in Pending)
-            {
-                Candidate candidate = pair.Value;
-                if (now - candidate.At > 0.5f) complete.Add(pair.Key);
-                else if ((mask & ~candidate.Before) != 0) { Begin(candidate.Story); complete.Add(pair.Key); }
-            }
-            foreach (string key in complete) Pending.Remove(key);
+            // A lock elsewhere in the world says nothing about this sequence. Only this action graph
+            // or cutscene controller can establish a story start.
+            if (classified) Begin(story);
         }
         public static void Init()
         {
@@ -395,7 +393,6 @@ namespace OriCoop
         {
             CleanupNative();
             RestoreVisible(); Seen.Clear(); Performed.Clear(); Local.Clear(); Remote.Clear(); Accepted.Clear(); Mirrored.Clear(); Starting.Clear();
-            Pending.Clear();
             StoryTexts.Clear(); ForgetInputLocks();
             MirrorStartsLog.Clear(); WindowStarts.Clear();
             LocalOnly.Clear(); LocalOnlyControllers.Clear(); LocalWellSequences.Clear();
@@ -573,7 +570,7 @@ namespace OriCoop
             story.Scene = GameStoryHost.ReadGuid(data.Scene); story.Id = GameStoryHost.ReadGuid(data.Id);
             story.Path = data.Path; story.State = data.State; story.Position = new Vector3(data.X, data.Y, data.Z);
             story.Classified = data.Classified; story.WellActivation = data.WellActivation;
-            if (!Online || Remote.ContainsKey(TokenKey(story.Sender, story.Token)) || PlayingLocally(story)) return;
+            if (!Online || !story.Classified || Remote.ContainsKey(TokenKey(story.Sender, story.Token)) || PlayingLocally(story)) return;
             if (CutsceneGuard.PedestalWindow) MirroredInWindow++;
             LastStoryActivity = Time.realtimeSinceStartup;
             story.Key = KeyOf(story);
@@ -587,13 +584,6 @@ namespace OriCoop
             }
             Ledger.TrackRemote(story, Services.Net.IsHost, Time.realtimeSinceStartup);
             StoryHost.Current.Rebroadcast(r);
-            SeinCharacter own = Own;
-            if (own != null && Vector3.Distance(own.Position, story.Position) > 12f)
-            {
-                StoryHost.Current.Teleport(own, story.Position + Vector3.right);
-                CutsceneGuard.SnapSpirit("story teleport");
-                StoryHost.Current.PositionChanged();
-            }
             // TestResolveDelay (tests): the mirror cannot start before the delay, as during a scene load.
             if (!story.Resolved && TestResolveDelay <= 0f) Resolve(story);
         }
@@ -685,6 +675,16 @@ namespace OriCoop
                 if (go != null) go.SetActive(false);
             }
         }
+        static void GatherForStory(Story story)
+        {
+            SeinCharacter own = Own;
+            if (own != null && Vector3.Distance(own.Position, story.Position) > 12f)
+            {
+                StoryHost.Current.Teleport(own, story.Position + Vector3.right);
+                CutsceneGuard.SnapSpirit("story teleport");
+                StoryHost.Current.PositionChanged();
+            }
+        }
         static bool Resolve(Story story)
         {
             if (PlayingLocally(story)) { story.Resolved = true; story.Watch = false; return true; }
@@ -709,6 +709,11 @@ namespace OriCoop
                 {
                     story.Sequence = FindSequence(story);
                     if (story.Sequence == null) return false;
+                    // An older peer may have classified its pause or objective presentation as a cutscene.
+                    if (!story.WellActivation && !IsStorySequence(story.Sequence))
+                    {
+                        story.Resolved = true; story.Sequence = null; return true;
+                    }
                     if (story.WellActivation) LocalOnly.Remove(story.Sequence);
                     else if (LocalOnly.Contains(story.Sequence))
                     {
@@ -717,6 +722,9 @@ namespace OriCoop
                         Services.Log.Info("net: story " + story.Token + " already playing locally (pedestal) " + story.Key);
                         return true;
                     }
+                    // Use the same player-takeover criterion as an all-player story gate. A camera-only
+                    // sequence can still mirror, but leaves the partner's Ori where it was.
+                    if (story.WellActivation || IsTakeoverAction(story.Sequence)) GatherForStory(story);
                     CaptureNative(); OwnedSequences.Add(story.Sequence);
                     Mirrored.Add(story.Sequence);
                     bool running = story.Sequence.IsRunning;
@@ -734,6 +742,7 @@ namespace OriCoop
                         foreach (CutsceneState state in controller.GetComponentsInChildren<CutsceneState>(true))
                         {
                             if (PathOf(state.transform) != story.State) continue;
+                            if (BlocksSein(state)) GatherForStory(story);
                             story.Controller = controller; CaptureNative(); OwnedControllers.Add(controller);
                             Mirrored.Add(controller);
                             ForcedSync.StoryStarted();
@@ -925,12 +934,11 @@ namespace OriCoop
                 if (Services.Net.Enabled) Services.Log.Info("net: story classification startsSeen=" + StartsSeen + " sent=" + StartsSent
                     + " mirrored=" + StartsMirrored + " cachedIds=" + Classification.Count + " watching=" + Watching);
             }
-            if (!Online) { if (Local.Count + Remote.Count + Pending.Count > 0) Reset(); return; }
+            if (!Online) { if (StoryActive) Reset(); return; }
             float now = Time.realtimeSinceStartup; bool locked = NativeLocked();
             List<ulong> expiredAccepted = new List<ulong>();
             foreach (KeyValuePair<ulong, Story> pair in Accepted) if (now - pair.Value.Began >= 60f) expiredAccepted.Add(pair.Key);
             foreach (ulong token in expiredAccepted) Accepted.Remove(token);
-            ObserveCandidates(now);
             if (Remote.Count > 0)
             {
                 List<ulong> released = new List<ulong>();
@@ -1067,7 +1075,7 @@ namespace OriCoop
                     foreach (SavePedestal well in SavePedestal.All)
                         if (well.OnOpenedAction == __instance) { well.MarkAsUsed(); break; }
                 __state.Root = s_entryDepth == 0 && canStart;
-                if (__state.Root) { s_entryDepth++; __state.Before = TakeoverMask(); __state.Position = Own == null ? Vector3.zero : Own.Position; }
+                if (__state.Root) { s_entryDepth++; __state.Position = Own == null ? Vector3.zero : Own.Position; }
                 if (replay && s_native != null && Remote.Count > 0 && !PuppetCall)
                 {
                     OwnedSequences.Add(__instance);
@@ -1136,7 +1144,7 @@ namespace OriCoop
                 if (__state.LocalOnly) s_localOnlyRunDepth++;
                 bool replay = s_mirroring || s_replayActionDepth > 0 || OwnedControllers.Contains(__instance);
                 __state.Root = s_entryDepth == 0;
-                if (__state.Root) { s_entryDepth++; __state.Before = TakeoverMask(); __state.Position = Own == null ? Vector3.zero : Own.Position; }
+                if (__state.Root) { s_entryDepth++; __state.Position = Own == null ? Vector3.zero : Own.Position; }
                 if (replay && s_native != null && Remote.Count > 0 && !PuppetCall) OwnedControllers.Add(__instance);
                 return true;
             }
