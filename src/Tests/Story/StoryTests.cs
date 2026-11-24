@@ -14,6 +14,7 @@ static partial class StoryTests
 
     static int Main()
     {
+        if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PICKUP_GUID_ONLY") == "1") PickupPlace.MutateGuidOnly = true;
         Check("shared initial copy", delegate {
             SharedResources r = new SharedResources();
             SharedValues a = r.Merge(3, 4, 2f, 5f, 9, 9, 9f);
@@ -54,6 +55,7 @@ static partial class StoryTests
         StoryLockRepairCases();   // T-177
         MirrorStartsCases();   // T-183
         SceneTripRuleCases();   // T-185
+        LeftoverCases();   // T-207, T-212
         return failures == 0 ? 0 : 1;
     }
 }

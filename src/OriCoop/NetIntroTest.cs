@@ -29,7 +29,13 @@ namespace OriCoop
         }
         static readonly Dictionary<int, Dictionary<int, Sample>> rounds = new Dictionary<int, Dictionary<int, Sample>>();
         static int count, neutralSteps, inputSteps;
-        static bool observeInput;
+        static bool observeInput, holdCompanionVisibility;
+        [HarmonyPatch(typeof(SeinController), "UpdateOriActiveState")]
+        static class HoldCompanionVisibility
+        {
+            static bool Prefix() { return !holdCompanionVisibility; }
+        }
+
         [HarmonyPatch(typeof(SeinController), "HandleControllerInput")]
         static class InputObservation
         {
@@ -83,6 +89,46 @@ namespace OriCoop
         }
         static IEnumerator Wait(float seconds)
         { float end = Time.realtimeSinceStartup + seconds; while (Time.realtimeSinceStartup < end) yield return null; }
+        static IEnumerator SpawnWithInactiveCompanion(TestHarness h)
+        {
+            Ori source = Characters.Ori;
+            h.Check(source != null, "INTRO companion: source exists before the remote puppet respawns");
+            if (source == null) yield break;
+            bool active = source.gameObject.activeSelf;
+            Ori.State state = source.CurrentState;
+            int failures = P2Extras.CompanionReturnFailures;
+            Puppet old = Players.First;
+            holdCompanionVisibility = true;
+            try
+            {
+                source.gameObject.SetActive(false);
+                source.CurrentState = Ori.State.MoveToPosition;
+                Plugin.DespawnPuppet(old);
+                float by = Time.realtimeSinceStartup + 5f;
+                while (Players.First == null && Time.realtimeSinceStartup < by) yield return null;
+                Puppet puppet = Players.First;
+                Ori spirit = puppet != null ? puppet.Companion : null;
+                h.Check(puppet != old && spirit != null && !spirit.gameObject.activeInHierarchy,
+                    "INTRO companion: a new puppet spawns with an inactive companion");
+                if (spirit == null) yield break;
+
+                yield return Wait(2.5f);
+                h.Check(!spirit.gameObject.activeInHierarchy && P2Extras.CompanionReturnFailures == failures && P2Extras.ReturnRetriesKept == 1,
+                    "INTRO companion: the pending return outlasts the retry budget without throwing while inactive");
+                P2Extras.SetCompanionActive(puppet, true);
+                by = Time.realtimeSinceStartup + 1f;
+                while (spirit.CurrentState != Ori.State.Hovering && Time.realtimeSinceStartup < by) yield return null;
+                h.Check(spirit.CurrentState == Ori.State.Hovering && Vector3.Distance(spirit.Position, puppet.Sein.Position) < 5f
+                    && P2Extras.ReturnRetriesKept == 0 && P2Extras.CompanionReturnFailures == failures,
+                    "INTRO companion: after activation it returns to the puppet without a failed attempt");
+            }
+            finally
+            {
+                holdCompanionVisibility = false;
+                source.CurrentState = state;
+                source.gameObject.SetActive(active);
+            }
+        }
         internal static IEnumerator Run(TestHarness h, int clients)
         {
             count = clients; rounds.Clear(); Services.Net.On(Message, Read); Services.Net.Forward(Message);
@@ -101,6 +147,11 @@ namespace OriCoop
             try
             {
                 yield return Round(h, 0);
+                if (clients == 2)
+                {
+                    if (Services.Net.IsHost) yield return SpawnWithInactiveCompanion(h);
+                    yield return Round(h, 6);
+                }
                 if (Services.Net.IsHost) StoryHost.Current = fixture;
                 NetTestHarness.BotLX = 0; NetTestHarness.BotButtons = 0;
                 yield return Wait(1f);

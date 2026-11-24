@@ -156,7 +156,7 @@ namespace OriCoop
                 if (s_entryKind == 0 && !s_editing && !s_legacyCode) help += "\n" + L10n.T("lobby.room.legacy", zh);   // T-046: older letter codes still work
                 r.Add(new[] { EntryDisplay(zh), help });
                 if (CServerEntry) r.Add(new[] { L10n.T("common.save", zh), L10n.T("cserver.save.desc", zh) });
-                else r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T("lobby.connect.desc", zh) + SaveNote(zh) });
+                else r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T(roomCode ? "lobby.connect.desc.cs" : "lobby.connect.desc", zh) + SaveNote(zh) });
                 r.Add(new[] { L10n.T("common.back", zh), L10n.T("common.back.desc", zh) });
             }
             else if (s_page == PageHost)
@@ -184,11 +184,12 @@ namespace OriCoop
                 string status;
                 if (NetPlay.PartnerHere)
                 {
-                    string who = !string.IsNullOrEmpty(NetPlay.SteamPartnerName) ? NetPlay.SteamPartnerName : L10n.T("lobby.partner", zh);
-                    status = string.Format(L10n.T("lobby.partner.joined", zh), who);
+                    string who = roomCode ? Roles.Tag(Roles.Partner)
+                        : !string.IsNullOrEmpty(NetPlay.SteamPartnerName) ? NetPlay.SteamPartnerName : L10n.T("lobby.partner", zh);
+                    status = string.Format(L10n.T(L10n.ModeKey("lobby.partner.joined", roomCode), zh), who);
                 }
                 else if (!string.IsNullOrEmpty(NetPlay.Problem)) status = L10n.T(FriendlyError(NetPlay.Problem, false), zh);
-                else status = L10n.T(canStart ? "lobby.start.ready" : "lobby.start.preparing", zh);
+                else status = L10n.T(canStart ? L10n.ModeKey("lobby.start.ready", roomCode) : "lobby.start.preparing", zh);
                 r.Add(new[] { L10n.T("lobby.start", zh), status });
                 r.Add(new[] { L10n.T("common.cancel", zh), L10n.T("lobby.host.cancel.desc", zh) });
             }

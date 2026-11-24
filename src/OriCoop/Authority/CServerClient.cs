@@ -248,6 +248,28 @@ namespace OriCoop.Authority
             Peer.Flush();
         }
 
+        // T-213 (3): NetPlay.End releases its seats and says goodbye in the same instant, so both datagrams reach the
+        // server in one poll: the goodbye marks the seat offline first, and the release, read after it, is ignored (an
+        // offline seat cannot release). The seat then stays held for the whole reconnect window (60 s) and a full room
+        // stays "full". A deliberate leave therefore waits, for at most waitMs, until the server has acknowledged the
+        // release: the server handles a message in the step it arrives in, so a goodbye sent after the acknowledgement
+        // is read after the release. idle runs between polls (null: sleep a moment; a test steps its server there).
+        // Returns true when the release was acknowledged.
+        internal static bool TestSkipReleaseWait;   // test only: release without waiting, as before
+        public bool ReleaseAll(int waitMs, Action idle)
+        {
+            if (PrimarySeat == 0 || Peer.State != PeerState.Connected) return false;
+            ReleaseAll();
+            if (TestSkipReleaseWait) return false;
+            System.Diagnostics.Stopwatch watch = System.Diagnostics.Stopwatch.StartNew();
+            while (Peer.State == PeerState.Connected && Peer.Stats.ReliablePending > 0 && watch.ElapsedMilliseconds < waitMs)
+            {
+                if (idle != null) idle(); else System.Threading.Thread.Sleep(2);
+                Peer.Poll(); Peer.Flush();
+            }
+            return Peer.State == PeerState.Connected && Peer.Stats.ReliablePending == 0;
+        }
+
         public void Leave()
         {
             Peer.Disconnect("leave");

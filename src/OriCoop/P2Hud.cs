@@ -150,7 +150,7 @@ namespace OriCoop
             sh.layer = hud.Go.layer;
         }
 
-        // Online: one tag for the partner: role (in the role's colour) + "主机/伙伴" + Steam name. Local co-op: "P2". The
+        // Online: one tag with the seat in its colour, the role, and the Steam name. Local co-op: "P2". The
         // health dots that used to follow it are gone (T-061b): health is on the status bars at the bottom left.
         static string Compose(Hud hud, int role, float a, bool shadow)
         {
@@ -162,8 +162,8 @@ namespace OriCoop
                 return "<color=" + Roles.HexOf(shadow ? dark : Roles.P2Color, shadow ? a * 0.55f : a) + ">" + hud.Plain + "</color>";
             }
             string name = NetPlay.SteamPartnerName;
-            string label = string.IsNullOrEmpty(name) ? L10n.F("roles.label", Roles.Tag(role), Roles.WordZh(role))
-                : L10n.F("roles.named_label", Roles.Tag(role), Roles.WordZh(role), name);
+            string label = string.IsNullOrEmpty(name) ? L10n.F("roles.label", Roles.Tag(role), Roles.Word(role))
+                : L10n.F("roles.named_label", Roles.Tag(role), Roles.Word(role), name);
             string rest = label.Substring(Roles.Tag(role).Length);
             hud.Plain = label;
             string roleHex = shadow ? Roles.HexOf(dark, a * 0.55f) : Roles.Hex(role, a);

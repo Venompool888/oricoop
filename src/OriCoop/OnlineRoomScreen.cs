@@ -172,7 +172,7 @@ namespace OriCoop
                         GUI.enabled = saveEnabled;
                     }
                 }
-                else Label("room.hostsave", L10n.T("room.host_save"));
+                else Label("room.hostsave", L10n.SessionText("room.host_save"));
                 GUILayout.EndScrollView();
                 Button("room.continue", L10n.T(model.IsHost ? "lobby.start" : "rooms.continue"), Continue);
                 GUILayout.EndVertical();

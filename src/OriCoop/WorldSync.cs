@@ -5,6 +5,8 @@ using System.Text;
 using Game;
 using HarmonyLib;
 using UnityEngine;
+using OriCoop.Authority;
+using OriCoop.World;
 
 namespace OriCoop
 {
@@ -41,7 +43,6 @@ namespace OriCoop
             public string Type;
             public Meaning Schema;
         }
-        sealed class ManifestEntry { public MoonGuid Scene, Id; public ulong Hash; public string Type; }
         static readonly Dictionary<string, Blob> s_blobs = new Dictionary<string, Blob>();
         static readonly Dictionary<string, ulong> s_known = new Dictionary<string, ulong>();
         static readonly Dictionary<string, float> s_changed = new Dictionary<string, float>();
@@ -49,8 +50,9 @@ namespace OriCoop
         static readonly HashSet<string> s_excluded = new HashSet<string>();
         static readonly Dictionary<string, Partial> s_parts = new Dictionary<string, Partial>();
         static readonly Dictionary<string, Blob> s_deferred = new Dictionary<string, Blob>();
-        static readonly Dictionary<string, ManifestEntry> s_remoteManifest = new Dictionary<string, ManifestEntry>();
-        static readonly Dictionary<string, ManifestEntry> s_compareManifest = new Dictionary<string, ManifestEntry>();
+        static readonly Dictionary<string, DigestObject> s_remoteManifest = new Dictionary<string, DigestObject>();
+        static readonly Dictionary<string, DigestObject> s_compareManifest = new Dictionary<string, DigestObject>();
+        static readonly DigestRepair s_digestRepair = new DigestRepair();
         static readonly HashSet<string> s_loggedLocalTypes = new HashSet<string>();
         static readonly HashSet<int> s_pendingSnapshots = new HashSet<int>();
         // T-172: changes inside a story this PC only mirrors stay local (World/MirrorHold.cs).
@@ -63,15 +65,11 @@ namespace OriCoop
         static long s_deltaBytes, s_snapshotBytes, s_digestBytes;
         static bool s_sendingSnapshot;
         static uint s_digestSequence, s_receivedDigest;
-        // Digest-mismatch resync backoff (lag test ①): a mismatch that survives a full resync is not fixed by another
-        // one, so wait 10, 20, 40, 60 s between requests; a matching digest resets it.
+        static int s_digestSender;
+        static bool s_digestProgressDiffers;
         static float s_digestResyncAt, s_digestBackoff = DigestBackoffMin;
         const float DigestBackoffMin = 10f, DigestBackoffMax = 60f;
         public static int DigestResyncs, DigestResyncsDeferred;
-        // A single mismatching round is usually a change still in flight (the digest crossed e.g. a "pedestal play"
-        // message, or one PC loaded a scene a moment earlier); only a mismatch in two consecutive rounds (~5 s apart)
-        // requests a full resync.
-        static int s_mismatchStreak;
         public static int DigestMismatchesIgnored;
         public static bool Applying;
         public static bool LastDigestMatch;
@@ -111,10 +109,10 @@ namespace OriCoop
             s_loggedHighlightedDoors = false;
             s_loggedSceneLoader = false;
             s_pendingSnapshots.Clear();
-            s_mirrorHold.Clear(); s_mirrorKeys.Clear();
+            s_mirrorHold.Clear(); s_mirrorKeys.Clear(); s_storyProgress.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             s_digestSequence = s_receivedDigest = 0;
-            s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; s_mismatchStreak = 0;
+            ResetDigestRepair();
             ResetDelta();
         }
 
@@ -123,10 +121,14 @@ namespace OriCoop
             if (!NetPlay.Connected || !SaveSync.Ready || !NetPlay.LocalInGameplay() || VersionRefused()) return;
             HostReady();
             if (!s_awaitSnapshot) s_delta.Flush();
-            if (s_deferred.Count != 0)
+            if (s_deferred.Count != 0 && !TestDeferApply)
             {
                 Blob[] waiting = new List<Blob>(s_deferred.Values).ToArray(); s_deferred.Clear();
-                foreach (Blob blob in waiting) ApplyLive(blob.Scene, blob.Id, blob.Bytes);
+                foreach (Blob blob in waiting)
+                {
+                    ApplyLive(blob.Scene, blob.Id, blob.Bytes);
+                    if (KeepsOwnCells(blob.Schema)) s_known.Remove(Key(blob.Scene, blob.Id));   // T-214, as in Apply
+                }
             }
             if (s_restorePending)
             {
@@ -456,6 +458,7 @@ namespace OriCoop
                     s_excluded.Remove(key);
                     if (s_bad.Contains(key)) continue;
                     if (StorySync.MirrorOwns(save as Component)) s_mirrorKeys.Add(key);
+                    if (save is ActionSequenceSerializer && StorySequenceOf(save) != null) s_storyProgress.Remember(key);   // T-207 review 7
                     try
                     {
                         byte[] bytes = CaptureBytes(save);
@@ -575,7 +578,11 @@ namespace OriCoop
             if (kind == 2)
             {
                 uint watermark = reader.ReadUInt32();
-                if (!NetPlay.IsHost) { s_awaitSnapshot = false; s_scanAt = Time.realtimeSinceStartup + 0.25f; s_delta.EndSnapshot(watermark); }
+                if (!NetPlay.IsHost)
+                {
+                    s_awaitSnapshot = false; s_scanAt = Time.realtimeSinceStartup + 0.25f;
+                    s_delta.EndSnapshot(watermark); s_digestRepair.SnapshotReceived(); SnapshotsEnded++;
+                }
                 return;
             }
             if (kind != 0) throw new InvalidDataException("unknown world batch");
@@ -705,8 +712,10 @@ namespace OriCoop
                 bytes = SnapshotAggregate(scene, id, schema, type, bytes);
             // T-183: a partner's GameController never replaces this PC's string-trigger list (World/WorldItems.cs).
             if (schema == Meaning.Controller) bytes = LocalTriggers(live, key, bytes);
-            StoreCheckpoint(scene, id, bytes);
-            if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay()) ApplyLive(scene, id, bytes);
+            // T-207 (1): a partner's story-sequence progress stays out of this PC's checkpoint too (StoryProgressKeys).
+            if (s_storyProgress.StoreInCheckpoint(key, live != null, StorySequenceOf(live) != null)) StoreCheckpoint(scene, id, bytes);
+            else { StoryProgressNotStored++; CoopTrace.Event("story", "sequence.progress.not-stored", "key", key); }
+            if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay() && !TestDeferApply) ApplyLive(scene, id, bytes);
             else if (live != null && !s_bad.Contains(key))
             {
                 s_deferred[key] = MakeBlob(scene, id, bytes, schema, type);
@@ -715,6 +724,9 @@ namespace OriCoop
             if (!s_bad.Contains(key)) s_blobs[key] = MakeBlob(scene, id, bytes, schema, type);
             else s_blobs.Remove(key);
             s_known[key] = incoming; // Remote application is never a new local proposal.
+            // T-214: except the map cells this PC kept on top of a snapshot (DeltaObject.Reset): the next scan measures
+            // the map again and proposes them.
+            if (KeepsOwnCells(schema)) s_known.Remove(key);
             s_mirrorHold.Applied(key);
             // T-141: the other guests (P2P / relay: connected only to us) get the accepted blob now, not after a digest
             // resync 5-60 s later, during which their own whole-GameController blob could overwrite it again.
@@ -739,6 +751,11 @@ namespace OriCoop
             }
             return devices.ToArray();
         }
+
+        // T-214: a guest's map after a full snapshot may hold cells of its own on top (DeltaObject.Reset). Applying the
+        // snapshot records the map as known; forgetting that makes the next scan measure it and propose those cells.
+        static bool KeepsOwnCells(Meaning schema)
+        { return !NetPlay.IsHost && schema == Meaning.Map && World.WorldItems.HasGrowing((byte)schema); }
 
         static void ApplyLive(MoonGuid scene, MoonGuid id, byte[] bytes)
         {
@@ -771,7 +788,32 @@ namespace OriCoop
         // A partner's "not running" value is still taken by a copy that is not running here.
         // Test-only mutation ORICOOP_MUTATE_SEQ_PROGRESS_SHARED: the partner's progress replaces it again.
         static readonly bool s_mutateSharedProgress = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SEQ_PROGRESS_SHARED") == "1";
-        public static int SequenceProgressKept;
+        public static int SequenceProgressKept, StoryProgressNotStored;
+        static readonly World.StoryProgressKeys s_storyProgress = new World.StoryProgressKeys();
+        // Test only (NetSeinTest, T-207 item 1): what this PC's checkpoint holds for a sequence's progress.
+        // False: the checkpoint has no entry for it.
+        internal static bool TestCheckpointProgress(ActionSequenceSerializer progress, out int index, out bool running)
+        {
+            index = -1; running = false;
+            if (progress == null || progress.MoonGuid == null) return false;
+            MoonGuid scene = MoonGuid.Empty;
+            for (Transform t = progress.transform; t != null; t = t.parent)
+            {
+                SceneRoot root = t.GetComponent<SceneRoot>();
+                if (root != null && root.MetaData != null) { scene = root.MetaData.SceneMoonGuid; break; }
+            }
+            SaveGameData data = Game.Checkpoint.SaveGameData;
+            SaveScene saved = scene == MoonGuid.Empty ? data.Master : data.InsertScene(scene);
+            foreach (SaveObject o in saved.SaveObjects)
+            {
+                if (o.Id != progress.MoonGuid) continue;
+                byte[] bytes = o.Data.MemoryStream.ToArray();
+                if (bytes.Length < 5) return false;
+                index = BitConverter.ToInt32(bytes, 0); running = bytes[4] != 0;
+                return true;
+            }
+            return false;
+        }
         static ActionSequence StorySequenceOf(ISerializable live)
         {
             ActionSequenceSerializer progress = live as ActionSequenceSerializer;
@@ -846,6 +888,85 @@ namespace OriCoop
             return false;
         }
 
+        // ---- T-214: a pickup's GUID is shared by every copy of its prefab; its scene and spot pick the copy ----
+        // The scene (GUID) an object belongs to; Empty = none of the loaded scenes.
+        public static MoonGuid SceneOf(Component c)
+        {
+            MoonGuid found = MoonGuid.Empty;
+            if (c == null) return found;
+            Transform root = c.transform.root;
+            Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
+                if (scene != MoonGuid.Empty && manager != null && manager.transform.root == root) found = scene;
+            });
+            return found;
+        }
+
+        static bool PickupAt(PickupBase p, bool hasSpot, Vector2 spot)
+        {
+            if (!hasSpot) return true;
+            Vector3 at = p.transform.position;
+            float dx = at.x - spot.x, dy = at.y - spot.y;
+            return dx * dx + dy * dy <= Story.PickupPlace.SameSpot * Story.PickupPlace.SameSpot;
+        }
+
+        // The copy with this GUID in that scene (Empty = scene not known) at that spot (hasSpot false = spot not known).
+        public static PickupBase FindPickup(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null)
+        {
+            PickupBase found = null;
+            Visit(delegate(MoonGuid loaded, SaveSceneManager manager) {
+                if (found != null || (scene != MoonGuid.Empty && loaded != scene)) return;
+                PickupBase p = manager.IdToSaveSerialize(id) as PickupBase;
+                if (p != null && PickupAt(p, hasSpot, spot)) found = p;
+            });
+            if (found != null || !hasSpot) return found;
+            // A copy the save registry does not have: it was inactive when its scene loaded (SaveSceneManager registers
+            // active objects only), or a second copy of the prefab replaced it there (AddSaveObject keeps one per GUID).
+            // Active scene objects only, so never a prefab asset.
+            foreach (PickupBase p in active ?? ActivePickups())
+                if (p != null && !p.IsCollected && p.MoonGuid == id && PickupAt(p, true, spot)
+                    && (scene == MoonGuid.Empty || SceneOf(p) == scene)) return p;
+            return null;
+        }
+
+        public static PickupBase[] ActivePickups() { return UnityEngine.Object.FindObjectsOfType<PickupBase>(); }
+
+        // A partner collected this pickup (reward already applied by ProgressSync; Collected actions are not replayed).
+        // false = that copy is not live here and its scene has no checkpoint record of it.
+        // active != null: a later retry, which only looks for the live copy among these.
+        public static bool MarkCollected(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null)
+        {
+            PickupBase live = FindPickup(id, scene, hasSpot, spot, active);
+            if (live != null)
+            {
+                live.IsCollected = true; live.gameObject.SetActive(false);
+                MoonGuid liveScene = SceneOf(live);
+                if (!Excluded(live) && ReferenceEquals(Find(liveScene, id), live))
+                {
+                    byte[] bytes = CaptureBytes(live);
+                    StoreCheckpoint(liveScene, id, bytes);
+                    RememberLocal(liveScene, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName);
+                }
+                return true;
+            }
+            if (active != null) return false;
+            // Its scene is not loaded here: edit that scene's checkpoint record, if it has one in the PickupBase layout
+            // (float m_currentTime + bool IsCollected, PickupBase.cs:134; no subclass overrides it).
+            foreach (SaveScene saved in Game.Checkpoint.SaveGameData.Scenes.Values)
+            {
+                if (scene != MoonGuid.Empty && saved.SceneGUID != scene) continue;
+                if (Find(saved.SceneGUID, id) != null) continue;   // loaded, but not the copy at that spot: not this record
+                for (int i = 0; i < saved.SaveObjects.Count; i++)
+                {
+                    SaveObject save = saved.SaveObjects[i];
+                    if (save.Id != id || save.Data.MemoryStream.Length != 5) continue;
+                    byte[] bytes = save.Data.MemoryStream.ToArray(); bytes[4] = 1;
+                    StoreCheckpoint(saved.SceneGUID, id, bytes);
+                    RememberLocal(saved.SceneGUID, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName); return true;
+                }
+            }
+            return false;
+        }
+
         public static bool MarkPedestal(MoonGuid id)
         {
             bool marked = false;
@@ -874,15 +995,23 @@ namespace OriCoop
             return false;
         }
 
-        public static void RequestResync(string reason)
+        public static void RequestResync(string reason) { TryRequestResync(reason); }
+
+        // false = not sent (this PC is the host, is not ready, or asked less than a second ago).
+        internal static bool TryRequestResync(string reason)
         {
-            if (!NetPlay.Connected || NetPlay.IsHost || !SaveSync.Ready) return;
+            if (!NetPlay.Connected || NetPlay.IsHost || !SaveSync.Ready) return false;
             float now = Time.realtimeSinceStartup;
-            if (now < s_requestAt) return;
+            if (now < s_requestAt) return false;
             s_requestAt = now + 1f; s_awaitSnapshot = true; s_delta.BeginSnapshot();
             Plugin.Log.LogInfo("net: request full resync: " + reason);
             NetPlay.Send(MsgResync, true, delegate(BinaryWriter w) { w.Write(reason); });
+            return true;
         }
+        public static int SnapshotsEnded;   // guest: full snapshots received to their end marker
+        // Test only (NetTestHarness, T-214): incoming world blobs wait as they do while this PC is not in gameplay (a
+        // checkpoint load); they are applied on the first Tick after it is cleared.
+        internal static bool TestDeferApply;
 
         public static ulong HashBytes(byte[] bytes)
         {
@@ -923,13 +1052,15 @@ namespace OriCoop
             Capture(false);
             List<string> keys = new List<string>(s_blobs.Keys); keys.Sort(StringComparer.Ordinal);
             MemoryStream stream = new MemoryStream(); BinaryWriter writer = new BinaryWriter(stream);
+            count = 0;
             foreach (string key in keys)
             {
                 Blob blob = s_blobs[key];
+                if (!DigestRepair.Includes(blob.Type)) continue;
                 writer.Write(blob.Scene.ToByteArray()); writer.Write(blob.Id.ToByteArray());
-                writer.Write((byte)blob.Schema); writer.Write(SharedHash(key, blob));
+                writer.Write((byte)blob.Schema); writer.Write(SharedHash(key, blob)); count++;
             }
-            writer.Flush(); ulong hash = HashBytes(stream.ToArray()); count = keys.Count;
+            writer.Flush(); ulong hash = HashBytes(stream.ToArray());
             writer.Close(); stream.Close(); return hash;
         }
 
@@ -948,43 +1079,57 @@ namespace OriCoop
             uint sequence = reader.ReadUInt32();
             int count = reader.ReadInt32(); ulong hash = reader.ReadUInt64(), progress = reader.ReadUInt64();
             if (!SaveSync.Ready || !ProgressSync.Ready || !NetPlay.LocalInGameplay() || s_awaitSnapshot || VersionRefused()) return;
-            int localCount; ulong localHash = Digest(out localCount);
-            s_receivedDigest = sequence; s_remoteManifest.Clear(); CopyManifest(s_compareManifest);
+            int sender = NetPlay.Sender;
+            if (!NetPlay.IsHost && sender != NetRoute.HostSeat) return;
+            int localCount; ulong localHash = Digest(out localCount), localProgress = ProgressSync.Hash();
+            s_digestSender = sender; s_receivedDigest = sequence;
+            s_remoteManifest.Clear(); CopyManifest(s_compareManifest);
             LastRemoteCount = count; LastLocalCount = localCount; LastRemoteHash = hash; LastLocalHash = localHash;
-            LastDigestMatch = count == localCount && hash == localHash && progress == ProgressSync.Hash();
+            s_digestProgressDiffers = progress != localProgress;
+            LastDigestMatch = count == localCount && hash == localHash && !s_digestProgressDiffers;
             LastDigestAt = Time.realtimeSinceStartup;
             Plugin.Log.LogInfo(LastDigestMatch ? "net: world digest match" : "net: world digest MISMATCH "
                 + localCount + " objects (remote=" + count + ", world=" + localHash.ToString("X16") + "/"
-                + hash.ToString("X16") + ", progress=" + ProgressSync.Hash().ToString("X16") + "/" + progress.ToString("X16") + ")");
-            if (LastDigestMatch) { s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; s_mismatchStreak = 0; }
-            else if (!NetPlay.IsHost && ++s_mismatchStreak < 2)
+                + hash.ToString("X16") + ", progress=" + localProgress.ToString("X16") + "/" + progress.ToString("X16") + ")");
+        }
+
+        static void ResetDigestRepair()
+        {
+            s_receivedDigest = 0; s_digestRepair.Clear();
+            s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin;
+        }
+
+        static void CheckDigestRepair(Dictionary<string, DigestDifference> differences)
+        {
+            if (NetPlay.IsHost || s_digestSender != NetRoute.HostSeat || s_awaitSnapshot) return;
+            DigestRepair.Decision decision = s_digestRepair.Observe(differences, s_digestProgressDiffers);
+            if (LastDigestMatch) { s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; }
+            if (decision == DigestRepair.Decision.Wait)
             {
                 DigestMismatchesIgnored++;
                 Plugin.Log.LogInfo("net: digest mismatch once; resync only if the next round still differs");
             }
-            else if (!NetPlay.IsHost)
+            if (decision != DigestRepair.Decision.Request) return;
+            float now = Time.realtimeSinceStartup;
+            if (now >= s_digestResyncAt && TryRequestResync("digest mismatch"))
             {
-                float now = Time.realtimeSinceStartup;
-                if (now >= s_digestResyncAt)
-                {
-                    DigestResyncs++; s_mismatchStreak = 0; RequestResync("digest mismatch");
-                    s_digestResyncAt = now + s_digestBackoff; s_digestBackoff = Mathf.Min(DigestBackoffMax, s_digestBackoff * 2f);
-                }
-                else
-                {
-                    DigestResyncsDeferred++;
-                    Plugin.Log.LogInfo("net: digest mismatch resync deferred " + (s_digestResyncAt - now).ToString("F0") + " s (backoff)");
-                }
+                s_digestRepair.SnapshotRequested(differences); DigestResyncs++;
+                s_digestResyncAt = now + s_digestBackoff; s_digestBackoff = Mathf.Min(DigestBackoffMax, s_digestBackoff * 2f);
+            }
+            else
+            {
+                DigestResyncsDeferred++;
+                Plugin.Log.LogInfo("net: digest mismatch resync deferred (backoff)");
             }
         }
 
-        static void CopyManifest(Dictionary<string, ManifestEntry> target)
+        static void CopyManifest(Dictionary<string, DigestObject> target)
         {
             target.Clear();
             foreach (KeyValuePair<string, Blob> pair in s_blobs)
             {
                 Blob blob = pair.Value;
-                target.Add(pair.Key, new ManifestEntry { Scene = blob.Scene, Id = blob.Id, Hash = SharedHash(pair.Key, blob), Type = blob.Type });
+                if (DigestRepair.Includes(blob.Type)) target.Add(pair.Key, new DigestObject(blob.Type, SharedHash(pair.Key, blob)));
             }
         }
 
@@ -995,6 +1140,7 @@ namespace OriCoop
             foreach (string key in keys)
             {
                 Blob blob = s_blobs[key];
+                if (!DigestRepair.Includes(blob.Type)) continue;
                 if (batch.Length + 48 + Encoding.UTF8.GetByteCount(blob.Type) > MaxMessage - 8)
                 { FlushManifest(sequence, false, batch, writer, count); count = 0; }
                 writer.Write(blob.Scene.ToByteArray()); writer.Write(blob.Id.ToByteArray());
@@ -1015,30 +1161,29 @@ namespace OriCoop
         static void ReceiveManifest(BinaryReader reader)
         {
             uint sequence = reader.ReadUInt32(); bool final = reader.ReadBoolean(); int count = reader.ReadUInt16();
-            bool compare = sequence == s_receivedDigest && s_receivedDigest != 0;
+            if (sequence == 0 || sequence != s_receivedDigest || NetPlay.Sender != s_digestSender) return;
             for (int i = 0; i < count; i++)
             {
-                ManifestEntry entry = new ManifestEntry { Scene = new MoonGuid(reader), Id = new MoonGuid(reader), Hash = reader.ReadUInt64(), Type = reader.ReadString() };
-                if (entry.Type.Length > 256) throw new InvalidDataException("invalid digest type label");
-                if (compare) s_remoteManifest[Key(entry.Scene, entry.Id)] = entry;
+                MoonGuid scene = new MoonGuid(reader), id = new MoonGuid(reader);
+                ulong hash = reader.ReadUInt64(); string type = reader.ReadString();
+                if (type.Length > 256) throw new InvalidDataException("invalid digest type label");
+                if (DigestRepair.Includes(type)) s_remoteManifest[Key(scene, id)] = new DigestObject(type, hash);
             }
-            if (!compare || !final) return;
-            List<string> union = new List<string>(s_compareManifest.Keys);
-            foreach (string key in s_remoteManifest.Keys) if (!s_compareManifest.ContainsKey(key)) union.Add(key);
-            union.Sort(StringComparer.Ordinal); int differences = 0;
-            foreach (string key in union)
+            if (!final) return;
+            s_receivedDigest = 0;
+            var differences = DigestRepair.Differences(s_compareManifest, s_remoteManifest);
+            List<string> keys = new List<string>(differences.Keys); keys.Sort(StringComparer.Ordinal);
+            for (int i = 0; i < Math.Min(5, keys.Count); i++)
             {
-                ManifestEntry local, remote;
-                bool haveLocal = s_compareManifest.TryGetValue(key, out local), haveRemote = s_remoteManifest.TryGetValue(key, out remote);
-                if (haveLocal && haveRemote && local.Hash == remote.Hash) continue;
-                differences++;
-                if (differences <= 5) Plugin.Log.LogInfo("net: world digest diff scene/object=" + key
-                    + " type=" + (haveLocal ? local.Type : remote.Type)
-                    + " local=" + (haveLocal ? local.Hash.ToString("X16") : "missing")
-                    + " remote=" + (haveRemote ? remote.Hash.ToString("X16") : "missing"));
+                string key = keys[i]; DigestDifference diff = differences[key];
+                Plugin.Log.LogInfo("net: world digest diff scene/object=" + key + " type=" + (diff.Local.Type ?? diff.Remote.Type)
+                    + " local=" + (diff.Local.Type != null ? diff.Local.Hash.ToString("X16") : "missing")
+                    + " remote=" + (diff.Remote.Type != null ? diff.Remote.Hash.ToString("X16") : "missing"));
             }
-            if (differences != 0) Plugin.Log.LogInfo("net: world digest manifest " + differences + " differing GUIDs (first 5 shown)");
-            else if (!LastDigestMatch) Plugin.Log.LogInfo("net: world digest manifest world GUIDs match; progress differs");
+            LastDigestMatch = differences.Count == 0 && !s_digestProgressDiffers;
+            if (differences.Count != 0) Plugin.Log.LogInfo("net: world digest manifest " + differences.Count + " differing GUIDs (first 5 shown)");
+            else if (s_digestProgressDiffers) Plugin.Log.LogInfo("net: world digest manifest world GUIDs match; progress differs");
+            CheckDigestRepair(differences);
         }
 
         [HarmonyPatch(typeof(RestoreCheckpointController), "RestoreCheckpoint")]
@@ -1048,6 +1193,7 @@ namespace OriCoop
             {
                 if (!NetPlay.Connected || !SaveSync.Ready) return;
                 s_known.Clear();
+                ResetDigestRepair();
                 if (!NetPlay.IsHost) s_restorePending = true;
                 else
                 {

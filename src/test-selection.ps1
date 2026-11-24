@@ -21,9 +21,11 @@ $TS_Suites = [ordered]@{
     'titlejoin-steam-retry' = @('run-titlejoin.ps1', '-Transport', 'steam', '-SteamFault', 'drop-create')   # T-216: the host's first lobby result is lost
     'titlejoin-cs' = @('run-titlejoin.ps1', '-Transport', 'cserver')   # T-171/T-173: the C-server room pages (房间管理页) run only here
     'titlejoin-prologue' = @('run-titlejoin.ps1', '-Prologue', 'skip')         # T-203: new game, the prologue on both PCs, the host's skip
-    'titlejoin-prologue-leave' = @('run-titlejoin.ps1', '-Prologue', 'leave')  # T-203: the guest leaves mid-prologue, joins again late
+    'titlejoin-prologue-late' = @('run-titlejoin.ps1', '-Prologue', 'late')    # T-205: the guest joins mid-prologue (cinematic), leaves, joins again in the playable part: the host's moment each time
     'titlejoin-prologue-cs' = @('run-titlejoin.ps1', '-Transport', 'cserver', '-Prologue', 'skip')   # T-203: the same over the C-server room page (playtest 4's path)
     'titlejoin-prologue-hostquit' = @('run-titlejoin.ps1', '-Prologue', 'hostquit')   # T-203: the host quits mid-prologue
+    'titlejoin-prologue-hostquit-slot' = @('run-titlejoin.ps1', '-Prologue', 'hostquit', '-GuestSlot')   # T-209 (2): the same for a guest that joined through an empty save slot
+    'titlejoin-prologue-deep' = @('run-titlejoin.ps1', '-Prologue', 'deep')   # T-205: the whole prologue to its own end; the guest joins in the last scene (about 7 min)
     'rooms'       = @('run-rooms.ps1')
 }
 $TS_AllSuites = @($TS_Suites.Keys)
@@ -69,18 +71,21 @@ $TS_FileSuites = [ordered]@{
     'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-cs')
     # T-203: the shared new-game prologue. Its own code and test run the two prologue suites, the existing-save join
     # (titlejoin: nothing of it may start there) and, for the input hook and the intro hold it stands next to, net + local.
-    'SharedPrologue'   = @('titlejoin-prologue', 'titlejoin-prologue-leave', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit', 'titlejoin', 'net', 'local')
-    'PrologueCore'     = @('titlejoin-prologue', 'titlejoin-prologue-leave', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit')
-    'TitlePrologueTest' = @('titlejoin-prologue', 'titlejoin-prologue-leave', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit')
-    'GameIntroHost'    = $TS_ModuleSuites['M5'] + @('titlejoin-prologue')                               # its module + the intro input hold stands back for the prologue
-    'SessionScreens'   = $TS_ModuleSuites['M6'] + @('titlejoin-prologue', 'titlejoin-prologue-leave')   # its module + the transfer screen during / after the prologue
-    'TitleReturn'      = $TS_ModuleSuites['M2'] + @('titlejoin-prologue', 'titlejoin-prologue-leave')   # its module + a guest's own return to the title / leaving mid-prologue
+    'SharedPrologue'   = @('titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-deep', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit', 'titlejoin-prologue-hostquit-slot', 'titlejoin', 'net', 'local')
+    'PrologueCore'     = @('titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-deep', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit')
+    'TitlePrologueTest' = @('titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-deep', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit', 'titlejoin-prologue-hostquit-slot')
+    'TitlePrologueProbe' = @('titlejoin-prologue-deep')                                                 # T-205: the investigation tool; its driver walks the host through the whole prologue in the deep suite
+    'GameIntroHost'    = $TS_ModuleSuites['M5'] + @('titlejoin-prologue', 'titlejoin-prologue-deep')    # its module + the intro hold stands back for the prologue (input; T-205: the last scene's Ori is not held or hidden)
+    'StorySync'        = $TS_ModuleSuites['M5'] + @('titlejoin-prologue-deep')                          # its module + T-205: IntroHeld leaves the prologue's own character alone
+    'SessionScreens'   = $TS_ModuleSuites['M6'] + @('titlejoin-prologue', 'titlejoin-prologue-late')    # its module + the transfer screen during / after the prologue, the "catching up" cover (T-205)
+    'TitleReturn'      = $TS_ModuleSuites['M2'] + @('titlejoin-prologue', 'titlejoin-prologue-late')    # its module + a guest's own return to the title / leaving mid-prologue
+    'KeyboardOnlyP1'   = $TS_ModuleSuites['M2'] + @('titlejoin-prologue')                               # its module + T-209 (1): only P1's device reaches the game during the prologue
     # T-165: the co-op save lineage (phase L) runs after every net suite: the late guest's commit and the promoted host's
     # save only with 3-4 players, and SaveSync's reload in the 4P wipe. These save files (M7) select every multi-seat suite,
     # and the direct 'net' suite: SaveSync / GuestJoin are shared core (every phase, src\phase-map.psd1), but M7's only
     # 2-player suite is net-newgame, which runs just INTRO,MOVE,W before a merge (T-096), so R, S4, P, WO, CAM, CUT never ran.
     'CoopSaveTest'     = @('coopsave') + $TS_MultiSeat; 'SaveSync' = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
-    'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('net', 'coopsave', 'titlejoin', 'titlejoin-prologue', 'titlejoin-prologue-leave', 'net-newgame', 'rooms') + $TS_MultiSeat
+    'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('net', 'coopsave', 'titlejoin', 'titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-hostquit', 'titlejoin-prologue-hostquit-slot', 'net-newgame', 'rooms') + $TS_MultiSeat
     'LoadRestart'      = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
     # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
     'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')

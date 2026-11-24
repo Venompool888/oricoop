@@ -21,6 +21,21 @@ namespace OriCoop.Rules
             get { int first = 0; foreach (int seat in seats) if (first == 0 || seat < first) first = seat; return first; }
         }
         public static bool LocalPaused(bool online, bool paused) { return online && paused; }
+        public static bool MapRunsLive(bool onlineNoPause, bool mapOpen, bool teleporterPicker)
+        { return onlineNoPause && mapOpen && !teleporterPicker; }
+        public static int RestoreMapSuspends(bool liveMap, ref int skipped, ref int vanilla)
+        {
+            if (!liveMap) return 0;
+            int restored = skipped;
+            vanilla += restored; skipped = 0;
+            return restored;
+        }
+        public static bool ConsumeMenuResume(ref int skipped, ref int vanilla)
+        {
+            if (skipped > 0) { skipped--; return false; }
+            if (vanilla == 0) return false;
+            vanilla--; return true;
+        }
         public static bool WantRemotePause(bool online, bool partner, bool ready, bool hasPlayer, bool respawning, bool gameplay)
         {
             return online && partner && ready && hasPlayer && !respawning && gameplay;

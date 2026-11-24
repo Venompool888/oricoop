@@ -11,6 +11,7 @@ namespace OriCoop.World
         readonly List<T> m_items = new List<T>();
         public int Count { get { return m_items.Count; } }
         public void Add(T item) { m_items.Add(item); }
+        public bool Any(Predicate<T> match) { return m_items.Exists(match); }
         public void Clear() { m_items.Clear(); }
 
         // Removes and returns the ready items in arrival order; items that are gone are dropped (counted in `dropped`).
