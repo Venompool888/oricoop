@@ -29,6 +29,7 @@ namespace OriCoop
                 puppet.Companion = go.GetComponent<Ori>();
                 Characters.Ori = puppet.Companion;
                 P2Context.AddOwned(go);
+                ForgetReturn(puppet);
                 ReturnCompanion(puppet, "spawned");
             }
             finally
@@ -49,14 +50,66 @@ namespace OriCoop
             if (puppet == null || puppet.Sein == null) return;
             Ori c = puppet.Companion;
             if (c == null) return;
+            if (!CanReturn(c))
+            {
+                if (!s_returnRetry.ContainsKey(puppet)) s_returnRetry.Add(puppet, new ReturnRetry { Why = why });
+                return;
+            }
             GameplayCamera cam = UI.Cameras.Current;
             Transform camTarget = cam != null ? cam.Target : null;
+            bool returned = false;
             P2Context.Enter(puppet);
-            try { c.BackToPlayerController(); }
+            try
+            {
+                if (TestFailReturns > 0) { TestFailReturns--; throw new System.NullReferenceException("test: BackToPlayerController failed"); }
+                c.BackToPlayerController();
+                returned = true;
+            }
             catch (System.Exception e) { Plugin.Log.LogWarning("companion return (" + why + "): " + e.Message); }
             finally { P2Context.Exit(); }
             // Ori.ChangeState(Hovering) also points the camera at "the current character" (P2 here); undo that.
             if (cam != null && camTarget != null) cam.Target = camTarget;
+            NoteReturn(puppet, returned, why);
+        }
+
+        // Ori.Awake caches m_transform on a clone's first activation.
+        static bool CanReturn(Ori c) { return s_mutateReturnInactive || c.gameObject.activeInHierarchy; }
+
+        sealed class ReturnRetry { public float At; public int Tries; public string Why; }
+        static readonly Dictionary<Puppet, ReturnRetry> s_returnRetry = new Dictionary<Puppet, ReturnRetry>();
+        static readonly bool s_mutateNoReturnRetry = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_COMPANION_RETRY") == "1";
+        static readonly bool s_mutateReturnInactive = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_COMPANION_RETURN_INACTIVE") == "1";
+        public static int CompanionReturnFailures, CompanionReturnRetries;
+        internal static int TestFailReturns;   // test only: the next N returns throw
+
+        static void NoteReturn(Puppet puppet, bool returned, string why)
+        {
+            if (returned) { s_returnRetry.Remove(puppet); return; }
+            CompanionReturnFailures++;
+            foreach (Puppet old in new List<Puppet>(s_returnRetry.Keys)) if (old.Sein == null) s_returnRetry.Remove(old);   // puppets that are gone
+            ReturnRetry retry;
+            if (!s_returnRetry.TryGetValue(puppet, out retry)) { retry = new ReturnRetry(); retry.Why = why; s_returnRetry[puppet] = retry; }
+            retry.Tries++; retry.At = Time.unscaledTime + 0.25f;
+            if (retry.Tries > 8)
+            {
+                s_returnRetry.Remove(puppet);
+                Plugin.Log.LogWarning("companion return (" + retry.Why + "): gave up after 8 tries");
+            }
+        }
+
+        public static void ForgetReturn(Puppet puppet) { if (puppet != null) s_returnRetry.Remove(puppet); }
+        public static int ReturnRetriesKept { get { return s_returnRetry.Count; } }
+
+        public static void RetryReturn(Puppet puppet)
+        {
+            ReturnRetry retry;
+            if (puppet == null || !s_returnRetry.TryGetValue(puppet, out retry)) return;
+            if (puppet.Sein == null || puppet.Companion == null) { s_returnRetry.Remove(puppet); return; }
+            if (!CanReturn(puppet.Companion) || Time.unscaledTime < retry.At) return;
+            if (retry.Tries == 0) { ReturnCompanion(puppet, retry.Why); return; }
+            if (s_mutateNoReturnRetry) return;
+            CompanionReturnRetries++;
+            ReturnCompanion(puppet, retry.Why + ", try " + (retry.Tries + 1));
         }
 
         public static void SetCompanionActive(bool on)

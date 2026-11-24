@@ -164,8 +164,23 @@ namespace OriCoop
             }
         }
 
+        // Test-only mutation: a guest whose host left during its prologue stays online (T-209 (2), the state before the fix).
+        static readonly bool s_mutateStayOnline = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PROLOGUE_GUEST_STAYS_ONLINE") == "1";
+
         // T-203: the host left while its new-game prologue played: no save exists and none will come.
-        internal static void HostLeft() { if (s_waiting) Abort("guest.host_left", "the host left during its prologue"); }
+        // T-209 (2): with that this guest's online play ends, whichever way it joined. The title's join page already
+        // ended it on any failed join (TitleMenu.TitleTick); a guest that had joined through an empty save slot was
+        // put back on the slot list still online, with nobody there.
+        internal static void HostLeft()
+        {
+            if (!s_waiting) return;
+            s_sessionEnds = !s_mutateStayOnline;
+            try { Abort("guest.host_left", "the host left during its prologue"); }
+            finally { s_sessionEnds = false; }
+            if (Services.Net.Enabled && !s_mutateStayOnline) SavesHost.Current.End("the host left during its prologue");
+        }
+
+        static bool s_sessionEnds;   // the failure being reported also ends online play: not "still connected"
 
         static void Abort(string key, string why) { Fail(s_ui, key, why); }
 
@@ -176,7 +191,7 @@ namespace OriCoop
             CoopSaves.GuestJoiningEmpty = false; CoopSaves.GuestPickedSlot = -1;
             Aborts++; LastAbort = why;
             Services.Log.Warn("guest join: not loading the host's save (" + why + ")" + (noSlot ? "" : "; back to the save slots"));
-            if (Services.Net.Enabled && Services.Net.Connected) SavesHost.Current.Toast(
+            if (Services.Net.Enabled && Services.Net.Connected && !s_sessionEnds) SavesHost.Current.Toast(
                 SavesHost.Current.Format("guest.still_connected", SavesHost.Current.Translate(key)), "");
             else SavesHost.Current.Toast(
                 SavesHost.Current.Translate(key), "");

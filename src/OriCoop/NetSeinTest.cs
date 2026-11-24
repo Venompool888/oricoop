@@ -127,6 +127,46 @@ namespace OriCoop
             yield return NetCutsceneTest.Settle();
         }
 
+        // T-207 (3), step 0: a fire the game's trigger refuses. The guest presses the key and waits; the host switches
+        // its trigger off and stands in the area: the gate fires, the host's trigger refuses. Right after the fire
+        // "another story begins" (the story clock is bumped), which made the old 3 s guess take the fire for a success
+        // and left the area dead for 15 s. Expected: the host tells everyone and the area is free on both PCs at once.
+        // ORICOOP_MUTATE_GATE_NO_RELEASE must fail here. Ends with the pickup armed again and the host outside.
+        static IEnumerator RefusedFire(TestHarness h)
+        {
+            string key = StorySync.ComponentKey(s_trigger); int fires = ForcedSync.Fires, releases = ForcedSync.Releases;
+            float until = Now + 1.2f, release = Now + 0.3f;
+            while (Now < until)
+            {
+                if (!NetPlay.IsHost) NetTestHarness.BotButtons = Now < release ? PickupButton() : 0;
+                yield return null;
+            }
+            NetTestHarness.BotButtons = 0;
+            yield return NetCutsceneTest.Barrier(h, 716);
+            if (NetPlay.IsHost) { s_trigger.Active = false; Place(0.6f); }
+            float firedAt = -1f; bool bumped = false; until = Now + 5f;
+            while (Now < until)
+            {
+                if (ForcedSync.Fires > fires && firedAt < 0f) firedAt = Now;
+                if (firedAt >= 0f && !bumped && Now - firedAt > 0.2f) { StorySync.LastStoryActivity = Now; bumped = true; }
+                if (firedAt >= 0f && Now - firedAt > 2.5f) break;
+                yield return null;
+            }
+            h.Note("SEIN refused fire (" + Who + "): fires=" + (ForcedSync.Fires - fires) + " releases=" + (ForcedSync.Releases - releases)
+                + " stillFired=" + ForcedSync.TestRecentlyFired(key) + " " + Diag());
+            Check(h, ForcedSync.Fires == fires + 1 && bumped, "0 the gate fired while the host's trigger was switched off (setup)");
+            Check(h, !s_sequence.IsRunning && StorySync.RealStories == 0, "0 the refused fire started no story");
+            Check(h, ForcedSync.Releases > releases && !ForcedSync.TestRecentlyFired(key),
+                "0 a fire the trigger refused frees the area on this PC within 2.5 s, also when another story began right after it");
+            if (NetPlay.IsHost) Place(s_rect.width * 0.5f + 8f);
+            Arm();
+            yield return NetCutsceneTest.Barrier(h, 717);
+            yield return NetCutsceneTest.Wait(2f);
+            Check(h, s_trigger.Active && !s_sequence.IsRunning, "0 the pickup is armed again after the refused fire");
+            Arm();
+            yield return NetCutsceneTest.Barrier(h, 718);
+        }
+
         static IEnumerator Play(TestHarness h)
         {
             SeinCharacter own = NetCutsceneTest.Own;
@@ -144,6 +184,7 @@ namespace OriCoop
             Check(h, s_trigger.Active && s_trigger.gameObject.activeInHierarchy && !s_sequence.IsRunning, "setup: the pickup is armed on this PC (trigger active, script not running)");
             Arm();
             yield return NetCutsceneTest.Barrier(h, 714);
+            yield return RefusedFire(h);
             int fires = ForcedSync.Fires, guard = CutsceneGuard.Repairs - CutsceneGuard.SpiritRepairs;
 
             // 1. The guest presses the pickup key alone.
@@ -173,6 +214,7 @@ namespace OriCoop
 
             // 3. The script runs. The guest dismisses the story text 2 s after it opens, the host 5 s after.
             int starts = 1; bool wasRunning = true, orphan = false; float began = Now, textAt = -1f, orphanAt = -1f;
+            bool savedKnown = false, savedRunning = false; int savedIndex = -1;
             int maxIndex = 0, lastIndex = -1; string steps = "";   // the waits the script stopped at: index@seconds
             float scriptEndedAt = -1f, freeAt = -1f;
             until = Now + 60f;
@@ -189,7 +231,12 @@ namespace OriCoop
                 if (running && s_sequence.Index > maxIndex) maxIndex = s_sequence.Index;
                 // The script runs here although no story is announced / mirrored any more.
                 if (running && Now - began > 1f && StorySync.RealStories == 0 && !orphan) { orphan = true; orphanAt = Now - began; }
-                if (NetCutsceneTest.OpenBoxes() > 0 && textAt < 0f) textAt = Now;
+                if (NetCutsceneTest.OpenBoxes() > 0 && textAt < 0f)
+                {
+                    textAt = Now;
+                    // T-207 (1): by now the host's script has sent its progress several times (steps 16..27, running).
+                    savedKnown = WorldSync.TestCheckpointProgress(s_sequence.GetComponent<ActionSequenceSerializer>(), out savedIndex, out savedRunning);
+                }
                 bool answer = textAt >= 0f && Now - textAt >= (NetPlay.IsHost ? 5f : 2f) && NetCutsceneTest.OpenBoxes() > 0;
                 NetTestHarness.BotButtons = answer && ((int)(Now * 4f)) % 2 == 0 ? P2Input.BTN_A : 0;
                 yield return null;
@@ -206,6 +253,11 @@ namespace OriCoop
             Check(h, starts == 1, "3 the pickup script started exactly once here (got " + starts + ")");
             Check(h, !orphan, "3 a story was announced on this PC for as long as the script ran here" + (orphan ? " (none from " + orphanAt.ToString("0.0") + " s)" : ""));
             Check(h, CutsceneGuard.Repairs - CutsceneGuard.SpiritRepairs == guard, "3 no guard repair was needed during the story (input lock, letterbox, camera)");
+            // T-207 (1): sampled when the story text opened. The host's progress (running, steps 16..27) must not be in
+            // the guest's checkpoint: after a death the reload would start the guest's copy at the host's step.
+            h.Note("SEIN checkpoint (" + Who + "): entry=" + savedKnown + " index=" + savedIndex + " running=" + savedRunning + " notStored=" + WorldSync.StoryProgressNotStored);
+            if (!NetPlay.IsHost) Check(h, textAt >= 0f && !savedRunning,
+                "3 the host's running script was not written into this PC's checkpoint (entry " + (savedKnown ? savedIndex + "/" + (savedRunning ? "running" : "stopped") : "none") + ")");
 
             // 4. Free within 1.5 s of this PC's own script ending, and the Ori walks.
             if (scriptEndedAt < 0f) scriptEndedAt = Now;   // ended in the frame the loop left
@@ -223,6 +275,25 @@ namespace OriCoop
             float moved = own != null ? Mathf.Abs(own.Position.x - from.x) : 0f;
             h.Note("SEIN move probe (" + Who + "): moved=" + moved.ToString("0.00") + " " + Diag());
             Check(h, own != null && moved > 0.5f, "4 own Ori walks once the story ended (bot pushed right for 1 s, moved " + moved.ToString("0.00") + ")");
+
+            // 5. T-207 (4): a partner waits at an area whose trigger is not loaded on this PC. The host announces a
+            // count for an area that exists nowhere; the guest must not walk every trigger in memory each frame for it.
+            yield return NetCutsceneTest.Barrier(h, 721);
+            if (NetPlay.IsHost) ForcedSync.TestSendCount("t207-scan", 1, 2);
+            // The two PCs leave a barrier up to a second apart: the guest waits for the area itself, and the host only
+            // withdraws it after the next barrier (a fixed delay let the host withdraw it before the guest had measured).
+            float seen = Now + 6f;
+            while (!NetPlay.IsHost && ForcedSync.TestCount("t207-scan") != 1 && Now < seen) yield return null;
+            bool known = NetPlay.IsHost || ForcedSync.TestCount("t207-scan") == 1;
+            yield return NetCutsceneTest.Wait(0.5f);
+            int scans = ForcedSync.Scans;
+            yield return NetCutsceneTest.Wait(2f);
+            int cost = ForcedSync.Scans - scans;
+            if (!NetPlay.IsHost) Check(h, known && ForcedSync.TestCount("t207-scan") == 1 && cost >= 2 && cost <= 6,
+                "5 an area whose trigger is not loaded here is looked for about twice a second, not twice a frame (" + cost + " walks in 2 s, area known " + known + ")");
+            yield return NetCutsceneTest.Barrier(h, 722);
+            if (NetPlay.IsHost) ForcedSync.TestSendCount("t207-scan", 0, 2);
+            yield return NetCutsceneTest.Wait(0.5f);
             NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = 719, Found = true });
             yield return NetCutsceneTest.Barrier(h, 719);
         }

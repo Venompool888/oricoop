@@ -4,14 +4,24 @@
 # and keeps a co-op copy in a slot. -Transport direct (default, LAN) | cserver (remote test server) |
 # steam (fake Steam on loopback; the guest accepts an automatic invite).
 # -FullSlots: the guest has 10 unrelated saves (every slot full): it is asked which slot keeps the co-op copy.
-# -Prologue skip|leave (T-203, TitlePrologueTest.cs): the host starts a NEW game on an empty slot while the guest
-#   waits; the prologue plays on both. skip (LAN or -Transport cserver): in step, only the host's input counts, the
-#   host's skip ends it for both, both load into the first scene with the host's save. leave (LAN only): the guest
-#   leaves mid-prologue, joins again late (waiting screen), the host skips, the late guest loads the host's save.
+# -Prologue skip|late|hostquit (T-203, T-205, TitlePrologueTest.cs): the host starts a NEW game on an empty slot; the
+#   prologue plays on both. skip (LAN or -Transport cserver): the guest waits when the host starts; in step, only the
+#   host's input counts, the host's skip ends it for both, both load into the first scene with the host's save.
+#   late (LAN only, T-205): the host starts alone; the guest joins about 20 s in (a cinematic part) and must show the
+#   host's moment within seconds, leaves from its pause menu, joins again in the playable part (Naru on the host's
+#   spot, the trigger the host passed done here too); then as in skip.
 #   hostquit (LAN only): the host quits to the title mid-prologue; the guest's copy ends after the 10 s link-drop
-#   grace, its join is given up with "the host left", both titles are usable.
+#   grace, its join is given up with "the host left", its online play ends, both titles are usable. With -GuestSlot
+#   (T-209) the guest joined the other way: connected first, then an EMPTY save slot (GuestJoin.Intercept).
+#   deep (LAN only, T-205): the host plays the WHOLE prologue to its own end (a driver walks its playable parts); the
+#   guest joins in the last scene, about nine minutes of story in: it must be level within a minute, with every point
+#   the host's player decided done on the way and the scene's character on screen where the host's is; then both
+#   reach the game with the host's save.
+#   probe (investigation, not a test): both play the whole prologue and dump what drives it; -FastForward n runs it
+#   at n times the speed; -ProbeJoin s: the host starts alone and the guest joins s seconds in (how long a late
+#   copy takes to catch up from there).
 param([ValidateSet('direct', 'cserver', 'steam')][string]$Transport = 'direct', [int]$TimeoutSec = 300, [switch]$Force, [switch]$FullSlots, [int]$Width = 800, [int]$Height = 450,
-    [ValidateSet('', 'skip', 'leave', 'hostquit')][string]$Prologue = '',
+    [ValidateSet('', 'skip', 'late', 'hostquit', 'deep', 'probe')][string]$Prologue = '', [int]$FastForward = 0, [switch]$GuestSlot, [int]$ProbeJoin = 0,
     [ValidateSet('', 'drop-create')][string]$SteamFault = '')   # T-216: -Transport steam only; the host's first CreateLobby result never comes
 $ErrorActionPreference = 'Stop'
 if ($Transport -eq 'steam' -and ($Prologue -or $FullSlots)) { throw '-Transport steam does not support -Prologue or -FullSlots' }
@@ -21,7 +31,9 @@ if ($SteamFault) {
 }
 if ($Prologue) {
     if ($Prologue -ne 'skip' -and $Transport -ne 'direct') { throw "-Prologue $Prologue runs on the LAN join page only: use -Transport direct" }
-    if (-not $PSBoundParameters.ContainsKey('TimeoutSec')) { $TimeoutSec = 540 }   # the prologue runs about a minute before Naru is playable
+    if (-not $PSBoundParameters.ContainsKey('TimeoutSec')) { $TimeoutSec = $(if ($Prologue -eq 'probe') { 1200 } elseif ($Prologue -eq 'deep') { 900 } else { 540 }) }   # the prologue runs about a minute before Naru is playable
+    # deep: the host's driver fast-forwards the cinematic parts (30x) until it is 45 s of story into the last scene; the guest joins there.
+    if ($Prologue -eq 'deep' -and $FastForward -le 0) { $FastForward = 30 }
 }
 . (Join-Path $PSScriptRoot 'test-launch.ps1')   # quiet launch + owner watchdog (docs\testing-rules.md)
 if ($Transport -eq 'cserver') {
@@ -73,6 +85,9 @@ function Client-Spec([string]$role, [string]$appData, [string]$resultPath) {
     }
     if ($FullSlots) { $vars['ORICOOP_TITLEJOIN_FULL'] = '1' }
     if ($Prologue) { $vars['ORICOOP_TITLEJOIN_PROLOGUE'] = $Prologue }
+    if ($FastForward -gt 0) { $vars['ORICOOP_TITLEJOIN_FF'] = "$FastForward" }
+    if ($GuestSlot) { $vars['ORICOOP_TITLEJOIN_GUESTSLOT'] = '1' }
+    if ($ProbeJoin -gt 0) { $vars['ORICOOP_TITLEJOIN_PROBE_JOIN'] = "$ProbeJoin" }
     @{ Tag = ('titlejoin-' + $role); Arguments = "-screen-fullscreen 0 -screen-width $Width -screen-height $Height"; Vars = $vars }
 }
 
@@ -99,6 +114,6 @@ foreach ($r in @($hostOut, $guestOut)) {
     if (Test-Path $r) { $lines = @(Get-Content $r); $lines; if (-not ($lines -match '\] RESULT PASS [1-9]\d*/\d+$')) { $passed = $false } }
     else { 'no result file: ' + (Get-NoResultReason); $passed = $false }
 }
-$what = $(if ($Prologue) { "${Transport}_prologue_$Prologue" } else { $Transport })   # one word: run-affected reads "TITLEJOIN <word> PASS"
+$what = $(if ($Prologue) { "${Transport}_prologue_$Prologue" + $(if ($GuestSlot) { '_slot' } else { '' }) } else { $Transport })   # one word: run-affected reads "TITLEJOIN <word> PASS"
 if ($passed) { "TITLEJOIN $what PASS" } else { "TITLEJOIN $what FAIL" }
 Exit-TestRun   # release the test copy only now, after the results were read

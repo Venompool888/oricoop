@@ -180,6 +180,9 @@ namespace OriCoop
             return true;
         }
 
+        internal static bool HasDeferredDamage(EntityDamageReciever target)
+        { return target != null && s_deferred.Any(d => d.Kind == KDamage && d.Target == target); }
+
         static void ReplayDeferred()
         {
             if (s_deferred.Count == 0) return;
