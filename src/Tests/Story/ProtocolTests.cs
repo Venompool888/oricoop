@@ -219,6 +219,31 @@ static partial class StoryTests
             Equal(false, guest.TryActivate("first"));
             Equal(false, guest.TryActivate("second"));
         });
+        Check("story revive: a legacy end has no grant; one snapshot restores multiple recipients", delegate {
+            Equal(null, StoryRecovery.Read(Reader(new byte[0])));
+            StoryRecovery data = new StoryRecovery();
+            data.Add(new StoryPoint(20f, 0f, 0f), 4f, 0f);
+            data.Add(new StoryPoint(-4f, 3f, 0f), 12f, 1f);
+            data.Add(new StoryPoint(3f, 5f, 0f), 20f, 3f);
+            byte[] tail = Wire(data.Write);
+            Equal(1 + 3 * 20, tail.Length);   // net13 count plus five floats per survivor
+            data = StoryRecovery.Read(Reader(tail));
+            float health, energy;
+            StoryPoint spot = data.For(new StoryPoint(-5f, 1f, 0f), 20, 2, out health, out energy);
+            Equal(-4f, spot.X); Equal(12f, health); Equal(1f, energy);
+            spot = data.For(new StoryPoint(0f, 5f, 0f), 8, 0, out health, out energy);
+            Equal(3f, spot.X); Equal(8f, health); Equal(0f, energy);
+        });
+        Check("story revive: round half cells up and grant one health cell even at low health", delegate {
+            StoryRecovery data = new StoryRecovery();
+            data.Add(new StoryPoint(), 6f, 0.5f);
+            float health, energy;
+            data.For(new StoryPoint(), 12, 2, out health, out energy);
+            Equal(8f, health); Equal(1f, energy);
+            data = new StoryRecovery(); data.Add(new StoryPoint(), 0.5f, 0.1f);
+            data.For(new StoryPoint(), 12, 2, out health, out energy);
+            Equal(4f, health); Equal(0f, energy);
+        });
         // T-066: a story the other PC started that this PC cannot find is retried every 0.1 s for 2 s; each failed try
         // used to load the scenes around it again (20 loads). The scene load is the expensive part: few, spread out.
         Check("story unresolved retries load the scenes a few times with backoff", delegate {

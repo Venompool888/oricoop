@@ -21,6 +21,58 @@ namespace OriCoop.Story
         }
     }
 
+    // T-246. One end-of-story sample serves every downed seat, even if they revive at different times.
+    internal sealed class StoryRecovery
+    {
+        struct Survivor { public StoryPoint Position; public float Health, Energy; }
+        readonly List<Survivor> survivors = new List<Survivor>(4);
+        public int Count { get { return survivors.Count; } }
+        public void Add(StoryPoint position, float health, float energy)
+        {
+            if (Count >= 4 || !Finite(position.X) || !Finite(position.Y) || !Finite(position.Z)
+                || !Finite(health) || health <= 0 || !Finite(energy) || energy < 0)
+                throw new InvalidDataException("invalid survivor in StoryEnd");
+            survivors.Add(new Survivor { Position = position, Health = health, Energy = energy });
+        }
+        static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+
+        public StoryPoint For(StoryPoint marker, float maxHealth, float maxEnergy, out float health, out float energy)
+        {
+            double totalHealth = 0, totalEnergy = 0, nearest = double.PositiveInfinity;
+            StoryPoint spot = marker;
+            foreach (Survivor s in survivors)
+            {
+                totalHealth += s.Health; totalEnergy += s.Energy;
+                double dx = s.Position.X - marker.X, dy = s.Position.Y - marker.Y;
+                double distance = dx * dx + dy * dy;
+                if (distance < nearest) { nearest = distance; spot = s.Position; }
+            }
+            health = Math.Min(maxHealth, Math.Max(4f, 4f * (float)Math.Floor(totalHealth / Count / 4 + 0.5)));
+            energy = Math.Min(maxEnergy, (float)Math.Floor(totalEnergy / Count + 0.5));
+            return spot;
+        }
+        public void Write(BinaryWriter w)
+        {
+            w.Write((byte)Count);
+            foreach (Survivor s in survivors)
+            {
+                w.Write(s.Position.X); w.Write(s.Position.Y); w.Write(s.Position.Z);
+                w.Write(s.Health); w.Write(s.Energy);
+            }
+        }
+        // A legacy end, a cancelled story, or a story with no rescue has only its original token.
+        public static StoryRecovery Read(BinaryReader r)
+        {
+            if (r.BaseStream.Position == r.BaseStream.Length) return null;
+            int count = r.ReadByte();
+            if (count < 1 || count > 4) throw new InvalidDataException("invalid survivor count in StoryEnd");
+            StoryRecovery result = new StoryRecovery();
+            for (int i = 0; i < count; i++)
+                result.Add(new StoryPoint(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()), r.ReadSingle(), r.ReadSingle());
+            return result;
+        }
+    }
+
     internal struct StoryPoint
     {
         public float X, Y, Z;

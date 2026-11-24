@@ -129,6 +129,15 @@ namespace OriCoop
             Check(h, reach.IsRunning, "chain: the gate started 01 on this PC");
             if (!reach.IsRunning) yield break;
             h.Note("KURO chain: 01 running (" + (NetPlay.IsHost ? "host, original" : "guest, mirror") + ")");
+            if (!NetPlay.IsHost && !Chain)
+            {
+                // The host's world delta can have marked the one-shot used before the slower mirror gets
+                // to 01's last action. The source still plays 02 and the guest must see it exactly once.
+                RunActionOnce tail = reach.Actions[reach.Actions.Count - 1] as RunActionOnce;
+                Check(h, tail != null && tail.Action == kuro, "01 ends with the one-shot that starts 02");
+                if (tail != null && tail.Action == kuro)
+                    AccessTools.Field(typeof(RunActionOnce), "m_hasRun").SetValue(tail, true);
+            }
             if (NetPlay.IsHost && Chain)
             {
                 // T-185: at least HostDelay, and until the guest reports that its mirror of 01 has ended (step 513).
@@ -220,7 +229,7 @@ namespace OriCoop
             if (!Chain) NetPlay.SetSim(KuroLagMs, KuroJitterMs, 0f, 0f);
             s_watchKuro = true;
             yield return NativeChain(h, delegate { hostKuro = true; });
-            if (!Chain && NetPlay.IsHost) Check(h, hostKuro, "the host's own 01 started 02 (the game's chain, no direct Perform)");
+            if (!Chain) Check(h, hostKuro, "02 started on this PC after 01 (T-247)");
             if (Chain)
             {
                 // WorldSync captures every 0.25 s: the guest's held change shows up just after its 01 ended.
@@ -266,8 +275,6 @@ namespace OriCoop
                 // T-177: the bot keeps answering like a player while the stories run (04 waits for the world-map
                 // objective to be pressed through before it stops the character animation and unlocks input).
                 float over = Now + 60f;
-                // T-183: real stories only (StorySync.RealStories); the tree's plants keep putting shootProjectile
-                // candidates into Pending, which StoryActive also counts.
                 while (StorySync.RealStories > 0 && Now < over) { Answer(); yield return null; }
                 NetTestHarness.BotButtons = 0;
                 // T-177: when StorySync says every story is over, the spirit-tree sequences really are over here. The
@@ -327,7 +334,7 @@ namespace OriCoop
             // T-182: the story ran the Kuro attack once. The host is the original: its 02 starts only from its own 01.
             s_watchKuro = false;
             h.Note("KURO 02 starts here=" + s_kuroStarts + " (" + (NetPlay.IsHost ? "host" : "guest") + ")");
-            if (NetPlay.IsHost) Check(h, s_kuroStarts == 1, "the Kuro attack (02) ran exactly once on the host (got " + s_kuroStarts + ")");
+            Check(h, s_kuroStarts == 1, "the Kuro attack (02) ran exactly once on this PC (got " + s_kuroStarts + ")");
             h.Note("KURO end: " + Diag());
             NetCutsceneTest.Publish(new NetCutsceneTest.Sample { Step = 512, Found = backAt >= 0f });
             yield return NetCutsceneTest.Barrier(h, 512);

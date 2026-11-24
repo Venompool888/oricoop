@@ -6,6 +6,7 @@ using UnityEngine;
 
 using OriCoop.Seams;
 using OriCoop.Rules;
+using OriCoop.Story;
 
 namespace OriCoop
 {
@@ -274,6 +275,67 @@ namespace OriCoop
                 s.Mortality.DamageReciever.MakeInvincible(1.5f);
                 if (Host.IsPuppet(s)) Host.ReturnCompanion(s, "revived");
                 if (saver == null) Services.Log.Info("P" + d.Player + " revived at its skull: the rescuer's Ori is not here any more");
+            }
+        }
+
+        internal static Downed[] LocalStoryDowns()
+        {
+            Downed[] eligible = null;
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
+            {
+                Downed d = s_down[seat];
+                if (d == null || d.Remote || !Players.IsLocal(seat)) continue;
+                if (eligible == null) eligible = new Downed[ReviveLogic.MaxSeats + 1];
+                eligible[seat] = d;
+            }
+            return eligible;
+        }
+
+        internal static StoryRecovery StorySurvivors()
+        {
+            if (!Online || !AnyDowned) return null;
+            StoryRecovery recovery = new StoryRecovery();
+            for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
+            {
+                if (s_down[seat] != null) continue;
+                SeinCharacter ori = SeinAt(seat);
+                Ui.VitalsSample vitals;
+                Vector3 at;
+                if (Players.IsLocal(seat))
+                {
+                    if (ori == null) continue;
+                    vitals = BottomHud.Sample(ori); at = ori.Position;
+                }
+                else
+                {
+                    if (!Host.SeatInSession(seat)) continue;
+                    if (!BottomHud.RemoteVitals(seat, out vitals) || !Host.RemotePos(seat, out at)) continue;
+                }
+                if (!vitals.Downed && vitals.Health > 0)
+                    recovery.Add(new StoryPoint(at.x, at.y, at.z), vitals.Health, vitals.Energy);
+            }
+            return recovery.Count == 0 ? null : recovery;
+        }
+
+        internal static void FinishStory(Downed[] eligible, StoryRecovery recovery)
+        {
+            if (!Online || eligible == null || recovery == null) return;
+            for (int seat = 1; seat < eligible.Length; seat++)
+            {
+                Downed d = eligible[seat];
+                if (d == null || s_down[seat] != d || d.Sein == null) continue;
+                float health, energy;
+                StoryPoint spot = recovery.For(new StoryPoint(d.Marker.x, d.Marker.y, d.Marker.z),
+                    d.Sein.Mortality.Health.MaxHealth, d.Sein.Energy.Max, out health, out energy);
+                s_down[seat] = null;
+                RestoreDowned(d, false);
+                Host.Teleport(d.Sein, new Vector3(spot.X + 1f, spot.Y, spot.Z));
+                d.Sein.Mortality.Health.SetAmount(health);
+                d.Sein.Energy.Current = energy;
+                d.Sein.Mortality.DamageReciever.MakeInvincible(1.5f);
+                if (Host.IsPuppet(d.Sein)) Host.ReturnCompanion(d.Sein, "story revive");
+                PartnerFx.PlayRevive(d.Sein, d.Sein.Position);
+                SendRevived(seat, d.Sein.Position);
             }
         }
 

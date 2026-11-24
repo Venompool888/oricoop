@@ -403,6 +403,7 @@ namespace OriCoop
                 yield return FourRevive(h);
                 yield return FourPause(h);
                 yield return FourStory(h);
+                yield return NetStoryTest.StoryRevive(h, 4, n => ThreeRound(h, 480 + n, 4));
                 yield return FourEnemy(h);
                 yield return FourPlace(h, arena);
                 yield return FourLoadingSync(h);
