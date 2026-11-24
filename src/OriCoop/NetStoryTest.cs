@@ -845,6 +845,56 @@ namespace OriCoop
             }
             finally { UnityEngine.Object.Destroy(go); UnityEngine.Object.Destroy(ordinaryObject); s_fixture = null; }
         }
+        internal static IEnumerator StoryRevive(TestHarness h, int seats, Func<int, IEnumerator> barrier)
+        {
+            bool revive = Revive.Enabled, immortal = Own.Mortality.DamageReciever.IsImmortal;
+            float previousHealth = Own.Mortality.Health.Amount, previousEnergy = Own.Energy.Current;
+            int seat = Players.LocalSeat;
+            GameObject go = new GameObject("T-246 cutscene");
+            ActionSequence sequence = go.AddComponent<ActionSequence>();
+            sequence.MoonGuid = new MoonGuid(FixtureId); sequence.MoonGuid.D += 246;
+            LockPlayerInputAction storyLock = go.AddComponent<LockPlayerInputAction>();
+            storyLock.DurationPlayerCantMove = 1.2f; sequence.Actions.Add(storyLock);
+            try
+            {
+                Revive.Enabled = true;
+                Own.Mortality.DamageReciever.IsImmortal = true;
+                if (seat != 2)
+                {
+                    Own.Mortality.Health.SetAmount(seat == 1 ? 4f : seat == 3 ? 8f : 12f);
+                    Own.Energy.Current = seats == 2 || seat != 1 ? 1f : 0f;
+                }
+                yield return barrier(0);
+                if (seat == 2) { Own.Energy.Current = 0f; Kill(); }
+                float end = Now + 6f;
+                while (Revive.DownedAtSeat(2) == null && Now < end) yield return null;
+                h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 down before the performance");
+                yield return Wait(0.8f);   // each device's normal Vitals sender publishes the setup
+                yield return barrier(1);
+                if (seat == 1) sequence.Perform(null);
+                yield return Wait(0.2f);
+                h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 stays down during the performance");
+                end = Now + 8f;
+                while (Revive.DownedAtSeat(2) != null && Now < end) yield return null;
+                h.Check(Revive.DownedAtSeat(2) == null, "story revive: P2 up after the performance on every seat");
+                if (seat == 2)
+                {
+                    float expectedHealth = seats == 2 ? 4f : 8f;
+                    h.Check(Own.Mortality.Health.Amount == expectedHealth && Own.Energy.Current == 1f,
+                        "story revive: P2 receives the living players' average health and energy (got "
+                        + F(Own.Mortality.Health.Amount) + "/" + F(Own.Energy.Current) + ")");
+                }
+                yield return barrier(2);
+            }
+            finally
+            {
+                Revive.Enabled = revive;
+                Own.Mortality.DamageReciever.IsImmortal = immortal;
+                Own.Mortality.Health.SetAmount(previousHealth);
+                Own.Energy.Current = previousEnergy;
+                UnityEngine.Object.Destroy(go);
+            }
+        }
         static IEnumerator SpiritWell(TestHarness h)
         {
             Vector3 start = Own.Position;
@@ -1018,6 +1068,7 @@ namespace OriCoop
                 yield return Step(h, 30, HostDeath(h));
                 yield return Step(h, 40, Story(h));
                 yield return Step(h, 70, SpiritWell(h));
+                yield return Step(h, 80, StoryRevive(h, 2, n => Barrier(h, 81 + n)));
                 yield return Step(h, 50, Reconnect(h));
             }
             finally

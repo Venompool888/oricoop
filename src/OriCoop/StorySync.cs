@@ -43,6 +43,8 @@ namespace OriCoop
             public uint ControlFrame;
             public Vector3 ControlPosition;
             public float FreeSince = -1f, FreeLast = -1f;
+            public Revive.Downed[] DownAtStart;
+            public StoryRecovery Recovery;
             public ActionSequence Sequence;
             public CutsceneController Controller;
             public int LastTakeover = -1;   // T-196: index of the sequence's last takeover action (LastTakeoverIndex)
@@ -552,6 +554,7 @@ namespace OriCoop
             if (LiveRemotes() != 0) return;   // a mirror that is only finishing (EndAt set) does not block
             story.Key = KeyOf(story);
             if (!Ledger.PrepareLocal(story, StoryHost.Current.LocalSeat, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
+            if (story.Classified) story.DownAtStart = Revive.LocalStoryDowns();
             LastStoryActivity = Time.realtimeSinceStartup;
             story.SawLock = NativeLocked(); Ledger.TrackLocal(story, Services.Net.IsHost);
             story.LastTakeover = LastTakeoverIndex(story.Sequence);
@@ -588,8 +591,10 @@ namespace OriCoop
             }
             Ledger.TrackRemote(story, Services.Net.IsHost, Time.realtimeSinceStartup);
             StoryHost.Current.Rebroadcast(r);
+            if (story.Classified) story.DownAtStart = Revive.LocalStoryDowns();
             SeinCharacter own = Own;
-            if (own != null && Vector3.Distance(own.Position, story.Position) > 12f)
+            // A downed Ori can watch the mirror from the skull without being gathered for the performance.
+            if (own != null && !Revive.IsDowned(own) && Vector3.Distance(own.Position, story.Position) > 12f)
             {
                 StoryHost.Current.Teleport(own, story.Position + Vector3.right);
                 CutsceneGuard.SnapSpirit("story teleport");
@@ -769,12 +774,19 @@ namespace OriCoop
         // Test-only mutation (before T-212 item 4): a "local only" window swallows the end of a story already announced,
         // on the sender and on a receiver.
         static readonly bool MutateEndLostInWindow = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_END_LOST_IN_WINDOW") == "1";
-        static void SendEnd(ulong token)
+        static void SendEnd(ulong token, bool completed = false)
         {
             Story story;
             if (Local.TryGetValue(token, out story)
                 && (MutateEndLostInWindow ? !LocalOnlyStory(story) : StoryLedger<Story>.EndOwed(story, LocalOnlyStory(story))))
-                Services.Net.Send(EndMessage, true, delegate(BinaryWriter w) { StoryWire.WriteToken(w, (uint)token); });
+            {
+                StoryRecovery recovery = completed && story.Classified ? Revive.StorySurvivors() : null;
+                Services.Net.Send(EndMessage, true, delegate(BinaryWriter w) {
+                    StoryWire.WriteToken(w, (uint)token);
+                    if (recovery != null) recovery.Write(w);
+                });
+                Revive.FinishStory(story.DownAtStart, recovery);
+            }
             Ledger.EndLocal(token);
             LastStoryActivity = Time.realtimeSinceStartup;
             Services.Log.Info("net: story end sent " + (uint)token);
@@ -786,9 +798,10 @@ namespace OriCoop
             // T-212 (4): a story this PC tracks ends when its sender says so, whatever window is open here now (the
             // "already playing locally" entries of a pedestal replay used to sit in Remote for 60 s for this reason).
             if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || MutateEndLostInWindow && LocalOnlyStory(story)) return;
+            story.Recovery = StoryRecovery.Read(r);
             StoryHost.Current.Rebroadcast(r);
             Accepted.Remove(token);
-            EndRemote(token);
+            EndRemote(token, false, true);
         }
         static void RemoveSeat(int seat)
         {
@@ -853,12 +866,13 @@ namespace OriCoop
         // Test-only mutation (before T-212 item 5): an end that arrives before the mirror started drops the story.
         static readonly bool MutateNoLateStart = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_LATE_START") == "1";
         public static int LateStarts;
-        static void EndRemote(ulong token, bool force = false)
+        static void EndRemote(ulong token, bool force = false, bool completed = false)
         {
             Story story;
             if (!Remote.TryGetValue(token, out story)) return;
             // T-212 (5): its mirror has not started here yet (scene trip, scene still loading): keep it for a late start.
-            if (!force && !MutateNoLateStart && story.Kind == 0 && StoryLedger<Story>.KeepForLateStart(story, Time.realtimeSinceStartup))
+            if (!force && !MutateNoLateStart && story.Kind == 0 && !Revive.IsDowned(Own)
+                && StoryLedger<Story>.KeepForLateStart(story, Time.realtimeSinceStartup))
             {
                 if (!story.EndedEarly)
                 {
@@ -890,6 +904,7 @@ namespace OriCoop
             if (StoryLedger<Story>.Cleanup(Remote.Count) == StoryCleanup.All) CleanupNative();
             else if (!MutateKeepDroppedMirror) StopOwn(story);
             if (!Watching) RestoreVisible();
+            if (completed) Revive.FinishStory(story.DownAtStart, story.Recovery);
         }
         static void ReceiveSkip(BinaryReader r)
         {
@@ -937,7 +952,7 @@ namespace OriCoop
                 foreach (KeyValuePair<ulong, Story> pair in Remote)
                 {
                     Story story = pair.Value;
-                    if (story.FreeSince >= 0 && now - story.FreeSince >= 2f && now - story.FreeLast <= 0.25f)
+                    if (story.DownAtStart == null && story.FreeSince >= 0 && now - story.FreeSince >= 2f && now - story.FreeLast <= 0.25f)
                     { released.Add(pair.Key); story.FreeSince = -1f; }
                 }
                 foreach (ulong token in released) EndRemote(token);
@@ -950,7 +965,7 @@ namespace OriCoop
                 bool ahead = !MutateEndsOnGap && StoryLedger<Story>.TakeoverAhead(running, running ? story.Sequence.Index : 0, story.LastTakeover);
                 if (StoryLedger<Story>.LocalEnded(story, locked, running, ahead, now)) ended.Add(TokenKey(story.Sender, story.Token));
             }
-            foreach (ulong token in ended) SendEnd(token);
+            foreach (ulong token in ended) SendEnd(token, now - Local[token].Began < 60f);
             ended.Clear();
             List<ulong> finished = new List<ulong>();
             foreach (Story story in Remote.Values)
@@ -1004,7 +1019,13 @@ namespace OriCoop
                 }
             }
             foreach (ulong token in ended) EndRemote(token, true);   // dropped: never kept for a late start
-            foreach (ulong token in finished) EndRemote(token, true);
+            foreach (ulong token in finished)
+            {
+                Story story = Remote[token];
+                bool completed = story.Recovery != null && now - story.Began < 60f
+                    && (story.Sequence == null || !story.Sequence.IsRunning);
+                EndRemote(token, true, completed);
+            }
             if (Watching) HideOwn(); else RestoreVisible();
             if (Seen.Count > 512)
             {
