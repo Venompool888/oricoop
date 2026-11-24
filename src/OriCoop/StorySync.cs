@@ -45,6 +45,7 @@ namespace OriCoop
             public float FreeSince = -1f, FreeLast = -1f;
             public Revive.Downed[] DownAtStart;
             public StoryRecovery Recovery;
+            public bool RecoversDowned;
             public ActionSequence Sequence;
             public CutsceneController Controller;
             public int LastTakeover = -1;   // T-196: index of the sequence's last takeover action (LastTakeoverIndex)
@@ -271,13 +272,9 @@ namespace OriCoop
         public static bool IsStoryAction(Component c) { return ContainsStory(c, new HashSet<Component>()); }
         // T-040: a story that takes the player over (input lock, letterbox, story text, pause, cutscene state).
         // Camera-only moves (chase / escape camera setups) are not: those areas must never wait for everyone.
-        static bool s_takeoverOnly;
+        enum StoryPurpose { Mirror, Gather, Rescue }
         public static bool IsTakeoverAction(Component c)
-        {
-            s_takeoverOnly = true;
-            try { return ContainsStory(c, new HashSet<Component>()); }
-            finally { s_takeoverOnly = false; }
-        }
+        { return ContainsStory(c, new HashSet<Component>(), StoryPurpose.Gather); }
         public static bool IsStoryCutscene(CutsceneController c) { return StoryController(c); }
         public static string ComponentKey(Component c) { return SceneOf(c) + ":" + PathOf(c.transform); }
         static bool BlocksSein(CutsceneState state)
@@ -310,7 +307,7 @@ namespace OriCoop
                     if (action is ReturnToTitleScreenAction && SceneOf(sequence) == MoonGuid.Empty) return true;
             return false;
         }
-        static bool ContainsStory(Component component, HashSet<Component> visited)
+        static bool ContainsStory(Component component, HashSet<Component> visited, StoryPurpose purpose = StoryPurpose.Mirror)
         {
             if (component == null || !visited.Add(component)) return false;
             ActionSequence sequence = component as ActionSequence;
@@ -323,41 +320,46 @@ namespace OriCoop
             LockPlayerInputManualAction manual = component as LockPlayerInputManualAction;
             if (manual != null) return manual.ShouldLock;
             LetterboxAction letterbox = component as LetterboxAction;
-            if (letterbox != null) return letterbox.ShowLetterboxes;
+            if (letterbox != null) return purpose != StoryPurpose.Rescue && letterbox.ShowLetterboxes;
             ChangeCutsceneStateAction change = component as ChangeCutsceneStateAction;
-            if (change != null) return BlocksSein(change.State) || StoryController(change.Cutscene);
+            if (change != null) return BlocksSein(change.State) || (purpose != StoryPurpose.Rescue && StoryController(change.Cutscene));
             PauseGameAction pause = component as PauseGameAction;
-            if (pause != null && (pause.SuspendPlayer || pause.ShowLetterbox)) return true;
-            if (s_takeoverOnly) { }   // camera-only moves do not take the player over (T-040)
-            else
+            if (pause != null && (pause.SuspendPlayer || (purpose != StoryPurpose.Rescue && pause.ShowLetterbox))) return true;
+            if (purpose == StoryPurpose.Mirror)
             {
-            SetCameraTargetAction target = component as SetCameraTargetAction;
-            if (target != null && target.Target != null && target.Target.GetComponentInParent<SeinCharacter>() == null) return true;
-            if (component is MoveCameraAction || component is MoveCameraHereAction) return true;
-            BaseAnimatorAction animation = component as BaseAnimatorAction;
-            if (animation != null)
-            {
-                if (animation.Animators != null) foreach (BaseAnimator animator in animation.Animators) if (Cinematic(animator)) return true;
-                if (animation.Target != null)
-                    foreach (BaseAnimator animator in animation.Target.GetComponentsInChildren<BaseAnimator>(true)) if (Cinematic(animator)) return true;
+                SetCameraTargetAction target = component as SetCameraTargetAction;
+                if (target != null && target.Target != null && target.Target.GetComponentInParent<SeinCharacter>() == null) return true;
+                if (component is MoveCameraAction || component is MoveCameraHereAction) return true;
             }
+            if (purpose != StoryPurpose.Gather)
+            {
+                // An actual cinematic timeline or a performance by Ori qualifies. A puzzle merely showing
+                // its door with the camera and letterboxes (Ginso's turret room) never grants a rescue.
+                if (purpose == StoryPurpose.Rescue && component.GetType().Name == "PlayCharacterAnimation") return true;
+                BaseAnimatorAction animation = component as BaseAnimatorAction;
+                if (animation != null)
+                {
+                    if (animation.Animators != null) foreach (BaseAnimator animator in animation.Animators) if (Cinematic(animator)) return true;
+                    if (animation.Target != null)
+                        foreach (BaseAnimator animator in animation.Target.GetComponentsInChildren<BaseAnimator>(true)) if (Cinematic(animator)) return true;
+                }
             }
             // Follow action references, not arbitrary scene objects. This includes ActionSequence.Actions,
             // PerformActionAction.SequenceToRun and conditional/wrapper actions, with a cycle guard.
             foreach (FieldInfo field in component.GetType().GetFields(BindingFlags.Public | BindingFlags.Instance))
             {
                 if (typeof(ActionMethod).IsAssignableFrom(field.FieldType))
-                { if (ContainsStory(field.GetValue(component) as ActionMethod, visited)) return true; }
+                { if (ContainsStory(field.GetValue(component) as ActionMethod, visited, purpose)) return true; }
                 else if (field.FieldType != typeof(string) && typeof(IEnumerable).IsAssignableFrom(field.FieldType))
                 {
                     IEnumerable actions = field.GetValue(component) as IEnumerable;
                     if (actions != null) foreach (object action in actions)
-                        if (ContainsStory(action as ActionMethod, visited)) return true;
+                        if (ContainsStory(action as ActionMethod, visited, purpose)) return true;
                 }
             }
             if (sequence != null && sequence.Actions == null)
                 foreach (ActionMethod action in sequence.GetComponentsInChildren<ActionMethod>(true))
-                    if (ContainsStory(action, visited)) return true;
+                    if (ContainsStory(action, visited, purpose)) return true;
             return false;
         }
         static void Consider(Story story, StartCall call)
@@ -551,7 +553,10 @@ namespace OriCoop
             if (LiveRemotes() != 0) return;   // a mirror that is only finishing (EndAt set) does not block
             story.Key = KeyOf(story);
             if (!Ledger.PrepareLocal(story, StoryHost.Current.LocalSeat, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
-            if (story.Classified) story.DownAtStart = Revive.LocalStoryDowns();
+            story.RecoversDowned = story.Sequence != null
+                ? ContainsStory(story.Sequence, new HashSet<Component>(), StoryPurpose.Rescue)
+                : story.Controller != null && BlocksSein(story.Controller.CurrentState);
+            if (story.RecoversDowned) story.DownAtStart = Revive.LocalStoryDowns();
             LastStoryActivity = Time.realtimeSinceStartup;
             story.SawLock = NativeLocked(); Ledger.TrackLocal(story, Services.Net.IsHost);
             story.LastTakeover = LastTakeoverIndex(story.Sequence);
@@ -786,7 +791,7 @@ namespace OriCoop
             if (Local.TryGetValue(token, out story)
                 && (MutateEndLostInWindow ? !LocalOnlyStory(story) : StoryLedger<Story>.EndOwed(story, LocalOnlyStory(story))))
             {
-                StoryRecovery recovery = completed && story.Classified ? Revive.StorySurvivors() : null;
+                StoryRecovery recovery = completed && story.RecoversDowned ? Revive.StorySurvivors() : null;
                 Services.Net.Send(EndMessage, true, delegate(BinaryWriter w) {
                     StoryWire.WriteToken(w, (uint)token);
                     if (recovery != null) recovery.Write(w);
@@ -970,7 +975,7 @@ namespace OriCoop
                 bool ahead = !MutateEndsOnGap && StoryLedger<Story>.TakeoverAhead(running, running ? story.Sequence.Index : 0, story.LastTakeover);
                 // The normal unlock can precede the last native action. An end carrying a rescue must
                 // wait for that tail, including when the downed seat is local to the story starter.
-                if (StoryLedger<Story>.LocalEnded(story, locked, running, ahead || Revive.AnyDowned, now)) ended.Add(TokenKey(story.Sender, story.Token));
+                if (StoryLedger<Story>.LocalEnded(story, locked, running, ahead || (story.RecoversDowned && Revive.AnyDowned), now)) ended.Add(TokenKey(story.Sender, story.Token));
             }
             foreach (ulong token in ended) SendEnd(token, now - Local[token].Began < 60f);
             ended.Clear();
