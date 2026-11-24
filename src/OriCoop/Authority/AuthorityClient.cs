@@ -12,6 +12,7 @@ namespace OriCoop.Authority
         readonly Dictionary<string, CsLeaseEntry> leases = new Dictionary<string, CsLeaseEntry>();
         readonly Dictionary<string, uint> versions = new Dictionary<string, uint>();
         readonly Dictionary<string, uint> receivedVersions = new Dictionary<string, uint>();
+        readonly Dictionary<string, uint> receivedEpochs = new Dictionary<string, uint>();   // epoch of receivedVersions
         readonly Dictionary<string, StateUpdate> latest = new Dictionary<string, StateUpdate>();
         uint lastEvent, nextSeq = 1;
 
@@ -105,8 +106,13 @@ namespace OriCoop.Authority
         {
             uint ver;
             if (snapshot ? state.Epoch > EpochOf(state.Key) : state.Epoch != EpochOf(state.Key)) return;
-            if (receivedVersions.TryGetValue(state.Key, out ver) && state.Ver <= ver) return;
-            receivedVersions[state.Key] = state.Ver;
+            // Versions count per owner and epoch (as in the arbiter, T-146): a new owner's first states may number at or
+            // below the old owner's last one here when the new owner missed some of those, and with 3-4 seats a third
+            // seat dropped them as old until the new owner's counter passed it.
+            uint epoch;
+            if (receivedVersions.TryGetValue(state.Key, out ver) && receivedEpochs.TryGetValue(state.Key, out epoch)
+                && epoch == state.Epoch && state.Ver <= ver) return;
+            receivedVersions[state.Key] = state.Ver; receivedEpochs[state.Key] = state.Epoch;
             versions.TryGetValue(state.Key, out ver);
             if (state.Ver > ver) versions[state.Key] = state.Ver;
             // NetPlay rewrites forwarded headers to the host seat; the lease identifies the publisher.
@@ -141,7 +147,7 @@ namespace OriCoop.Authority
                     break;
                 case CsWire.CsSnapshot:
                     leases.Clear();
-                    receivedVersions.Clear();
+                    receivedVersions.Clear(); receivedEpochs.Clear();
                     latest.Clear();
                     if (Reset != null) Reset();
                     foreach (CsLeaseEntry lease in message.Leases) Grant(lease);
@@ -157,7 +163,7 @@ namespace OriCoop.Authority
 
         public void ResetSession()
         {
-            leases.Clear(); versions.Clear(); receivedVersions.Clear(); latest.Clear(); lastEvent = 0; nextSeq = 1;
+            leases.Clear(); versions.Clear(); receivedVersions.Clear(); receivedEpochs.Clear(); latest.Clear(); lastEvent = 0; nextSeq = 1;
             if (Reset != null) Reset();
         }
 
