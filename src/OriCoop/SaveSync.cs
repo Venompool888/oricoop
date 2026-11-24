@@ -18,6 +18,8 @@ namespace OriCoop
     {
         static bool s_started, s_loading, s_disabled, s_restartFinished, s_restoreFinished, s_hostAdopt;
         static bool s_joined;   // T-142: this guest finished its join load in this session; later loads are host checkpoints
+        static int s_wipeHost;  // host that announced a team wipe before its next reliable checkpoint
+        static bool s_loadingWipe;
         static readonly SeatReadiness s_guests = new SeatReadiness();
         static readonly HostPromotion s_promotion = new HostPromotion();
         static byte[] s_pending;
@@ -70,13 +72,20 @@ namespace OriCoop
             // T-213 (10): a guest that has finished its own join notes every seat that joins after it, until that seat
             // announces its load (SeatReadiness.SawJoin): if this guest becomes the host, that seat still needs a save.
             Services.Net.PlayerJoined += delegate(int seat) { if (Services.Net.IsHost) s_guests.Join(seat); else if (s_joined) s_guests.SawJoin(seat); };
-            Services.Net.PlayerLeft += delegate(int seat) { s_guests.Leave(seat); if (Services.Net.IsHost) UpdateHostReady(); };
+            Services.Net.PlayerLeft += delegate(int seat)
+            {
+                if (seat == s_wipeHost) s_wipeHost = 0;
+                s_guests.Leave(seat);
+                if (Services.Net.IsHost) UpdateHostReady();
+            };
             CoopSaves.Init();
         }
 
         static void Reset()
         {
             Ready = s_started = s_loading = s_disabled = s_hostAdopt = s_joined = false;
+            s_wipeHost = 0;
+            s_loadingWipe = false;
             s_guests.Clear();
             s_promotion.Reset();
             s_pending = null;
@@ -165,7 +174,7 @@ namespace OriCoop
                 if (s_loadWatch != null && s_loadWatch.ElapsedMilliseconds > 60000)
                 { Disable("native save-load timeout", new TimeoutException("restart/restore did not finish")); return; }
                 if (s_restartFinished && s_loadingBytes != null) LoadAfterRestart();
-                if (s_restoreFinished) PlaceBesideHost();
+                if (s_restoreFinished) FinishGuestRestore();
                 return;
             }
             // Let the player's title/slot load settle before entering the native return-to-menu path.
@@ -214,11 +223,17 @@ namespace OriCoop
             catch (Exception e) { Disable("checkpoint load after restart", e); }
         }
 
-        static void PlaceBesideHost()
+        static void FinishGuestRestore()
         {
             SeinCharacter own = Characters.Sein;
             if (own == null || GameController.Instance.IsLoadingGame) return;
             if (InstantLoadScenesController.Instance.IsLoading) return;
+            if (s_loadingWipe)
+            {
+                Services.Log.Info("net: team wipe restored at room checkpoint " + own.Position);
+                FinishJoin();
+                return;
+            }
             float elapsed = Services.Clock.RealTime - s_loadFinishedAt;
             if (SavesHost.Current.HaveRemotePosition && SavesHost.Current.NewestRemoteTick != s_joinFrame)
             {
@@ -243,6 +258,8 @@ namespace OriCoop
                     InstantLoadScenesController.Instance.FreezeIfLoadingScenes();
                 }
                 else Services.Log.Warn("net: live host join position has no local scene boundary; using normal local streaming");
+                Services.Log.Info("net: guest join liveHost=" + HostJoinPosition + " distance=" + GuestJoinDistance
+                    + " elapsedAfterLoadMs=" + (GuestJoinElapsed * 1000f) + " placed=" + JoinedHost);
                 FinishJoin();
             }
             else if (elapsed >= 2f)
@@ -255,7 +272,7 @@ namespace OriCoop
 
         static void FinishJoin()
         {
-            s_loading = s_restoreFinished = false; Ready = true;
+            s_loading = s_restoreFinished = s_loadingWipe = false; Ready = true;
             if (!Services.Net.IsHost)
             {
                 s_joined = true;
@@ -263,8 +280,6 @@ namespace OriCoop
                 SeatSkillSync.Loaded();
             }
             s_promotion.Joined();
-            Services.Log.Info("net: guest join liveHost=" + HostJoinPosition + " distance=" + GuestJoinDistance
-                + " elapsedAfterLoadMs=" + (GuestJoinElapsed * 1000f) + " placed=" + JoinedHost);
             Services.Net.Send(SaveWire.LoadedMessage, true, SaveWire.WriteLoaded);
         }
 
@@ -281,7 +296,7 @@ namespace OriCoop
             s_hostAdopt = true; s_pending = SeatSkillSync.ForLoad(bytes, "partner progress"); ResetGuests();
         }
 
-        // A host restore uses exactly the join transfer / native teardown / live placement path.
+        // A host restore uses the join transfer and native teardown.
         // Clear readiness before sending so LoadedMessage requests a fresh world/progress snapshot.
         public static void PushCheckpointNow()
         {
@@ -396,6 +411,13 @@ namespace OriCoop
             return bytes != null && GameController.Instance.SaveGameController.LoadFromBytes(bytes);
         }
 
+        internal static void ExpectWipeCheckpoint()
+        {
+            // BothDown and the subsequent checkpoint are reliable and ordered from the same host.
+            // A seat still waiting for its first transfer joins normally, even if the room just wiped.
+            if (s_joined && !Services.Net.IsHost) s_wipeHost = Services.Net.HostSeat;
+        }
+
         static void Receive(BinaryReader r)
         {
             if (Services.Net.IsHost || s_loading || s_pending != null || s_disabled) return;
@@ -403,6 +425,8 @@ namespace OriCoop
             SavePosition p = SaveWire.ReadCoordinates(r);
             HostCheckpointPosition = new Vector3(p.X, p.Y, p.Z);
             s_pending = s_hostCheckpointBytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveBytes(r), "checkpoint transfer");
+            s_loadingWipe = s_wipeHost != 0 && s_wipeHost == Services.Net.Sender;
+            s_wipeHost = 0;
             if (CoopSaves.CommitsReceived == 0) CheckpointsBeforeCommit++;
             if (CopySlotAtCheckpoint == -2) CopySlotAtCheckpoint = CoopSaves.SessionSlot;
             Ready = false; JoinedHost = false;
@@ -519,7 +543,7 @@ namespace OriCoop
                 s_restoreFinished = true; s_loadFinishedAt = Services.Clock.RealTime;
                 s_joinFrame = SavesHost.Current.NewestRemoteTick;
                 Services.Log.Info("net: host checkpoint restored in " + (s_loadWatch == null ? 0 : s_loadWatch.ElapsedMilliseconds)
-                    + " ms; guest=" + GuestLoadPosition + "; awaiting fresh host position");
+                    + " ms; guest=" + GuestLoadPosition + (s_loadingWipe ? "; team wipe" : "; awaiting fresh host position"));
             }
         }
 
