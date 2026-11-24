@@ -1608,15 +1608,29 @@ namespace OriCoop
             fsm.IState current = e.Controller.StateMachine.CurrentState;
             if (current.GetType() == typeof(fsm.State))
             {
-                FieldInfo state = AccessTools.Field(e.GetType(), "State");
+                FieldInfo state = StatesField(e.GetType());
                 if (state != null)
                 {
                     object states = state.GetValue(e);
-                    foreach (FieldInfo field in states.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public))
+                    foreach (FieldInfo field in StateFields(states.GetType()))
                         if (object.ReferenceEquals(field.GetValue(states), current)) return field.Name;
                 }
             }
             return current.GetType().FullName;
+        }
+        // StateName runs for every captured state (Tick -> Capture for each snapshot sent, up to ~20 a second per
+        // enemy): the reflection lookups behind it are the same for a type every time, so they are made once per type.
+        static readonly Dictionary<Type, FieldInfo> s_statesFields = new Dictionary<Type, FieldInfo>();
+        static readonly Dictionary<Type, FieldInfo[]> s_stateFields = new Dictionary<Type, FieldInfo[]>();
+        static FieldInfo StatesField(Type enemy)
+        {
+            FieldInfo field; if (s_statesFields.TryGetValue(enemy, out field)) return field;
+            field = AccessTools.Field(enemy, "State"); s_statesFields.Add(enemy, field); return field;
+        }
+        static FieldInfo[] StateFields(Type states)
+        {
+            FieldInfo[] fields; if (s_stateFields.TryGetValue(states, out fields)) return fields;
+            fields = states.GetFields(BindingFlags.Instance | BindingFlags.Public); s_stateFields.Add(states, fields); return fields;
         }
         // Test helper: the owner (re)spawns a tracked enemy whose placeholder is loaded but has no live instance.
         public static void EnsureSpawned(string key)
