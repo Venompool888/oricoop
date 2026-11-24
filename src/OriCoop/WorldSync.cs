@@ -118,7 +118,7 @@ namespace OriCoop
             s_digestSequence = s_receivedDigest = 0;
             ResetDigestRepair();
             ResetDelta();
-            s_timerPhase.Reset(); s_timerTraces = 0;
+            s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear();
         }
 
         public static void Tick()
@@ -762,31 +762,59 @@ namespace OriCoop
         static readonly bool s_mutateTimerPhaseOnce = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_TIMER_PHASE_ONCE") == "1";
         static readonly TimerPhaseSchedule s_timerPhase = new TimerPhaseSchedule(250u);
         public static int TimerPhasesSent, TimerPhasesTaken, TimerPhasesInStep, TimerPhasesNearRestart;
+        public static int LastSendableTimers;   // timers the host's latest resend found (0: none in its loaded scenes)
         static int s_timerTraces;
         const int MaxTimerTraces = 200;
+        static readonly HashSet<string> s_timerCensus = new HashSet<string>();
+        const int MaxTimerCensus = 400;
 
         static void SendTimerPhases()
         {
             List<Blob> timers = new List<Blob>();
             Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
                 if (scene == MoonGuid.Empty) return;
+                bool census = s_timerCensus.Add(scene.ToString()) && s_timerCensus.Count <= MaxTimerCensus;
+                int found = 0, sent = 0, excluded = 0, layout = 0, bad = 0;
+                HashSet<string> others = census ? new HashSet<string>() : null;
                 SaveSceneManager.SaveId[] entries = manager.SaveData.ToArray();
                 foreach (SaveSceneManager.SaveId entry in entries)
                 {
                     if (entry == null || entry.Id == null || entry.SaveObject == null) continue;
                     ISerializable save = entry.Save;
-                    if (!(save is OnTimerPerformAction) && !(save is TimedTrigger)) continue;
+                    if (!(save is OnTimerPerformAction) && !(save is TimedTrigger))
+                    {
+                        // Census only: a timer-like save type this rule does not know (a shooter run by another class).
+                        if (others != null && save != null && others.Count < 8)
+                        {
+                            string name = save.GetType().Name;
+                            if (name.IndexOf("Timer", StringComparison.OrdinalIgnoreCase) >= 0
+                                || name.IndexOf("Timed", StringComparison.OrdinalIgnoreCase) >= 0
+                                || name.IndexOf("Shoot", StringComparison.OrdinalIgnoreCase) >= 0
+                                || name.IndexOf("Projectile", StringComparison.OrdinalIgnoreCase) >= 0) others.Add(name);
+                        }
+                        continue;
+                    }
+                    found++;
                     string key = Key(scene, entry.Id);
-                    if (s_bad.Contains(key) || s_excluded.Contains(key) || Excluded(save)) continue;
+                    if (s_bad.Contains(key)) { bad++; continue; }
+                    if (s_excluded.Contains(key) || Excluded(save)) { excluded++; continue; }
                     try
                     {
                         byte[] bytes = CaptureBytes(save);
-                        if (bytes.Length != 4) continue;   // not the AmbientPhase layout: left to the ordinary scan
+                        if (bytes.Length != 4) { layout++; continue; }   // not the AmbientPhase layout: left to the ordinary scan
                         timers.Add(MakeBlob(scene, entry.Id, bytes, Meaning.AmbientPhase, save.GetType().FullName));
+                        sent++;
                     }
-                    catch (Exception e) { Disable(key, save, e); }
+                    catch (Exception e) { bad++; Disable(key, save, e); }
                 }
+                // Once per scene per session: lets a run tell "this scene has no level timers" from "found none".
+                if (census)
+                    Plugin.Log.LogInfo("net: world timers scene=" + (manager.transform.root != null ? manager.transform.root.name : "?")
+                        + " found=" + found + " sendable=" + sent + " excluded=" + excluded + " other_layout=" + layout
+                        + " bad=" + bad + " save_entries=" + entries.Length
+                        + (others.Count != 0 ? " other_timer_like=" + string.Join(",", new List<string>(others).ToArray()) : ""));
             });
+            LastSendableTimers = timers.Count;
             if (timers.Count == 0) return;
             TimerPhasesSent += timers.Count;
             SendBlobs(timers);
