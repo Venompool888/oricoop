@@ -336,7 +336,7 @@ namespace OriCoop
             {
                 if (extraOwner)
                 {
-                    UI.Menu.ShowAreaMap();
+                    UI.Menu.ShowMenuScreen();
                     P2Input.BotActive = true; P2Input.BotLX = 1;
                 }
                 for (float end = Time.realtimeSinceStartup + 2f; Time.realtimeSinceStartup < end; )
@@ -344,10 +344,11 @@ namespace OriCoop
                     sampled |= extraPuppet.Input.Horizontal > 0.5f;
                     yield return null;
                 }
-                if (extraOwner) h.Check(GameMapUI.Instance.IsVisible && !Own.Controller.CanMove,
-                    "locals: the primary seat has the map open and cannot steer its Ori");
+                if (extraOwner) h.Check(UI.Menu.MainMenuVisible && UI.Menu.CurrentScreen == MenuScreenManager.Screens.Pause
+                    && SessionRules.LiveScreen && !Own.Controller.CanMove,
+                    "locals: the primary seat has the pause menu open and cannot steer its Ori");
                 h.Check(sampled && extraPuppet.Sein.Position.x > start.x + 1f,
-                    "locals: extra moves by independent input on every observer while its primary seat views the map");
+                    "locals: extra moves and sends independent input while its primary seat uses the pause menu");
             }
             finally
             {

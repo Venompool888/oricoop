@@ -23,6 +23,7 @@ namespace OriCoop
     {
         public const int PageSettings = 0, PageModeSelect = 1, PageSetup = 2;
         public static bool IsOpen { get; private set; }
+        internal static int OpeningSeat { get; private set; }
         // True while this panel froze the game itself (offline F8). Opened from the native pause it never does (tests).
         public static bool FrozeGame { get { return IsOpen && s_changedTimeScale; } }
         public static int Page { get; private set; }
@@ -52,10 +53,11 @@ namespace OriCoop
         static int s_waitFor;            // 0 none, positive = local seat, -1 = add local player
         static bool s_fromPause, s_changedTimeScale;
         static int[] s_baseline = new int[4];
-        static float s_ignoreNavUntil, s_backHeld;
+        static float s_ignoreNavUntil;
+        static readonly float[] s_backHeld = new float[4];
         static float s_savedTimeScale = 1f;
-        static bool s_savedLockInput, s_ownsLockInput;
-        // Test-only mutation switch (T-132): online too, save LockInput at open and write it back at close.
+        static bool s_mutationSavedLock, s_mutatedLock;
+        // Test-only: save and restore the native lock in the live panel.
         static readonly bool s_staleLockMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_MENU_STALE_LOCK") == "1";
         static string s_message = "";
         static readonly bool[] s_connected = new bool[4];
@@ -127,39 +129,67 @@ namespace OriCoop
             s_ignoreNavUntil = Time.unscaledTime + 0.25f;
         }
 
-        static void OpenPage(int page)
+        static int SeatForInput(int pad)
+        {
+            foreach (int seat in s_seats.LocalSeats)
+            {
+                InputDevice input = s_seats.InputOf(seat);
+                if (pad < 0 ? input.Kind == InputDevice.DeviceKind.KeyboardMouse : input.Kind == InputDevice.DeviceKind.Pad && input.Pad == pad)
+                    return seat;
+            }
+            return pad < 0 ? s_seats.PrimarySeat : 0;
+        }
+
+        static void OpenPage(int page, int seat = -1)
         {
             if (s_testPage == "" && !NetPlay.LocalInGameplay()) return;
             if (CsRoomPage.InGame) return;   // T-189: never over the in-game room page (one pause hold, see Tick)
             if (IsOpen) { GoTo(page); return; }
             IsOpen = true;
+            OpeningSeat = seat < 0 ? s_seats.PrimarySeat : seat;
             Page = page;
             s_focus = 0; s_waitFor = 0; s_message = "";
             s_ignoreNavUntil = Time.unscaledTime + 0.3f;
             s_settingsH = 0f;
             s_fromPause = PauseMenuEntry.Suspend();
             if (!s_fromPause && UI.MainMenuVisible) { try { UI.Menu.HideMenuScreen(true); } catch (Exception) { } }
-            s_savedTimeScale = Time.timeScale;
-            s_changedTimeScale = !NetPlay.Enabled && !s_fromPause;
-            if (s_changedTimeScale) Time.timeScale = 0f;
-            // Offline the game is frozen (time scale 0 or the pause menu), so nothing else touches LockInput while the panel
-            // is open: save it and write it back. Online the world keeps running and a story box may take or drop the lock
-            // meanwhile; writing back the value from opening time froze the player or freed them mid-dialog (T-132).
-            // Online the panel holds this player's Ori through SessionRules.LocalLocked and leaves LockInput alone.
-            s_ownsLockInput = !NetPlay.Enabled || s_staleLockMutation;
-            if (s_ownsLockInput && GameController.Instance != null) { s_savedLockInput = GameController.Instance.LockInput; GameController.Instance.LockInput = true; }
+            SessionPauseChanged(SessionRules.NoPause);
+            SessionRules.ScreenOpened();
             PollPads(); PollPads();
             Plugin.Log.LogInfo("co-op menu opened (" + (page == PageModeSelect ? "mode select" : page == PageSetup ? "2-player setup" : "settings") + ")");
+        }
+
+        internal static void SessionPauseChanged(bool live)
+        {
+            SetPause(IsOpen && !live && !(s_fromPause && UI.MainMenuVisible), IsOpen && !live);
+        }
+
+        static void SetPause(bool freeze, bool lockInput)
+        {
+            if (freeze != s_changedTimeScale)
+            {
+                if (freeze) { s_savedTimeScale = Time.timeScale; Time.timeScale = 0f; }
+                else Time.timeScale = s_savedTimeScale;
+                s_changedTimeScale = freeze;
+            }
+            SessionRules.SetScreenInputLock(typeof(CoopMenu), lockInput);
+            if (!s_staleLockMutation) return;
+            bool mutateLock = IsOpen && !lockInput;
+            if (mutateLock != s_mutatedLock && GameController.Instance != null)
+            {
+                if (mutateLock) s_mutationSavedLock = GameController.Instance.LockInput;
+                GameController.Instance.LockInput = mutateLock || s_mutationSavedLock;
+            }
+            s_mutatedLock = mutateLock;
         }
 
         public static void Close()
         {
             if (!IsOpen) return;
             IsOpen = false;
+            OpeningSeat = 0;
             s_waitFor = 0;
-            if (s_changedTimeScale) Time.timeScale = s_savedTimeScale;
-            if (s_ownsLockInput && GameController.Instance != null) GameController.Instance.LockInput = s_savedLockInput;
-            s_ownsLockInput = false;
+            SetPause(false, false);
             P2Input.StartLatched = false;
             KeyboardOnlyP1.HoldUntilReleased = true;
             KeyboardOnlyP1.Refresh();
@@ -177,12 +207,22 @@ namespace OriCoop
             {
                 // T-189: not over the in-game room page: its View is 踢出, and opening here would take the page's pause hold
                 // (PauseMenuEntry has one), leaving the native pause menu live under the page.
-                if (!inGame || CsRoomPage.InGame) { s_backHeld = 0f; return; }
-                // Hold Back/View on any pad for 1 s, or press F8.
+                if (!inGame || CsRoomPage.InGame) { Array.Clear(s_backHeld, 0, s_backHeld.Length); return; }
                 PollPads();
-                bool backDown = false; for (int i = 0; i < 4; i++) if ((s_buttons[i] & BACK) != 0) backDown = true;
-                s_backHeld = backDown ? s_backHeld + Time.unscaledDeltaTime : 0f;
-                if (Input.GetKeyDown(KeyCode.F8) || s_backHeld > 1f) { s_backHeld = 0f; Open(); }
+                if (Input.GetKeyDown(KeyCode.F8))
+                {
+                    Array.Clear(s_backHeld, 0, s_backHeld.Length);
+                    OpenPage(PageSettings, SeatForInput(-1));
+                    return;
+                }
+                for (int i = 0; i < s_backHeld.Length; i++)
+                {
+                    s_backHeld[i] = (s_buttons[i] & BACK) != 0 ? s_backHeld[i] + Time.unscaledDeltaTime : 0f;
+                    if (s_backHeld[i] <= 1f) continue;
+                    Array.Clear(s_backHeld, 0, s_backHeld.Length);
+                    OpenPage(PageSettings, SeatForInput(i));
+                    break;
+                }
                 return;
             }
             if (!inGame && s_testPage == "") { Close(); return; }

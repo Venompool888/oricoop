@@ -24,6 +24,7 @@ namespace OriCoop
         static byte[] s_hostCheckpointBytes;
         static byte[] s_loadingBytes;
         static byte[] s_titleLoadBytes;   // guest joining from an empty slot: PerformLoad reads these (GuestJoin.cs)
+        static SeinCharacter s_pendingSkillSave;
         static Stopwatch s_loadWatch;
         static float s_loadFinishedAt, s_joinStartedAt, s_adoptedAt, s_diagAt;
         static uint s_joinFrame;
@@ -82,6 +83,7 @@ namespace OriCoop
             s_hostCheckpointBytes = null;
             s_loadingBytes = null;
             s_titleLoadBytes = null;
+            s_pendingSkillSave = null;
             s_loadWatch = null;
             HaveCheckpointPosition = false;
             s_restartFinished = s_restoreFinished = JoinedHost = false;
@@ -136,6 +138,7 @@ namespace OriCoop
             SubsystemGuard.Run("GuestJoin.Tick", s_guestJoinTick);
             if (!Services.Net.Connected || !s_started || s_disabled) return;
             CheckPromotion();
+            if (s_pending == null && !s_loading) TickSkillSave();
             if (Services.Net.IsHost && !s_hostAdopt)
             {
                 // Co-op save lineage first (CoopSaves): the host may adopt the partner's progress before the
@@ -498,6 +501,7 @@ namespace OriCoop
         {
             static void Postfix()
             {
+                s_pendingSkillSave = null;
                 if (!Services.Net.Connected || (Services.Net.IsHost && !s_hostAdopt) || !s_loading || s_disabled) return;
                 if (Services.Net.IsHost)
                 {
@@ -576,24 +580,45 @@ namespace OriCoop
             }
         }
 
-        // Buying a skill calls CreateCheckpoint + PerformSave natively, online too (coordinator, 2026-11-21: a purchase
-        // is a save point; a guest's becomes a SaveOffer). Test-only: TestSkipPurchaseSave buys without that save, the
-        // stand-in for a purchase whose offer was not taken (the per-seat record must roll it back).
+        static bool SkillSaveReady(SeinCharacter ori)
+        { return !Revive.IsDowned(ori) && ori.PlatformBehaviour.PlatformMovement.IsOnGround; }
+
+        static void SaveSkillCheckpoint(SaveGameController save)
+        {
+            s_pendingSkillSave = null;
+            GameController.Instance.CreateCheckpoint();
+            save.PerformSave();
+        }
+
+        static void TickSkillSave()
+        {
+            SeinCharacter ori = s_pendingSkillSave;
+            if (ori != null && ori == Characters.Sein && NetPlay.LocalInGameplay() && SkillSaveReady(ori))
+                SaveSkillCheckpoint(GameController.Instance.SaveGameController);
+        }
+
+        // Test-only: buy without a save to exercise rolling back an unaccepted purchase.
         public static bool TestSkipPurchaseSave;
         [HarmonyPatch(typeof(SkillTreeManager), "OnMenuItemPressed")]
         static class SkillPurchaseSavePatch
         {
-            static void Checkpoint(GameController game) { if (!TestSkipPurchaseSave) game.CreateCheckpoint(); }
-            static void Save(SaveGameController save) { if (!TestSkipPurchaseSave) save.PerformSave(); }
+            static void Save(SaveGameController save)
+            {
+                if (TestSkipPurchaseSave) return;
+                SeinCharacter ori = Characters.Sein;
+                if (SessionRules.NoPause && !SkillSaveReady(ori)) s_pendingSkillSave = ori;
+                else SaveSkillCheckpoint(save);
+            }
 
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
                 MethodInfo checkpoint = AccessTools.Method(typeof(GameController), "CreateCheckpoint");
                 MethodInfo save = AccessTools.Method(typeof(SaveGameController), "PerformSave");
+                // Run the snapshot and save together, at the same position as any guest offer.
                 foreach (CodeInstruction code in instructions)
                 {
-                    string method = code.Calls(checkpoint) ? "Checkpoint" : code.Calls(save) ? "Save" : null;
-                    if (method != null) { code.opcode = OpCodes.Call; code.operand = AccessTools.Method(typeof(SkillPurchaseSavePatch), method); }
+                    if (code.Calls(checkpoint)) { code.opcode = OpCodes.Pop; code.operand = null; }
+                    else if (code.Calls(save)) { code.opcode = OpCodes.Call; code.operand = AccessTools.Method(typeof(SkillPurchaseSavePatch), "Save"); }
                     yield return code;
                 }
             }

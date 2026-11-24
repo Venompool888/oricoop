@@ -107,8 +107,10 @@ namespace OriCoop
                 if (p != null) p.IsLocal = true;
             }
         }
-        static void Sample(int seat, InputState state)
+        static void Sample(Puppet puppet)
         {
+            int seat = puppet.Seat;
+            InputState state = puppet.Input;
             if (NetPlay.Enabled)
             {
                 InputDevice d = InputOf(seat);
@@ -121,9 +123,10 @@ namespace OriCoop
                 if (input >= 0) P2Input.SampleExtra(input, state);
                 else if (input == -1) SampleKeyboard(state);
             }
+            puppet.SelfReviveHeld = state.Bash.IsPressed;
             GameController gc = GameController.Instance;
             if (P2Input.HoldStill || gc == null || gc.InputLocked || gc.GameplaySuspended || gc.GameplaySuspendedForUI
-                || StorySync.IntroHeld(seat) || Revive.IsDowned(Players.OriOf(seat)))
+                || StorySync.IntroHeld(seat) || Revive.IsDowned(puppet.Sein) || SessionRules.ScreenInputLocked(puppet.Sein))
                 P2Input.Fill(state, 0, 0, 0, 0, 0, false, false, false);
         }
         public static void SampleExtras()
@@ -131,7 +134,7 @@ namespace OriCoop
             foreach (Puppet p in Players.Remotes)
             {
                 if (!p.IsLocal || p.Sein == null || !NetPlay.Enabled && p.Seat <= 2) continue;
-                Sample(p.Seat, p.Input);
+                Sample(p);
                 ForcedSync.FilterInput(p.Seat, p.Sein, p.Input);
             }
         }

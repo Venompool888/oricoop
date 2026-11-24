@@ -305,7 +305,7 @@ namespace OriCoop
             Release();
         }
 
-        static void Release()
+        internal static void Release()
         {
             if (s_held != null)
             {

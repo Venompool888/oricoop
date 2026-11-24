@@ -195,8 +195,7 @@ namespace OriCoop
                 yield return Barrier(h, 11); yield return Wait(0.4f);
                 ownStart = Own.Position; puppetStart = P2Context.P2.Position; frames = NetPlay.FramesPlayed;
                 int disconnects = SessionRules.Disconnects;
-                // T-044: online nothing pauses. The guest's pause menu holds only the guest's own Ori; the world keeps
-                // running on both PCs and the host keeps playing. Hold it longer than NetPeer's 5 s timeout.
+                // Keep the menu open longer than NetPeer's 5 s timeout.
                 // ORICOOP_S4_SKEW (seconds, host only) stretches the host's window to reproduce the race below on
                 // purpose: the two windows start a few ms apart (each side starts when it sees barrier 11).
                 float skew = 0f; if (!guest) float.TryParse(Environment.GetEnvironmentVariable("ORICOOP_S4_SKEW") ?? "",
@@ -204,8 +203,8 @@ namespace OriCoop
                 Bot(1); float maxOwn = 0, maxPuppet = 0, start = Now; int suspendedFrames = 0, sampled = 0;
                 while (Now - start < 6f + skew)
                 {
-                    maxOwn = Mathf.Max(maxOwn, Vector3.Distance(ownStart, Own.Position));
-                    maxPuppet = Mathf.Max(maxPuppet, Vector3.Distance(puppetStart, P2Context.P2.Position));
+                    maxOwn = Mathf.Max(maxOwn, Mathf.Abs(ownStart.x - Own.Position.x));
+                    maxPuppet = Mathf.Max(maxPuppet, Mathf.Abs(puppetStart.x - P2Context.P2.Position.x));
                     sampled++; if (Paused(SuspensionCounts())) suspendedFrames++;
                     yield return null;
                 }
@@ -217,25 +216,21 @@ namespace OriCoop
                 h.Check(!SessionRules.LocalPaused && !SessionRules.PausedByPartner && !SessionRules.PartnerInMenu, "S4 no pause: no pause reported or applied");
                 if (guest)
                 {
-                    h.Check(maxOwn < 0.3f, "S4 no pause: the guest's own Ori is held while its menu is open");
+                    h.Check(maxOwn < 0.3f, "S4 no pause: the guest's menu doesn't steer its Ori");
                     h.Check(maxPuppet > 2f, "S4 no pause: the host keeps playing on the guest's screen");
-                    h.Check(SessionRules.LocalLocked && SessionRules.SkippedMenuSuspends > 0, "S4 no pause: the menu skipped its suspend and locks own input");
+                    h.Check(SessionRules.LiveScreen && !SessionRules.LocalLocked && !Own.Controller.CanMove
+                        && SessionRules.SkippedMenuSuspends > 0, "S4 no pause: the menu skipped its suspend and blocks only the guest's input");
                     h.Check(NetPlay.FramesPlayed - frames > 30, "S4 guest receives frames while its menu is open");
                 }
                 else
                 {
                     h.Check(maxOwn > 2f, "S4 no pause: the host keeps playing while the guest is in the menu");
-                    h.Check(maxPuppet < 0.3f, "S4 no pause: the guest's Ori stays still on the host's screen");
+                    h.Check(maxPuppet < 0.3f && Players.First.ScreenInputLocked, "S4 no pause: the guest sends neutral input while its menu is open");
                 }
                 h.Check(NetPlay.Connected && SessionRules.Disconnects == disconnects, "S4 session survives a 6 s pause");
-                // The guest keeps its menu open until both sides have checked. Without this the guest's window,
-                // which can end a few ms earlier, closed the menu and its "resumed" message reached the host just
-                // before the host's checks ("S4 partner pause reliable status received" flake, 2026-11-16).
-                // Test-only mutation switch: ORICOOP_S4_NO_HOLD=1 skips this hold (with ORICOOP_S4_SKEW=0.3 the host's
-                // pause checks then fail every time, which proves the hold is what makes them pass).
+                // Keep the menu open until both sides have sampled it.
                 if (Environment.GetEnvironmentVariable("ORICOOP_S4_NO_HOLD") != "1") { Publish(h, 12, false); yield return Barrier(h, 12); }
-                // T-112: a teleport while the menu is still open (gate pull, revive, pedestal all go through
-                // Plugin.Teleport) must stick: the menu hold re-anchors at the new spot instead of pulling the Ori back.
+                // A teleport during the menu must still stick.
                 if (guest)
                 {
                     Vector3 target = Own.Position + Vector3.left * 3f;
@@ -243,30 +238,30 @@ namespace OriCoop
                     yield return Wait(1.5f);
                     float dx = Mathf.Abs(Own.Position.x - target.x), dy = Own.Position.y - target.y;
                     bool ground = Own.PlatformBehaviour.PlatformMovement.IsOnGround;
-                    h.Note("S4 menu teleport dx=" + F(dx) + " dy=" + F(dy) + " ground=" + ground + " locked=" + SessionRules.LocalLocked);
+                    h.Note("S4 menu teleport dx=" + F(dx) + " dy=" + F(dy) + " ground=" + ground);
                     h.Check(dx < 0.3f && Mathf.Abs(dy) < 2.5f, "S4 a teleport while the menu is open sticks (T-112)");
-                    h.Check(ground, "S4 after the teleport the held Ori stands on the ground, not in mid-air");
-                    h.Check(SessionRules.LocalLocked, "S4 own Ori still held after the teleport");
+                    h.Check(ground && SessionRules.LiveScreen, "S4 Ori lands after a teleport while the menu stays open");
                 }
                 // (13 is the fence before the menu opens; reusing it let the host run ahead of the guest.)
                 Publish(h, 14, false); yield return Barrier(h, 14);
             }
             finally { Bot(0); if (guest && UI.Menu != null) UI.Menu.HideMenuScreen(true); }
             yield return Wait(0.5f);
-            h.Check(!SessionRules.PausedByPartner && !SessionRules.LocalPaused && !SessionRules.LocalLocked, "S4 menu closed: nothing paused or locked");
+            h.Check(!SessionRules.PausedByPartner && !SessionRules.LocalPaused && !SessionRules.LocalLocked && !SessionRules.LiveScreen,
+                "S4 menu closed: nothing paused or locked");
             // T-132: online the F8 panel must not write back the LockInput it saw when it opened. A story box that lets go
             // while the panel is open stays released; one that takes the lock while it is open keeps it after closing.
             if (guest && GameController.Instance != null)
             {
                 GameController gc = GameController.Instance;
                 gc.LockInput = true; CoopMenu.Open(); yield return null;
-                bool openLocked = CoopMenu.IsOpen && SessionRules.LocalLocked;
+                bool openLive = CoopMenu.IsOpen && SessionRules.LiveScreen && !SessionRules.LocalLocked && !CoopMenu.FrozeGame;
                 gc.LockInput = false; yield return null; CoopMenu.Close(); yield return null;
                 bool released = !gc.LockInput;
                 gc.LockInput = false; CoopMenu.Open(); yield return null; gc.LockInput = true; yield return null; CoopMenu.Close(); yield return null;
                 bool kept = gc.LockInput;
                 gc.LockInput = false;
-                h.Check(openLocked, "S4 F8 online: the open panel holds this player (T-132)");
+                h.Check(openLive, "S4 F8 online: the open panel keeps this player live");
                 h.Check(released, "S4 F8 online: a story lock released while the panel was open stays released (T-132)");
                 h.Check(kept, "S4 F8 online: a story lock taken while the panel was open survives closing it (T-132)");
             }
@@ -301,6 +296,13 @@ namespace OriCoop
                 if (a != null && a.HelpMessage != null && a.Avatar != null) return a;
             return null;
         }
+        internal static bool TryOpenHelp()
+        {
+            ShowHelpTextAction help = FindHelp();
+            if (help == null) return false;
+            help.Perform(null);
+            return SessionRules.PopupOpen;
+        }
         static Vector3 s_runStart;
         // A pause suspends (nearly) everything; single objects the game suspends itself out of view
         // (SuspendWhenOutOfFrustrum, liana physics, force appliers) are not a pause.
@@ -308,21 +310,6 @@ namespace OriCoop
         {
             int suspended = 0; foreach (int n in counts.Values) if (n > 0) suspended++;
             return counts.Count > 0 && suspended * 4 > counts.Count;
-        }
-        // Which kinds of objects are suspended (top types), for the failure note.
-        static string SuspendedKinds()
-        {
-            Dictionary<string, int> kinds = new Dictionary<string, int>();
-            foreach (KeyValuePair<ISuspendable, int> pair in SuspensionCounts())
-            {
-                if (pair.Value <= 0) continue;
-                Component c = pair.Key as Component;
-                string name = pair.Key.GetType().Name + (c != null ? "@" + c.gameObject.name : "");
-                int n; kinds.TryGetValue(name, out n); kinds[name] = n + 1;
-            }
-            List<string> parts = new List<string>();
-            foreach (KeyValuePair<string, int> pair in kinds) { parts.Add(pair.Key + "x" + pair.Value); if (parts.Count >= 8) break; }
-            return kinds.Count + " kinds: " + string.Join(", ", parts.ToArray());
         }
         static IEnumerator Map(TestHarness h)
         {
@@ -386,7 +373,6 @@ namespace OriCoop
                     Bot(1); yield return TestClock.WaitGame(0.3f); Bot(0);
                     h.Check(!GameMapUI.Instance.IsVisible && ori.PlatformBehaviour.LeftRightMovement.HorizontalInput > 0f,
                         "S4 map: the map button closes it and restores P1's movement input");
-                    yield return TeleporterPicker(h, ori, receiver);
                     yield return OpenMapWhileAiming(h, ori);
                     UI.Menu.HideMenuScreen(true);
                     yield return DownedInMap(h, ori, receiver);
@@ -461,17 +447,7 @@ namespace OriCoop
                     "S4 map: the fatal hit downs P1 and closes the map");
                 h.Check(!flame.IsCharging && Mathf.Approximately(ori.Energy.Current, ori.Energy.Max),
                     "S4 map: opening the map cancels and refunds Charge Flame before the same-frame fatal hit");
-                Bot(0);
-                TestClock.Window hint = new TestClock.Window(1f);
-                while (Revive.LastSelfHint == null && hint.Open) yield return null;
-                h.Check(Revive.LastSelfHint != null && GameObject.Find("OriCoop_SelfReviveHint_P" + Players.LocalSeat) != null,
-                    "S4 map: the hold-Y/Q self-revive hint appears");
-                Bot(0, P2Input.BTN_Y);
-                TestClock.Window hold = new TestClock.Window(3f);
-                while (Revive.IsDowned(ori) && hold.Open) yield return null;
-                Bot(0);
-                h.Check(!Revive.IsDowned(ori) && Revive.SelfRevives == self + 1 && TestHarness.RestoreCheckpointCalls == restores,
-                    "S4 map: holding Y self-revives P1 without a checkpoint reload");
+                yield return SelfRevive(h, "S4 map: ", ori, self, restores);
             }
             finally
             {
@@ -480,97 +456,213 @@ namespace OriCoop
                 if (!hadCharge) ori.PlayerAbilities.SetAbility(AbilityType.ChargeFlame, false);
             }
         }
-        static IEnumerator TeleporterPicker(TestHarness h, SeinCharacter ori, SeinDamageReciever receiver)
+        static IEnumerator SelfRevive(TestHarness h, string label, SeinCharacter ori, int self, int restores)
         {
-            GameMapTeleporter well = TeleporterController.Instance.Teleporters[0];
-            bool activated = well.Activated;
+            Bot(0);
+            TestClock.Window hint = new TestClock.Window(1f);
+            while (Revive.LastSelfHint == null && hint.Open) yield return null;
+            h.Check(Revive.LastSelfHint != null && GameObject.Find("OriCoop_SelfReviveHint_P" + Players.LocalSeat) != null,
+                label + "the hold-Y/Q self-revive hint appears");
+            Bot(0, P2Input.BTN_Y);
+            TestClock.Window hold = new TestClock.Window(3f);
+            while (Revive.IsDowned(ori) && hold.Open) yield return null;
+            Bot(0);
+            h.Check(!Revive.IsDowned(ori) && Revive.SelfRevives == self + 1 && TestHarness.RestoreCheckpointCalls == restores,
+                label + "holding Y revives P1 without a checkpoint reload");
+        }
+        static IEnumerator CheckLiveScreen(TestHarness h, string screen, Action open, Func<bool> visible, int step, bool retryClose = false)
+        {
+            string label = "S4 " + screen + ": ";
+            bool host = NetPlay.IsHost, revive = Revive.Enabled;
+            SeinCharacter ori = Own;
+            SeinDamageReciever receiver = ori.Mortality.DamageReciever;
+            bool immortal = receiver.IsImmortal;
+            float health = ori.Mortality.Health.Amount;
+            Action close = delegate {
+                SessionRules.HidePopups(); CoopMenu.Close();
+                if (UI.MainMenuVisible) UI.Menu.HideMenuScreen(true);
+            };
+            yield return Barrier(h, step);
             try
             {
-                well.Activated = true;
-                receiver.ResetInviciblity();
-                float health = ori.Mortality.Health.Amount;
-                ori.Speed = Vector3.down * 2f;
-                int skipped = SessionRules.SkippedMenuSuspends;
-                TeleporterController.Show(well.Identifier);
-                h.Check(GameMapUI.Instance.ShowingTeleporters && SessionRules.LocalLocked && !SessionRules.LiveMap
-                    && SessionRules.SkippedMenuSuspends > skipped && ori.Speed == Vector3.zero,
-                    "S4 map: the spirit well picker holds P1 on open without pausing the game");
-                receiver.OnRecieveDamage(new Damage(1000f, Vector2.zero, ori.Position, DamageType.Enemy, null));
-                h.Check(ori.Mortality.Health.Amount == health && !Revive.IsDowned(ori) && UI.Menu.MainMenuVisible,
-                    "S4 map: the spirit well picker stays open and a fatal hit cannot down P1");
+                Revive.Enabled = true;
+                if (host)
+                {
+                    yield return Wait(0.5f);
+                    ori.Position = s_runStart + Vector3.up * 5f;
+                    ori.Speed = Vector3.down * 2f;
+                    ori.Mortality.Health.RestoreAllHealth();
+                    receiver.IsImmortal = false;
+                    open();
+                    h.Check(visible() && SessionRules.LiveScreen && !SessionRules.LocalLocked && ori.Speed.y < -1f,
+                        label + "opens without holding Ori or zeroing speed");
+                    Bot(1);
+                }
+                float peak = (host ? ori : P2Context.P2).Position.y, drop = 0f;
+                float sentPeak = float.MinValue, sentDrop = 0f;
+                bool running = true, visibleThroughout = true, remoteLocked = false;
+                for (float end = Now + 3f; Now < end; )
+                {
+                    float y = (host ? ori : P2Context.P2).Position.y;
+                    if (host || Players.First.ScreenInputLocked)
+                    {
+                        peak = Mathf.Max(peak, y); drop = Mathf.Max(drop, peak - y);
+                        sentPeak = Mathf.Max(sentPeak, NetPlay.LatestRemotePos.y);
+                        sentDrop = Mathf.Max(sentDrop, sentPeak - NetPlay.LatestRemotePos.y);
+                        remoteLocked |= !host;
+                    }
+                    running &= Time.timeScale > 0f && !Own.IsSuspended && !Paused(SuspensionCounts());
+                    visibleThroughout &= !host || visible();
+                    yield return null;
+                }
+                h.Check(running, label + "the world keeps running");
+                if (host)
+                {
+                    h.Check(visibleThroughout && drop > 2f && ori.PlatformBehaviour.LeftRightMovement.HorizontalInput == 0f
+                        && !GameController.Instance.InputLocked, label + "P1 falls but the screen input does not steer it (drop=" + F(drop) + ")");
+                    float before = ori.Mortality.Health.Amount;
+                    receiver.ResetInviciblity();
+                    receiver.OnRecieveDamage(new Damage(4f, Vector2.right, ori.Position, DamageType.Enemy, null));
+                    h.Check(visible() && ori.Mortality.Health.Amount < before, label + "P1 takes an enemy hit while it stays open");
+                }
+                else h.Check(remoteLocked && drop > 2f && sentDrop > 2f,
+                    label + "P2 receives P1's fall and sees the puppet fall (sent=" + F(sentDrop) + ", puppet=" + F(drop) + ")");
+                yield return Barrier(h, step + 1);
+                if (host)
+                {
+                    close();
+                    yield return TestClock.WaitGame(0.5f);
+                    h.Check(!visible() && !SessionRules.LiveScreen && ori.Controller.CanMove
+                        && ori.PlatformBehaviour.LeftRightMovement.HorizontalInput > 0f, label + "closing restores control");
+                    Bot(0);
+                    Revive.LastSelfHint = null;
+                    int self = Revive.SelfRevives, restores = TestHarness.RestoreCheckpointCalls;
+                    open();
+                    h.Check(visible(), label + "open before fatal hit");
+                    if (retryClose) UI.Menu.LockClosingMenu = true;
+                    try
+                    {
+                        receiver.OnRecieveDamage(new Damage(1000f, Vector2.zero, ori.Position, DamageType.Enemy, null));
+                        if (retryClose)
+                        {
+                            Bot(0, P2Input.BTN_Y);
+                            yield return TestClock.WaitGame(0.3f);
+                            Revive.Downed down = Revive.DownedAtSeat(Players.LocalSeat);
+                            h.Check(UI.MainMenuVisible && down != null && down.SelfHold > 0f,
+                                label + "self-revive hold advances while native closing is locked");
+                        }
+                    }
+                    finally { if (retryClose) UI.Menu.LockClosingMenu = false; }
+                    if (retryClose) yield return TestClock.WaitGame(0.1f);
+                    h.Check(Revive.IsDowned(ori) && !UI.MainMenuVisible && !CoopMenu.IsOpen && !SessionRules.PopupOpen
+                        && !GameController.Instance.LockInput, label + "the fatal hit closes the screen");
+                    yield return SelfRevive(h, label, ori, self, restores);
+                }
+                yield return Barrier(h, step + 2);
             }
             finally
             {
-                UI.Menu.HideMenuScreen(true);
-                well.Activated = activated;
+                Bot(0); Revive.Enabled = revive;
+                if (Revive.AnyDowned) Revive.ClearAll("S4 screen test cleanup", false);
+                if (host)
+                {
+                    close(); receiver.IsImmortal = immortal; ori.Mortality.Health.SetAmount(health);
+                }
             }
-            TestClock.Window close = new TestClock.Window(2f);
-            while (GameMapUI.Instance.ShowingTeleporters && close.Open) yield return null;
-            h.Check(!GameMapUI.Instance.ShowingTeleporters && !SessionRules.LocalLocked,
-                "S4 map: closing the spirit well picker frees P1's input");
+        }
+        static IEnumerator CheckMenu(TestHarness h, MenuScreenManager.Screens screen, Action open, int step)
+        {
+            return CheckLiveScreen(h, screen.ToString(), open, () => UI.Menu.MainMenuVisible && UI.Menu.CurrentScreen == screen, step,
+                screen == MenuScreenManager.Screens.Pause);
+        }
+        static void OpenInventoryItem()
+        {
+            UI.Menu.ShowInventory();
+            InventoryManager inventory = InventoryManager.Instance;
+            foreach (CleverMenuItem item in inventory.NavigationManager.MenuItems)
+            {
+                InventoryAbilityItem ability = item.GetComponent<InventoryAbilityItem>();
+                if (item.GetComponent<InventoryItemHelpText>() == null || (ability != null && !ability.HasAbility)) continue;
+                inventory.NavigationManager.SetCurrentMenuItem(item);
+                inventory.OnMenuItemPressed();
+                break;
+            }
         }
         static IEnumerator NoPauseScreens(TestHarness h)
         {
-            bool guest = !NetPlay.IsHost;
             yield return PlaceAtStart(h, s_runStart, 180);
             yield return Map(h);
             yield return PlaceAtStart(h, s_runStart, 188);
-            string firstSuspended = "";
-            int popups = SessionRules.SkippedPopupSuspends, suspendedFrames = 0;
-            float ownTravel = 0f, maxPuppet = 0f;
-            bool popupShown = false, popupClosed = false; string popupName = "none";
-            Vector3 puppetStart = P2Context.P2.Position, ownStart = Own.Position;
-            try
-            {
-                Bot(1);
-                if (guest)
-                {
-                    ShowHelpTextAction help = FindHelp();
-                    if (help != null) { popupName = help.name; help.Perform(null); }
-                    yield return null; popupShown = SessionRules.PopupOpen;
-                }
-                for (float end = Now + 3f; Now < end; )
-                {
-                    ownTravel = Mathf.Max(ownTravel, Vector3.Distance(ownStart, Own.Position));
-                    maxPuppet = Mathf.Max(maxPuppet, Vector3.Distance(puppetStart, P2Context.P2.Position));
-                    if (Paused(SuspensionCounts())) { suspendedFrames++; if (firstSuspended == "") firstSuspended = SuspendedKinds(); }
-                    yield return null;
-                }
-                if (guest)
-                {
-                    // Close the help popup the way the player's button press does (InteractiveMessageBox.EndMessageBox). Hiding
-                    // it alone left GameController.LockInput set for ~20 s: the guest could not move or take damage (T-156).
-                    foreach (UnityEngine.Object o in UnityEngine.Object.FindObjectsOfType(typeof(InteractiveMessageBox)))
-                    {
-                        InteractiveMessageBox box = o as InteractiveMessageBox;
-                        if (box != null && box.MessageBox != null
-                            && Traverse.Create(box).Field("m_state").GetValue<InteractiveMessageBox.State>() != InteractiveMessageBox.State.Inactive)
-                            box.EndMessageBox();
-                    }
-                    SessionRules.HideSkippedPopups();
-                    float end = Now + 4f;
-                    while (SessionRules.PopupOpen && Now < end) yield return null;
-                    popupClosed = !SessionRules.PopupOpen;
-                }
-            }
-            finally { Bot(0); if (guest && UI.Menu != null && UI.Menu.MainMenuVisible) UI.Menu.HideMenuScreen(true); }
-            h.Note("S4 popup=" + popupName + "/" + popupShown + " closed=" + popupClosed
-                + " puppetMax=" + F(maxPuppet) + " ownTravel=" + F(ownTravel) + " suspendedFrames=" + suspendedFrames
-                + " skippedPopups=" + (SessionRules.SkippedPopupSuspends - popups)
-                + (firstSuspended == "" ? "" : " firstSuspended=" + firstSuspended));
-            h.Check(suspendedFrames == 0, "S4 no pause: the game is not paused on this PC while the guest has a help popup open");
-            if (guest)
-            {
-                h.Check(popupShown && SessionRules.SkippedPopupSuspends > popups, "S4 no pause: an ability help popup opens without suspending");
-                h.Check(ownTravel < 0.3f, "S4 no pause: own Ori held while the help popup is open");
-                h.Check(popupClosed && !SessionRules.LocalLocked && !GameController.Instance.LockInput,
-                    "S4 no pause: closing the popup frees own input (game input lock " + GameController.Instance.LockInput + ")");
-                h.Check(maxPuppet > 2f, "S4 no pause: the host keeps playing on the guest's screen");
-            }
-            else h.Check(ownTravel > 2f, "S4 no pause: the host keeps playing while the guest has a popup open");
-            Publish(h, 19, false); yield return Barrier(h, 19);
-            // The guest-death step respawns the guest beside the host's last known position.
+            yield return CheckMenu(h, MenuScreenManager.Screens.Pause, () => UI.Menu.ShowMenuScreen(), 200);
+            yield return CheckMenu(h, MenuScreenManager.Screens.SkillTree, () => UI.Menu.ShowSkillTree(), 203);
+            yield return CheckMenu(h, MenuScreenManager.Screens.Inventory, () => UI.Menu.ShowInventory(), 206);
+            yield return CheckMenu(h, MenuScreenManager.Screens.Options, () => UI.Menu.ShowOptions(), 209);
+            yield return CheckLiveScreen(h, "inventory item", OpenInventoryItem, () => UI.Menu.IsInventoryVisible() && SessionRules.PopupOpen, 212);
+            yield return CheckLiveScreen(h, "help popup", () => TryOpenHelp(), () => SessionRules.PopupOpen, 215);
+            yield return CheckLiveScreen(h, "F8", CoopMenu.Open, () => CoopMenu.IsOpen, 218);
+            yield return TeleportPicker(h);
             yield return PlaceAtStart(h, s_runStart, 184);
+        }
+        static IEnumerator TeleportPicker(TestHarness h)
+        {
+            yield return Barrier(h, 221);
+            if (NetPlay.IsHost)
+            {
+                SeinCharacter ori = Own;
+                Vector3 start = ori.Position;
+                GameMapTeleporter origin = TeleporterController.Instance.Teleporters[0];
+                GameMapTeleporter destination = TeleporterController.Instance.Teleporters.Find(w => w != origin && Vector3.Distance(w.WorldPosition, start) > 15f);
+                h.Check(destination != null, "S4 picker: a distant destination exists");
+                if (destination != null)
+                {
+                    MenuScreenManager menu = UI.Menu;
+                    bool closingLocked = menu.LockClosingMenu;
+                    bool originActive = origin.Activated, destinationActive = destination.Activated;
+                    GameObject go = new GameObject("S4 departure well");
+                    try
+                    {
+                        go.transform.position = start;
+                        go.AddComponent<SceneTeleporter>().Identifier = origin.Identifier;
+                        SavePedestal well = go.AddComponent<SavePedestal>(); well.enabled = false;
+                        AccessTools.Field(typeof(SavePedestal), "m_hasBeenUsedBefore").SetValue(well, true);
+                        origin.Activated = destination.Activated = true;
+                        AccessTools.Method(typeof(SavePedestal), "TeleportOnPedestal").Invoke(well, null);
+                        h.Check(menu.MainMenuVisible && GameMapUI.Instance.ShowingTeleporters && !ori.IsSuspended
+                            && !ori.Controller.CanMove, "S4 picker: stays live at the departure well");
+                        GameMapUI.Instance.Teleporters.Select(destination.Identifier);
+                        menu.LockClosingMenu = true;
+                        ori.Position = start + Vector3.right * (well.Radius + 1f);
+                        Core.Input.InputButtonProcessor confirm = Core.Input.ActionButtonA;
+                        bool pressed = confirm.IsPressed, wasPressed = confirm.WasPressed;
+                        try { confirm.WasPressed = false; confirm.IsPressed = true; GameMapUI.Instance.Teleporters.Advance(); }
+                        finally { confirm.IsPressed = pressed; confirm.WasPressed = wasPressed; }
+                        h.Check(menu.MainMenuVisible && !(bool)AccessTools.Field(typeof(TeleporterController), "m_isTeleporting").GetValue(TeleporterController.Instance),
+                            "S4 picker: moving out of range blocks confirmation even while closing is locked");
+                        ori.Position = start;
+                        menu.LockClosingMenu = false;
+                        yield return TestClock.WaitGame(0.1f);
+                        h.Check(!menu.MainMenuVisible, "S4 picker: a cancelled picker closes when unlocked");
+                    }
+                    finally
+                    {
+                        try
+                        {
+                            if (menu != null && menu.MainMenuVisible && menu.CurrentScreen == MenuScreenManager.Screens.WorldMap)
+                            {
+                                menu.LockClosingMenu = false;
+                                menu.HideMenuScreen(true);
+                            }
+                        }
+                        finally
+                        {
+                            if (menu != null) menu.LockClosingMenu = closingLocked;
+                            origin.Activated = originActive; destination.Activated = destinationActive;
+                            UnityEngine.Object.Destroy(go);
+                        }
+                    }
+                }
+            }
+            yield return Barrier(h, 223);
         }
         // Losing window focus online is not a pause: the game and the network keep running.
         static IEnumerator Focus(TestHarness h)
@@ -627,9 +719,7 @@ namespace OriCoop
             bool guest = !NetPlay.IsHost, died = false;
             if (guest)
             {
-                // T-156: the help popup of the step before locks input for a few seconds (LockPlayerInputAction), and an Ori
-                // that cannot move takes no damage (SeinDamageReciever.OnRecieveDamage): the kill did nothing and these
-                // checks passed without a death. Kill only once the guest can move, and require the death.
+                // Damage ignores a guest whose input is still locked by a story.
                 float ready = Now;
                 while (!Own.Controller.CanMove && Now - ready < 10f) yield return null;
                 GameController gc = GameController.Instance;
@@ -638,7 +728,13 @@ namespace OriCoop
                     + " animation=" + Own.Controller.IsPlayingAnimation + " held=" + SessionRules.LocalLocked + " popup=" + SessionRules.PopupOpen + ")");
             }
             float start = Now;
-            if (guest) { Kill(); died = !Alive || SessionRules.Respawning; }
+            if (guest)
+            {
+                UI.Menu.ShowMenuScreen();
+                Kill(); died = !Alive || SessionRules.Respawning;
+                h.Check(!UI.MainMenuVisible, "S4 guest death closes the pause menu without revive rules");
+                if (UI.MainMenuVisible) UI.Menu.HideMenuScreen(true);
+            }
             while (Now - start < 0.1f) { if (guest && (!Alive || SessionRules.Respawning)) died = true; yield return null; }
             while ((!Alive || (guest && SessionRules.Respawning)) && Now - start < 3f) { died = true; yield return null; }
             yield return Wait(0.25f);
