@@ -62,7 +62,7 @@ namespace OriCoop
                 if (!s_guests.Loaded(seat)) return;
                 SaveWire.ReadLoaded(r); UpdateHostReady();
                 Services.Log.Info("net: guest save loaded; sending full world and progress");
-                SavesHost.Current.SendWorldSnapshot(seat);
+                SavesHost.Current.SendWorldSnapshot(seat);   // also pays off a resync this load queued (T-254)
                 SavesHost.Current.SendProgressSnapshot(seat);
             });
             Services.Net.SessionStarted += Start;
@@ -104,6 +104,11 @@ namespace OriCoop
             CoopSaves.RebindDevice(previous, primary);
             SeatSkillSync.RebindDevice(previous, primary);
         }
+
+        // Host (T-254): this remote device seat plays the world (its checkpoint load is announced, not pending).
+        internal static bool GuestPlaysWorld(int deviceSeat) { return s_guests.ReadyForSeat(deviceSeat, true, true); }
+        static readonly Func<int, bool> s_guestPlaysWorld = GuestPlaysWorld;
+        internal static Func<int, bool> GuestPlaysWorldCheck { get { return s_guestPlaysWorld; } }
 
         public static bool ReadyForSeat(int seat)
         {
