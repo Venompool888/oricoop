@@ -205,7 +205,12 @@ namespace OriCoop.Saves
             string path = Sidecar(slot);
             if (record == null || string.IsNullOrEmpty(hash)) { if (File.Exists(path)) File.Delete(path); return; }
             using (MemoryStream m = new MemoryStream()) using (BinaryWriter w = new BinaryWriter(m))
-            { w.Write(hash); record.Write(w); w.Flush(); File.WriteAllBytes(path, m.ToArray()); }
+            {
+                // Temp file + replace: a crash mid-write left a cut sidecar, and the save lost its skill record.
+                w.Write(hash); record.Write(w); w.Flush();
+                File.WriteAllBytes(path + ".tmp", m.ToArray());
+                CoopSaveFolder.ReplaceWith(path + ".tmp", path);
+            }
         }
     }
 }

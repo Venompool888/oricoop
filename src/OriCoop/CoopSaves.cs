@@ -204,8 +204,7 @@ namespace OriCoop
                     + "\nsynced=" + Synced + "\nsyncedAt=" + SyncedAt + "\n";
                 string p = LinkPath(slot), tmp = p + ".tmp";
                 File.WriteAllText(tmp, text, new UTF8Encoding(false));
-                if (File.Exists(p)) File.Delete(p);
-                File.Move(tmp, p);
+                CoopSaveFolder.ReplaceWith(tmp, p);
             }
         }
 
@@ -249,8 +248,7 @@ namespace OriCoop
         {
             string p = SavePath(slot), tmp = p + ".oricoop-tmp";
             File.WriteAllBytes(tmp, bytes);
-            if (File.Exists(p)) File.Delete(p);
-            File.Move(tmp, p);
+            CoopSaveFolder.ReplaceWith(tmp, p);
             RefreshSlotInfo(slot, bytes);
         }
 
