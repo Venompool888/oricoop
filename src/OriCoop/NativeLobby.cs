@@ -22,8 +22,9 @@ namespace OriCoop
         const int PageRoomsMenu = 17, PageServerManage = 18;   // T-095: 我的房间 submenu, 服务器管理
         const int PageRooms = 11, PageRoomView = 12, PageRoomCreate = 13, PageRoomJoin = 14, PageRoomPassword = 15, PageRoomSlots = 16;
         const int PageDiagnosticsList = 19, PageDiagnosticsConsent = 20;
+        const int PageHostMethod = 21, PageJoinMethod = 22;   // menu redesign: 创建房间 / 加入房间 -> connection method (TitleMenu.cs)
         static string s_diagnosticsAddress = "";
-        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots", "roomsmenu", "servermanage", "diagnosticslist", "diagnosticsconsent" };
+        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots", "roomsmenu", "servermanage", "diagnosticslist", "diagnosticsconsent", "hostmethod", "joinmethod" };
         const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // legacy letter codes (text entry); new codes are digits 2-9 typed on the dial (T-046)
         const string IpAlphabet = "0123456789.:";
         const string CServerHostAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-";
@@ -94,7 +95,7 @@ namespace OriCoop
         public static bool LobbyEditing { get { return s_editing; } }
         public static string LobbyEntry { get { return s_entry; } }
 
-        static bool IsLobbyPage { get { return (s_page >= PageRole && s_page <= PageJoin) || s_page >= PageServerList; } }
+        static bool IsLobbyPage { get { return (s_page >= PageRole && s_page <= PageJoin) || (s_page >= PageServerList && !IsTitleFlowPage); } }
         static bool UsesRoomCode { get { return s_transport == "cserver"; } }
         static string LobbyServer { get { return s_transport == "cserver" ? (OriCoop.Authority.CServerConfig.Address ?? "").Trim() : ""; } }
         static bool CServerEntry { get { return s_entryKind == 3 || s_entryKind == 4; } }
@@ -480,23 +481,7 @@ namespace OriCoop
                     if (s_transport == "cserver") BeginCServer(true, srv + "|");
                     else NetPlay.Begin(true, s_transport, "");
                 }
-                else if (index == 1)
-                {
-                    if (s_transport == "steam") { s_joinTarget = ""; GoPage(PageJoin, 1); NetPlay.Begin(false, "steam", ""); return; }
-                    s_entryKind = roomCode ? 0 : 1;
-                    if (roomCode)
-                    {
-                        s_legacyCode = HasLegacyLetter(NetPlay.ConfigRoomCode);   // a remembered older letter code stays a text entry
-                        s_entry = Filter((NetPlay.ConfigRoomCode ?? "").Trim().ToUpperInvariant());
-                        s_cursor = Math.Min(s_entry.Length, EntryMax - 1);
-                        GoPage(PageEntry, s_entry.Length > 0 ? 1 : 0);
-                    }
-                    else
-                    {
-                        LoadAddress(NetPlay.ConfigAddress ?? "", NetPlay.ConfigPort);
-                        GoPage(PageEntry, IpComplete && ValidPort(s_port) ? 2 : 0);
-                    }
-                }
+                else if (index == 1) OpenJoinEntry();
             }
             else if (s_page == PageEntry && IpMode)
             {
@@ -568,8 +553,30 @@ namespace OriCoop
             else NetPlay.Begin(false, s_transport, s_joinTarget);
         }
 
+        // Join with s_transport: the Steam join page (waits for an invite), else the room-code or IP entry page, prefilled
+        // with what was typed last. Used by the 加入 row of the host / join page and by 加入房间 on the title (TitleMenu.cs).
+        static void OpenJoinEntry()
+        {
+            if (s_transport == "steam") { s_joinTarget = ""; GoPage(PageJoin, 1); NetPlay.Begin(false, "steam", ""); return; }
+            bool roomCode = UsesRoomCode;
+            s_entryKind = roomCode ? 0 : 1;
+            if (roomCode)
+            {
+                s_legacyCode = HasLegacyLetter(NetPlay.ConfigRoomCode);   // a remembered older letter code stays a text entry
+                s_entry = Filter((NetPlay.ConfigRoomCode ?? "").Trim().ToUpperInvariant());
+                s_cursor = Math.Min(s_entry.Length, EntryMax - 1);
+                GoPage(PageEntry, s_entry.Length > 0 ? 1 : 0);
+            }
+            else
+            {
+                LoadAddress(NetPlay.ConfigAddress ?? "", NetPlay.ConfigPort);
+                GoPage(PageEntry, IpComplete && ValidPort(s_port) ? 2 : 0);
+            }
+        }
+
         static void LobbyBack()
         {
+            if (TitleFlowBack()) return;                    // a join opened from 加入房间 on the title goes back there (TitleMenu.cs)
             if (IsRoomsPage) { RoomBack(); return; }
             if (s_page == PageDiagnosticsConsent) { GoPage(PageDiagnosticsList, Math.Max(0, Authority.CServerConfig.Servers.IndexOf(s_diagnosticsAddress))); return; }
             if (s_page == PageDiagnosticsList) { GoPage(PageServerManage, 3); return; }
@@ -600,6 +607,7 @@ namespace OriCoop
 
         static void LobbyTick()
         {
+            if (IsOpen && IsTitleFlowPage) { if (Time.realtimeSinceStartup >= s_nextRefresh) RefreshTexts(false); return; }   // a toast ends, a server is added
             if (!IsOpen || !IsLobbyPage) return;
             if (IsRoomsPage) { RoomTick(); return; }
             if (OnlineRoomScreen.Visible) return;
@@ -1084,7 +1092,7 @@ namespace OriCoop
 
         static string TooltipFor(string[][] rows, int i)
         {
-            if (IsLobbyPage && Time.realtimeSinceStartup < s_toastUntil) return PickResolved(L10n.T(s_toastKey, true), L10n.T(s_toastKey, false));
+            if ((IsLobbyPage || IsTitleFlowPage) && Time.realtimeSinceStartup < s_toastUntil) return PickResolved(L10n.T(s_toastKey, true), L10n.T(s_toastKey, false));
             return PickResolved(rows[i][1], rows[i][3]);
         }
 

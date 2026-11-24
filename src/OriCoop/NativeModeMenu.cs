@@ -103,7 +103,8 @@ namespace OriCoop
                     for (int i = 0; i < zh.Length; i++) lobby.Add(new[] { zh[i][0], zh[i][1], en[i][0], en[i][1] });
                     return lobby.ToArray();
                 }
-                string[][] keys = s_page == 0 ? MainPage : s_page == 1 ? OnlinePage : s_page == PageCoop ? TitlePage : ServerModeKeys();
+                if (IsTitleFlowPage) return TitleFlowRows();   // 多人游玩 / 创建房间 / 加入房间 on the title (TitleMenu.cs)
+                string[][] keys = s_page == 0 ? MainPage : s_page == 1 ? OnlinePage : ServerModeKeys();
                 var rows = new List<string[]>();
                 foreach (string[] row in keys) rows.Add(Row(row[0], row[1]));
                 return rows.ToArray();
@@ -644,7 +645,7 @@ namespace OriCoop
             if (font.otherChars != null) foreach (BitmapFontChar c in font.otherChars) have.Add(c.id);
             var missing = new StringBuilder();
             var seen = new HashSet<char>();
-            foreach (string[][] page in new[] { MainPage, OnlinePage, TitlePage, ServerModePage })
+            foreach (string[][] page in new[] { MainPage, OnlinePage, TitlePage, TitleHostPage, TitleJoinPage, ServerModePage })
                 foreach (string[] row in page)
                     foreach (string key in row)
                         foreach (char ch in L10n.T(key, !english))
@@ -665,8 +666,8 @@ namespace OriCoop
         internal static string PagesWithHostMode()
         {
             string bad = "";
-            string[] names = { "MainPage", "OnlinePage", "TitlePage", "ServerModePage" };
-            string[][][] pages = { MainPage, OnlinePage, TitlePage, ServerModePage };
+            string[] names = { "MainPage", "OnlinePage", "TitlePage", "TitleHostPage", "TitleJoinPage", "ServerModePage" };
+            string[][][] pages = { MainPage, OnlinePage, TitlePage, TitleHostPage, TitleJoinPage, ServerModePage };
             for (int i = 0; i < pages.Length; i++)
                 foreach (string[] row in pages[i]) foreach (string key in row) if (key == "server.relay" || key == "server.relay.desc") bad += names[i] + " ";
             return bad.Trim();
