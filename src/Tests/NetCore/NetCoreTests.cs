@@ -119,6 +119,53 @@ static class NetCoreTests
         }
     }
 
+    // T-251: level geometry for the stand-in's wall test: axis-aligned boxes; a segment is blocked when it crosses one.
+    sealed class FakeWalls : StandInCorrection.IWallProbe
+    {
+        public readonly List<float[]> Boxes = new List<float[]>();   // xMin, yMin, xMax, yMax
+        public int Calls;
+        public FakeWalls Box(float xMin, float yMin, float xMax, float yMax) { Boxes.Add(new float[] { xMin, yMin, xMax, yMax }); return this; }
+        public bool Blocked(float ax, float ay, float bx, float by) { Calls++; return Crosses(ax, ay, bx, by); }
+        public bool Crosses(float ax, float ay, float bx, float by)
+        {
+            foreach (float[] b in Boxes)
+            {
+                // Liang-Barsky clip of the segment against the box.
+                float t0 = 0f, t1 = 1f, dx = bx - ax, dy = by - ay;
+                if (Clip(-dx, ax - b[0], ref t0, ref t1) && Clip(dx, b[2] - ax, ref t0, ref t1)
+                    && Clip(-dy, ay - b[1], ref t0, ref t1) && Clip(dy, b[3] - ay, ref t0, ref t1)) return true;
+            }
+            return false;
+        }
+        static bool Clip(float p, float q, ref float t0, ref float t1)
+        {
+            if (p == 0f) return q >= 0f;
+            float r = q / p;
+            if (p < 0f) { if (r > t1) return false; if (r > t0) t0 = r; }
+            else { if (r < t0) return false; if (r < t1) t1 = r; }
+            return true;
+        }
+    }
+
+    // NetPlay.Correct with the default config (SnapDistance 4, CorrectionBlend 0.2): the stand-in at (x, y) follows its
+    // owner at (ox, oy) for some fixed steps; the stand-in's own replay is stuck (it does not move by itself), as when
+    // it stopped against a wall its owner got past. Returns the snaps; fails when a pull moves it across a wall.
+    static int Follow(FakeWalls walls, ref float x, ref float y, float ox, float oy, int steps)
+    {
+        int snaps = 0;
+        for (int i = 0; i < steps; i++)
+        {
+            float ex = ox - x, ey = oy - y, e = (float)Math.Sqrt(ex * ex + ey * ey);
+            StandInCorrection.Fix fix = StandInCorrection.Decide(e, 4f, x, y, ox, oy, walls);
+            if (fix == StandInCorrection.Fix.Snap) { x = ox; y = oy; snaps++; continue; }
+            if (fix != StandInCorrection.Fix.Blend) continue;
+            float nx = x + ex * 0.2f, ny = y + ey * 0.2f;
+            Check(!walls.Crosses(x, y, nx, ny), "step " + i + ": the stand-in slid through a wall from (" + x + "," + y + ") to (" + nx + "," + ny + ")");
+            x = nx; y = ny;
+        }
+        return snaps;
+    }
+
     static int cases, failures;
     static void Check(bool value, string message) { if (!value) throw new Exception(message); }
     static void Equal<T>(T expected, T actual)
@@ -619,6 +666,80 @@ static class NetCoreTests
             receive(90000); playTick = 90001;              // the previous player's straggler, played (the catch-up jumps to it)
             taken = 0; for (uint tick = 3; tick < 10; tick++) receive(tick);
             Equal(7, taken); Equal(3u, playTick);
+        });
+        // T-251 (playtest 6, 34% loss): "it slides around, I saw you go through the wall". The stand-in's position error
+        // was pulled in 20% a step by writing the position, with no collision: across a wall it slid through it.
+        if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STANDIN_SLIDES") == "1") StandInCorrection.MutateNoWallSnap = true;
+        Run("stand-in: a pull whose path crosses a wall jumps to the owner instead of sliding through (T-251)", delegate {
+            FakeWalls walls = new FakeWalls().Box(0f, -5f, 0.3f, 5f);   // a wall 0.3 thick
+            float x = -0.5f, y = 0f;                                   // stopped against it; the owner went on to x = 1.2
+            int snaps = Follow(walls, ref x, ref y, 1.2f, 0f, 30);
+            Equal(1, snaps); Check(x == 1.2f && y == 0f, "at the owner (" + x + "," + y + ")");
+        });
+        Run("stand-in: a floor or ceiling between it and its owner is a wall too (T-251)", delegate {
+            FakeWalls walls = new FakeWalls().Box(-10f, 1f, 10f, 1.4f);   // a ledge: the owner jumped onto it
+            float x = 0.5f, y = 0.5f;
+            Equal(1, Follow(walls, ref x, ref y, 0.2f, 2.0f, 20));
+            Check(y == 2.0f, "on the ledge (" + y + ")");
+        });
+        Run("stand-in: with a free path the error is pulled in smoothly, no jump (T-251)", delegate {
+            FakeWalls walls = new FakeWalls().Box(5f, -5f, 5.3f, 5f);   // a wall, but not between them
+            float x = 0f, y = 0f, last = 3.5f;
+            for (int i = 0; i < 25; i++)
+            {
+                Equal(0, Follow(walls, ref x, ref y, 3.5f, 0f, 1));
+                float e = 3.5f - x;
+                Check(e < last && e > last * 0.75f, "step " + i + ": error " + e + " after " + last + " (20% a step)");
+                last = e;
+            }
+            Check(last < 0.02f, "converged (" + last + ")");
+            Check(walls.Calls > 0, "the path was checked");
+        });
+        Run("stand-in: far errors jump and tiny ones cast no line, as before (T-251)", delegate {
+            FakeWalls walls = new FakeWalls().Box(0f, -5f, 0.3f, 5f);
+            Equal(StandInCorrection.Fix.Snap, StandInCorrection.Decide(4.5f, 4f, -1f, 0f, 3.5f, 0f, walls));
+            Equal(StandInCorrection.Fix.Snap, StandInCorrection.Decide(9f, 4f, -1f, 0f, 8f, 0f, null));
+            Equal(StandInCorrection.Fix.None, StandInCorrection.Decide(0.01f, 4f, 0f, 0f, 0.01f, 0f, walls));
+            Equal(StandInCorrection.Fix.Blend, StandInCorrection.Decide(0.05f, 4f, -0.02f, 0f, 0.03f, 0f, walls));
+            Equal(0, walls.Calls);
+            Equal(StandInCorrection.Fix.Blend, StandInCorrection.Decide(2f, 4f, -1f, 0f, 1f, 0f, null));   // no probe: the old pull
+        });
+        // T-251: during a stall the stand-in repeats its owner's last input (extrapolation) only briefly. The starved path
+        // stopped after 6 steps, but a burst whose first ticks were lost replayed the stale input again, uncapped.
+        Run("stand-in: a stall followed by a burst with lost ticks repeats the stale input at most 6 steps (T-251)", delegate {
+            int missing = 0, repeated = 0, worst = 0, holds = 0;
+            Action<bool, bool> step = delegate(bool have, bool newer) {
+                StandInCorrection.Step s = StandInCorrection.NextStep(have, newer, ref missing);
+                if (s == StandInCorrection.Step.Play) { repeated = 0; return; }
+                if (StandInCorrection.Holds(s)) { holds++; return; }
+                repeated++; if (repeated > worst) worst = repeated;
+            };
+            for (int i = 0; i < 10; i++) step(true, true);     // frames play
+            for (int i = 0; i < 20; i++) step(false, false);   // the stream stalls (starved)
+            for (int i = 0; i < 12; i++) step(false, true);    // a burst arrives: its first 12 ticks were lost
+            for (int i = 0; i < 5; i++) step(true, true);
+            Check(worst <= StandInCorrection.RepeatSteps, "the last input was repeated " + worst + " steps in a row");
+            Equal(20 + 12 - StandInCorrection.RepeatSteps, holds);
+            Equal(0, missing);
+        });
+        Run("stand-in: a long run of lost ticks alone is capped too, and a lost tick still moves the stream on (T-251)", delegate {
+            int missing = 0;
+            for (int i = 1; i <= StandInCorrection.RepeatSteps; i++) Equal(StandInCorrection.Step.RepeatLost, StandInCorrection.NextStep(false, true, ref missing));
+            Equal(StandInCorrection.Step.HoldLost, StandInCorrection.NextStep(false, true, ref missing));
+            Check(StandInCorrection.Lost(StandInCorrection.Step.HoldLost) && StandInCorrection.Holds(StandInCorrection.Step.HoldLost), "held and moved on");
+            Equal(StandInCorrection.Step.HoldLate, StandInCorrection.NextStep(false, false, ref missing));
+            Check(!StandInCorrection.Lost(StandInCorrection.Step.HoldLate), "a starved hold waits");
+            Equal(StandInCorrection.Step.Play, StandInCorrection.NextStep(true, false, ref missing)); Equal(0, missing);
+        });
+        Run("stand-in: under scattered loss (runs of up to 6 lost ticks) it never lets go of the buttons (T-251)", delegate {
+            int missing = 0, holds = 0; uint seed = 251;
+            for (int i = 0; i < 3600; i++)
+            {
+                seed = seed * 1664525U + 1013904223U;
+                bool lose = (seed >> 24) < 87 && missing < StandInCorrection.RepeatSteps;   // ~34% of ticks lost, runs capped at 6
+                if (StandInCorrection.Holds(StandInCorrection.NextStep(!lose, true, ref missing))) holds++;
+            }
+            Equal(0, holds);
         });
         Console.WriteLine("NetCore: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;

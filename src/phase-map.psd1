@@ -30,6 +30,7 @@
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
+        'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
         'WorldObjSync' = 'WO,R'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
         'OnlineCamera' = 'CAM'; 'CoopCamera' = 'MOVE,CAM'; 'CutsceneGuard' = 'INTRO,S4,CAM,CUT'
@@ -63,6 +64,7 @@
         @{ Switch = 'ORICOOP_MUTATE_NO_PROMOTION';   File = 'src\OriCoop\Saves\CoopSaves.Lineage.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_PUPPET_CAMERA';  File = 'src\OriCoop\PuppetCameraGuard.cs'; Suite = 'net';  Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_FACING';      File = 'src\OriCoop\NetPlay.cs';      Suite = 'net';       Phase = 'MOVE' }   # T-199 the partner's facing comes from the network (FACE)
+        @{ Switch = 'ORICOOP_MUTATE_STANDIN_SLIDES'; File = 'src\OriCoop\NetPlay.cs';      Suite = 'net';       Phase = 'MOVE' }   # T-251 a stand-in pull that crosses a wall jumps (MOVE WALL; NetCore unit tests)
         @{ Switch = 'ORICOOP_MUTATE_FAIL_KEEPS_REMOTES'; File = 'src\OriCoop\NetPlay.cs';  Suite = 'net';       Phase = '' }   # T-213 a failed transport ends the session like a goodbye (closing G checks, every run)
         @{ Switch = 'ORICOOP_MUTATE_PRIMARY_SEAT_ONE'; File = 'src\OriCoop\NetPlay.cs';    Suite = 'net-3p-cs'; Phase = '' }   # T-213 after the host changed, a guest's host is the arbiter's seat
         @{ Switch = 'ORICOOP_MUTATE_NO_STREAM_RESTART'; File = 'src\OriCoop\NetPlay.cs';   Suite = 'net';       Phase = '' }   # T-213 a stale frame far ahead does not freeze the partner's Ori (closing G checks; NetCore unit tests)
