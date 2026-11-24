@@ -84,7 +84,15 @@ namespace OriCoop
                 SeinCharacter p1 = StoryHost.Current.P1;
                 if (p1 == null || __instance.IsCollected || !__instance.gameObject.activeInHierarchy) return;
                 if ((float)s_timeField.GetValue(__instance) < __instance.DelayBeforeCollectable) return;
-                if (NetPlay.Enabled) { TryCollect(__instance, p1, StoryHost.Current.P2, 2); return; }
+                if (NetPlay.Enabled)
+                {
+                    SeinCharacter first = StoryHost.Current.P2;
+                    if (TryCollect(__instance, p1, first, 2) || __instance.IsCollected) return;
+                    // An extra local player of this PC (F8, seats 2-4) is a puppet as well: nobody else collects for it.
+                    foreach (Puppet p in Players.Remotes)
+                        if (p.IsLocal && p.Sein != first && (TryCollect(__instance, p1, p.Sein, p.Seat) || __instance.IsCollected)) return;
+                    return;
+                }
                 // Offline every puppet is a local Ori (P2, and P3/P4 since T-057): any of them collects for P1.
                 foreach (Puppet p in Players.Remotes)
                     if (TryCollect(__instance, p1, p.Sein, p.Seat) || __instance.IsCollected) return;
