@@ -544,8 +544,10 @@ namespace OriCoop
             "escape.mash.cs", "连按 {0} 到其他玩家身边复活", "Mash {0} to come back beside another player",
             "escape.through", "伙伴通过了，全员前进", "A teammate made it through - the team moves on",
             "escape.through.cs", "{0} 通过了，全员前进", "{0} made it through - the team moves on",
-            "gate.force", "长按 {0} 强制触发", "Hold {0} to force it",
-            "gate.wait", "需全员都到才能推进（{0}/{1}）", "Everyone must be here to continue ({0}/{1})",
+            "gate.force", "长按 {0} 强制开始", "Hold {0} to force start",
+            "gate.wait", "等待 {0}…（{1}/{2}）", "Waiting for {0}... ({1}/{2})",
+            "gate.leave", "按 {0} 离开", "Press {0} to leave",
+            "gate.count", "（{0}/{1}）", "({0}/{1})",
             "pause.by", "{0} 暂停了", "{0} paused the game",
             "session.resumed", "有玩家继续了游戏", "A player resumed the game",
             // title / mode / lobby

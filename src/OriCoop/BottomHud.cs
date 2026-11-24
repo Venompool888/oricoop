@@ -565,6 +565,12 @@ namespace OriCoop
             VitalsSent++;
         }
 
+        internal static bool RemoteDownOrDead(int seat)
+        {
+            VitalsModel model;
+            return s_net.TryGetValue(seat, out model) && model.Have && (model.Now.Downed || model.Now.Health <= 0f);
+        }
+
         static void OnVitals(System.IO.BinaryReader r)
         {
             int seat;

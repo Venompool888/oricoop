@@ -19,12 +19,14 @@ namespace OriCoop
             public GameObject Go; public ActionSequence Sequence; public LockPlayerInputAction Input;
             public void Destroy() { if (Input != null) Input.Stop(); if (Go != null) Object.Destroy(Go); }
         }
-        static Fixture Build(MoonGuid id, float lockSeconds, float tailSeconds)
+        static Fixture Build(MoonGuid id, float lockSeconds, float tailSeconds, bool childLock = false)
         {
             Fixture f = new Fixture();
-            f.Go = new GameObject("OriCoop T-212 fixture story");
+            f.Go = new GameObject("OriCoop fixture story");
             f.Sequence = f.Go.AddComponent<ActionSequence>(); f.Sequence.MoonGuid = new MoonGuid(id);
-            f.Input = f.Go.AddComponent<LockPlayerInputAction>(); f.Input.DurationPlayerCantMove = lockSeconds;
+            GameObject input = childLock ? new GameObject("Lock player input") : f.Go;
+            if (childLock) input.transform.SetParent(f.Go.transform, false);
+            f.Input = input.AddComponent<LockPlayerInputAction>(); f.Input.DurationPlayerCantMove = lockSeconds;
             WaitAction wait = f.Go.AddComponent<WaitAction>(); wait.Duration = lockSeconds + tailSeconds;
             f.Sequence.Actions.Add(f.Input); f.Sequence.Actions.Add(wait);
             return f;
@@ -218,6 +220,41 @@ namespace OriCoop
             yield return NetCutsceneTest.Barrier(h, 862);
         }
 
+        static IEnumerator InactiveInputAction(TestHarness h)
+        {
+            yield return Quiet(h, "input");
+            SceneManagerScene scene = Core.Scenes.Manager.CurrentSceneManagerScene;
+            Check(h, scene != null && scene.SceneRoot != null, "input: a loaded scene to mirror the fixture in");
+            Fixture f = Build(Id(8), 2f, 0f, true);
+            f.Input.DurationPlayerCantMove = 20f;
+            GameObject child = f.Input.gameObject;
+            GameObject unused = new GameObject("Unlisted action");
+            unused.transform.SetParent(f.Go.transform, false);
+            unused.AddComponent<WaitAction>(); unused.SetActive(false);
+            if (scene != null && scene.SceneRoot != null) f.Go.transform.SetParent(scene.SceneRoot.transform, false);
+            if (!NetPlay.IsHost) { child.SetActive(false); f.Go.SetActive(false); }
+            try
+            {
+                int starts = Starts;
+                Check(h, !GameController.Instance.LockInputByAction, "input: no existing lock before the fixture");
+                yield return NetCutsceneTest.Barrier(h, 871);
+                if (NetPlay.IsHost) f.Sequence.Perform(null);
+                yield return WaitStarted(starts, 6f);
+                Check(h, Starts == starts + 1 && f.Sequence.IsRunning, "input: the fixture started on both PCs");
+                Check(h, child.activeInHierarchy && GameController.Instance.LockInputByAction,
+                    "input: the inactive mirror activated its listed child and executed the lock");
+                Check(h, !unused.activeSelf, "input: an unlisted action stayed inactive");
+                float end = Now + 6f;
+                while (f.Sequence.IsRunning && Now < end) yield return null;
+                Check(h, !f.Sequence.IsRunning && !GameController.Instance.LockInputByAction,
+                    "input: the sequence ended and released its lock without waiting for its timer or the guard");
+                Check(h, child.activeSelf == NetPlay.IsHost && f.Go.activeSelf == NetPlay.IsHost && !unused.activeSelf,
+                    "input: the sequence and its actions retain their original activation after the mirror ends");
+            }
+            finally { f.Sequence.Stop(); f.Destroy(); }
+            yield return NetCutsceneTest.Barrier(h, 872);
+        }
+
         public static IEnumerator Run(TestHarness h)
         {
             NetTestHarness.BotLX = 0; NetTestHarness.BotButtons = 0;
@@ -230,6 +267,7 @@ namespace OriCoop
                 yield return StartInsideWindow(h);
                 yield return EndAfterWatch(h);
                 yield return DroppedAfterLockRanOut(h);
+                yield return InactiveInputAction(h);
                 yield return NetCutsceneTest.Barrier(h, 899);
             }
             finally { CutsceneGuard.TestLocalOnlyWindow(0f); StorySync.TestResolveDelay = 0f; NetTestHarness.BotLX = 0; NetTestHarness.BotButtons = 0; }

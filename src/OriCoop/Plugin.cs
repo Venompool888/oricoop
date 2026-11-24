@@ -246,6 +246,7 @@ namespace OriCoop
         void SampleInput()
         {
             P2Input.Sample(m_samplePad, P2Context.P2Input);
+            ForcedSync.FilterInput(2, P2Context.P2, P2Context.P2Input);
             if (Players.Remotes.Count > 1) OnlineLocalPlayers.SampleExtras();
         }
         void TickSharedProgress() { SharedProgress.Sync(m_tickP1, m_tickP2); }
@@ -691,6 +692,7 @@ namespace OriCoop
 
         public static void Teleport(SeinCharacter who, Vector3 pos)
         {
+            ForcedSync.BeforeTeleport(who);
             who.Position = pos + new Vector3(0f, 0.5f, 0f);
             VisualInvariants.Grace(1.5f);
             who.Speed = Vector3.zero;

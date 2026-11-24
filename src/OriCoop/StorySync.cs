@@ -74,6 +74,7 @@ namespace OriCoop
         static readonly HashSet<Component> Mirrored = new HashSet<Component>();
         static readonly HashSet<CutsceneController> Starting = new HashSet<CutsceneController>();
         static readonly HashSet<ActionSequence> OwnedSequences = new HashSet<ActionSequence>();
+        static readonly Dictionary<GameObject, HashSet<ActionSequence>> MirrorActivations = new Dictionary<GameObject, HashSet<ActionSequence>>();
         static readonly HashSet<ActionSequence> LocalOnly = new HashSet<ActionSequence>();
         static readonly HashSet<CutsceneController> LocalOnlyControllers = new HashSet<CutsceneController>();
         static int s_localOnlyDepth, s_localOnlyRunDepth;
@@ -114,7 +115,7 @@ namespace OriCoop
         // T-183: a mirrored sequence still on its way to registering the string that starts `started` was overtaken by
         // the original (Story/MirrorStarts.Overtaken). Stop it; of its remaining actions only ActivateAction runs (world
         // objects end as in the original), not its waits, fades, registrations or scene loads.
-        static void RetireOvertaken(ActionSequence started)
+        static void RetireOvertaken(ActionSequence started, bool handOff)
         {
             if (MutateMirrorTriggerRuns || started == null) return;
             List<string> strings = new List<string>();
@@ -132,6 +133,7 @@ namespace OriCoop
                 }
                 if (!MirrorStarts.Overtaken(ahead, strings)) continue;
                 int at = p.Index;
+                if (handOff) InputLocks.HandOffManual(p, started);
                 for (int i = at + 1; i < p.Actions.Count; i++)
                 {
                     ActivateAction a = p.Actions[i] as ActivateAction;
@@ -190,8 +192,11 @@ namespace OriCoop
         { return root != null && (t == root.transform || t.IsChildOf(root.transform)); }
         public static int TakeoverMaskPublic() { return TakeoverMask(); }
         static readonly HashSet<CutsceneController> OwnedControllers = new HashSet<CutsceneController>();
-        static readonly HashSet<LockPlayerInputAction> OwnedInputActions = new HashSet<LockPlayerInputAction>();
-        static readonly Dictionary<LockPlayerInputAction, float> LockEnds = new Dictionary<LockPlayerInputAction, float>();   // game time each mirrored lock runs out
+        static readonly SequenceInputLocks<ActionSequence, LockPlayerInputAction> InputLocks = new SequenceInputLocks<ActionSequence, LockPlayerInputAction>();
+        static ActionSequence s_inputSequence;
+        internal static void ForgetInputLocks() { InputLocks.Clear(); }
+        static readonly Predicate<LockPlayerInputAction> ActiveTimer = action => action != null && action.gameObject.activeInHierarchy;
+        internal static bool TimedInputRunning() { return InputLocks.TimerRunning(ActiveTimer); }
         static readonly HashSet<PauseGameAction> OwnedPauses = new HashSet<PauseGameAction>();
         static readonly Dictionary<ShowStoryTextAction, bool> StoryTexts = new Dictionary<ShowStoryTextAction, bool>();
         static readonly FieldInfo StoryMessageBox = AccessTools.Field(typeof(ShowStoryTextAction), "m_messageBox");
@@ -382,7 +387,7 @@ namespace OriCoop
             CleanupNative();
             RestoreVisible(); Seen.Clear(); Performed.Clear(); Local.Clear(); Remote.Clear(); Accepted.Clear(); Mirrored.Clear(); Starting.Clear();
             Pending.Clear();
-            StoryTexts.Clear();
+            StoryTexts.Clear(); ForgetInputLocks();
             MirrorStartsLog.Clear(); WindowStarts.Clear();
             LocalOnly.Clear(); LocalOnlyControllers.Clear();
             s_mirroring = false;
@@ -427,7 +432,6 @@ namespace OriCoop
                 // Resume: PauseGameAction owns its exclusion set and releases its own reference.
                 foreach (PauseGameAction pause in OwnedPauses)
                     if (pause != null && pause.IsPerforming) TryStop(pause);
-                foreach (LockPlayerInputAction action in OwnedInputActions) TryStop(action);
                 List<ShowStoryTextAction> texts = new List<ShowStoryTextAction>();
                 foreach (KeyValuePair<ShowStoryTextAction, bool> pair in StoryTexts) if (pair.Value) texts.Add(pair.Key);
                 foreach (ShowStoryTextAction text in texts)
@@ -463,7 +467,6 @@ namespace OriCoop
                 // Only remove locks introduced since replay began. Preexisting native locks belong
                 // to their original script, not this run. Menu/watch gates never write these flags.
                 if (MirrorBaseline.Restore(n.Lock, own, ownNow) == false) n.Game.LockInput = false;
-                if (MirrorBaseline.Restore(n.ActionLock, own, ownNow) == false) n.Game.LockInputByAction = false;
                 if (MirrorBaseline.Restore(n.Movement, own, ownNow) == false) n.Ori.Controller.LockMovementInput = false;
                 if (MirrorBaseline.Restore(n.Ignore, own, ownNow) == false) n.Ori.Controller.IgnoreControllerInput = false;
                 if (MirrorBaseline.Restore(n.Animation, own, ownNow) == false) n.Ori.Controller.IsPlayingAnimation = false;
@@ -495,7 +498,8 @@ namespace OriCoop
             catch (Exception e) { Services.Log.Warn("net: mirrored story cleanup: " + e); }
             finally
             {
-                OwnedSequences.Clear(); OwnedControllers.Clear(); OwnedInputActions.Clear(); OwnedPauses.Clear(); LockEnds.Clear();
+                RestoreMirrorActivation(null);
+                OwnedSequences.Clear(); OwnedControllers.Clear(); OwnedPauses.Clear();
                 s_mirroring = previous; StoryHost.Current.PositionChanged();
             }
         }
@@ -632,6 +636,44 @@ namespace OriCoop
                     && (sequence.gameObject.activeInHierarchy || SceneOf(sequence) != MoonGuid.Empty)) return sequence;
             return null;
         }
+        static void ActivateMirrorSequence(ActionSequence sequence)
+        {
+            ActivateMirrorPath(sequence, sequence.transform);
+            if (sequence.Actions != null)
+                foreach (ActionMethod action in sequence.Actions)
+                    if (action != null) ActivateMirrorPath(sequence, action.transform);
+        }
+        static void ActivateMirrorPath(ActionSequence sequence, Transform t)
+        {
+            for (; t != null && t.GetComponent<SceneRoot>() == null; t = t.parent)
+            {
+                GameObject go = t.gameObject;
+                HashSet<ActionSequence> users;
+                if (!MirrorActivations.TryGetValue(go, out users))
+                {
+                    if (go.activeSelf) continue;
+                    users = new HashSet<ActionSequence>(); MirrorActivations.Add(go, users);
+                }
+                users.Add(sequence);
+                if (!go.activeSelf) go.SetActive(true);
+            }
+        }
+        static void RestoreMirrorActivation(ActionSequence sequence)
+        {
+            List<GameObject> restore = null;
+            foreach (KeyValuePair<GameObject, HashSet<ActionSequence>> pair in MirrorActivations)
+            {
+                if (!ReferenceEquals(sequence, null) && (!pair.Value.Remove(sequence) || pair.Value.Count != 0)) continue;
+                if (restore == null) restore = new List<GameObject>();
+                restore.Add(pair.Key);
+            }
+            if (restore == null) return;
+            foreach (GameObject go in restore)
+            {
+                MirrorActivations.Remove(go);
+                if (go != null) go.SetActive(false);
+            }
+        }
         static bool Resolve(Story story)
         {
             if (PlayingLocally(story)) { story.Resolved = true; story.Watch = false; return true; }
@@ -663,18 +705,14 @@ namespace OriCoop
                         Services.Log.Info("net: story " + story.Token + " already playing locally (pedestal) " + story.Key);
                         return true;
                     }
-                    if (!story.Sequence.gameObject.activeInHierarchy)
-                    {
-                        // ActionSequence advances in FixedUpdate: an inactive copy would stall at its first wait
-                        // (no subtitles, orb never returned). The host's copy was active when it ran.
-                        for (Transform t = story.Sequence.transform; t != null && t.GetComponent<SceneRoot>() == null; t = t.parent)
-                            if (!t.gameObject.activeSelf) t.gameObject.SetActive(true);
-                        Services.Log.Info("net: story " + story.Token + " activated inactive sequence " + story.Sequence.name);
-                    }
                     CaptureNative(); OwnedSequences.Add(story.Sequence);
-                    Mirrored.Add(story.Sequence); if (!alreadyPerformed) story.Sequence.Perform(null);
+                    Mirrored.Add(story.Sequence);
+                    bool running = story.Sequence.IsRunning;
+                    if (!alreadyPerformed || running) ActivateMirrorSequence(story.Sequence);
                     MirrorStartsLog.MirrorPerformed(story.Sequence.GetInstanceID(), Time.realtimeSinceStartup);   // T-183
-                    RetireOvertaken(story.Sequence);
+                    RetireOvertaken(story.Sequence, running || !alreadyPerformed && story.Sequence.enabled);
+                    ForcedSync.StoryStarted();
+                    if (!alreadyPerformed) story.Sequence.Perform(null);
                 }
                 else
                 {
@@ -686,6 +724,7 @@ namespace OriCoop
                             if (PathOf(state.transform) != story.State) continue;
                             story.Controller = controller; CaptureNative(); OwnedControllers.Add(controller);
                             Mirrored.Add(controller);
+                            ForcedSync.StoryStarted();
                             if (!alreadyPerformed) controller.ChangeState(state);
                             break;
                         }
@@ -763,26 +802,6 @@ namespace OriCoop
                 {
                     foreach (ActionSequence sequence in new List<ActionSequence>(OwnedSequences))
                         if (sequence != null && Below(sequence.transform, story.Sequence)) { TryStop(sequence); OwnedSequences.Remove(sequence); }
-                    // The game has one LockInputByAction flag and LockPlayerInputAction.Stop clears it: a mirror that still
-                    // runs may hold it (first live run: the remaining story lost its lock). Only the coroutine is stopped;
-                    // the flag is cleared when no mirrored lock action is left, else by the remaining one or the cleanup.
-                    // (LockPlayerInputAction.IsPerforming cannot tell: it asks IsInvoking about a coroutine.)
-                    bool stoppedLock = false; int locksLeft = 0;
-                    foreach (LockPlayerInputAction action in new List<LockPlayerInputAction>(OwnedInputActions))
-                    {
-                        if (action == null) { OwnedInputActions.Remove(action); continue; }
-                        if (!Below(action.transform, story.Sequence))
-                        {
-                            // Review finding 6: only a lock action still inside its own duration holds the flag.
-                            float endsAt;
-                            if (LockEnds.TryGetValue(action, out endsAt) && MirrorLocks.Held(Time.time, endsAt)) locksLeft++;
-                            continue;
-                        }
-                        try { action.StopCoroutine("PerformActionCoroutine"); }
-                        catch (Exception e) { Services.Log.Warn("net: stopping a mirrored input lock: " + e.Message); }
-                        OwnedInputActions.Remove(action); stoppedLock = true;
-                    }
-                    if (stoppedLock && !MirrorLocks.KeepFlag(locksLeft) && GameController.Instance != null) GameController.Instance.LockInputByAction = false;
                     foreach (PauseGameAction pause in new List<PauseGameAction>(OwnedPauses))
                         if (pause != null && Below(pause.transform, story.Sequence)) { if (pause.IsPerforming) TryStop(pause); OwnedPauses.Remove(pause); }
                     foreach (ShowStoryTextAction text in new List<ShowStoryTextAction>(StoryTexts.Keys))
@@ -1015,14 +1034,22 @@ namespace OriCoop
                 bool replay = s_mirroring || s_replayActionDepth > 0 || OwnedSequences.Contains(__instance);
                 __state.Root = s_entryDepth == 0 && __instance.enabled && __instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty;
                 if (__state.Root) { s_entryDepth++; __state.Before = TakeoverMask(); __state.Position = Own == null ? Vector3.zero : Own.Position; }
-                if (replay && s_native != null && Remote.Count > 0 && !PuppetCall) OwnedSequences.Add(__instance);
+                if (replay && s_native != null && Remote.Count > 0 && !PuppetCall)
+                {
+                    OwnedSequences.Add(__instance);
+                    if (!Mirrored.Contains(__instance)) ActivateMirrorSequence(__instance);
+                }
                 return true;
             }
             static void Postfix(ActionSequence __instance, StartCall __state)
             {
                 if (Services.Net.Enabled && !s_mirroring && !PuppetCall) StartsSeen++;
-                if (OwnedSequences.Contains(__instance) && __instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty)
-                    Performed[KeyOf(new Story { Kind = 0, Scene = SceneOf(__instance), Id = __instance.MoonGuid })] = Time.realtimeSinceStartup;
+                if (OwnedSequences.Contains(__instance))
+                {
+                    if (!__instance.IsRunning) RestoreMirrorActivation(__instance);
+                    if (__instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty)
+                        Performed[KeyOf(new Story { Kind = 0, Scene = SceneOf(__instance), Id = __instance.MoonGuid })] = Time.realtimeSinceStartup;
+                }
                 if (!__state.Root || !__instance.enabled || __instance.MoonGuid == null || __instance.MoonGuid == MoonGuid.Empty || Mirrored.Contains(__instance)) return;
                 Consider(new Story { Kind = 0, Scene = SceneOf(__instance), Id = new MoonGuid(__instance.MoonGuid), Sequence = __instance }, __state);
             }
@@ -1031,19 +1058,22 @@ namespace OriCoop
         [HarmonyPatch(typeof(ActionSequence), "RunAction")]
         static class ReplayAction
         {
-            static void Prefix(ActionSequence __instance, out int __state)
+            struct ActionCall { public int Flags; public ActionSequence Previous; }
+            static void Prefix(ActionSequence __instance, out ActionCall __state)
             {
-                __state = 0;
-                if (LocalOnly.Contains(__instance)) { __state |= 4; s_localOnlyRunDepth++; }
-                if (OwnedSequences.Contains(__instance)) { __state |= 1; s_replayActionDepth++; }
+                __state = new ActionCall { Previous = s_inputSequence };
+                s_inputSequence = __instance;
+                if (LocalOnly.Contains(__instance)) { __state.Flags |= 4; s_localOnlyRunDepth++; }
+                if (OwnedSequences.Contains(__instance)) { __state.Flags |= 1; s_replayActionDepth++; }
                 foreach (Story story in Local.Values)
-                    if (story.Sequence == __instance) { __state |= 2; s_sourceActionDepth++; break; }
+                    if (story.Sequence == __instance) { __state.Flags |= 2; s_sourceActionDepth++; break; }
             }
-            static Exception Finalizer(int __state, Exception __exception)
+            static Exception Finalizer(ActionCall __state, Exception __exception)
             {
-                if ((__state & 1) != 0) s_replayActionDepth--;
-                if ((__state & 2) != 0) s_sourceActionDepth--;
-                if ((__state & 4) != 0) s_localOnlyRunDepth--;
+                s_inputSequence = __state.Previous;
+                if ((__state.Flags & 1) != 0) s_replayActionDepth--;
+                if ((__state.Flags & 2) != 0) s_sourceActionDepth--;
+                if ((__state.Flags & 4) != 0) s_localOnlyRunDepth--;
                 return __exception;
             }
         }
@@ -1119,16 +1149,81 @@ namespace OriCoop
                 }
             }
         }
-        [HarmonyPatch(typeof(LockPlayerInputAction), "Perform")]
-        static class TrackInputAction
+        static void ApplyInputLock(bool? locked)
         {
-            static void Prefix(LockPlayerInputAction __instance)
+            if (locked.HasValue && GameController.Instance != null) GameController.Instance.LockInputByAction = locked.Value;
+        }
+        static readonly Action<LockPlayerInputAction> StopInputTimer = delegate(LockPlayerInputAction action)
+        { if (action != null) action.StopCoroutine("PerformActionCoroutine"); };
+
+        static void EndSequenceInput(ActionSequence sequence, bool finished)
+        {
+            if (!InputLocks.Any) return;
+            ActionSequence next = null;
+            bool sceneTrip = false;
+            if (finished && sequence.Actions != null && sequence.Actions.Count > 0)
             {
-                if (s_native == null || !(s_mirroring || s_replayActionDepth > 0) || PuppetCall) return;
-                OwnedInputActions.Add(__instance);
-                LockEnds[__instance] = Time.time + Mathf.Max(0f, __instance.DurationPlayerCantMove);   // review 6
+                // A sequence can intentionally hand a manual lock to its next script, or across a scene trip.
+                ActionMethod last = sequence.Actions[sequence.Actions.Count - 1];
+                RunActionOnce run = last as RunActionOnce;
+                if (run != null) next = run.Action as ActionSequence;
+                if (next == sequence || next != null && !next.IsRunning) next = null;
+                sceneTrip = last is LoadSceneAction;
+            }
+            ApplyInputLock(InputLocks.End(sequence, next, sceneTrip, StopInputTimer));
+        }
+        static void FinishSequence(ActionSequence sequence, bool finished)
+        {
+            EndSequenceInput(sequence, finished);
+            RestoreMirrorActivation(sequence);
+        }
+        [HarmonyPatch(typeof(ActionSequence), "UpdateActions")]
+        static class SequenceFinished
+        {
+            static void Prefix(ActionSequence __instance, out bool __state) { __state = __instance.IsRunning; }
+            static void Postfix(ActionSequence __instance, bool __state)
+            { if (__state && !__instance.IsRunning) FinishSequence(__instance, true); }
+        }
+        [HarmonyPatch(typeof(ActionSequence), "Stop")]
+        static class SequenceStopped
+        {
+            static void Postfix(ActionSequence __instance) { FinishSequence(__instance, false); }
+        }
+        [HarmonyPatch(typeof(LockPlayerInputManualAction), "Perform")]
+        static class TrackManualInput
+        {
+            static void Prefix(LockPlayerInputManualAction __instance)
+            {
+                if (Online && !PuppetCall && __instance.ShouldLock && s_inputSequence != null)
+                    InputLocks.LockManual(s_inputSequence, GameController.Instance.LockInputByAction);
+            }
+            static void Postfix(LockPlayerInputManualAction __instance)
+            {
+                if (Online && !PuppetCall && !__instance.ShouldLock) ApplyInputLock(InputLocks.UnlockManual(s_inputSequence));
             }
         }
+        [HarmonyPatch(typeof(LockPlayerInputAction), "PerformActionCoroutine")]
+        static class TrackTimedInput
+        {
+            static void Postfix(LockPlayerInputAction __instance, ref IEnumerator __result)
+            {
+                if (Online && !PuppetCall) __result = Observe(__instance, s_inputSequence, __result);
+            }
+            static IEnumerator Observe(LockPlayerInputAction action, ActionSequence sequence, IEnumerator routine)
+            {
+                InputLocks.LockTimed(sequence, action, GameController.Instance.LockInputByAction);
+                while (routine.MoveNext()) yield return routine.Current;
+                ApplyInputLock(InputLocks.EndTimed(action));
+            }
+        }
+        [HarmonyPatch(typeof(LockPlayerInputAction), "Stop")]
+        static class TimedInputStopped
+        {
+            static void Postfix(LockPlayerInputAction __instance)
+            { if (Online && !PuppetCall) ApplyInputLock(InputLocks.EndTimed(__instance)); }
+        }
+        [HarmonyPatch(typeof(GameController), "ResetInputLocks")]
+        static class NativeInputReset { static void Postfix() { ForgetInputLocks(); } }
         [HarmonyPatch(typeof(PauseGameAction), "Perform")]
         static class TrackPause
         {

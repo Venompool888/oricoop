@@ -129,7 +129,11 @@ namespace OriCoop
         public static void SampleExtras()
         {
             foreach (Puppet p in Players.Remotes)
-                if (p.IsLocal && p.Sein != null && (NetPlay.Enabled || p.Seat > 2)) Sample(p.Seat, p.Input);
+            {
+                if (!p.IsLocal || p.Sein == null || !NetPlay.Enabled && p.Seat <= 2) continue;
+                Sample(p.Seat, p.Input);
+                ForcedSync.FilterInput(p.Seat, p.Sein, p.Input);
+            }
         }
         static void SampleKeyboard(InputState s)
         {

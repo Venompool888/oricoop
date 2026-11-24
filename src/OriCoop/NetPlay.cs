@@ -932,7 +932,9 @@ namespace OriCoop
         internal static bool TestLoading;
 
         // T-131: a teammate in this session (it said hello), also while its Ori is away (loading, rejoining).
-        internal static bool RemoteInSession(int seat) { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello; }
+        internal static bool RemoteInSession(int seat) { return s_session.RemoteInSession(seat); }
+        internal static bool RemoteLoading(int seat)
+        { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello && !remote.InGameplay; }
 
         public static bool LocalInGameplay()
         {
@@ -1055,7 +1057,7 @@ namespace OriCoop
         static void SendSeatFrame(int seat, SeinCharacter p1, uint tick)
         {
             GameController gc = GameController.Instance;
-            bool neutral = gc == null || gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.InputLocked
+            bool neutral = gc == null || gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.InputLocked || ForcedSync.IsLocked(p1)
                 || p1.Controller == null || !p1.Controller.CanMove || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput;
 
             Frame f = new Frame();

@@ -391,17 +391,21 @@ namespace OriCoop
             int seat = d.Player;
             bool primary = d.Sein == Host.P1;
             bool pad = !primary || GameSettings.Instance != null && GameSettings.Instance.CurrentControlScheme == ControlScheme.Controller;
-            string text = s_point.Have ? L10n.F("revive.self_hold", pad ? PadY : KeyQ) : null;
-            LastSelfHint = text;
-            GameplayCamera cam = UI.Cameras.Current;
-            if (text == null || cam == null || cam.Camera == null) { HideSelfHint(seat); return; }
-            // Online the camera is elsewhere (spectating): the primary Ori's hint sits low on the screen. Other local
-            // Oris (local co-op, extra players on a device) get theirs under their own skull.
-            Vector3 at = Services.Net.Enabled && primary
-                ? cam.Camera.ViewportToWorldPoint(new Vector3(0.5f, 0.24f, -cam.Camera.transform.position.z))
-                : d.Marker + new Vector3(0f, -1.6f, 0f);
+            if (!s_point.Have) { LastSelfHint = null; HideSelfHint(seat); return; }
+            string text = L10n.F("revive.self_hold", pad ? PadY : KeyQ);
             if (s_selfHint[seat] == null) s_selfHint[seat] = new GameText("OriCoop_SelfReviveHint_P" + seat);
-            if (s_selfHint[seat].Ok) { s_selfHint[seat].SetText(text); s_selfHint[seat].Place(at, 0.032f, 0.4f, 1f); }
+            GameText hint = s_selfHint[seat];
+            // The online camera may follow a teammate, not the downed Ori. Keep the primary hint in the viewport.
+            bool shown = hint.SetText(text) && (Services.Net.Enabled && primary
+                ? hint.PlaceViewport(0.5f, 0.24f, 0.032f, 0.4f)
+                : hint.Place(d.Marker + new Vector3(0f, -1.6f, 0f), 0.032f, 0.4f, 1f));
+            LastSelfHint = shown ? text : null;
+        }
+
+        internal static bool SelfHintOnScreen(int seat)
+        {
+            GameText hint = s_selfHint[seat];
+            return hint != null && hint.OnScreen(false) && hint.OnScreen(true);
         }
 
         static void HideSelfHint(int seat)

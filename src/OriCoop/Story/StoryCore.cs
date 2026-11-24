@@ -238,15 +238,66 @@ namespace OriCoop.Story
         public bool EndedEarly;  // T-212 (5): the sender's end arrived before the mirror could start here
         public bool Started;     // its mirror really started on this PC (or failed half-way): never started late again
     }
-    // Review of T-212 (3), finding 6: the game has one LockInputByAction flag. When one mirrored story's lock action is
-    // stopped while other mirrors run, the flag stays only if another mirrored lock action is still inside its own
-    // duration; a lock action that has run out no longer holds it (it used to count, and the flag then stayed until
-    // the remaining mirror's cleanup).
-    public static class MirrorLocks
+    // The engine has one LockInputByAction flag, but several scripts can hold it independently.
+    internal sealed class SequenceInputLocks<TSequence, TAction> where TSequence : class where TAction : class
     {
-        // endsAt: game time at which the lock action's own duration runs out.
-        public static bool Held(float now, float endsAt) { return now < endsAt; }
-        public static bool KeepFlag(int othersStillHeld) { return othersStillHeld > 0; }
+        readonly HashSet<TSequence> manual = new HashSet<TSequence>();
+        readonly Dictionary<TAction, TSequence> timed = new Dictionary<TAction, TSequence>();
+        bool nativeLock;
+        public bool Any { get { return manual.Count != 0 || timed.Count != 0; } }
+        bool Locked { get { return Any || nativeLock; } }
+
+        public void LockManual(TSequence sequence, bool wasLocked)
+        {
+            if (!Any) nativeLock = wasLocked;
+            manual.Add(sequence);
+        }
+        public void LockTimed(TSequence sequence, TAction action, bool wasLocked)
+        {
+            if (!Any) nativeLock = wasLocked;
+            timed[action] = sequence;
+        }
+        public bool UnlockManual(TSequence sequence)
+        {
+            // An unlock without a matching owner also ends a native lock handed across a scene trip.
+            if (!manual.Remove(sequence)) nativeLock = false;
+            return Locked;
+        }
+        public bool EndTimed(TAction action)
+        {
+            timed.Remove(action);
+            return Locked;
+        }
+        public bool TimerRunning(Predicate<TAction> running)
+        {
+            foreach (TAction action in timed.Keys) if (running(action)) return true;
+            return false;
+        }
+        public bool HandOffManual(TSequence sequence, TSequence next)
+        {
+            if (!manual.Remove(sequence)) return false;
+            manual.Add(next);
+            return true;
+        }
+        public bool? End(TSequence sequence, TSequence next, bool sceneTrip, Action<TAction> stopTimer)
+        {
+            bool released = next != null ? HandOffManual(sequence, next) : manual.Remove(sequence);
+            if (released && next == null && sceneTrip) nativeLock = true;
+            List<TAction> stop = null;
+            foreach (KeyValuePair<TAction, TSequence> item in timed)
+            {
+                if (!EqualityComparer<TSequence>.Default.Equals(item.Value, sequence)) continue;
+                if (stop == null) stop = new List<TAction>();
+                stop.Add(item.Key);
+            }
+            if (stop != null)
+            {
+                foreach (TAction action in stop) { timed.Remove(action); stopTimer(action); }
+                released = true;
+            }
+            return released ? (bool?)Locked : null;
+        }
+        public void Clear() { manual.Clear(); timed.Clear(); nativeLock = false; }
     }
 
     internal enum StoryResolution { Retry, Drop, Watch }

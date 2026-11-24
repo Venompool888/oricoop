@@ -300,6 +300,7 @@ namespace OriCoop
                 h.Check(Revive.LastSelfHint != null && Revive.LastSelfHint.Contains("<icon>")
                     && Revive.LastSelfHint.Contains(hint.Substring(hint.IndexOf("{0}") + 3)),
                     "R6 guest: the hint says to hold the button to come back at the last soul link or save point (" + Revive.LastSelfHint + ")");
+                h.Check(Revive.SelfHintOnScreen(Players.LocalSeat), "R6 guest: the self-revive text and its button glyph render on screen");
                 Revive.TestHoldSelf = true;
                 yield return Wait(1f);
                 h.Check(Revive.DownedOf(1) != null, "R6 guest: still down after holding Y for 1 s");
@@ -307,6 +308,7 @@ namespace OriCoop
                 float back = Vector3.Distance(Own.Position, at);
                 h.Check(Revive.SelfRevives == self0 + 1 && Revive.DownedOf(1) == null,
                     "R6 guest: holding Y revives it on its own: no teammate, no new soul link");
+                h.Check(!Revive.SelfHintOnScreen(Players.LocalSeat), "R6 guest: the self-revive hint hides after revival");
                 // The teleport puts it 0.5 above the spot; the skull is about 1.5 away.
                 h.Check(back < 1f, "R6 guest: back at the last save point, not at its skull (d=" + F(back) + ", skull was " + F(skull) + " away)");
                 h.Check(Mathf.Abs(Own.Mortality.Health.Amount - Own.Mortality.Health.MaxHealth) < 0.01f,
@@ -343,6 +345,7 @@ namespace OriCoop
                 float skull = d != null ? Vector3.Distance(d.Marker, at) : -1f;
                 h.Check(d != null && d.LinkHealth == 0f && Revive.LinkFromCheckpoint && skull > 1f,
                     "R6b host: own Ori downed away from the save point, still no room save (skull d=" + F(skull) + ")");
+                h.Check(Revive.SelfHintOnScreen(Players.LocalSeat), "R6b host: the self-revive text and its button glyph render on screen");
                 Revive.TestHoldSelf = true;
                 yield return Wait(1f);
                 h.Check(Revive.DownedOf(1) != null, "R6b host: still down after holding Y for 1 s");

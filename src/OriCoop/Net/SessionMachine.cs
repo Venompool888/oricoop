@@ -112,6 +112,12 @@ namespace OriCoop.Net
         }
         public bool SignalLost { get { return context.Connected && SilenceMs >= 1000f; } }
 
+        public bool RemoteInSession(int seat)
+        {
+            Remote remote;
+            return remotes.TryGetValue(seat, out remote) && remote.Hello;
+        }
+
         public bool IsFactoryMessage(byte type) { return context.FactorySession && type >= 176 && type <= 186; }
         public void AssignSeat(int seat) { assignSeat(seat); }
         public void Heard(Remote remote) { remote.LastHeardMs = clock(); }

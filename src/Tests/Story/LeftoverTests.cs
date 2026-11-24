@@ -186,11 +186,13 @@ static partial class StoryTests
             Run local = new Run { Began = 10f, Resolved = true };                                  // this PC plays it itself
             Equal(false, StoryLedger<Run>.KeepForLateStart(local, 13f));
         });
-        // Finding 6: seat 2's lock action ran out at game time 101; seat 3's (dropped) lock is stopped at 103.
         Check("review 6: a mirrored lock action that has run out does not keep the input-lock flag", delegate {
-            Equal(false, MirrorLocks.Held(103f, 101f)); Equal(false, MirrorLocks.Held(101f, 101f)); Equal(true, MirrorLocks.Held(100.9f, 101f));
-            Equal(false, MirrorLocks.KeepFlag(0));      // nobody else holds it: cleared with the dropped teammate's lock
-            Equal(true, MirrorLocks.KeepFlag(1));       // another mirror's lock is still inside its duration: kept
+            SequenceInputLocks<string, string> l = new SequenceInputLocks<string, string>();
+            l.LockTimed("mirror 2", "timer 2", false); l.LockTimed("mirror 3", "timer 3", true);
+            Equal(true, l.EndTimed("timer 2"));
+            string stopped = null;
+            Equal((bool?)false, l.End("mirror 3", null, false, delegate(string action) { stopped = action; }));
+            Equal("timer 3", stopped);
         });
 
         // T-212 (6): the gate fired at 10, the players died, the checkpoint was restored at 13.

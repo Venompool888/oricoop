@@ -366,6 +366,18 @@ static class NetCoreTests
         Run("leave without hello still fires player left but no end", delegate {
             Rig r = new Rig(true, false, true); r.Add(2, new FakePeer()); r.Session.RemoteLeft(2); Equal("cleanup:2,left:2", Events(r));
         });
+        Run("a remote in the session still counts while loading", delegate {
+            Rig r = new Rig(true, true, false); r.Seat = 1;
+            r.Add(2, null);
+            Equal(false, r.Session.RemoteInSession(2));
+            r.Receive(1, 2, true, 0, Hello); r.Receive(2, 2, true, 0, Gameplay);
+            Equal(true, r.Session.RemoteInSession(2));
+            r.Receive(2, 2, true, 0, delegate(BinaryWriter w) { w.Write(false); w.Write(""); });
+            Equal(false, r.Session.Remotes[2].InGameplay);
+            Equal(true, r.Session.RemoteInSession(2));
+            r.Session.RemoteLeft(2);
+            Equal(false, r.Session.RemoteInSession(2));
+        });
         Run("unknown leave does nothing", delegate { Rig r = new Rig(false, true, false); r.Session.RemoteLeft(3); Equal("", Events(r)); });
         Run("left frame is accepted from host only", delegate {
             Rig r = new Rig(false, false, false); r.Seat = 2; r.Add(3, null); Action<BinaryWriter> body = delegate(BinaryWriter w) { w.Write((byte)3); };

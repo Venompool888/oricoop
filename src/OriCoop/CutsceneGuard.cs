@@ -16,6 +16,7 @@ namespace OriCoop
         static readonly RecentObjects<MoonGuid> Played = new RecentObjects<MoonGuid>();
         static readonly Dictionary<string, string> Traces = new Dictionary<string, string>();
         static float s_freeSince = -1f;
+        static readonly Func<bool> s_findRunningSequence = FindRunningSequence;
         static Transform s_traceTarget;
         static bool s_traceTargetKnown;
         static float s_spiritAt = -2f, s_uiAt = -2f, s_letterboxAt = -2f, s_puppetAt = -2f, s_targetAt = -2f, s_fadeAt = -2f, s_actionLockSince = -1f, s_blackSince = -1f, s_storyRanAt = -1f;
@@ -233,9 +234,15 @@ namespace OriCoop
             string old;
             if (!Traces.TryGetValue(key, out old) || old != value) { Traces[key] = value; Log(key + "=" + value); }
         }
+        static bool FindRunningSequence()
+        {
+            foreach (ActionSequence sequence in Resources.FindObjectsOfTypeAll<ActionSequence>())
+                if (sequence != null && sequence.IsRunning) { s_storyRanAt = Time.realtimeSinceStartup; return true; }
+            return false;
+        }
         public static void Tick()
         {
-            if (!Online) { s_freeSince = -1f; Traces.Clear(); s_traceTargetKnown = false; TickAfterSession(); return; }
+            if (!Online) { s_freeSince = s_actionLockSince = s_storyRanAt = -1f; Traces.Clear(); s_traceTargetKnown = false; TickAfterSession(); return; }
             s_onlineAt = Time.realtimeSinceStartup; s_wasOnline = true;
             GameController gc = GameController.Instance; SeinCharacter own = Own;
             if (Game.UI.SeinUI != null) Trace("ShowUI", Game.UI.SeinUI.ShowUI.ToString());
@@ -258,11 +265,6 @@ namespace OriCoop
             float now = Time.realtimeSinceStartup;
             int puppetId = puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f ? puppet.CinematicPuppet.GetInstanceID() : 0;
             if (PuppetGate.Observe(puppetId, now)) Log("camera puppet came straight back: the scene drives it, not clearing it for 30 s (T-137)");
-            // LockPlayerInputAction's coroutine clears LockInputByAction after a few seconds; a coroutine killed with its
-            // GameObject (story stopped / deactivated mid-way) never does and the player can't move at all (it also keeps
-            // the originator's story alive). Held 20 s with no story sequence running: release it. T-177: "Lock player
-            // input" (LockPlayerInputManualAction) has no timer and the story clears it itself (spirit tree 03 -> 04,
-            // over 20 s with the world map and its objective): while a story sequence runs, wait up to 60 s.
             // Fully black (FadeStay) while nothing is loading: start the "stuck black" clock.
             bool black = UI.Fader != null && UI.Fader.CurrentState == FaderB.State.FadeStay
                 && gc != null && !gc.IsLoadingGame && Services.Session.Ready && !StorySync.StoryActive;
@@ -271,14 +273,18 @@ namespace OriCoop
             else s_actionLockSince = -1f;
             bool parked = ParkedInMove(UI.Cameras.Current);
             if (!parked) s_moveSince = -1f; else if (s_moveSince < 0) s_moveSince = now;
+            bool paused = gc != null && (gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.IsSuspended);
             bool storyRunning = StorySync.StorySequenceRunning();
             if (storyRunning) s_storyRanAt = now;
-            if (!Off && s_actionLockSince >= 0 && StoryLockRepair.Due(now - s_actionLockSince, storyRunning, s_storyRanAt < 0f ? float.MaxValue : now - s_storyRanAt))
+            if (!Off && s_actionLockSince >= 0 && !StorySync.TimedInputRunning()
+                && StoryLockRepair.Due(now - s_actionLockSince, storyRunning, s_storyRanAt < 0f ? float.MaxValue : now - s_storyRanAt,
+                    paused, s_findRunningSequence))
             {
-                Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + StorySync.StorySequenceRunning() + ")");
+                Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + storyRunning + ")");
+                StorySync.ForgetInputLocks();
                 gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++;
             }
-            if (StoryHost.Current.Inside || own == null || gc == null || gc.IsLoadingGame || gc.GameplaySuspended
+            if (StoryHost.Current.Inside || own == null || gc == null || gc.IsLoadingGame || paused
                 || Game.UI.MainMenuVisible || StorySync.StoryActive
                 || PedestalWindow) { s_freeSince = -1f; return; }   // a pedestal/lever cutscene runs natively: hands off
             bool free = (StorySync.TakeoverMaskPublic() & 191) == 0;
@@ -287,8 +293,6 @@ namespace OriCoop
             float since = StorySync.LastStoryActivity >= 0 ? now - StorySync.LastStoryActivity : float.PositiveInfinity;
             if (Characters.Ori != null && Characters.Ori.CurrentState == Ori.State.Hovering && now - s_spiritAt >= 2f
                 && Vector3.Distance(Characters.Ori.Position, own.Position) > 30f) { s_spiritAt = now; SnapSpirit("far away"); }
-            // LockPlayerInputAction's coroutine clears LockInputByAction; a story stopped or deactivated mid-way never
-            // does, and the player can't move at all. No story for 15 s: release it.
             // Free for 3 s: repair. Still locked 30-120 s after the last story ended: a half-run story left it so.
             if (s_freeSince >= 0 && now - s_freeSince >= 3f || since >= 30f && since <= 120f)
                 Repair(now, false, since <= 120f);
