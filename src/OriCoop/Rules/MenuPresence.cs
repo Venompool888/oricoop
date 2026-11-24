@@ -45,6 +45,32 @@ namespace OriCoop.Rules
         }
     }
 
+    // T-248 (#336): the screens of a downed Ori (online, where screens do not pause). A screen that was open when the Ori
+    // went down is closed, retried every frame until it is gone (the fatal hit closes the map / pause menu / co-op panel;
+    // closing may be locked for a moment). After that the downed player may open the pause menu or the co-op panel again
+    // (to leave the game, change a setting): before, every screen of a downed Ori was closed again the next frame, so a
+    // downed player could not reach settings or quit until someone revived it.
+    public sealed class DownedScreens
+    {
+        readonly bool[] m_down, m_closing;
+        public DownedScreens(int maxSeats) { m_down = new bool[maxSeats + 1]; m_closing = new bool[maxSeats + 1]; }
+
+        // Every frame for each local seat: is it down, and does a screen hold its input. true = close its screens now.
+        public bool Tick(int seat, bool downed, bool screenOpen)
+        {
+            if (seat < 1 || seat >= m_down.Length) return false;
+            if (!downed) { m_down[seat] = m_closing[seat] = false; return false; }
+            if (!m_down[seat]) { m_down[seat] = true; m_closing[seat] = screenOpen; }
+            else if (m_closing[seat] && !screenOpen) m_closing[seat] = false;
+            return m_closing[seat];
+        }
+
+        // Still closing the screens that were open when this seat went down.
+        public bool Closing(int seat) { return seat >= 1 && seat < m_closing.Length && m_closing[seat]; }
+
+        public void Reset() { Array.Clear(m_down, 0, m_down.Length); Array.Clear(m_closing, 0, m_closing.Length); }
+    }
+
     public sealed class ScreenInputLocks
     {
         readonly HashSet<object> owners = new HashSet<object>();

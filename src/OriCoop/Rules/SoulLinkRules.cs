@@ -26,8 +26,12 @@ namespace OriCoop.Rules
 
         // A soul link (the room's new save point) was just made: every player downed right now may later revive at it
         // with the creator's health after creating it.
+        // T-248: a save point whose creator health is 0 (not known: a repeat, a save made before anyone went down, a
+        // save offer whose checkpoint was a restore) is still the room's save point, but not a soul link made while
+        // these players were down: what they come back with stays as it was (full health, or an earlier link's).
         public static void NoteLink<T>(DownedRoster<T> roster, float creatorHealth) where T : DownedState
         {
+            if (!(creatorHealth > 0f)) return;
             foreach (T d in roster.Seats) if (d != null) d.LinkHealth = creatorHealth;
         }
 
@@ -48,6 +52,24 @@ namespace OriCoop.Rules
             d.SelfHold += dt;
             return d.SelfHold >= SelfHoldSeconds;
         }
+
+        // T-248: why a downed player's hold Y / Q at the latest soul link does not count right now (traced whenever it
+        // changes, so a playtest log says why a revive never came). Counting / NotHeld are not refusals.
+        public const string HoldCounting = "counting", HoldNotHeld = "not_held";
+        public static string SelfHoldState(bool havePoint, bool escape, bool noGame, bool suspended, bool loading,
+            bool inputLocked, bool paused, bool held)
+        {
+            if (!havePoint) return "no_save_point";
+            if (escape) return "escape";
+            if (noGame) return "no_game";
+            if (suspended) return "gameplay_suspended";
+            if (loading) return "loading";
+            if (inputLocked) return "input_locked";
+            if (paused) return "paused";
+            return held ? HoldCounting : HoldNotHeld;
+        }
+
+        public static bool SelfHoldRefused(string state) { return state != HoldCounting && state != HoldNotHeld; }
 
         // Starting the self revive cancels a teammate's revive in progress; the rescuer keeps what it lost.
         public static void CancelRescue(DownedState d)
