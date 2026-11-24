@@ -12,7 +12,7 @@ static class ReviveLeftoverTests
 
     static ReviveWire.Link At(int seat, float x, float y, float health)
     {
-        ReviveWire.Link l; l.Seat = seat; l.X = x; l.Y = y; l.Z = 0f; l.Health = health; return l;
+        return new ReviveWire.Link { Seat = seat, X = x, Y = y, Health = health };
     }
 
     internal static void Run(Action<string, Action> run)
@@ -89,9 +89,13 @@ static class ReviveLeftoverTests
         // ---- #6: a save offer's spot serves that offer only -----------------------------------------------------
         run("T-215 #6 an offered spot is used for the offer it came with", delegate {
             OfferedSpots s = new OfferedSpots(ReviveLogic.MaxSeats);
-            s.Note(2, At(2, 10f, 20f, 8f));
+            ReviveWire.Link offered = At(2, 10f, 20f, 8f);
+            offered.MarkerKnown = true;
+            offered.Flame = new ReviveWire.Marker { X = 3f, Scene = new Guid("12345678-1234-1234-1234-123456789abc") };
+            s.Note(2, offered);
             ReviveWire.Link l;
             Check(s.Take(2, out l) && Near(l.X, 10f) && Near(l.Y, 20f) && Near(l.Health, 8f) && l.Seat == 2, "spot " + l.X + "," + l.Y);
+            Check(l.MarkerKnown && l.Flame.HasValue && l.Flame.Value.Equals(offered.Flame.Value), "offer lost its native marker");
         });
         run("T-215 #6 a later offer without a spot does not get the earlier one", delegate {
             OfferedSpots s = new OfferedSpots(ReviveLogic.MaxSeats);

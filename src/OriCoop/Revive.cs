@@ -499,9 +499,11 @@ namespace OriCoop
             static void Prefix()
             {
                 s_moved = false;
-                if (!Local || !Host.Inside || Host.P1 == null || Host.P2 == null || IsDowned(Host.P1)) return;
+                SeinCharacter extra = Host.Inside ? Host.P2 : null;
+                if (Host.P1 == null || extra == null) return;
+                if (s_caster != extra && !s_usingSharedFlame && (!Local || IsDowned(Host.P1))) return;
                 s_p1Before = Host.P1.Position;
-                Host.P1.Position = Host.P2.Position;
+                Host.P1.Position = extra.Position;
                 s_moved = true;
                 CheckpointsByP2++;
             }

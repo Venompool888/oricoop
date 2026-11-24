@@ -213,7 +213,9 @@ static partial class StoryTests
             sizes["0.2.0-net9"] = new[] { 6, 55 }; animKey["0.2.0-net9"] = "swimIdle|d0343fbb|12";   // T-169: EscapeDone (pinned in Tests/Escape), intro unchanged
             sizes["0.2.0-net10"] = new[] { 6, 55 }; animKey["0.2.0-net10"] = "swimIdle|d0343fbb|12";   // T-171: LobbyState / LobbyStart (pinned in Tests/Ui/CsRoomTests.cs), intro unchanged
             sizes["0.2.0-net11"] = new[] { 6, 55 }; animKey["0.2.0-net11"] = "swimIdle|d0343fbb|12";   // T-214: a pickup action carries its scene and spot; T-207 GateRelease; T-205 prologue clock and log; intro unchanged
+            sizes["0.2.0-net12"] = new[] { 6, 55 }; animKey["0.2.0-net12"] = "swimIdle|d0343fbb|12";   // T-229 RoomLink; T-232 well activation flags and snapshot; intro unchanged
             string v = OriCoop.Net.ProtocolVersion.Mod;
+            Equal("0.2.0-net12", v);
             if (!sizes.ContainsKey(v)) throw new Exception("no pinned wire formats for " + v);
             MemoryStream a = new MemoryStream(); IntroWire.Write(new BinaryWriter(a), new IntroState { Active = true });
             MemoryStream b = new MemoryStream();

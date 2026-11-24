@@ -15,11 +15,12 @@ namespace OriCoop
         const byte BarrierMessage = 59;
         static readonly MoonGuid FixtureId = new MoonGuid(0x53345445, 0x53545345, 0x5155454e, 0x43453031);
         static readonly MoonGuid OrdinaryId = new MoonGuid(0x53344f52, 0x44494e41, 0x52595345, 0x51303031);
+        static readonly MoonGuid WellId = new MoonGuid(0x53345745, 0x4c4c5341, 0x56455345, 0x51303031);
         static readonly Dictionary<int, Sample> Remote = new Dictionary<int, Sample>();
         static readonly Dictionary<int, Sample> Local = new Dictionary<int, Sample>();
         static readonly HashSet<int> Acknowledged = new HashSet<int>();
         static bool s_registered;
-        static int s_performs, s_leafCalls, s_immediateCalls, s_delayedCalls, s_ordinaryCalls;
+        static int s_performs, s_leafCalls, s_immediateCalls, s_delayedCalls, s_ordinaryCalls, s_wellCalls;
         static ActionSequence s_fixture;
         sealed class Sample
         {
@@ -682,7 +683,11 @@ namespace OriCoop
         static class CountFixture
         {
             static void Postfix(ActionSequence __instance)
-            { if (__instance.MoonGuid == FixtureId) s_performs++; if (__instance.MoonGuid == OrdinaryId) s_ordinaryCalls++; }
+            {
+                if (__instance.MoonGuid == FixtureId) s_performs++;
+                if (__instance.MoonGuid == OrdinaryId) s_ordinaryCalls++;
+                if (__instance.MoonGuid == WellId) s_wellCalls++;
+            }
         }
         static IEnumerator Story(TestHarness h)
         {
@@ -743,6 +748,78 @@ namespace OriCoop
                     "S4 repeated nested reference performs twice; delayed leaf once");
             }
             finally { UnityEngine.Object.Destroy(go); UnityEngine.Object.Destroy(ordinaryObject); s_fixture = null; }
+        }
+        static IEnumerator SpiritWell(TestHarness h)
+        {
+            Vector3 start = Own.Position;
+            GameObject go = new GameObject("S4 spirit well");
+            SavePedestal well = go.AddComponent<SavePedestal>(); well.enabled = false;
+            ActionSequence opened = go.AddComponent<ActionSequence>(); opened.MoonGuid = new MoonGuid(WellId);
+            WaitAction wait = go.AddComponent<WaitAction>(); wait.Duration = 0.2f;
+            opened.Actions.Add(wait); well.OnOpenedAction = opened;
+            Type playType = AccessTools.TypeByName("PlayCharacterAnimation");
+            ActionMethod play = (ActionMethod)go.AddComponent(playType);
+            opened.Actions.Add(play);
+            opened.Actions.Add((ActionMethod)go.AddComponent(AccessTools.TypeByName("StopCharacterAnimation")));
+            MethodInfo save = AccessTools.Method(typeof(SavePedestal), "SaveOnPedestal");
+            FieldInfo used = AccessTools.Field(typeof(SavePedestal), "m_hasBeenUsedBefore");
+            bool host = NetPlay.IsHost;
+            PlatformMovement guestMovement = host ? null : Own.PlatformBehaviour.PlatformMovement;
+            bool wasSuspended = guestMovement != null && guestMovement.IsSuspended;
+            try
+            {
+                AccessTools.Field(playType, "Animation").SetValue(play, Own.Abilities.Idle.IdleAnimation);
+                // Opening the teleport menu marks the well used without performing OnOpenedAction.
+                used.SetValue(well, true);
+                if (!host) { StorySync.EnterLocalOnly(opened); StorySync.ExitLocalOnly(); }
+                go.transform.position = host ? start : NetPlay.LatestRemotePos;
+                Vector3 away = go.transform.position + Vector3.right * 20f;
+                if (!host)
+                {
+                    if (!Core.Scenes.Manager.IsInsideASceneBoundary(away + Vector3.up * 0.5f))
+                        away = go.transform.position - Vector3.right * 20f;
+                    // The offset may have no floor. Suspend only physics; story teleports still write the position.
+                    guestMovement.IsSuspended = true;
+                    Plugin.Teleport(Own, away);
+                }
+                int plays = s_wellCalls;
+                yield return Barrier(h, 71);
+                if (!host) h.Check(Vector3.Distance(Own.Position, go.transform.position) > 12f, "S4 well: guest starts outside gather range");
+                if (host) save.Invoke(well, null);
+                float end = Now + 4f;
+                while (s_wellCalls == plays && Now < end) yield return null;
+                h.Check(s_wellCalls == plays + 1, "S4 well: first activation plays once on each PC despite the used flag");
+                if (!host) h.Check(Vector3.Distance(Own.Position, go.transform.position) < 4f, "S4 well: first activation gathers the guest");
+                // The generic story dedupe lasts three seconds; a re-save must stay local even after it expires.
+                yield return Wait(3.3f);
+                if (!host) Plugin.Teleport(Own, away);
+                yield return Barrier(h, 72);
+                Vector3 before = Own.Position;
+                int restores = TestHarness.RestoreCheckpointCalls;
+                plays = s_wellCalls;
+                int sent = StorySync.StartsSent, anims = CutsceneAnimSync.Sent, ownPlays = CutsceneAnimSync.OwnPlays;
+                if (!host) h.Check(Mathf.Abs(before.x - go.transform.position.x) > 12f, "S4 well: guest is away again before re-save");
+                if (host) save.Invoke(well, null);
+                yield return TestClock.WaitGame(0.8f);
+                yield return Barrier(h, 73);
+                h.Check(s_wellCalls == plays + (host ? 1 : 0), "S4 well: re-save plays only on the saver");
+                h.Check(StorySync.StartsSent == sent && CutsceneAnimSync.Sent == anims, "S4 well: re-save broadcasts no story or animation");
+                if (!host)
+                {
+                    float moved = Own != null ? Vector3.Distance(Own.Position, before) : float.PositiveInfinity;
+                    int restored = TestHarness.RestoreCheckpointCalls - restores, played = CutsceneAnimSync.OwnPlays - ownPlays;
+                    h.Note("S4 well: guest re-save movement=" + F(moved) + " checkpoint restores=" + restored + " animations=" + played);
+                    h.Check(Alive && restored == 0 && moved < 0.5f && played == 0,
+                        "S4 well: re-save does not teleport or animate the guest");
+                }
+            }
+            finally
+            {
+                UnityEngine.Object.Destroy(go);
+                if (guestMovement != null) guestMovement.IsSuspended = wasSuspended;
+                if (Own != null) Plugin.Teleport(Own, start);
+            }
+            yield return Wait(0.6f);
         }
         static IEnumerator Digests(TestHarness h, int step)
         {
@@ -837,6 +914,7 @@ namespace OriCoop
                 yield return Step(h, 20, GuestDeath(h));
                 yield return Step(h, 30, HostDeath(h));
                 yield return Step(h, 40, Story(h));
+                yield return Step(h, 70, SpiritWell(h));
                 yield return Step(h, 50, Reconnect(h));
             }
             finally

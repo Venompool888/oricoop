@@ -826,8 +826,7 @@ namespace OriCoop
                 && a.Applied - Three(4, 1).Applied == 1 && a.Rejected - Three(4, 1).Rejected == 1,
                 "3P pickup applied once, duplicate rejected, all keys agree");
 
-            // T-115: guest-to-guest broadcasts ride the P2P host's forward table (the C-server forwards everything): a
-            // soul link (80) and a co-push report (89) sent by seat 2 must reach seat 3.
+            // Guest-to-guest broadcasts ride the P2P host's forward table. Check the cast notice and co-push report.
             int soulBefore = PartnerFx.SoulLinksReceived, pushBefore = PushBlockSync.CoPushHeard;
             yield return ThreeRound(h, 40);
             if (Players.LocalSeat == 2) { PartnerFx.TestSendSoulLink(); PushBlockSync.TestSendCoPush(); h.Note("3P seat 2 sent soul link and co-push"); }
@@ -839,10 +838,8 @@ namespace OriCoop
                     "3P guest 3 receives guest 2's soul link (80) and co-push (89) (T-115; " + (PartnerFx.SoulLinksReceived - soulBefore) + "/" + (PushBlockSync.CoPushHeard - pushBefore) + ")");
             }
             yield return ThreeRound(h, 41);
-            // T-213 (7): seat 2 makes a soul link while seat 3 is loading (seat 2's Ori is not on seat 3's screen). Seat 3
-            // gets the hint at once; the flame must be shown once seat 2's Ori is back. Mutation
-            // ORICOOP_MUTATE_DROP_PENDING_LINK=1 (the flame is dropped, as before) must fail it.
-            int linkGot = PartnerFx.SoulLinksReceived, linkShown = PartnerFx.SoulLinksShown;
+            // Seat 2 saves while seat 3 is loading. Keep the accepted marker until seat 3 can use its own Ori again.
+            int linksBefore = Revive.LinksNoted, noticesBefore = PartnerFx.SoulLinksReceived;
             if (Players.LocalSeat == 3)
             {
                 NetPlay.TestLoading = true;
@@ -850,46 +847,54 @@ namespace OriCoop
                 while (PuppetAt(2) != null && Time.realtimeSinceStartup < by) yield return null;
             }
             yield return ThreeRound(h, 42);
-            if (Players.LocalSeat == 2) PartnerFx.TestSendSoulLink();
+            if (Players.LocalSeat == 2) { Own.Energy.RestoreAllEnergy(); NetReviveTest.CastSoulLink(Own); }
             if (Players.LocalSeat == 3)
             {
-                by = Time.realtimeSinceStartup + 6f;
-                while (PartnerFx.SoulLinksReceived == linkGot && Time.realtimeSinceStartup < by) yield return null;
-                bool whileLoading = PartnerFx.SoulLinksReceived > linkGot && PartnerFx.SoulLinksShown == linkShown && PuppetAt(2) == null;
+                by = Time.realtimeSinceStartup + 8f;
+                while ((Revive.LinkSeat != 2 || Revive.LinksNoted == linksBefore || PartnerFx.SoulLinksReceived == noticesBefore)
+                    && Time.realtimeSinceStartup < by) yield return null;
+                h.Check(Revive.LinkSeat == 2 && Revive.LinksNoted > linksBefore && PartnerFx.SoulLinksReceived == noticesBefore + 1
+                    && Revive.RoomFlamePending && PuppetAt(2) == null, "3P the cast notice arrives and the room marker waits while loading");
                 NetPlay.TestLoading = false;
                 by = Time.realtimeSinceStartup + 8f;
-                while (PartnerFx.SoulLinksShown == linkShown && Time.realtimeSinceStartup < by) yield return null;
-                Puppet linkOwner = PuppetAt(2);
-                SoulFlame linkFlame = linkOwner != null ? FlameOf(linkOwner.Sein) : null;
-                h.Check(whileLoading && PartnerFx.SoulLinksShown == linkShown + 1 && linkFlame != null && linkFlame.gameObject.activeInHierarchy,
-                    "3P a soul link made while this PC was loading shows its flame once the partner's Ori is back (T-213; arrived while loading "
-                    + whileLoading + ", shown +" + (PartnerFx.SoulLinksShown - linkShown) + ", flame " + (linkFlame != null) + ")");
+                while (Revive.RoomFlamePending && Time.realtimeSinceStartup < by) yield return null;
+                string flameState;
+                bool onlyOne = NetReviveTest.OnlyNativeFlame(Own, out flameState);
+                h.Check(NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition) && onlyOne,
+                    "3P after loading, only the primary Ori's native flame is at the room link (" + flameState + ")");
             }
             yield return ThreeRound(h, 43);
-            // T-213 review (6, 7). (6): seat 2's Ori is on seat 3's screen, but the game fails to make the flame once
-            // (test hook): the link is kept and shown on a later frame. Before, the error skipped the keeping: a hint
-            // and no flame. (7): a soul link that names seat 9, which no player can have, is not kept. Before, it
-            // stayed until the session ended.
-            int linkGot2 = PartnerFx.SoulLinksReceived, linkShown2 = PartnerFx.SoulLinksShown;
-            if (Players.LocalSeat == 3) PartnerFx.TestFailShows = 1;
+            // Retry a failed native spawn; an invalid cast notice must not add another flame or notice.
+            linksBefore = Revive.LinksNoted; noticesBefore = PartnerFx.SoulLinksReceived;
+            Vector3 previousLink = Revive.LinkPosition;
+            if (Players.LocalSeat == 3) Revive.TestFailRoomFlameApplies = 1;
             yield return ThreeRound(h, 44);
-            if (Players.LocalSeat == 2) { PartnerFx.TestSendSoulLink(); PartnerFx.TestSendSoulLink(9); }
+            if (Players.LocalSeat == 2)
+            {
+                Plugin.Teleport(Own, previousLink + Vector3.right * 2f);
+                yield return TestClock.WaitGame(0.2f);
+                Own.Energy.RestoreAllEnergy(); NetReviveTest.CastSoulLink(Own); PartnerFx.TestSendSoulLink(9);
+            }
             if (Players.LocalSeat == 3)
             {
-                by = Time.realtimeSinceStartup + 6f;
-                while (PartnerFx.SoulLinksReceived < linkGot2 + 2 && Time.realtimeSinceStartup < by) yield return null;
-                by = Time.realtimeSinceStartup + 2f;
-                while (PartnerFx.SoulLinksShown == linkShown2 && Time.realtimeSinceStartup < by) yield return null;
-                bool failedOnce = PartnerFx.TestFailShows == 0;
-                PartnerFx.TestFailShows = 0;
-                h.Check(failedOnce && PartnerFx.SoulLinksShown == linkShown2 + 1,
-                    "3P a soul link whose flame the game could not make at once is shown on a later frame (T-213; failed once " + failedOnce
-                    + ", shown +" + (PartnerFx.SoulLinksShown - linkShown2) + ")");
-                h.Check(PartnerFx.SoulLinksReceived >= linkGot2 + 2 && PartnerFx.SoulLinksPending == 0,
-                    "3P a soul link for a seat no player can have is not kept (T-213; got +" + (PartnerFx.SoulLinksReceived - linkGot2)
-                    + ", kept " + PartnerFx.SoulLinksPending + ")");
+                by = Time.realtimeSinceStartup + 8f;
+                while ((Vector3.Distance(Revive.LinkPosition, previousLink) < 1f || Revive.RoomFlamePending
+                    || PartnerFx.SoulLinksReceived == noticesBefore) && Time.realtimeSinceStartup < by) yield return null;
+                bool failedOnce = Revive.TestFailRoomFlameApplies == 0;
+                Revive.TestFailRoomFlameApplies = 0;
+                h.Check(failedOnce && Revive.LinksNoted > linksBefore && Revive.LinkSeat == 2 && !Revive.RoomFlamePending
+                    && Vector3.Distance(Revive.LinkPosition, previousLink) >= 1f && NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition),
+                    "3P a native flame that failed to spawn is retried at the new room link");
             }
             yield return ThreeRound(h, 45);
+            if (Players.LocalSeat == 3)
+            {
+                string flameState;
+                bool onlyOne = NetReviveTest.OnlyNativeFlame(Own, out flameState);
+                int notices = PartnerFx.SoulLinksReceived - noticesBefore;
+                h.Check(notices == 1 && onlyOne && NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition),
+                    "3P an invalid caster seat gives no extra flame or notice (notices=" + notices + ", " + flameState + ")");
+            }
             yield return Safely(h, "3P ESC", NetEscapeTest.Run3P(h));   // T-169: mash back beside a teammate in the escape
             // T-213 (10): seat 2 notes seat 3 as "joined after me, no load announced yet" (how a guest gets that note:
             // Saves unit tests). When seat 2 becomes the host below it must send seat 3 its checkpoint, not take it as loaded.

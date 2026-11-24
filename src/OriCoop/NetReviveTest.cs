@@ -36,38 +36,98 @@ namespace OriCoop
         static SeinCharacter Puppet { get { return P2Context.P2; } }
         static string F(float f) { return f.ToString("F2"); }
 
-        // R4 (T-029): the guest casts a soul link (the save flame, the game's SeinSoulFlame.CheckpointMarker); the host
-        // must see the same native flame appear beside the guest's Ori. The puppet's own soul-flame logic is blocked online.
-        static readonly FieldInfo s_soulFlameField = typeof(SeinSoulFlame).GetField("m_soulFlame", BindingFlags.Instance | BindingFlags.NonPublic);
-        static SoulFlame FlameOf(SeinCharacter s) { return s == null || s.SoulFlame == null ? null : s_soulFlameField.GetValue(s.SoulFlame) as SoulFlame; }
-        static IEnumerator SoulLink(TestHarness h, bool host)
+        internal static bool NativeLinkAt(SeinCharacter s, Vector3 at)
         {
-            SoulFlame before = FlameOf(host ? Puppet : Own);
-            yield return Barrier(h, 11);
-            if (Own == null || Puppet == null) { h.Check(false, "R4 needs both Oris"); yield break; }
-            if (!host)
-            {
-                int saves0 = Revive.DeathSaves; float hp0 = Own.Mortality.Health.Amount;
-                CastSoulLink(Own);
-                SoulFlame mine = FlameOf(Own);
-                h.Check(mine != null && mine != before && Vector3.Distance(mine.Position, Own.Position) < 0.5f, "R4 guest: soul link cast at own position");
-                // T-041: with nobody down a soul link saves as it always did.
-                h.Check(Revive.DeathSaves == saves0 && Mathf.Abs(Own.Mortality.Health.Amount - hp0) < 0.01f,
-                    "R4 guest: nobody down, so the soul link costs no health (" + F(hp0) + " -> " + F(Own.Mortality.Health.Amount) + ")");
-            }
-            else
-            {
-                float end = Time.realtimeSinceStartup + 5f; SoulFlame seen = null;
-                while (Time.realtimeSinceStartup < end) { seen = FlameOf(Puppet); if (seen != null && seen != before) break; yield return null; }
-                bool appeared = seen != null && seen != before;
-                float d = appeared ? Vector3.Distance(seen.Position, Puppet.Position) : -1f;
-                h.Check(appeared && seen.gameObject.activeInHierarchy && d < 2f,
-                    "R4 host: the guest's soul link flame appears on this screen beside the guest (" + (appeared ? F(d) : "none") + ")");
-            }
-            yield return Barrier(h, 12);
+            return s != null && s.SoulFlame != null && s.SoulFlame.SoulFlameExists
+                && Vector3.Distance(s.SoulFlame.SoulFlamePosition, at) < 0.1f;
+        }
+        static readonly FieldInfo s_markerObject = typeof(SeinSoulFlame).GetField("m_checkpointMarkerGameObject", BindingFlags.Instance | BindingFlags.NonPublic);
+
+        internal static bool OnlyNativeFlame(SeinCharacter own, out string state)
+        {
+            SeinSoulFlame flame = own != null ? own.SoulFlame : null;
+            GameObject marker = flame != null ? (GameObject)s_markerObject.GetValue(flame) : null;
+            SoulFlame[] active = UnityEngine.Object.FindObjectsOfType<SoulFlame>();
+            int puppetFlames = 0;
+            foreach (Puppet p in Players.Remotes)
+                if (p.Sein != null && p.Sein.SoulFlame != null && p.Sein.SoulFlame.SoulFlameExists) puppetFlames++;
+            bool primaryIsSoleFlame = marker != null && active.Length == 1 && active[0].gameObject == marker;
+            state = "active=" + active.Length + ", primary=" + (marker == null ? "none" : marker.transform.position.ToString("F3"))
+                + ", primary is sole flame=" + primaryIsSoleFlame + ", puppet flames=" + puppetFlames;
+            return primaryIsSoleFlame && puppetFlames == 0;
         }
 
-        static void CastSoulLink(SeinCharacter s)
+        internal static IEnumerator StandAtNativeLink(SeinCharacter s, Vector3 at)
+        {
+            Plugin.Teleport(s, at);
+            yield return Wait(Time.fixedDeltaTime);
+            TestClock.Window landing = new TestClock.Window(1f);
+            while (!s.IsOnGround && landing.Open) yield return null;
+            yield return Wait(Time.fixedDeltaTime);
+        }
+
+        static IEnumerator SoulLink(TestHarness h, bool host)
+        {
+            if (Own == null || Puppet == null) { h.Check(false, "R4 needs both Oris"); yield break; }
+            Vector3 first = Vector3.zero;
+            for (int round = 0; round < 2; round++)
+            {
+                bool cast = host == (round == 0);
+                int step = 110 + 3 * round, creator = round + 1;
+                if (cast && round == 1) { Plugin.Teleport(Own, first + Vector3.right * 3f); yield return Wait(0.25f); }
+                int notices = PartnerFx.SoulLinksReceived;
+                yield return Barrier(h, step);
+                SaveReport spot = new SaveReport();
+                if (cast)
+                {
+                    Own.Energy.RestoreAllEnergy();
+                    int saves = Revive.DeathSaves; float hp = Own.Mortality.Health.Amount;
+                    spot.HasPosition = true; spot.Position = Own.Position;
+                    CastSoulLink(Own);
+                    h.Check(Revive.DeathSaves == saves && Mathf.Abs(Own.Mortality.Health.Amount - hp) < 0.01f,
+                        "R4 P" + creator + ": a soul link costs no health when nobody is down");
+                }
+                yield return Barrier(h, step + 1, "", spot);
+                if (!cast) s_partnerSteps.TryGetValue(step + 1, out spot);
+                string label = "R4 P" + creator + " cast: ";
+                h.Check(spot != null && spot.HasPosition, label + "cast position reported");
+                if (spot != null && spot.HasPosition)
+                {
+                    Vector3 at = spot.Position;
+                    if (round == 0) first = at;
+                    else h.Check(Vector3.Distance(at, first) > 1f, label + "the new link is away from the old one");
+                    float end = Time.realtimeSinceStartup + 6f;
+                    while ((Revive.RoomFlamePending || !NativeLinkAt(Own, at) || Revive.LinkSeat != creator) && Time.realtimeSinceStartup < end)
+                        yield return null;
+                    yield return Wait(Time.fixedDeltaTime);
+                    string flameState;
+                    bool onlyOne = OnlyNativeFlame(Own, out flameState);
+                    h.Check(NativeLinkAt(Own, at), label + "this PC's native link is at the caster's exact spot (cast="
+                        + at.ToString("F3") + ", " + flameState + ")");
+                    h.Check(Revive.HaveLink && Revive.LinkSeat == creator && Vector3.Distance(Revive.LinkPosition, at) < 0.1f,
+                        label + "this PC's respawn point is the same spot (seat=" + Revive.LinkSeat + ", point=" + Revive.LinkPosition.ToString("F3") + ")");
+                    h.Check(onlyOne, label + "only one flame exists, none on the puppet (" + flameState + ")");
+                    if (!cast) h.Check(PartnerFx.SoulLinksReceived == notices + 1, label + "the cast notice reached the other PC");
+                    Vector3 back = Own.Position;
+                    int level = Own.Level.Current;
+                    try
+                    {
+                        yield return StandAtNativeLink(Own, at);
+                        Own.Level.Current = Mathf.Max(level, 1);
+                        SeinSoulFlame flame = Own.SoulFlame;
+                        bool inside = flame.InsideCheckpointMarker;
+                        h.Check(inside, label + "this player is in range of the native flame (Ori="
+                            + Own.Position.ToString("F3") + ", cast=" + at.ToString("F3") + ")");
+                        h.Check(inside && flame.AllowedToAccessSkillTree && !Own.Controller.IsBashing && !UI.Fader.IsFadingInOrStay(),
+                            label + "a tap can open the native skill tree (inside=" + inside + ", safety=" + flame.IsSafeToCastSoulFlame + ")");
+                    }
+                    finally { Own.Level.Current = level; Plugin.Teleport(Own, back); }
+                }
+                yield return Barrier(h, step + 2);
+            }
+        }
+
+        internal static void CastSoulLink(SeinCharacter s)
         {
             typeof(SeinSoulFlame).GetMethod("CastSoulFlame", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(s.SoulFlame, null);
         }

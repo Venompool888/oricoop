@@ -516,8 +516,9 @@ namespace OriCoop
             s_sendingSnapshot = true;
             try { SendBlobs(blobs, seat); }
             finally { s_sendingSnapshot = false; }
-            // net5 (T-168): the end marker carries the newest world item batch this snapshot contains.
-            SendBlobsMessage(seat, delegate(BinaryWriter w) { w.Write((byte)2); w.Write(watermark); });
+            SendBlobsMessage(seat, delegate(BinaryWriter w) {
+                w.Write((byte)2); w.Write(watermark); StorySync.WriteWellActivations(w);
+            });
             Plugin.Log.LogInfo("net: full world snapshot " + blobs.Count + " objects in "
                 + ((Time.realtimeSinceStartup - start) * 1000f).ToString("F1") + " ms");
         }
@@ -580,6 +581,7 @@ namespace OriCoop
                 uint watermark = reader.ReadUInt32();
                 if (!NetPlay.IsHost)
                 {
+                    StorySync.MergeWellActivations(reader);
                     s_awaitSnapshot = false; s_scanAt = Time.realtimeSinceStartup + 0.25f;
                     s_delta.EndSnapshot(watermark); s_digestRepair.SnapshotReceived(); SnapshotsEnded++;
                 }
