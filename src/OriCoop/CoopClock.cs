@@ -21,17 +21,23 @@ namespace OriCoop
 
         static readonly ClockSync.Table s_table = new ClockSync.Table();
         static readonly Dictionary<int, double> s_reported = new Dictionary<int, double>();
-        static bool s_registered, s_hadPartner;
+        static bool s_registered, s_hadPartner, s_joined;
         static int s_left;
         static float s_nextSend, s_reportAt = -1f, s_nextBurst;
 
         public static void Tick()
         {
-            if (!s_registered) { s_registered = true; NetPlay.On(MsgClock, OnMessage); }
+            if (!s_registered)
+            {
+                s_registered = true; NetPlay.On(MsgClock, OnMessage);
+                // A third / fourth player (or a new PC on a freed seat) says hello while a partner is already here: it is
+                // measured now, not at the next 5-minute burst, and a freed seat's old best sample is not kept for it.
+                NetPlay.PlayerJoined += delegate(int seat) { s_joined = true; };
+            }
             float now = Time.realtimeSinceStartup;
             bool partner = NetPlay.Connected && NetPlay.RemoteHello;
-            if (partner && !s_hadPartner) { s_table.Clear(); s_reported.Clear(); StartBurst(now); }
-            s_hadPartner = partner;
+            if (partner && (!s_hadPartner || s_joined)) { s_table.Clear(); s_reported.Clear(); s_reportAt = -1f; StartBurst(now); }
+            s_hadPartner = partner; s_joined = false;
             if (!partner) return;
             if (s_left > 0 && now >= s_nextSend)
             {
