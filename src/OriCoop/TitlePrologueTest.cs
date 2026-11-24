@@ -16,10 +16,13 @@ namespace OriCoop
     // skip:  the guest plays the prologue along (not the waiting screen), in step with the host; its own input moves
     //        nothing, the host's input moves Naru on both PCs; the guest cannot skip; the host's skip ends it for
     //        both and both are in the first playable scene with the host's save.
-    // leave: the guest leaves from its pause menu mid-prologue (back on the title, the host goes on); it joins again:
-    //        now it is late, keeps the waiting screen (which says why) past the "no save" limit; the host skips and
-    //        the late guest loads the host's save.
-    // The expected values come from docs\tickets\T-203.md (设计), not from the code under test.
+    // late:  (T-205) the host starts alone. The guest joins about 20 s in (a cinematic part): within seconds its copy
+    //        shows the host's moment (the same timeline within 2 s), not the start and not the waiting screen. It
+    //        leaves from its pause menu (title usable, the host goes on) and joins again while the host's Naru stands
+    //        in the playable part, past a trigger: same scene, Naru on the host's spot, the trigger done here too.
+    //        Then as in skip: own keys move nothing, the host walks Naru on both, the host's skip ends it for both.
+    // hostquit: the host quits mid-prologue.
+    // The expected values come from docs\tickets\T-203.md and T-205.md (设计), not from the code under test.
     public static partial class NativeModeMenu
     {
         partial class TitleJoinTest
@@ -30,6 +33,16 @@ namespace OriCoop
             // PC that stalls on loading may trail by a moment). The start itself: within StartLimit.
             const float StepLimit = 3f, StartLimit = 1.5f;
             const string FirstScene = "swallowsNestStartOfLeafJourney", GameScene = "sunkenGladesRunaway";
+            // T-205 (ticket 验收 1-2): a late guest shows the host's moment within JoinLimit seconds of joining, no more
+            // than MomentLimit seconds of story apart; in a playable part its character is on the host's spot.
+            const float JoinLimit = 8f, MomentLimit = 2f, SpotLimit = 1f;
+            // ... a guest joining in the prologue's last scene (about nine minutes of story to make up; ticket 设计
+            // "玩家看到什么"): level within DeepJoinLimit; its character, which the host moves, within the 3 units the
+            // position correction allows while the host walks.
+            const float DeepJoinLimit = 60f, DeepSpotLimit = 3f;
+            // The area-name trigger of the first playable scene (probe: swallowsNestTheGift/areaTextZone/triggerCollider).
+            const float AreaTriggerX = -2244.5f;
+            const string AreaTrigger = "areaTextZone/triggerCollider";
 
             // ---- values shared between the two games (files next to the result file) ------------------------------
             readonly Dictionary<string, string> m_pOwn = new Dictionary<string, string>();
@@ -70,22 +83,29 @@ namespace OriCoop
                 m_pRetrying = false;
             }
             void Put(string key, double value) { Put(key, Num(value)); }
+            // What the other game has reported so far. A read can fall into the moment the other game replaces its file
+            // (it is gone for an instant between delete and move; T-205: the host now writes five times a second): what
+            // was read before stays known, so a value that was there never seems to disappear.
+            readonly Dictionary<string, string> m_pPeer = new Dictionary<string, string>();
             string Peer(string key)
             {
                 try
                 {
-                    if (!File.Exists(PFile(PeerRole))) return null;
-                    string text;
-                    using (FileStream fs = new FileStream(PFile(PeerRole), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
-                    using (StreamReader reader = new StreamReader(fs)) text = reader.ReadToEnd();
-                    foreach (string line in text.Split('\n'))
+                    if (File.Exists(PFile(PeerRole)))
                     {
-                        int eq = line.IndexOf('=');
-                        if (eq > 0 && line.Substring(0, eq) == key) return line.Substring(eq + 1);
+                        string text;
+                        using (FileStream fs = new FileStream(PFile(PeerRole), FileMode.Open, FileAccess.Read, FileShare.ReadWrite | FileShare.Delete))
+                        using (StreamReader reader = new StreamReader(fs)) text = reader.ReadToEnd();
+                        foreach (string line in text.Split('\n'))
+                        {
+                            int eq = line.IndexOf('=');
+                            if (eq > 0) m_pPeer[line.Substring(0, eq)] = line.Substring(eq + 1);
+                        }
                     }
                 }
                 catch (Exception) { }   // the other game is replacing it right now: read again next frame
-                return null;
+                string value;
+                return m_pPeer.TryGetValue(key, out value) ? value : null;
             }
             double PeerNum(string key)
             {
@@ -118,6 +138,86 @@ namespace OriCoop
                     if (!naru && NaruPlayable) { naru = true; Put("m.naru", Utc()); Note("Naru is the current character at x " + NaruX.ToString("F2")); }
                     yield return null;
                 }
+            }
+
+            // ---- T-205: what the game shows right now (its own state: scene, character, the longest timeline that plays)
+            static string ActorNow
+            {
+                get
+                {
+                    ICharacter c = Characters.Current;
+                    return c == null ? "none" : object.ReferenceEquals(c, Characters.Naru) ? "Naru" : object.ReferenceEquals(c, Characters.BabySein) ? "BabySein"
+                        : object.ReferenceEquals(c, Characters.Sein) ? "Sein" : "other";
+                }
+            }
+            static TimelineSequence PlayingTimeline(string name)
+            {
+                TimelineSequence best = null; float longest = 0f;
+                foreach (TimelineSequence s in UnityEngine.Object.FindObjectsOfType<TimelineSequence>())
+                {
+                    if (!s.AnimatorDriver.IsPlaying || name != null && s.name != name) continue;
+                    float d = s.Duration;
+                    if (d > longest) { longest = d; best = s; }
+                }
+                return best;
+            }
+            // The host reports it five times a second (key "s") for as long as its test runs.
+            IEnumerator PublishMoments()
+            {
+                while (!m_finished)
+                {
+                    TimelineSequence t = PlayingTimeline(null);
+                    if (t != null && t.Duration < 5f) t = null;   // a short effect may start a frame apart on the two PCs
+                    Vector3 p = Characters.Current != null ? Characters.Current.Position : Vector3.zero;
+                    Put("s", string.Join("|", new[] { Num(Utc()), SceneNow, ActorNow, Num(p.x), Num(p.y), t == null ? "" : t.name,
+                        Num(t == null ? 0.0 : t.AnimatorDriver.CurrentTime), SharedPrologue.HostStep.ToString() }));
+                    yield return StartCoroutine(TWait(0.2f));
+                }
+            }
+            // The character this copy controls is drawn (its object is active and at least one renderer is on).
+            static bool CharacterVisible
+            {
+                get
+                {
+                    ICharacter c = Characters.Current;
+                    if (c == null || c.GameObject == null || !c.GameObject.activeInHierarchy) return false;
+                    foreach (Renderer r in c.GameObject.GetComponentsInChildren<Renderer>()) if (r.enabled) return true;
+                    return false;
+                }
+            }
+
+            // Guest: does this copy show what the host's latest report shows? Scene and character equal; a playing
+            // timeline is the same one and within `limit` seconds; a character stands within `spot` of the host's.
+            bool SameMoment(float limit, out string detail) { return SameMoment(limit, SpotLimit, out detail); }
+            bool SameMoment(float limit, float spot, out string detail)
+            {
+                string raw = Peer("s");
+                detail = "no report from the host";
+                if (raw == null) return false;
+                string[] p = raw.Split('|');
+                if (p.Length < 8) return false;
+                double age = Utc() - double.Parse(p[0], CultureInfo.InvariantCulture);
+                float hx = float.Parse(p[3], CultureInfo.InvariantCulture), hy = float.Parse(p[4], CultureInfo.InvariantCulture), ht = float.Parse(p[6], CultureInfo.InvariantCulture);
+                detail = "host: scene " + p[1] + ", character " + p[2] + (p[5].Length > 0 ? ", timeline " + p[5] + " at " + ht.ToString("F1") + " s" : "")
+                    + "; here: scene " + SceneNow + ", character " + ActorNow;
+                if (age > 1.0) { detail += "; the host's report is " + age.ToString("F1") + " s old"; return false; }
+                if (p[1] != SceneNow || p[2] != ActorNow) return false;
+                if (p[5].Length > 0)
+                {
+                    TimelineSequence mine = PlayingTimeline(p[5]);
+                    if (mine == null) { detail += ", that timeline does not play here"; return false; }
+                    float apart = mine.AnimatorDriver.CurrentTime - (ht + (float)age);
+                    detail += ", the same timeline " + apart.ToString("F2") + " s apart";
+                    if (Math.Abs(apart) > limit) return false;
+                }
+                if (Characters.Current != null)
+                {
+                    Vector3 here = Characters.Current.Position;
+                    float off = Math.Max(Math.Abs(here.x - hx), Math.Abs(here.y - hy));
+                    detail += ", the character " + off.ToString("F2") + " units from the host's";
+                    if (off > spot) return false;
+                }
+                return true;
             }
 
             void CheckStep(string key, string what)
@@ -160,24 +260,45 @@ namespace OriCoop
                 }
                 yield return StartCoroutine(Row(1, 0.5f));                          // 开始游戏 -> the room screen, until the guest is there
                 yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Visible, 5f));
-                yield return StartCoroutine(WaitPeer("waiting", 180f));
-                Check(Peer("waiting") != null && NetPlay.PartnerHere && OnlineRoomScreen.Visible,
-                    "host: the guest is connected and " + (m_tr == "cserver" ? "ready on the room page" : "waits for the host's save"));
-                if (Peer("waiting") == null) yield break;
+                if (mode == "late" || mode == "deep" || mode == "probe" && ProbeJoin > 0f)   // T-205: the host starts alone; the guest connects later
+                    Check(OnlineRoomScreen.Visible && !NetPlay.PartnerHere, "host: starts its new game alone, nobody has joined yet");
+                else
+                {
+                    yield return StartCoroutine(WaitPeer("waiting", 180f));
+                    Check(Peer("waiting") != null && NetPlay.PartnerHere && OnlineRoomScreen.Visible,
+                        "host: the guest is connected and " + (m_tr == "cserver" ? "ready on the room page" : "waits for the host's save"));
+                    if (Peer("waiting") == null) yield break;
+                }
                 yield return StartCoroutine(TWait(1f));
                 float end = Time.realtimeSinceStartup + 10f;
                 while (Time.realtimeSinceStartup < end && OnlineRoomScreen.Visible) { OnlineRoomScreen.Click("room.continue"); yield return null; }
                 Put("start", Utc());
                 yield return null;
                 Check(SharedPrologue.HostStarts == 1 && SharedPrologue.HostAnnouncing, "host: the new game announces its prologue at once (starts " + SharedPrologue.HostStarts + ")");
-                yield return StartCoroutine(Milestones(150f, mode == "skip"));
+                if (mode == "probe") { yield return StartCoroutine(PrologueProbe(1000f, true)); yield return StartCoroutine(TWait(3f)); yield break; }
+                StartCoroutine(PublishMoments());
+                if (mode == "deep")
+                {
+                    // T-205: the host plays the whole prologue (the probe's driver walks it; its cinematic parts are
+                    // fast-forwarded up to the point where the guest joins, in the last scene) to its own end.
+                    yield return StartCoroutine(PrologueProbe(700f, true));
+                    Check(!InPrologueState && SharedPrologue.EventsLogged >= 40,
+                        "host: played the whole prologue to its own end (" + (SharedPrologue.HostStep / 60f).ToString("F0") + " s of story, " + SharedPrologue.EventsLogged
+                        + " player points logged, state " + GameStateMachine.Instance.CurrentState + ")");
+                    Put("natural.end", Utc());
+                    if (m_fails != 0) yield break;
+                    yield return StartCoroutine(PrologueHostInGame(slot, "the prologue's own end"));
+                    yield break;
+                }
+                yield return StartCoroutine(Milestones(150f, mode == "skip" || mode == "late"));
                 Check(InPrologueState, "host: the state machine is in the Prologue state");
                 // Ticket 11: the prologue is not co-op gameplay; no checkpoint leaves the host in the middle of it.
                 Check(!NetPlay.LocalInGameplay() && !SaveSync.HaveCheckpointPosition, "host: not 'in gameplay' during the prologue, no checkpoint sent");
                 if (!InPrologueState) yield break;
                 if (mode == "hostquit") { yield return StartCoroutine(PrologueHostQuits()); yield break; }
-                if (mode == "leave") yield return StartCoroutine(PrologueHostLeave());
-                else yield return StartCoroutine(PrologueHostControl());
+                if (mode == "late") yield return StartCoroutine(PrologueHostLate());
+                if (m_fails != 0) yield break;
+                yield return StartCoroutine(PrologueHostControl());
                 if (m_fails != 0) yield break;
 
                 // ---- only P1 skips: the pause menu's skip item performs SkipCutsceneController.SkipCutscene
@@ -185,9 +306,16 @@ namespace OriCoop
                 Check(SkipCutsceneController.Instance != null && SkipCutsceneController.Instance.SkippingAvailable, "host: P1 can skip the prologue");
                 Put("skip", Utc());
                 SkipCutsceneController.Instance.SkipCutscene();
-                end = Time.realtimeSinceStartup + 90f;
+                yield return StartCoroutine(PrologueHostInGame(slot, "its skip"));
+            }
+
+            // The host's prologue is over (skipped, or played to its end): it is in the game, the guest loads its save
+            // and stands beside it, and the new game's save is in the slot the host picked.
+            IEnumerator PrologueHostInGame(int slot, string after)
+            {
+                float end = Time.realtimeSinceStartup + 90f;
                 while (Time.realtimeSinceStartup < end && !NetPlay.LocalInGameplay()) { DismissResume(); yield return null; }
-                Check(NetPlay.LocalInGameplay() && !InPrologueState, "host: in game after its skip");
+                Check(NetPlay.LocalInGameplay() && !InPrologueState, "host: in game after " + after);
                 Check(!SharedPrologue.HostAnnouncing && SharedPrologue.HostStarts == 1, "host: the prologue is announced as over (one prologue in this session)");
                 end = Time.realtimeSinceStartup + 150f;
                 while (Time.realtimeSinceStartup < end && !(NetPlay.PartnerHere && SaveSync.Ready)) { DismissResume(); yield return null; }
@@ -217,6 +345,18 @@ namespace OriCoop
             {
                 Check(NaruPlayable, "host: Naru is playable");
                 if (!NaruPlayable) yield break;
+                // T-209 (1): P1 plays on a controller (the test's menu device is pad 0). A key held on this PC's keyboard
+                // (a second local player's device) must not walk Naru: only P1 controls the prologue.
+                yield return StartCoroutine(TWait(6f));                             // control is handed over a few seconds after the camera
+                float keyFrom = NaruX, keyMoved = 0f;
+                KeyboardOnlyP1.TestKeyHeld = KeyCode.D;                             // the game's default "right" key (PlayerInputRebinding)
+                float keyUntil = Time.realtimeSinceStartup + 2.5f;
+                while (Time.realtimeSinceStartup < keyUntil) { keyMoved = Math.Max(keyMoved, Math.Abs(NaruX - keyFrom)); yield return null; }
+                KeyboardOnlyP1.TestKeyHeld = KeyCode.None;
+                Check(OnlineLocalPlayers.InputOf(Players.LocalSeat).Kind == InputDevice.DeviceKind.Pad && keyMoved < 0.3f,
+                    "host: P1 is on a controller (" + OnlineLocalPlayers.InputOf(Players.LocalSeat).Kind + "): a held keyboard direction key does not move Naru (moved "
+                    + keyMoved.ToString("F2") + " units)");
+                yield return StartCoroutine(TWait(1f));
                 // First the guest presses its own keys while the host's are neutral; the guest checks nothing moves there.
                 yield return StartCoroutine(Together("own.start", 60f));
                 yield return StartCoroutine(WaitPeer("own.done", 30f));
@@ -256,18 +396,32 @@ namespace OriCoop
                 yield return StartCoroutine(WaitPeer("done", 60f));
             }
 
-            // The guest leaves mid-prologue and joins again late: the host just goes on.
-            IEnumerator PrologueHostLeave()
+            // T-205: the guest joined during the opening cinematic, checked what it sees and left again (pause menu):
+            // the host just goes on. Alone, it walks Naru through the area-name trigger and stands still; the guest
+            // joins again there.
+            IEnumerator PrologueHostLate()
             {
-                yield return StartCoroutine(WaitPeer("left", 120f));
+                yield return StartCoroutine(WaitPeer("left", 150f));
                 yield return StartCoroutine(WaitFor(() => !NetPlay.PartnerHere, 20f));
                 yield return StartCoroutine(TWait(2f));
                 Check(Peer("left") != null && !NetPlay.PartnerHere && InPrologueState && NetPlay.Enabled && SharedPrologue.HostAnnouncing && !NetPlay.LocalInGameplay(),
-                    "leave: the guest left; the host's prologue goes on, still hosting (partner " + NetPlay.PartnerHere + ", net=" + NetPlay.CurrentPhase + ")");
-                yield return StartCoroutine(WaitPeer("late.waiting", 180f));
-                Check(Peer("late.waiting") != null && NetPlay.PartnerHere && InPrologueState, "leave: the guest is back in the session while the prologue still plays");
-                yield return StartCoroutine(WaitPeer("late.checked", 60f));           // the late guest waits past its no-save limit
-                Check(InPrologueState && !SaveSync.HaveCheckpointPosition, "leave: still in the prologue, still no checkpoint sent");
+                    "late: the guest joined, then left; the host's prologue goes on, still hosting (partner " + NetPlay.PartnerHere + ", net=" + NetPlay.CurrentPhase + ")");
+                Check(NaruPlayable, "late: the host's Naru is playable");
+                if (!NaruPlayable) yield break;
+                yield return StartCoroutine(TWait(6f));                             // control is handed over a few seconds after the camera
+                float x0 = NaruX; int logged = SharedPrologue.EventsLogged;
+                SharedPrologue.TestInput = true; SharedPrologue.TestHorizontal = 1f;
+                float end = Time.realtimeSinceStartup + 40f;
+                while (Time.realtimeSinceStartup < end && NaruX < AreaTriggerX + 1.5f) yield return null;
+                SharedPrologue.TestHorizontal = 0f;
+                yield return StartCoroutine(TWait(2.5f));                           // at rest
+                SharedPrologue.TestInput = false;
+                Check(NaruX > AreaTriggerX + 1f && SharedPrologue.EventsLogged > logged && InPrologueState,
+                    "late: alone, the host walked Naru through the area-name trigger (x " + x0.ToString("F1") + " -> " + NaruX.ToString("F1") + ", player points logged "
+                    + logged + " -> " + SharedPrologue.EventsLogged + ", story step " + SharedPrologue.HostStep + ")");
+                Put("walk1.x", NaruX); Put("walk1.y", Characters.Naru.Position.y); Put("walk1.done", Utc());
+                yield return StartCoroutine(WaitPeer("rejoined.checked", 150f));
+                Check(Peer("rejoined.checked") != null && NetPlay.PartnerHere && InPrologueState, "late: the guest is back in the session while Naru stands in the playable part");
             }
 
             // ---- guest -----------------------------------------------------------------------------------------
@@ -318,12 +472,57 @@ namespace OriCoop
                     + " (net=" + NetPlay.CurrentPhase + ")");
             }
 
+            // T-209 (2): the other way in (ORICOOP_TITLEJOIN_GUESTSLOT=1, run-titlejoin -GuestSlot): the guest is connected
+            // and picks an EMPTY save slot (difficulty -> new game). The new game is not started (GuestJoin.Intercept);
+            // that slot waits for the host's save. A player gets there from the save-slot screen's own mode menu; the
+            // test connects directly, as the net harness does for -GuestNewGame.
+            static bool GuestSlotPath { get { return Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_GUESTSLOT") == "1"; } }
+            IEnumerator PrologueConnectBySlot(string who)
+            {
+                KeyboardOnlyP1.SetMenuDeviceForTest(-1);
+                m_pGuestParked = false;
+                int intercepts = GuestJoin.Intercepts;
+                if (TitleOrbOpen) NativeModeMenu.Destroy();
+                NetPlay.Begin(false, "direct", "127.0.0.1:" + NetPlay.ConfigPort);
+                TitleScreenManager.SetScreen(TitleScreenManager.Screen.SaveSlots);
+                yield return StartCoroutine(WaitFor(() => SlotsReady && NetPlay.PartnerHere, 90f));
+                Check(SlotsReady && NetPlay.PartnerHere && !GuestJoin.Waiting, who + ": connected, on the save-slot screen (net=" + NetPlay.CurrentPhase + ")");
+                SaveSlotsUI ui = SaveSlotsUI.Instance;
+                if (ui == null || !SlotsReady || !NetPlay.PartnerHere) yield break;
+                yield return StartCoroutine(TWait(0.8f));
+                ui.SetCurrentItem(0);
+                ui.EmptySaveSlotSelected();                                        // A on an empty slot: the game's difficulty screen
+                yield return StartCoroutine(TWait(0.6f));
+                ui.SetDifficulty(DifficultyMode.Easy);
+                yield return StartCoroutine(TWait(0.5f));
+                m_pGuestParked = GuestJoin.Waiting && GuestJoin.Intercepts == intercepts + 1;
+                Check(m_pGuestParked && !InPrologueState && NetPlay.PartnerHere,
+                    who + ": the empty slot starts no new game here; it waits for the host's save (intercepted " + (GuestJoin.Intercepts - intercepts) + ", waiting " + GuestJoin.Waiting + ")");
+            }
+
             IEnumerator PrologueJoinRun(int savesAtStart)
             {
                 string mode = PrologueMode;
-                Note("--- shared prologue: " + mode + " (guest)");
+                Note("--- shared prologue: " + mode + " (guest" + (GuestSlotPath ? ", joining through an empty save slot" : "") + ")");
                 Check(savesAtStart == 0, "guest: appdata has no saves (" + savesAtStart + ")");
-                yield return StartCoroutine(PrologueConnect("guest", false));
+                if (mode == "late") { yield return StartCoroutine(PrologueJoinLate()); yield break; }
+                if (mode == "deep") { yield return StartCoroutine(PrologueJoinDeep()); yield break; }
+                if (mode == "probe" && ProbeJoin > 0f)
+                {
+                    yield return StartCoroutine(WaitPeer("start", 180f));
+                    double hostStarted = PeerNum("start");
+                    yield return StartCoroutine(WaitPeer("probe.ready", 900f));   // the host's story is ProbeJoin seconds in
+                    yield return StartCoroutine(PrologueConnect("late probe guest", true));
+                    double joinedAt = Utc();
+                    Note("late probe guest: joined " + (joinedAt - hostStarted).ToString("F1") + " s after the host's start");
+                    yield return StartCoroutine(WaitFor(() => SharedPrologue.Watching && SharedPrologue.CatchUps > 0 && !SharedPrologue.CatchingUp, 120f));
+                    Note("late probe guest: level with the host " + (Utc() - joinedAt).ToString("F1") + " s after joining (fast-forward " + SharedPrologue.LastCatchUpSeconds.ToString("F1")
+                        + " s for " + (SharedPrologue.LastCatchUpSteps / 60f).ToString("F1") + " s of story; points done " + SharedPrologue.EventsApplied + ", left out " + SharedPrologue.EventsSkipped + ")");
+                    yield return StartCoroutine(PrologueProbe(1000f, false));
+                    yield break;
+                }
+                if (GuestSlotPath) yield return StartCoroutine(PrologueConnectBySlot("guest"));
+                else yield return StartCoroutine(PrologueConnect("guest", false));
                 if (!m_pGuestParked) yield break;
                 int titleReturns = TitleReturn.SessionsEnded;
                 Check(SharedPrologue.LocalStarts == 0 && !SharedPrologue.HostPlaying, "guest: nothing plays before the host starts");
@@ -342,6 +541,7 @@ namespace OriCoop
                 Check(SharedPrologue.LastStartDelay >= 0f && SharedPrologue.LastStartDelay <= StartLimit,
                     "guest: its copy started " + SharedPrologue.LastStartDelay.ToString("F2") + " s after the host's (limit " + StartLimit + " s)");
                 Check(DifficultyController.Instance.Difficulty == DifficultyMode.Easy, "guest: its copy has the host's difficulty (" + DifficultyController.Instance.Difficulty + ")");
+                if (mode == "probe") { yield return StartCoroutine(PrologueProbe(1000f, false)); yield break; }
                 yield return StartCoroutine(Milestones(150f, mode == "skip"));
                 yield return StartCoroutine(WaitPeer("m.scene", 30f));
                 Check(InPrologueState && SharedPrologue.Watching, "guest: its state machine is in the Prologue state");
@@ -351,12 +551,27 @@ namespace OriCoop
                 Shot("prologue_playing");
                 if (m_fails != 0) yield break;
                 if (mode == "hostquit") { yield return StartCoroutine(PrologueJoinHostQuits()); yield break; }
-                if (mode == "leave") { yield return StartCoroutine(PrologueJoinLeave()); yield break; }
 
                 yield return StartCoroutine(WaitPeer("m.naru", 30f));
                 CheckStep("m.naru", "Naru playable");
                 if (!NaruPlayable) yield break;
+                // T-205: an on-time guest follows the host's story too (its points come from the host's log, its
+                // speed from the host's clock); nothing was left out and it never needed the cover.
+                Check(SharedPrologue.FollowsStory && SharedPrologue.EventsSkipped == 0 && SharedPrologue.CatchUps == 0 && Math.Abs(SharedPrologue.LastLag) <= 120,
+                    "guest: follows the host's story position (" + (SharedPrologue.LastLag / 60f).ToString("F2") + " s behind now, points left out " + SharedPrologue.EventsSkipped
+                    + ", covered catch-ups " + SharedPrologue.CatchUps + ")");
+                yield return StartCoroutine(PrologueGuestControl());
+                if (m_fails != 0) yield break;
 
+                // ---- the host skips: the copy here ends, the join loads the host's save as always
+                yield return StartCoroutine(Together("skip.ready", 120f));
+                yield return StartCoroutine(PrologueGuestEnds("guest", titleReturns, 0, 1, 1));
+            }
+
+            // Naru is playable on both PCs: this PC's keys move nothing, the host's input walks Naru here too, this
+            // PC cannot skip, its own pause menu opens and pauses nothing.
+            IEnumerator PrologueGuestControl()
+            {
                 // ---- P2 cannot control: this PC's own keys (right + jump) for 3 s move nothing
                 yield return StartCoroutine(Together("own.start", 60f));
                 yield return StartCoroutine(TWait(6f));                             // control has been handed over (a few seconds after the camera)
@@ -384,38 +599,78 @@ namespace OriCoop
                     + ", inputs applied " + SharedPrologue.InputsApplied + ", position corrections " + SharedPrologue.Snaps + ")");
                 Put("walk.checked", Utc());
 
+                // ---- T-205: a "press a button" wait of the story is the host's to answer. The game's own condition class
+                // (the one the sleeping-Ori wait uses, any button) is asked while a button of this PC is held that the
+                // host's input never replaces: it must not be answered here.
+                if (SharedPrologue.FollowsStory)
+                {
+                    GameObject waitObject = new GameObject("oricoopTestButtonWait");
+                    ButtonPressedCondition wait = waitObject.AddComponent<ButtonPressedCondition>();
+                    wait.Button = Core.Input.Button.Any; wait.State = ButtonPressedCondition.ButtonStates.Pressed;
+                    SharedPrologue.TestInput = true; SharedPrologue.TestOwnButton = true;
+                    yield return StartCoroutine(TWait(0.5f));
+                    bool held = Core.Input.Legend.IsPressed && Core.Input.AnyButtonPressed, answered = wait.Validate(null);
+                    SharedPrologue.TestOwnButton = false; SharedPrologue.TestInput = false;
+                    UnityEngine.Object.Destroy(waitObject);
+                    Check(held && !answered, "guest: a button of this PC is held (" + held + ") and does not answer the story's 'press a button' wait (answered " + answered + ")");
+                    yield return StartCoroutine(TWait(0.3f));
+
+                    // ---- T-205 review 1: a trigger of the host's log is done only when the game really took it. The
+                    // game's own trigger class, asked the way the host's log asks: switched off, on an inactive object,
+                    // then usable, then used up (it fires once).
+                    GameObject triggerObject = new GameObject("oricoopTestTrigger");
+                    PlayerCollisionTrigger trigger = triggerObject.AddComponent<PlayerCollisionTrigger>();
+                    trigger.UseTrigger = true;                                      // never by a character's position
+                    trigger.TriggerOnce = true; trigger.Active = false;
+                    bool off = SharedPrologue.Replay(trigger);
+                    trigger.Active = true; triggerObject.SetActive(false);
+                    bool inactive = SharedPrologue.Replay(trigger), kept = trigger.Active;
+                    triggerObject.SetActive(true);
+                    bool taken = SharedPrologue.Replay(trigger), used = !trigger.Active, again = SharedPrologue.Replay(trigger);
+                    UnityEngine.Object.Destroy(triggerObject);
+                    Check(!off && !inactive && kept && taken && used && !again,
+                        "guest: a trigger of the host's log counts as done only when the game took it (switched off " + off + ", inactive object " + inactive
+                        + " and still usable " + kept + ", usable " + taken + " and used up " + used + ", asked again " + again + ")");
+                    yield return StartCoroutine(TWait(0.3f));
+                }
+
                 // ---- P2 cannot skip; its own pause menu opens and the prologue goes on behind it
                 Check(SkipCutsceneController.Instance != null && !SkipCutsceneController.Instance.SkippingAvailable, "guest: skipping is not available to P2");
-                int refused = SharedPrologue.SkipsRefused;
+                int refused = SharedPrologue.SkipsRefused, stops = SharedPrologue.LocalStops;
                 SkipCutsceneController.Instance.SkipCutscene();                    // what the pause menu's skip item performs
                 yield return StartCoroutine(TWait(1.5f));
-                Check(SharedPrologue.SkipsRefused == refused + 1 && SharedPrologue.Watching && InPrologueState && SharedPrologue.LocalStops == 0,
+                Check(SharedPrologue.SkipsRefused == refused + 1 && SharedPrologue.Watching && InPrologueState && SharedPrologue.LocalStops == stops,
                     "guest: its skip is refused, the prologue plays on (refused " + (SharedPrologue.SkipsRefused - refused) + ", watching " + SharedPrologue.Watching + ")");
                 UI.Menu.ShowMenuScreen(true);
                 yield return StartCoroutine(TWait(1.5f));
                 Check(UI.MainMenuVisible && SharedPrologue.Watching && Time.timeScale > 0.01f, "guest: its own pause menu opens and the prologue is not paused (menu " + UI.MainMenuVisible + ")");
                 UI.Menu.HideMenuScreen(true);
                 yield return StartCoroutine(TWait(1f));
-                if (m_fails != 0) yield break;
-
-                // ---- the host skips: the copy here ends, the join loads the host's save as always
-                yield return StartCoroutine(Together("skip.ready", 120f));
-                yield return StartCoroutine(PrologueGuestEnds("guest", titleReturns, 0, 1, 1));
             }
 
             // After the host's skip: the copy is put away, the session stays, the host's save loads from the title.
             // aborts: joins given up before this one; copies / stops: prologue copies started / ended on this PC by now.
             IEnumerator PrologueGuestEnds(string who, int titleReturns, int aborts, int copies, int stops)
+            { return PrologueGuestEnds(who, titleReturns, aborts, copies, stops, false); }
+            // natural: the host does not skip; its prologue plays to its own end (the copy here may reach it a moment sooner).
+            IEnumerator PrologueGuestEnds(string who, int titleReturns, int aborts, int copies, int stops, bool natural)
             {
                 bool watched = SharedPrologue.Watching;
-                yield return StartCoroutine(WaitPeer("skip", 60f));
+                if (natural && watched) yield return StartCoroutine(WaitFor(() => !SharedPrologue.Watching || Peer("natural.end") != null, 300f));
+                else yield return StartCoroutine(WaitPeer("skip", 60f));
                 if (watched)
                 {
-                    yield return StartCoroutine(WaitFor(() => !SharedPrologue.Watching, 10f));
-                    double after = Utc() - PeerNum("skip");
-                    // The host's skip item runs its own 2 s fade before the state changes (playtest trace); then one network hop.
-                    Check(!SharedPrologue.Watching && after < 6.0 && SharedPrologue.LastStop == "the host's prologue ended",
-                        who + ": the host's skip ends the copy here (" + after.ToString("F1") + " s after the host pressed skip; '" + SharedPrologue.LastStop + "')");
+                    yield return StartCoroutine(WaitFor(() => !SharedPrologue.Watching, natural ? 30f : 10f));
+                    if (natural)
+                        Check(!SharedPrologue.Watching && (SharedPrologue.LastStop == "the host's prologue ended" || SharedPrologue.LastStop == "this copy reached its end first"),
+                            who + ": the copy here ends with the prologue's own end ('" + SharedPrologue.LastStop + "', points left out " + SharedPrologue.EventsSkipped + ")");
+                    else
+                    {
+                        double after = Utc() - PeerNum("skip");
+                        // The host's skip item runs its own 2 s fade before the state changes (playtest trace); then one network hop.
+                        Check(!SharedPrologue.Watching && after < 6.0 && SharedPrologue.LastStop == "the host's prologue ended",
+                            who + ": the host's skip ends the copy here (" + after.ToString("F1") + " s after the host pressed skip; '" + SharedPrologue.LastStop + "')");
+                    }
                     yield return StartCoroutine(TWait(0.5f));
                     Check(SessionScreens.Blocking, who + ": the transfer screen is back while the host's save comes (" + SessionScreens.Phase + ")");
                 }
@@ -473,40 +728,162 @@ namespace OriCoop
                 Put("done", Utc());
             }
 
-            // Leave from the pause menu mid-prologue, then join again: late.
-            IEnumerator PrologueJoinLeave()
+            // T-205: this PC has just joined a host whose prologue is running (GuestJoin waits since `waitingAt`). Its
+            // copy must show the host's moment within JoinLimit: started at once, fast-forwarded under the cover
+            // screen, then the same scene / character / timeline as the host (the game's own state, not the mod's clock).
+            // catchUps: SharedPrologue.CatchUps before this PC connected (the copy may start in the frame it joins).
+            IEnumerator LateJoinChecks(string who, int copies, double waitingAt, int catchUps)
+            { return LateJoinChecks(who, copies, waitingAt, catchUps, JoinLimit, SpotLimit); }
+            IEnumerator LateJoinChecks(string who, int copies, double waitingAt, int catchUps, float joinLimit, float spot)
             {
-                yield return StartCoroutine(TWait(4f));                             // well inside the prologue
-                Check(SharedPrologue.Watching && InPrologueState, "leave: the guest is in the prologue before leaving");
-                yield return StartCoroutine(QuitFromPause());                       // pause menu -> quit to the title, as a player does
-                Put("left", Utc());
-                yield return StartCoroutine(CheckTitleInput("guest left the prologue"));
-                Check(!SharedPrologue.Busy && !SharedPrologue.Watching && SessionScreens.Phase == SessionScreens.SavePhase.None && !GuestJoin.Waiting && !InPrologueState,
-                    "leave: on the title nothing of the prologue or the join is left (busy " + SharedPrologue.Busy + ", screen " + SessionScreens.Phase + ", waiting " + GuestJoin.Waiting + ")");
-                if (m_fails != 0) yield break;
+                yield return StartCoroutine(WaitFor(() => SharedPrologue.Watching, JoinLimit));
+                double copyAt = Utc();
+                Check(SharedPrologue.Watching && SharedPrologue.LocalStarts == copies,
+                    who + ": its own copy of the prologue starts " + (copyAt - waitingAt).ToString("F1") + " s after joining (copies started " + SharedPrologue.LocalStarts
+                    + ", host in prologue " + SharedPrologue.HostPlaying + ", host story known " + SharedPrologue.EventsKnown + " points)");
+                if (!SharedPrologue.Watching) yield break;
+                Check(SharedPrologue.FollowsStory, who + ": the copy follows the host's story position");
+                // While it fast-forwards the picture is covered, and the screen says what is going on.
+                // Review 5: the pause key (what Start does in the game) is pressed every few frames while the cover is
+                // up: the pause menu must never open under it.
+                bool covered = false, menuUnderCover = false;
+                int refused = SharedPrologue.MenusRefused, frame = 0;
+                float end = Time.realtimeSinceStartup + joinLimit + 30f;
+                while (Time.realtimeSinceStartup < end && (SharedPrologue.CatchUps == catchUps || SharedPrologue.CatchingUp))
+                {
+                    if (SharedPrologue.CatchingUp && SessionScreens.Phase == SessionScreens.SavePhase.Waiting && SessionScreens.WaitingText == L10n.T("session.catching_up"))
+                    {
+                        covered = true;
+                        if (UI.Menu != null)
+                        {
+                            if (UI.MainMenuVisible) { menuUnderCover = true; UI.Menu.HideMenuScreen(true); }
+                            else if (frame++ % 5 == 0) UI.Menu.DoMenuKeyPress();
+                        }
+                    }
+                    yield return null;
+                }
+                if (UI.Menu != null && UI.MainMenuVisible) { menuUnderCover = true; UI.Menu.HideMenuScreen(true); }
+                double levelAt = Utc();
+                Check(!menuUnderCover && SharedPrologue.MenusRefused > refused,
+                    who + ": the pause key does nothing while the cover is up (pause menu opened under it " + menuUnderCover + ", presses refused "
+                    + (SharedPrologue.MenusRefused - refused) + ")");
+                Check(SharedPrologue.CatchUps == catchUps + 1 && !SharedPrologue.CatchingUp && covered,
+                    who + ": catches up with the host under the cover screen (catch-ups " + (SharedPrologue.CatchUps - catchUps) + ", cover with its text seen " + covered
+                    + ", still catching up " + SharedPrologue.CatchingUp + ", rate " + SharedPrologue.RateNow + ", " + (SharedPrologue.LastLag / 60f).ToString("F1") + " s behind)");
+                Check(levelAt - waitingAt <= joinLimit,
+                    who + ": shows the host's moment " + (levelAt - waitingAt).ToString("F1") + " s after joining (limit " + joinLimit + " s; the fast-forward took "
+                    + SharedPrologue.LastCatchUpSeconds.ToString("F1") + " s for " + (SharedPrologue.LastCatchUpSteps / 60f).ToString("F1") + " s of story)");
+                yield return StartCoroutine(TWait(1f));
+                Check(SessionScreens.Phase == SessionScreens.SavePhase.None && !SessionScreens.Blocking && SharedPrologue.Watching && InPrologueState,
+                    who + ": the cover is gone, the prologue is on screen (" + SessionScreens.Phase + ")");
+                // The same moment as the host: three looks, half a second apart.
+                int same = 0; string detail = "";
+                for (int look = 0; look < 3; look++)
+                {
+                    bool ok = false;
+                    float until = Time.realtimeSinceStartup + 3f;
+                    while (Time.realtimeSinceStartup < until && !(ok = SameMoment(MomentLimit, spot, out detail))) yield return null;
+                    if (ok) same++;
+                    yield return StartCoroutine(TWait(0.5f));
+                }
+                Check(same == 3, who + ": shows the same moment as the host, " + same + " of 3 looks (" + detail + ")");
+                double age = Utc() - copyAt;
+                Check(SharedPrologue.LocalStep / 60f > age + 5.0,
+                    who + ": did not play from the start: its copy is " + (SharedPrologue.LocalStep / 60f).ToString("F1") + " s into the story " + age.ToString("F1") + " s after it started");
+                Check(SharedPrologue.EventsSkipped == 0 && Math.Abs(SharedPrologue.LastLag) <= MomentLimit * 60f,
+                    who + ": none of the host's player points was left out (" + SharedPrologue.EventsApplied + " done, " + SharedPrologue.EventsSkipped + " left out); "
+                    + (SharedPrologue.LastLag / 60f).ToString("F2") + " s behind the host's clock");
+                Check(GuestJoin.Waiting && NetPlay.Enabled && Time.timeScale <= 2.01f, who + ": the join still waits for the host's save; the game runs at its own speed again (time scale "
+                    + Time.timeScale.ToString("F2") + ")");
+            }
 
-                // ---- join again while the host's prologue still plays: too late to play along
-                int titleReturns = TitleReturn.SessionsEnded, aborts = GuestJoin.Aborts;
-                GuestJoin.TestWaitLimit = 8f;                                       // the "no save" limit, shortened from 90 s for this check
-                yield return StartCoroutine(PressCoop());
-                yield return StartCoroutine(Row(Array.IndexOf(TitleTransports, m_tr), 1f));
+            // T-205: join in the prologue's last scene (the weak Ori before the Spirit Tree), about nine minutes of
+            // story in. The copy fast-forwards through every scene and every point the host's player decided; then the
+            // story's character is on screen where the host's is, and both PCs play to the prologue's own end.
+            IEnumerator PrologueJoinDeep()
+            {
+                yield return StartCoroutine(WaitPeer("start", 180f));
+                if (Peer("start") == null) yield break;
+                yield return StartCoroutine(WaitPeer("probe.ready", 600f));
+                Check(Peer("probe.ready") != null && !NetPlay.Enabled, "deep guest: the host is deep in its prologue, " + (Utc() - PeerNum("start")).ToString("F0")
+                    + " s after it started; this PC is not connected yet");
+                if (Peer("probe.ready") == null) yield break;
+                int titleReturns = TitleReturn.SessionsEnded, aborts = GuestJoin.Aborts, catchUps = SharedPrologue.CatchUps;
+                yield return StartCoroutine(PrologueConnect("deep guest", true));
+                if (!m_pGuestParked) yield break;
+                double waitingAt = Utc();
+                yield return StartCoroutine(LateJoinChecks("deep guest", 1, waitingAt, catchUps, DeepJoinLimit, DeepSpotLimit));
+                // About 42-48 by then (triggers, the button wait, cutscene states; scene loads are not counted here).
+                Check(SharedPrologue.EventsApplied >= 30, "deep guest: its copy did the points the host's player decided on the way (" + SharedPrologue.EventsApplied + " of "
+                    + SharedPrologue.EventsKnown + " known)");
+                // The intro hold used to take this scene's Ori for "this player's Ori": pinned where it appeared, hidden.
+                Check(Characters.Sein != null && object.ReferenceEquals(Characters.Current, Characters.Sein) && CharacterVisible,
+                    "deep guest: the story's character is on screen (character " + ActorNow + ", drawn " + CharacterVisible + ")");
+                Shot("prologue_deep");
+                if (m_fails != 0) yield break;
+                yield return StartCoroutine(PrologueGuestEnds("deep guest", titleReturns, aborts, 1, 1, true));
+            }
+
+            // T-205: join late twice. First during the opening cinematic; then, after leaving from the pause menu, in
+            // the playable part.
+            IEnumerator PrologueJoinLate()
+            {
+                yield return StartCoroutine(WaitPeer("start", 180f));
+                if (Peer("start") == null) yield break;
+                Check(!NetPlay.Enabled && SharedPrologue.LocalStarts == 0, "late guest: not connected while the host starts its new game");
+                double hostStart = PeerNum("start");
+                yield return StartCoroutine(WaitFor(() => Utc() - hostStart >= 20.0, 40f));
+                int catchUps = SharedPrologue.CatchUps;
                 yield return StartCoroutine(PrologueConnect("late guest", true));
                 if (!m_pGuestParked) yield break;
-                Put("late.waiting", Utc());
-                yield return StartCoroutine(WaitFor(() => SharedPrologue.HostPlaying, 5f));
-                yield return StartCoroutine(TWait(2f));
-                Check(SharedPrologue.HostPlaying && !SharedPrologue.Watching && SharedPrologue.LocalStarts == 1,
-                    "late guest: the host is in its prologue; no copy starts here (copies " + SharedPrologue.LocalStarts + ")");
-                Check(SessionScreens.Phase == SessionScreens.SavePhase.Waiting && SessionScreens.WaitingText == L10n.T("session.waiting_prologue"),
-                    "late guest: the waiting screen says the host is watching the opening (" + SessionScreens.Phase + ": '" + SessionScreens.WaitingText + "')");
-                Shot("prologue_late_waiting");
-                yield return StartCoroutine(TWait(GuestJoin.TestWaitLimit + 4f));   // past the (shortened) no-save limit
-                Check(GuestJoin.Waiting && GuestJoin.Aborts == aborts && NetPlay.Enabled,
-                    "late guest: still waiting after " + (GuestJoin.TestWaitLimit + 6f) + " s: no 'no save' failure while the host is in its prologue (aborts " + (GuestJoin.Aborts - aborts) + " " + GuestJoin.LastAbort + ")");
-                Put("late.checked", Utc());
+                double waitingAt = Utc();
+                Note("late guest: joined " + (waitingAt - hostStart).ToString("F1") + " s after the host's start");
+                yield return StartCoroutine(LateJoinChecks("late guest (cinematic)", 1, waitingAt, catchUps));
+                Check(Characters.Current == null, "late guest (cinematic): a cinematic part, no character to control");
+                Shot("prologue_late_cinematic");
+                if (m_fails != 0) yield break;
+
+                // ---- leave from the pause menu, as a player does: back on a usable title, the host goes on
+                yield return StartCoroutine(QuitFromPause());
+                Put("left", Utc());
+                yield return StartCoroutine(CheckTitleInput("late guest left the prologue"));
+                Check(!SharedPrologue.Busy && !SharedPrologue.Watching && SessionScreens.Phase == SessionScreens.SavePhase.None && !GuestJoin.Waiting && !InPrologueState,
+                    "late guest: on the title nothing of the prologue or the join is left (busy " + SharedPrologue.Busy + ", screen " + SessionScreens.Phase + ", waiting " + GuestJoin.Waiting + ")");
+                Check(SharedPrologue.LocalStops == 1 && Time.timeScale <= 2.01f, "late guest: its copy ended with the leave (" + SharedPrologue.LocalStops + "), time scale " + Time.timeScale.ToString("F2"));
+                if (m_fails != 0) yield break;
+
+                // ---- join again: the host's Naru stands in the playable part, past the area-name trigger
+                yield return StartCoroutine(WaitPeer("walk1.done", 180f));
+                if (Peer("walk1.done") == null) yield break;
+                int titleReturns = TitleReturn.SessionsEnded, aborts = GuestJoin.Aborts, applied = SharedPrologue.EventsApplied;
+                catchUps = SharedPrologue.CatchUps;
+                yield return StartCoroutine(PressCoop());
+                yield return StartCoroutine(Row(Array.IndexOf(TitleTransports, m_tr), 1f));
+                yield return StartCoroutine(PrologueConnect("rejoining guest", true));
+                if (!m_pGuestParked) yield break;
+                waitingAt = Utc();
+                yield return StartCoroutine(LateJoinChecks("rejoining guest (playable part)", 2, waitingAt, catchUps));
+                double hostX = PeerNum("walk1.x"), hostY = PeerNum("walk1.y");
+                Check(NaruPlayable && Math.Abs(NaruX - hostX) <= SpotLimit && Math.Abs(Characters.Naru.Position.y - hostY) <= SpotLimit,
+                    "rejoining guest: Naru is playable and stands on the host's spot (host " + hostX.ToString("F2") + ", " + hostY.ToString("F2") + "; here "
+                    + (NaruPlayable ? NaruX.ToString("F2") + ", " + Characters.Naru.Position.y.ToString("F2") : "no Naru") + ")");
+                // The host walked through the area-name trigger before this PC joined: the copy here did it too, from the
+                // host's log (its own Naru never walked there).
+                Trigger area = null;
+                foreach (PlayerCollisionTrigger t in UnityEngine.Object.FindObjectsOfType<PlayerCollisionTrigger>())
+                    if (t.transform.parent != null && t.transform.parent.name + "/" + t.name == AreaTrigger) area = t;
+                Check(area != null && !area.Active && SharedPrologue.EventsApplied > applied,
+                    "rejoining guest: the trigger the host walked through alone has fired here too (" + (area == null ? "trigger not found" : "still armed: " + area.Active)
+                    + ", host points done in this copy " + (SharedPrologue.EventsApplied - applied) + ")");
+                Shot("prologue_late_playable");
+                Put("rejoined.checked", Utc());
+                if (m_fails != 0) yield break;
+
+                // ---- from here on like a guest that was there from the start
+                yield return StartCoroutine(PrologueGuestControl());
+                if (m_fails != 0) yield break;
                 yield return StartCoroutine(Together("skip.ready", 120f));
-                GuestJoin.TestWaitLimit = 0f;
-                yield return StartCoroutine(PrologueGuestEnds("late guest", titleReturns, aborts, 1, 1));
+                yield return StartCoroutine(PrologueGuestEnds("rejoining guest", titleReturns, aborts, 2, 2));
             }
         }
     }

@@ -64,6 +64,8 @@ namespace OriCoop.Rules
         public bool GuestNeedsSlot { get { return GuestJoin.NeedSlotChoice; } }
         public bool PrologueWatching { get { return SharedPrologue.Watching; } }
         public bool HostInPrologue { get { return SharedPrologue.HostPlaying; } }
+        public bool PrologueCatchingUp { get { return SharedPrologue.CatchingUp; } }
+        public float PrologueCatchUpProgress { get { return SharedPrologue.CatchUpProgress; } }
         public bool IncomingProgress(out int have, out int total)
         {
             have = total = 0;

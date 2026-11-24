@@ -106,5 +106,64 @@ namespace OriCoop.Rules
             d.ProgressSendAt = now + 0.1f;
             return true;
         }
+
+        // T-215 #1: where a revived Ori appears. Beside its rescuer; when the rescuer's Ori is not on this PC any more
+        // (it left or is loading while its "revived you" was on the way), at the revived Ori's own skull, where the
+        // rescuer stood. Either way the revive is completed: position, health, invincibility.
+        public static void ReviveSpot(bool rescuerHere, float rescuerX, float rescuerY, bool rescuerFacesLeft,
+            float skullX, float skullY, out float x, out float y)
+        {
+            if (rescuerHere) { x = rescuerX + (rescuerFacesLeft ? 1f : -1f); y = rescuerY; }
+            else { x = skullX; y = skullY; }
+        }
+
+        // The health a revived Ori gets: what the rescuer gave, at least 1, at most its maximum.
+        public static float RevivedHealth(float given, float max)
+        {
+            float h = given < 1f ? 1f : given;
+            return h > max ? max : h;
+        }
+    }
+
+    // T-215 #4: the last solid ground an Ori stood on is where its skull goes, but only while the Ori is still around
+    // there. An Ori that moved further than any movement allows between two looks (a door, a teleport, a reload, a
+    // pedestal) left that ground behind: its skull goes where it died.
+    public static class SafeGroundRules
+    {
+        // Looks are 0.2 s apart; this is 60 units a second, faster than any fall or dash.
+        public const float RelocatedDistance = 12f;
+
+        public static bool Relocated(float dx, float dy)
+        {
+            return dx * dx + dy * dy > RelocatedDistance * RelocatedDistance;
+        }
+
+        // haveSeen / dx, dy: the Ori's move since it was last looked at.
+        public static bool UseSafeGround(bool haveSafe, bool haveSeen, float dx, float dy)
+        {
+            return haveSafe && !(haveSeen && Relocated(dx, dy));
+        }
+    }
+
+    // T-215 #2: "everyone is down" must stay true for a moment before the host declares the wipe. A teammate's
+    // "I'm back" (62) that left before another teammate's "I'm down" (60) can arrive after it; the host would see
+    // everyone down for that instant and roll back a player who is already up.
+    public sealed class WipeGrace
+    {
+        public const float Seconds = 0.8f;   // real seconds; covers a 400 ms one-way lag with room to spare
+        float m_due = -1f;
+        public bool Armed { get { return m_due >= 0f; } }
+
+        // Every frame on the host. true = everyone was down for the whole grace: declare the wipe now.
+        public bool Tick(bool allDown, float now, float seconds)
+        {
+            if (!allDown) { m_due = -1f; return false; }
+            if (m_due < 0f) m_due = now + seconds;
+            if (now < m_due) return false;
+            m_due = -1f;
+            return true;
+        }
+
+        public void Reset() { m_due = -1f; }
     }
 }

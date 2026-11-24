@@ -43,8 +43,12 @@ namespace OriCoop
         static SeinCharacter s_caster;       // inside SeinSoulFlame.CastSoulFlame: the Ori making the soul link
         static bool s_charged;               // the death-save cost was taken for this cast
         // Host: where each guest device's offered save point is (msg 69 from that guest, just before its SaveOffer).
-        static readonly ReviveWire.Link[] s_offered = new ReviveWire.Link[ReviveLogic.MaxSeats + 1];
-        static readonly bool[] s_haveOffered = new bool[ReviveLogic.MaxSeats + 1];
+        // T-215 #6: one spot serves one offer (Rules.OfferedSpots).
+        static readonly OfferedSpots s_offers = new OfferedSpots(ReviveLogic.MaxSeats);
+        // T-215 planted bugs. #6: a guest tells its save point's spot only while a teammate's Ori is on its PC, and the
+        // host keeps a used spot for later offers. #7: telling the room's save point again looks like a new soul link.
+        static readonly bool s_mutateStaleOfferSpot = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STALE_OFFER_SPOT") == "1";
+        static readonly bool s_mutateResendAsNew = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_RESEND_AS_NEW") == "1";
         static readonly GameText[] s_selfHint = new GameText[ReviveLogic.MaxSeats + 1];
         static bool s_linkRegistered;
 
@@ -64,6 +68,16 @@ namespace OriCoop
         public static bool FirstArrivalHadPoint, FirstArrivalFromCheckpoint;
         // Test hook: forget the room's save point, as at the start of a session (this PC's own checkpoint stays).
         internal static void TestForgetRoomSave() { s_point.SessionEnded(); s_lastLinkHealth = 0f; }
+        // Test hook (T-215 #2): this PC's downed Ori completes its hold right now (the "I'm back" of a hold that began
+        // two seconds earlier, as the host receives it just after someone else's "I'm down").
+        internal static bool TestSelfReviveNow(int seat)
+        {
+            Downed d = seat >= 1 && seat <= ReviveLogic.MaxSeats ? s_down[seat] : null;
+            if (d == null || d.Remote || d.Sein == null || !s_point.Have) return false;
+            HideSelfHint(seat);
+            ReviveAtLink(d);
+            return true;
+        }
 
         // From Plugin start-up: the room link message, and the checkpoint restore that loading a game runs (the host's
         // first latest link) happens before any co-op tick.
@@ -169,7 +183,11 @@ namespace OriCoop
             {
                 try
                 {
-                    if (!Online || Services.Net.IsHost) return;
+                    // T-215 #6: every offer carries its spot, also while no teammate's Ori is on this PC for a moment
+                    // (Online is false then, but the save is still offered). Without it the host used the spot of
+                    // this guest's previous offer.
+                    bool offering = s_mutateStaleOfferSpot ? Online : Services.Net.Enabled && Services.Net.Connected;
+                    if (!offering || Services.Net.IsHost) return;
                     if (!s_point.HaveCheckpoint) { Services.Log.Info("room link: guest save without a recorded checkpoint"); return; }
                     RegisterLink();
                     ReviveWire.Link c = s_point.Checkpoint;
@@ -186,17 +204,19 @@ namespace OriCoop
                 {
                     if (!__runOriginal) return;   // a guest's suppressed save, or a promoted save that was blocked
                     if (Local) { if (s_point.HaveCheckpoint) ApplyLink(s_point.Checkpoint, "local save"); return; }
-                    if (!Online || !Services.Net.IsHost) return;
+                    // T-215 #6: the room's save is the room's save point whether or not a teammate's Ori is on this PC
+                    // right now (it may be loading); it used to be skipped then and the older save point stayed.
+                    bool hosting = s_mutateStaleOfferSpot ? Online : Enabled && Services.Net.Enabled && Services.Net.Connected;
+                    if (!hosting || !Services.Net.IsHost) return;
                     RegisterLink();
                     int offerer = SaveSync.AdoptingOfferSeat;
                     if (offerer > 0)
                     {
                         if (s_mutateLinkHostOnly) return;
                         ReviveWire.Link l;
-                        if (offerer <= ReviveLogic.MaxSeats && s_haveOffered[offerer]) l = s_offered[offerer];
-                        else
+                        if (!s_offers.Take(offerer, out l, s_mutateStaleOfferSpot))
                         {
-                            // No spot from the guest (older build): its live position is the best we have.
+                            // No spot came with this offer (older build): its live position is the best we have.
                             Vector3 at;
                             if (!Host.RemotePos(offerer, out at)) return;
                             l.Seat = offerer; l.X = at.x; l.Y = at.y; l.Z = at.z; l.Health = 0f;
@@ -217,10 +237,14 @@ namespace OriCoop
             SendRoomLink();
         }
 
-        static void SendRoomLink()
+        // repeat: told again to a PC that joined or came back from loading. T-215 #7: a repeat carries health 0, so on
+        // the PCs that already know this save point it is not a soul link made just now (a player who went down after
+        // it was made would come back with the creator's health instead of full health).
+        static void SendRoomLink(bool repeat = false)
         {
             if (!s_point.Have || !Services.Net.Enabled || !Services.Net.Connected || !Services.Net.IsHost) return;
-            int seat = s_linkSeat; Vector3 at = s_linkPos; float health = s_lastLinkHealth;
+            int seat = s_linkSeat; Vector3 at = s_linkPos;
+            float health = SoulLinkRules.AnnouncedHealth(s_lastLinkHealth, repeat && !s_mutateResendAsNew);
             Services.Net.Send(MsgRoomLink, true, w => ReviveWire.WriteLink(w, seat, at.x, at.y, at.z, health));
             RoomLinksSent++;
         }
@@ -272,7 +296,7 @@ namespace OriCoop
                 // A guest's save point spot, ahead of its SaveOffer. Only its own seats count.
                 if (sender == Services.Net.HostSeat || sender < 1 || sender > ReviveLogic.MaxSeats || NetPlay.DeviceSeat(l.Seat) != sender)
                 { Services.Log.Info("room link: dropped a save point spot for P" + l.Seat + " from seat " + sender); return; }
-                s_offered[sender] = l; s_haveOffered[sender] = true;
+                s_offers.Note(sender, l);
                 Services.Log.Info("room link: seat " + sender + " offers its save point at (" + l.X + ", " + l.Y + "), health " + l.Health.ToString("F1"));
                 return;
             }
@@ -398,7 +422,8 @@ namespace OriCoop
             // on, and it is the save point of the next session this PC hosts until that room's first save.
             s_point.SessionEnded(); s_lastLinkHealth = 0f;
             TeammateArrivals = 0; FirstArrivalHadPoint = FirstArrivalFromCheckpoint = false;
-            Array.Clear(s_haveOffered, 0, s_haveOffered.Length);
+            s_offers.Clear();
+            EscapeSessionEnded();   // T-215 #3
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++) HideSelfHint(seat);
         }
     }

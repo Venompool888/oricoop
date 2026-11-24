@@ -76,8 +76,9 @@ namespace OriCoop
             // (Not while it asks which slot to overwrite: that slot list must stay visible and usable.)
             if (!Services.Session.LocalInGameplay && !(Host.GuestWaiting && !Host.GuestNeedsSlot)) return SavePhase.None;
             // T-203: the host's new-game prologue plays on this PC too (SharedPrologue): that is what the player sees,
-            // with the host's input; the transfer screen comes back when it is over.
-            if (Host.PrologueWatching) return SavePhase.None;
+            // with the host's input; the transfer screen comes back when it is over. T-205: a copy that started late
+            // fast-forwards to the host's place first; the screen covers that and says so.
+            if (Host.PrologueWatching) return Host.PrologueCatchingUp ? SavePhase.Waiting : SavePhase.None;
             if (pending) return SavePhase.Loading;
             int have, total;
             if (Host.IncomingProgress(out have, out total) && total > 4)
@@ -255,8 +256,12 @@ namespace OriCoop
             }
             string text;
             // T-203: a player who arrived after the host's prologue began waits for its end, and is told so.
-            bool prologue = Phase == SavePhase.Waiting && Host.HostInPrologue;
-            if (prologue) { text = Host.Text("session.waiting_prologue"); }
+            // T-205: ... unless the host says where its story is: then this PC's copy fast-forwards to that place.
+            bool catching = Phase == SavePhase.Waiting && Host.PrologueCatchingUp;
+            float caught = catching ? Host.PrologueCatchUpProgress : -1f;
+            bool prologue = Phase == SavePhase.Waiting && Host.HostInPrologue && !catching;
+            if (catching) { text = Host.Text("session.catching_up"); }
+            else if (prologue) { text = Host.Text("session.waiting_prologue"); }
             else if (Phase == SavePhase.Waiting) { text = Host.Text("session.waiting"); }
             else if (Phase == SavePhase.Receiving) { text = Host.Text("session.receiving"); }
             else { text = Host.Text("session.loading"); }
@@ -266,10 +271,11 @@ namespace OriCoop
             // Progress line: real fraction while fragments arrive, otherwise a travelling glow.
             float w = 560f * scale, x = (Screen.width - w) * 0.5f, y = cy + 64f * scale, bh = 3f * scale;
             Fill(new Rect(x, y, w, bh), new Color(1f, 1f, 1f, 0.12f * fade));
-            if (Phase == SavePhase.Receiving && Progress >= 0f)
+            if (Phase == SavePhase.Receiving && Progress >= 0f || caught >= 0f)
             {
-                Fill(new Rect(x, y, w * Progress, bh), new Color(Glow.r, Glow.g, Glow.b, 0.9f * fade));
-                Text(new Rect(0, y + 12f * scale, Screen.width, 26f * scale), Host.Format("session.progress", Mathf.RoundToInt(Progress * 100f)), s_small, dim);
+                float done = caught >= 0f ? caught : Progress;
+                Fill(new Rect(x, y, w * done, bh), new Color(Glow.r, Glow.g, Glow.b, 0.9f * fade));
+                Text(new Rect(0, y + 12f * scale, Screen.width, 26f * scale), Host.Format("session.progress", Mathf.RoundToInt(done * 100f)), s_small, dim);
             }
             else
             {
@@ -277,7 +283,7 @@ namespace OriCoop
                 float a = Mathf.Max(x, x + p), b = Mathf.Min(x + w, x + p + seg);
                 if (b > a) Fill(new Rect(a, y, b - a, bh), new Color(Glow.r, Glow.g, Glow.b, 0.8f * fade));
             }
-            string help = prologue ? Host.Text("session.waiting_prologue_help")
+            string help = catching ? Host.Text("session.catching_up_help") : prologue ? Host.Text("session.waiting_prologue_help")
                 : Phase == SavePhase.Waiting ? Host.Text("session.waiting_help") : Host.Text("session.loading_help");
             WaitingText = text;
             Text(new Rect(0, Screen.height - 110f * scale, Screen.width, 28f * scale), help, s_bodyZh, ink);

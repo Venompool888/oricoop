@@ -41,9 +41,10 @@ namespace OriCoop
         static readonly float[] s_lastEscapeAt = new float[ReviveLogic.MaxSeats + 1];
         const float LastEscapeSeconds = 4f;   // the running escape each local Ori was last inside while alive
         // Pending "bring the team" work on this PC after a finish.
-        static int s_pendingEscape, s_pendingFinisher;
+        static readonly PendingFinish s_pending = new PendingFinish();
         static Vector3 s_pendingExit;
-        static float s_pendingFallbackAt, s_extrasJoinAt;
+        // T-215 #3 planted bug: the work owed after a finish survives the session's end.
+        static readonly bool s_mutateEscapeKeepPending = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ESCAPE_KEEP_PENDING") == "1";
         static Vector3 s_pendingFinisherAt;
         static EscapeDone s_send;
         static float s_sendAt;
@@ -160,7 +161,7 @@ namespace OriCoop
                 Services.Net.Send(EscapeRules.MsgEscapeDone, true, w => EscapeRules.Write(w, done));
                 EscapeFinishesSent++;
             }
-            if (s_pendingEscape != 0) TickPendingFinish();
+            if (s_pending.Active) TickPendingFinish();
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
             {
                 Downed d = s_down[seat];
@@ -387,17 +388,35 @@ namespace OriCoop
             if (primaryMoved) LoadScenesHere(Primary);
             // The extra local Oris follow the primary one once the game's end has placed it (or right away when the
             // primary Ori is the finisher).
-            s_pendingEscape = e.Id; s_pendingFinisher = finisher; s_pendingExit = exit; s_pendingFinisherAt = finisherAt;
-            s_extrasJoinAt = EscapeNow + (finisherHere ? 1.2f : 2f);
-            s_pendingFallbackAt = primaryMoved ? EscapeNow + 3f : 0f;
+            s_pendingExit = exit; s_pendingFinisherAt = finisherAt;
+            s_pending.Begin(e.Id, finisher, primaryMoved ? EscapeNow + 3f : 0f, EscapeNow + (finisherHere ? 1.2f : 2f));
         }
+
+        // T-215 #3: the session ended (from Revive.ResetLinkState). What this PC still owed after a teammate's finish is
+        // dropped: a player who stays in its own game must not be pulled to where the finisher was.
+        static void EscapeSessionEnded()
+        {
+            if (s_mutateEscapeKeepPending) return;
+            if (s_pending.Active) Services.Log.Info("escape: the session ended; nothing more is done for the finish by P" + s_pending.Finisher);
+            s_pending.Clear();
+            s_sendAt = 0f;
+        }
+
+        // Test hooks (NetReviveTest R7): a teammate's finish that still owes this PC's Ori the fallback placement beside
+        // `finisherAt`, due after `seconds`; and the session's end as the escape code sees it.
+        internal static void TestOweFallback(int finisher, Vector3 finisherAt, float seconds)
+        {
+            s_pendingFinisherAt = finisherAt;
+            s_pending.Begin(EscapeRules.Ginso, finisher, EscapeNow + seconds, 0f);
+        }
+        internal static void TestEscapeSessionEnded() { EscapeSessionEnded(); }
+        internal static bool EscapeWorkOwed { get { return s_pending.Active; } }
 
         static void TickPendingFinish()
         {
             float now = EscapeNow;
-            if (s_pendingFallbackAt > 0f && now >= s_pendingFallbackAt)
+            if (s_pending.TakeFallback(now))
             {
-                s_pendingFallbackAt = 0f;
                 // The game's end did not bring this PC's Ori to the finisher (its end trigger was already used, not
                 // loaded yet, or ran while the scenes were still loading): go beside the finisher.
                 Vector3 at = s_pendingFinisherAt;   // where the finisher's PC said it stands after the game's end
@@ -408,21 +427,19 @@ namespace OriCoop
                     Host.Teleport(own, at + Vector3.right);
                     LoadScenesHere(own);
                     EscapeFallbacks++;
-                    Services.Log.Info("escape: not at the finisher after the end (trigger ran here: " + s_exitFiredHere[s_pendingEscape] + "); placed beside P" + s_pendingFinisher);
+                    Services.Log.Info("escape: not at the finisher after the end (trigger ran here: " + s_exitFiredHere[s_pending.Escape] + "); placed beside P" + s_pending.Finisher);
                 }
             }
-            if (s_extrasJoinAt > 0f && now >= s_extrasJoinAt)
+            if (s_pending.TakeExtras(now))
             {
-                s_extrasJoinAt = 0f;
                 SeinCharacter lead = Primary;
                 foreach (int seat in Players.LocalSeats)
                 {
                     SeinCharacter s = seat >= 1 && seat <= ReviveLogic.MaxSeats ? SeinAt(seat) : null;
-                    if (s == null || s == lead || seat == s_pendingFinisher || lead == null || IsDowned(lead)) continue;
+                    if (s == null || s == lead || seat == s_pending.Finisher || lead == null || IsDowned(lead)) continue;
                     Host.Teleport(s, lead.Position + new Vector3(-1f, 0f, 0f));
                 }
             }
-            if (s_pendingFallbackAt <= 0f && s_extrasJoinAt <= 0f) s_pendingEscape = 0;
         }
 
         // The primary Ori moved far: load the scenes there first, as SaveSync does for a guest joining a host far away.

@@ -202,12 +202,17 @@ namespace OriCoop
             remote = (RemoteState)value;
             return found;
         }
+        // T-213 (2, 9): a guest's primary remote is the current host: seat 1 in P2P, the arbiter's seat on a server (it
+        // moves to the lowest online seat when the first host leaves). Looking only at seat 1, a guest that outlived the
+        // first host saw "the host has not said hello": it stopped syncing enemies, and a guest that joined later was not
+        // placed beside the new host (no host position).
+        static readonly bool s_mutatePrimarySeatOne = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PRIMARY_SEAT_ONE") == "1";
         static RemoteState Primary
         {
             get
             {
                 RemoteState result = null;
-                if (!IsHost) { TryGetRemote(1, out result); return result; }
+                if (!IsHost) { TryGetRemote(s_mutatePrimarySeatOne ? 1 : Authority.NetRoute.HostSeat, out result); return result; }
                 foreach (RemoteState remote in s_remotes.Values)
                     if (result == null || remote.Seat < result.Seat) result = remote;
                 return result;
@@ -323,6 +328,7 @@ namespace OriCoop
             s_inviteKey = cfg.Bind("Net", "InviteKey", KeyCode.F5, "Transport = steam, host: opens the Steam overlay to invite a friend.");
             s_menuAddress = cfg.Bind("OnlineMenu", "LastAddress", "", "Last address typed in the in-game online menu (prefill only).");
             s_menuRoom = cfg.Bind("OnlineMenu", "LastRoomCode", "", "Last room code typed in the in-game online menu (prefill only).");
+            FrameBufferTrim.MutateNoRestart = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_STREAM_RESTART") == "1";
             SteamTransport.Trace += m => Plugin.Log.LogInfo("net: Steam: " + m);
             NetPeer.Trace = m => Plugin.Log.LogInfo("net: peer: " + m);
             // T-159: the relay is gone. An old [Net] Transport = relay (its RelayServer / RoomCode keys stay in the file
@@ -405,7 +411,14 @@ namespace OriCoop
         public static void End(string why)
         {
             // T-113: a deliberate end, before the goodbye below: transports that hold seats (C-server) release them.
-            if (Enabled && Leaving != null) { try { Leaving(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: leaving hook: " + e.Message); } }
+            // T-213: the hook may poll the connection for a moment (the C-server release waits for its acknowledgement). A
+            // connection that ends during that wait ends by this player's choice too: no "connection lost" dialog.
+            if (Enabled && Leaving != null)
+            {
+                bool byChoice = EndingByChoice; EndingByChoice = true;
+                try { Leaving(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: leaving hook: " + e.Message); }
+                finally { EndingByChoice = byChoice; }
+            }
             OnlineRoomScreen.Reset();
             s_rtTransport = s_rtAddress = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;
@@ -527,8 +540,8 @@ namespace OriCoop
             s_steam.Update();
             if (!string.IsNullOrEmpty(s_steam.Error))
             {
-                Plugin.Log.LogWarning("net: Steam: " + s_steam.Error); Problem = "steam: " + s_steam.Error;
-                Close(); s_retryAt = Time.realtimeSinceStartup + 5f;
+                Plugin.Log.LogWarning("net: Steam: " + s_steam.Error);
+                TransportFailed("steam: " + s_steam.Error, 5f);
                 return false;
             }
             if (IsHost && s_steam.Ready && Input.GetKeyDown(s_inviteKey.Value)) OpenSteamInvite();
@@ -629,6 +642,34 @@ namespace OriCoop
                 }
             }
             catch (Exception e) { Plugin.Log.LogError("net: could not start: " + e.Message); Problem = e.Message; Close(); s_retryAt = Time.realtimeSinceStartup + 5f; }
+        }
+
+        // T-213: the transport itself failed (Steam: the host left the lobby, Steam went away) before a goodbye was read
+        // from the connection, so OnDisconnected never runs for it. The session ends the way a goodbye ends it: the
+        // partners' Oris go, every remote leaves, the session-ended handlers run. Only then is the transport closed
+        // (Close alone just forgets the remotes: the partner's Ori stayed on screen and nothing was told the session ended).
+        static readonly bool s_mutateFailKeepsRemotes = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_FAIL_KEEPS_REMOTES") == "1";
+        static void TransportFailed(string problem, float retryIn)
+        {
+            Problem = problem;
+            if (!s_mutateFailKeepsRemotes) EndLostSession(problem);
+            Close(); s_retryAt = Time.realtimeSinceStartup + retryIn;
+        }
+
+        // The connection is gone without this side having chosen to leave: every remote leaves and the session ends.
+        static void EndLostSession(string reason)
+        {
+            RemoveRemote("connection lost (" + reason + ")");
+            foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values)) Leave(remote, reason);
+            EndSession();
+        }
+
+        // Test only (T-213): this side says goodbye (so the partner sees it at once) and, before its own connection has
+        // reported the end, the transport fails: the order a Steam guest sees when the host leaves the lobby. No retry.
+        internal static void TestTransportFailure(string problem)
+        {
+            Shutdown("test: transport failure");
+            TransportFailed(problem, 3600f);
         }
 
         static void Close()
@@ -772,9 +813,7 @@ namespace OriCoop
             // connection shows its reason on the host page instead of "preparing" for ever. A held refusal keeps its reason.
             Plugin.Log.LogWarning("net: disconnected: " + reason);
             if (!s_holdRetry && (!IsHost || (s_factorySession && WaitingForSeat))) Problem = reason;
-            RemoveRemote("connection lost (" + reason + ")");
-            foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values)) Leave(remote, reason);
-            EndSession();
+            EndLostSession(reason);
             ResetSession(IsHost && !s_factorySession);
             // Host keeps listening for a new guest; a guest retries after a moment.
             // T-030: a guest tries again after 1 s (was 3 s). Each connect attempt itself keeps asking for up to 10 s, so this
@@ -863,7 +902,9 @@ namespace OriCoop
                 else if (remote.Puppet != null && (!remote.InGameplay || !inGame))
                 { Plugin.DespawnPuppet(remote.Puppet); remote.Puppet = null; }
             }
+            SubsystemGuard.Run("PartnerFx.Tick", s_fxTick);   // T-213: soul links kept until their owner's Ori is here
         }
+        static readonly Action s_fxTick = PartnerFx.Tick;
 
         static string LocalScene(bool inGame)
         {
@@ -883,7 +924,10 @@ namespace OriCoop
         }
 
         // Test only (T-131, the 4P wipe check): tell the others "not in gameplay", as while loading, without loading.
+        // T-213: like a real load it also stops this PC's movement frames (SendLocal).
         internal static bool TestReportLoading;
+        static readonly bool s_mutateExtraKeepsHistory = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_EXTRA_KEEPS_HISTORY") == "1";
+        static readonly bool s_mutateExtraKeepsStream = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_EXTRA_KEEPS_STREAM") == "1";
         // Test only (T-166): behave as if loading here too (the puppets of the others go, so revive messages are missed).
         internal static bool TestLoading;
 
@@ -921,7 +965,7 @@ namespace OriCoop
             {
                 remote.InGameplay = r.ReadBoolean(); remote.Scene = r.ReadString(); remote.LastStatus = m;
                 Plugin.Log.LogInfo("net: P" + Sender + " " + (remote.InGameplay ? "in gameplay (" + remote.Scene + ")" : "not in gameplay"));
-                if (!remote.InGameplay) { remote.Buffer.Clear(); remote.HavePlay = false; remote.HaveRemotePos = false; remote.HaveFace = false; }
+                if (!remote.InGameplay) ClearStream(remote);
                 CopyDeviceStatus(remote);
             }
             else if (type == MsgTest)
@@ -946,10 +990,28 @@ namespace OriCoop
             }
         }
 
+        // The seat's movement stream starts over: nothing buffered, no play position, no known position or facing.
+        static void ClearStream(RemoteState remote)
+        {
+            remote.Buffer.Clear(); remote.HavePlay = false; remote.HaveRemotePos = false; remote.HaveFace = false;
+        }
+
+        // Test only (T-213): a straggler of the seat's previous player: one frame far ahead of the stream, somewhere else.
+        internal static void TestStaleFrame(int seat, uint ahead, Vector3 at)
+        {
+            RemoteState remote;
+            if (!TryGetRemote(seat, out remote)) return;
+            Frame f = new Frame(); f.Tick = remote.NewestTick + ahead; f.Flags = (byte)FlagNeutral; f.Pos = at;
+            Receive(remote, f);
+        }
+        internal static long TestSnaps(int seat) { RemoteState remote; return TryGetRemote(seat, out remote) ? remote.Snaps : -1; }
+
         static void Receive(RemoteState remote, Frame f)
         {
             if (!remote.InGameplay) return;
-            if (remote.HavePlay && f.Tick < remote.PlayTick) { return; }     // already played (redundant copy) or too late
+            FrameBufferTrim.Admit admit = FrameBufferTrim.Judge(remote.HavePlay, remote.PlayTick, f.Tick);
+            if (admit == FrameBufferTrim.Admit.Drop) return;                 // already played (redundant copy) or too late
+            if (admit == FrameBufferTrim.Admit.Restart) ClearStream(remote);  // T-213: the seat's stream started over
             if (remote.Buffer.ContainsKey(f.Tick)) return;
             if (!remote.HaveRemotePos || f.Tick > remote.NewestTick) { remote.NewestTick = f.Tick; remote.LatestRemotePos = f.Pos; remote.HaveRemotePos = true; }
             remote.Buffer[f.Tick] = f;
@@ -970,7 +1032,15 @@ namespace OriCoop
 
         static void SendLocal()
         {
-            if (!Connected || WaitingForSeat || !LocalInGameplay()) { s_sentCount = 0; return; }
+            // T-213 (6): while this PC is not in gameplay (a load) nothing is sent, and afterwards no frame from before
+            // goes out again: for every local seat, not only the first. The extra local players' histories were kept, so
+            // their first packet after a load repeated their last three frames at the old place.
+            if (!Connected || WaitingForSeat || !LocalInGameplay() || TestReportLoading)
+            {
+                s_sentCount = 0;
+                if (!s_mutateExtraKeepsHistory) Array.Clear(s_extraCount, 0, s_extraCount.Length);
+                return;
+            }
             uint tick = ++s_localTick;
             SendSeatFrame(Players.LocalSeat, Characters.Sein, tick);
             foreach (Puppet puppet in Players.Remotes)

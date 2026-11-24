@@ -111,7 +111,7 @@ namespace OriCoop
             s_loggedHighlightedDoors = false;
             s_loggedSceneLoader = false;
             s_pendingSnapshots.Clear();
-            s_mirrorHold.Clear(); s_mirrorKeys.Clear();
+            s_mirrorHold.Clear(); s_mirrorKeys.Clear(); s_storyProgress.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             s_digestSequence = s_receivedDigest = 0;
             s_digestResyncAt = 0; s_digestBackoff = DigestBackoffMin; s_mismatchStreak = 0;
@@ -123,10 +123,14 @@ namespace OriCoop
             if (!NetPlay.Connected || !SaveSync.Ready || !NetPlay.LocalInGameplay() || VersionRefused()) return;
             HostReady();
             if (!s_awaitSnapshot) s_delta.Flush();
-            if (s_deferred.Count != 0)
+            if (s_deferred.Count != 0 && !TestDeferApply)
             {
                 Blob[] waiting = new List<Blob>(s_deferred.Values).ToArray(); s_deferred.Clear();
-                foreach (Blob blob in waiting) ApplyLive(blob.Scene, blob.Id, blob.Bytes);
+                foreach (Blob blob in waiting)
+                {
+                    ApplyLive(blob.Scene, blob.Id, blob.Bytes);
+                    if (KeepsOwnCells(blob.Schema)) s_known.Remove(Key(blob.Scene, blob.Id));   // T-214, as in Apply
+                }
             }
             if (s_restorePending)
             {
@@ -456,6 +460,7 @@ namespace OriCoop
                     s_excluded.Remove(key);
                     if (s_bad.Contains(key)) continue;
                     if (StorySync.MirrorOwns(save as Component)) s_mirrorKeys.Add(key);
+                    if (save is ActionSequenceSerializer && StorySequenceOf(save) != null) s_storyProgress.Remember(key);   // T-207 review 7
                     try
                     {
                         byte[] bytes = CaptureBytes(save);
@@ -575,7 +580,7 @@ namespace OriCoop
             if (kind == 2)
             {
                 uint watermark = reader.ReadUInt32();
-                if (!NetPlay.IsHost) { s_awaitSnapshot = false; s_scanAt = Time.realtimeSinceStartup + 0.25f; s_delta.EndSnapshot(watermark); }
+                if (!NetPlay.IsHost) { s_awaitSnapshot = false; s_scanAt = Time.realtimeSinceStartup + 0.25f; s_delta.EndSnapshot(watermark); SnapshotsEnded++; }
                 return;
             }
             if (kind != 0) throw new InvalidDataException("unknown world batch");
@@ -705,8 +710,10 @@ namespace OriCoop
                 bytes = SnapshotAggregate(scene, id, schema, type, bytes);
             // T-183: a partner's GameController never replaces this PC's string-trigger list (World/WorldItems.cs).
             if (schema == Meaning.Controller) bytes = LocalTriggers(live, key, bytes);
-            StoreCheckpoint(scene, id, bytes);
-            if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay()) ApplyLive(scene, id, bytes);
+            // T-207 (1): a partner's story-sequence progress stays out of this PC's checkpoint too (StoryProgressKeys).
+            if (s_storyProgress.StoreInCheckpoint(key, live != null, StorySequenceOf(live) != null)) StoreCheckpoint(scene, id, bytes);
+            else { StoryProgressNotStored++; CoopTrace.Event("story", "sequence.progress.not-stored", "key", key); }
+            if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay() && !TestDeferApply) ApplyLive(scene, id, bytes);
             else if (live != null && !s_bad.Contains(key))
             {
                 s_deferred[key] = MakeBlob(scene, id, bytes, schema, type);
@@ -715,6 +722,9 @@ namespace OriCoop
             if (!s_bad.Contains(key)) s_blobs[key] = MakeBlob(scene, id, bytes, schema, type);
             else s_blobs.Remove(key);
             s_known[key] = incoming; // Remote application is never a new local proposal.
+            // T-214: except the map cells this PC kept on top of a snapshot (DeltaObject.Reset): the next scan measures
+            // the map again and proposes them.
+            if (KeepsOwnCells(schema)) s_known.Remove(key);
             s_mirrorHold.Applied(key);
             // T-141: the other guests (P2P / relay: connected only to us) get the accepted blob now, not after a digest
             // resync 5-60 s later, during which their own whole-GameController blob could overwrite it again.
@@ -739,6 +749,11 @@ namespace OriCoop
             }
             return devices.ToArray();
         }
+
+        // T-214: a guest's map after a full snapshot may hold cells of its own on top (DeltaObject.Reset). Applying the
+        // snapshot records the map as known; forgetting that makes the next scan measure it and propose those cells.
+        static bool KeepsOwnCells(Meaning schema)
+        { return !NetPlay.IsHost && schema == Meaning.Map && World.WorldItems.HasGrowing((byte)schema); }
 
         static void ApplyLive(MoonGuid scene, MoonGuid id, byte[] bytes)
         {
@@ -771,7 +786,32 @@ namespace OriCoop
         // A partner's "not running" value is still taken by a copy that is not running here.
         // Test-only mutation ORICOOP_MUTATE_SEQ_PROGRESS_SHARED: the partner's progress replaces it again.
         static readonly bool s_mutateSharedProgress = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SEQ_PROGRESS_SHARED") == "1";
-        public static int SequenceProgressKept;
+        public static int SequenceProgressKept, StoryProgressNotStored;
+        static readonly World.StoryProgressKeys s_storyProgress = new World.StoryProgressKeys();
+        // Test only (NetSeinTest, T-207 item 1): what this PC's checkpoint holds for a sequence's progress.
+        // False: the checkpoint has no entry for it.
+        internal static bool TestCheckpointProgress(ActionSequenceSerializer progress, out int index, out bool running)
+        {
+            index = -1; running = false;
+            if (progress == null || progress.MoonGuid == null) return false;
+            MoonGuid scene = MoonGuid.Empty;
+            for (Transform t = progress.transform; t != null; t = t.parent)
+            {
+                SceneRoot root = t.GetComponent<SceneRoot>();
+                if (root != null && root.MetaData != null) { scene = root.MetaData.SceneMoonGuid; break; }
+            }
+            SaveGameData data = Game.Checkpoint.SaveGameData;
+            SaveScene saved = scene == MoonGuid.Empty ? data.Master : data.InsertScene(scene);
+            foreach (SaveObject o in saved.SaveObjects)
+            {
+                if (o.Id != progress.MoonGuid) continue;
+                byte[] bytes = o.Data.MemoryStream.ToArray();
+                if (bytes.Length < 5) return false;
+                index = BitConverter.ToInt32(bytes, 0); running = bytes[4] != 0;
+                return true;
+            }
+            return false;
+        }
         static ActionSequence StorySequenceOf(ISerializable live)
         {
             ActionSequenceSerializer progress = live as ActionSequenceSerializer;
@@ -846,6 +886,85 @@ namespace OriCoop
             return false;
         }
 
+        // ---- T-214: a pickup's GUID is shared by every copy of its prefab; its scene and spot pick the copy ----
+        // The scene (GUID) an object belongs to; Empty = none of the loaded scenes.
+        public static MoonGuid SceneOf(Component c)
+        {
+            MoonGuid found = MoonGuid.Empty;
+            if (c == null) return found;
+            Transform root = c.transform.root;
+            Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
+                if (scene != MoonGuid.Empty && manager != null && manager.transform.root == root) found = scene;
+            });
+            return found;
+        }
+
+        static bool PickupAt(PickupBase p, bool hasSpot, Vector2 spot)
+        {
+            if (!hasSpot) return true;
+            Vector3 at = p.transform.position;
+            float dx = at.x - spot.x, dy = at.y - spot.y;
+            return dx * dx + dy * dy <= Story.PickupPlace.SameSpot * Story.PickupPlace.SameSpot;
+        }
+
+        // The copy with this GUID in that scene (Empty = scene not known) at that spot (hasSpot false = spot not known).
+        public static PickupBase FindPickup(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null)
+        {
+            PickupBase found = null;
+            Visit(delegate(MoonGuid loaded, SaveSceneManager manager) {
+                if (found != null || (scene != MoonGuid.Empty && loaded != scene)) return;
+                PickupBase p = manager.IdToSaveSerialize(id) as PickupBase;
+                if (p != null && PickupAt(p, hasSpot, spot)) found = p;
+            });
+            if (found != null || !hasSpot) return found;
+            // A copy the save registry does not have: it was inactive when its scene loaded (SaveSceneManager registers
+            // active objects only), or a second copy of the prefab replaced it there (AddSaveObject keeps one per GUID).
+            // Active scene objects only, so never a prefab asset.
+            foreach (PickupBase p in active ?? ActivePickups())
+                if (p != null && !p.IsCollected && p.MoonGuid == id && PickupAt(p, true, spot)
+                    && (scene == MoonGuid.Empty || SceneOf(p) == scene)) return p;
+            return null;
+        }
+
+        public static PickupBase[] ActivePickups() { return UnityEngine.Object.FindObjectsOfType<PickupBase>(); }
+
+        // A partner collected this pickup (reward already applied by ProgressSync; Collected actions are not replayed).
+        // false = that copy is not live here and its scene has no checkpoint record of it.
+        // active != null: a later retry, which only looks for the live copy among these.
+        public static bool MarkCollected(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null)
+        {
+            PickupBase live = FindPickup(id, scene, hasSpot, spot, active);
+            if (live != null)
+            {
+                live.IsCollected = true; live.gameObject.SetActive(false);
+                MoonGuid liveScene = SceneOf(live);
+                if (!Excluded(live) && ReferenceEquals(Find(liveScene, id), live))
+                {
+                    byte[] bytes = CaptureBytes(live);
+                    StoreCheckpoint(liveScene, id, bytes);
+                    RememberLocal(liveScene, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName);
+                }
+                return true;
+            }
+            if (active != null) return false;
+            // Its scene is not loaded here: edit that scene's checkpoint record, if it has one in the PickupBase layout
+            // (float m_currentTime + bool IsCollected, PickupBase.cs:134; no subclass overrides it).
+            foreach (SaveScene saved in Game.Checkpoint.SaveGameData.Scenes.Values)
+            {
+                if (scene != MoonGuid.Empty && saved.SceneGUID != scene) continue;
+                if (Find(saved.SceneGUID, id) != null) continue;   // loaded, but not the copy at that spot: not this record
+                for (int i = 0; i < saved.SaveObjects.Count; i++)
+                {
+                    SaveObject save = saved.SaveObjects[i];
+                    if (save.Id != id || save.Data.MemoryStream.Length != 5) continue;
+                    byte[] bytes = save.Data.MemoryStream.ToArray(); bytes[4] = 1;
+                    StoreCheckpoint(saved.SceneGUID, id, bytes);
+                    RememberLocal(saved.SceneGUID, id, bytes, Meaning.Pickup, typeof(PickupBase).FullName); return true;
+                }
+            }
+            return false;
+        }
+
         public static bool MarkPedestal(MoonGuid id)
         {
             bool marked = false;
@@ -874,15 +993,23 @@ namespace OriCoop
             return false;
         }
 
-        public static void RequestResync(string reason)
+        public static void RequestResync(string reason) { TryRequestResync(reason); }
+
+        // false = not sent (this PC is the host, is not ready, or asked less than a second ago).
+        internal static bool TryRequestResync(string reason)
         {
-            if (!NetPlay.Connected || NetPlay.IsHost || !SaveSync.Ready) return;
+            if (!NetPlay.Connected || NetPlay.IsHost || !SaveSync.Ready) return false;
             float now = Time.realtimeSinceStartup;
-            if (now < s_requestAt) return;
+            if (now < s_requestAt) return false;
             s_requestAt = now + 1f; s_awaitSnapshot = true; s_delta.BeginSnapshot();
             Plugin.Log.LogInfo("net: request full resync: " + reason);
             NetPlay.Send(MsgResync, true, delegate(BinaryWriter w) { w.Write(reason); });
+            return true;
         }
+        public static int SnapshotsEnded;   // guest: full snapshots received to their end marker
+        // Test only (NetTestHarness, T-214): incoming world blobs wait as they do while this PC is not in gameplay (a
+        // checkpoint load); they are applied on the first Tick after it is cleared.
+        internal static bool TestDeferApply;
 
         public static ulong HashBytes(byte[] bytes)
         {

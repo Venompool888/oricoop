@@ -54,12 +54,17 @@ namespace OriCoop
             Services.Net.On(MsgSoulLink, OnNetSoulLink);
             // T-115: guests only talk to the P2P host: it must relay a guest's soul link flame to the other guests.
             if (!PushBlockSync.s_mutateNoForward) Services.Net.Forward(MsgSoulLink);
+            // T-213 (7): a kept soul link goes with its player and with the session.
+            Services.Net.PlayerLeft += delegate(int seat) { s_pendingLinks.Remove(seat); s_pendingTries.Remove(seat); };
+            Services.Net.SessionEnded += delegate { s_pendingLinks.Clear(); s_pendingTries.Clear(); };
         }
         // T-115 net test: announce a soul link at our own position (the partners spawn the native flame on our puppet).
-        internal static void TestSendSoulLink()
+        internal static void TestSendSoulLink() { TestSendSoulLink(Host.LocalSeat); }
+        // seat: the seat the message names (a test may name one that no player can have).
+        internal static void TestSendSoulLink(int seat)
         {
             if (Host.P1 == null) return;
-            int seat = Host.LocalSeat; Vector3 at = Host.P1.Position;
+            Vector3 at = Host.P1.Position;
             Services.Net.Send(MsgSoulLink, true, w => { w.Write((byte)seat); w.Write(at.x); w.Write(at.y); w.Write(at.z); });
         }
 
@@ -104,14 +109,61 @@ namespace OriCoop
             Vector3 at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
             SoulLinksReceived++;
             // T-041 (#15): everyone else is told; the creator sees only the game's own "soul link made".
-            if (seat >= 1 && !Players.IsLocal(seat)) NetHud.Toast(L10n.F("revive.link_made", Roles.Tag(seat)));
+            // A seat number no player can have (a damaged or foreign message) gets no hint and is never kept: nothing
+            // would ever show or drop it before the session ends.
+            bool partner = seat >= 1 && seat <= Players.MaxSeats && !Players.IsLocal(seat);
+            if (partner) NetHud.Toast(L10n.F("revive.link_made", Roles.Tag(seat)));
+            // The game can fail to make the flame on an Ori that was created this very moment: that is kept like a
+            // missing Ori (Tick tries again), not thrown past the lines below.
+            bool shown = false; string problem = null;
+            try { shown = ShowSoulLink(seat, at); }
+            catch (Exception e) { problem = e.Message; }
+            if (shown) { s_pendingLinks.Remove(seat); s_pendingTries.Remove(seat); return; }
+            // T-213 (7): the partner's Ori is not here now (this PC is loading). The hint above was shown, but the flame
+            // was dropped for good. Keep where it goes: Tick shows it once that Ori is here.
+            bool keep = partner && !s_mutateDropPendingLink;
+            if (keep) { s_pendingLinks[seat] = at; s_pendingTries.Remove(seat); }
+            Log("got soul link for seat " + seat + (problem != null ? " but the flame could not be made (" + problem + ")" : " but no puppet")
+                + (keep ? "; kept until its Ori is here" : ""));
+        }
+
+        internal static int TestFailShows;   // test only: the next N flames throw, as the game might on a fresh Ori
+
+        static bool ShowSoulLink(int seat, Vector3 at)
+        {
             SeinCharacter s = Revive.SeinAt(seat);
-            if (s == null || s == Host.P1 || s.SoulFlame == null || OwnedLocalPuppet(s)) { Log("got soul link for seat " + seat + " but no puppet"); return; }
+            if (s == null || s == Host.P1 || s.SoulFlame == null || OwnedLocalPuppet(s)) return false;
+            if (TestFailShows > 0) { TestFailShows--; throw new NullReferenceException("test: the flame could not be made"); }
             s.SoulFlame.DestroySoulFlame();
             s.SoulFlame.SpawnSoulFlame(at);
             SoulLinksShown++;
             Log("partner P" + seat + " soul link flame shown at " + at);
             Host.Trace("player", "soullink.fx", "who", "P" + seat, "pos", at);
+            return true;
+        }
+
+        // T-213 (7): soul links that arrived while their owner's Ori was not here, by seat.
+        static readonly Dictionary<int, Vector3> s_pendingLinks = new Dictionary<int, Vector3>();
+        static readonly Dictionary<int, int> s_pendingTries = new Dictionary<int, int>();
+        static readonly bool s_mutateDropPendingLink = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_DROP_PENDING_LINK") == "1";
+        public static int SoulLinksPending { get { return s_pendingLinks.Count; } }
+
+        // Every frame while online (NetPlay.Update): show a kept soul link once its owner's Ori is here. A game error on
+        // a fresh Ori is tried again on the next frames, five times at most.
+        static readonly List<int> s_pendingSeats = new List<int>();   // reused: Tick runs every frame while a link is kept
+        internal static void Tick()
+        {
+            if (s_pendingLinks.Count == 0) return;
+            s_pendingSeats.Clear(); s_pendingSeats.AddRange(s_pendingLinks.Keys);
+            foreach (int seat in s_pendingSeats)
+            {
+                try { if (ShowSoulLink(seat, s_pendingLinks[seat])) { s_pendingLinks.Remove(seat); s_pendingTries.Remove(seat); } }
+                catch (Exception e)
+                {
+                    int tries; s_pendingTries.TryGetValue(seat, out tries); s_pendingTries[seat] = ++tries;
+                    if (tries >= 5) { s_pendingLinks.Remove(seat); s_pendingTries.Remove(seat); Services.Log.Warn("soul link of P" + seat + " could not be shown: " + e.Message); }
+                }
+            }
         }
 
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected && Host.P1 != null; } }

@@ -40,7 +40,9 @@ namespace OriCoop.Enemies
         internal void UpdateInterest(string key, float distance, float sceneRadius)
         {
             if (!Policy.UsesLeases) return;
-            if (Loaded && distance >= 0 && distance <= sceneRadius && !float.IsInfinity(distance))
+            // T-208 review 6: a family held without its scene keeps its lease while its pieces live, wherever they
+            // went (near a teammate, far from this PC's Ori): no other PC has the scene loaded to take it over.
+            if (Present && distance >= 0 && (distance <= sceneRadius || Holding) && !float.IsInfinity(distance))
                 Policy.RequestOwnership(key, distance, false);
             else Policy.Release(key);
         }
@@ -52,6 +54,7 @@ namespace OriCoop.Enemies
             int owner = Policy.DesiredOwner(key, null);
             uint epoch = Policy.EpochOf(key);
             bool changed = OwnerSeat != owner || Epoch != epoch || Known != (owner != 0);
+            Changing(owner, epoch);
             OwnerSeat = owner; Epoch = epoch; Known = owner != 0; Frozen = owner == 0;
             PendingTakeover = false;
             if (changed) ExpectFirstSnapshot = owner != 0;
@@ -74,6 +77,15 @@ namespace OriCoop.Enemies
         internal int OwnerSeat = 1, PendingOwner;
         internal readonly HashSet<int> LoadedSeats = new HashSet<int>();
         internal float OwnerChangedAt, NextPresence;
+        // T-208 (3): this PC still simulates live pieces of this Swarm family although the family's scene is no longer
+        // loaded here (they followed a player into the next area). For presence, ownership and the lease the family
+        // is then as good as loaded on this PC.
+        internal bool Holding;
+        internal bool Present { get { return Loaded || Holding; } }
+        // T-208 (1): who simulated this enemy right before the current owner, and in which epoch.
+        internal int PreviousOwner; internal uint PreviousEpoch;
+        // T-208 (9): when the host began waiting for the old owner's handoff.
+        internal float PendingSince; internal const float TakeoverLimit = 3f;
         internal float SceneRadius = float.PositiveInfinity;
         internal uint Epoch = 1, PendingEpoch, Generation = 0;
 
@@ -81,8 +93,8 @@ namespace OriCoop.Enemies
         internal void Presence(int seat, bool loaded) { if (loaded) LoadedSeats.Add(seat); else LoadedSeats.Remove(seat); }
         // T-147: report a load or an unload once; refresh only enemies this PC has loaded. An enemy it only heard of
         // (s_actors keeps every enemy anyone saw for the whole session) costs no traffic.
-        internal bool PresenceDue(Func<float> now) { return SentLoaded != Loaded || Loaded && now() >= NextPresence; }
-        internal void PresenceSent(Func<float> now) { SentLoaded = Loaded; NextPresence = now() + 2f; }
+        internal bool PresenceDue(Func<float> now) { return SentLoaded != Present || Present && now() >= NextPresence; }
+        internal void PresenceSent(Func<float> now) { SentLoaded = Present; NextPresence = now() + 2f; }
         // Host: a guest reported whether it has this enemy loaded. (T-147)
         // 0: nothing to send, 1: send the owner and state to that guest only, 2: run the owner decision.
         // An unchanged owner is not re-broadcast: only a guest that just loaded the enemy needs the owner and state.
@@ -95,26 +107,33 @@ namespace OriCoop.Enemies
         }
 
         // 0: refresh, 1: await old owner, 2: transfer from local owner.
-        internal int BeginDecision(int desired, int localSeat)
+        internal int BeginDecision(int desired, int localSeat, float now = 0f)
         {
             if (!Known) { Known = true; OwnerSeat = 1; }
             if (OwnerSeat == desired) return 0;
             PendingEpoch = Epoch + 1; PendingOwner = desired;
-            if (OwnerSeat != localSeat) { PendingTakeover = true; Frozen = true; return 1; }
+            if (OwnerSeat != localSeat) { PendingTakeover = true; Frozen = true; PendingSince = now; return 1; }
             return 2;
         }
+        // T-208 (9): the handoff the host waits for can be refused (the target's seat was renumbered meanwhile) or lost.
+        // Before, the host then waited for ever: the enemy stood frozen on its screen and took no hits. Now it gives
+        // up after TakeoverLimit, hands the enemy back to the old owner one epoch on (the same step as when the target
+        // leaves, SeatLeft 2) and decides again with the seats as they are then.
+        internal bool TakeoverOverdue(float now) { return PendingTakeover && now - PendingSince >= TakeoverLimit; }
+        internal void CancelTakeover() { Changing(OwnerSeat, PendingEpoch); Epoch = PendingEpoch; PendingTakeover = false; Frozen = false; }
         internal void CompleteLocalTransfer(Func<float> now)
         {
+            Changing(PendingOwner, PendingEpoch);
             Frozen = true; OwnerSeat = PendingOwner; Epoch = PendingEpoch; OwnerChangedAt = now(); ExpectFirstSnapshot = true;
         }
         internal bool CanFreeze(int sender, int localSeat, uint epoch) { return !Policy.UsesLeases && sender == 1 && Mine(localSeat) && epoch > Epoch; }
         internal bool CanAcceptGrant(bool host, int sender, uint epoch) { return !Policy.UsesLeases && !host && sender == 1 && epoch >= Epoch; }
         internal bool GrantChanged(int owner, uint epoch) { return !Known || OwnerSeat != owner || Epoch != epoch; }
-        internal void ApplyGrant(int owner, uint epoch) { Known = true; OwnerSeat = owner; Epoch = epoch; Frozen = false; }
+        internal void ApplyGrant(int owner, uint epoch) { Changing(owner, epoch); Known = true; OwnerSeat = owner; Epoch = epoch; Frozen = false; }
         internal bool CanAcceptHandoff(bool host, int sender, uint epoch, int owner)
         { return !Policy.UsesLeases && host && PendingTakeover && epoch == PendingEpoch && sender == OwnerSeat && owner == PendingOwner; }
         internal void CompleteHandoff(int owner, uint epoch, Func<float> now)
-        { OwnerSeat = owner; Epoch = epoch; PendingTakeover = false; OwnerChangedAt = now(); }
+        { Changing(owner, epoch); OwnerSeat = owner; Epoch = epoch; PendingTakeover = false; OwnerChangedAt = now(); }
         // 1: owner left, 2: pending target left.
         internal int SeatLeft(int seat, bool host, Func<float> now)
         {
@@ -122,13 +141,30 @@ namespace OriCoop.Enemies
             if (Policy.UsesLeases) return 0; // The arbiter advances the lease epoch when a seat leaves.
             if (!host) return 0;
             if (OwnerSeat == seat)
-            { OwnerSeat = 1; Epoch++; PendingTakeover = false; Frozen = true; OwnerChangedAt = now(); return 1; }
+            { Changing(1, Epoch + 1); OwnerSeat = 1; Epoch++; PendingTakeover = false; Frozen = true; OwnerChangedAt = now(); return 1; }
             if (PendingTakeover && PendingOwner == seat)
-            { Epoch = PendingEpoch; PendingTakeover = false; Frozen = false; return 2; }
+            { Changing(OwnerSeat, PendingEpoch); Epoch = PendingEpoch; PendingTakeover = false; Frozen = false; return 2; }
             return 0;
         }
         internal bool AcceptOwnerMessage(int localSeat, uint epoch, int sender, bool checkFrozen)
         { return Known && !Mine(localSeat) && (!checkFrozen || !Frozen) && Epoch == epoch && OwnerSeat == sender; }
+        // T-208 (1): a split Swarm piece has no handoff of its own (only its family's placeholder has), so what its
+        // simulator did in its last moments (killed it, split it) can arrive while the family is frozen for the
+        // handoff, or after it changed hands. AcceptOwnerMessage refuses both; for a piece's life message they count
+        // when they come from that simulator in its own epoch.
+        internal void NotePrevious() { if (Known && OwnerSeat != 0) { PreviousOwner = OwnerSeat; PreviousEpoch = Epoch; } }
+        // T-208 review 1: every change of hands keeps the simulator before it. A piece the new owner never heard of has
+        // no history of its own; its family's history (the placeholder actor's) is what counts for its late messages.
+        void Changing(int owner, uint epoch) { if (owner != OwnerSeat || epoch != Epoch) NotePrevious(); }
+        // T-208 review 4: this PC simulates the enemy, frozen for a handoff or not; in a free lease, the PC that
+        // simulated it last.
+        internal bool SimulatedHere(int localSeat) { return Known ? OwnerSeat == localSeat : PreviousOwner == localSeat; }
+        internal bool AcceptLateLife(int localSeat, uint epoch, int sender)
+        {
+            if (!Known || sender == 0 || sender == localSeat) return false;
+            if (OwnerSeat == sender && Epoch == epoch) return Frozen;
+            return PreviousOwner == sender && PreviousEpoch == epoch;
+        }
         // T-133: a device's primary seat was renumbered (renamed[old] = new, 0 = unchanged). The device keeps simulating
         // its enemies: owner, pending owner and presence move to the new number together (applied at once, so a chain
         // like 4->3 with 3->2 cannot mix them up).
@@ -136,6 +172,7 @@ namespace OriCoop.Enemies
         {
             OwnerSeat = RenamedSeat(renamed, OwnerSeat);
             PendingOwner = RenamedSeat(renamed, PendingOwner);
+            PreviousOwner = RenamedSeat(renamed, PreviousOwner);
             List<int> loaded = new List<int>(LoadedSeats);
             LoadedSeats.Clear();
             foreach (int seat in loaded) LoadedSeats.Add(RenamedSeat(renamed, seat));
@@ -219,6 +256,10 @@ namespace OriCoop.Enemies
             return nextGeneration > priorGeneration || (nextGeneration == priorGeneration
                 && (newSource || (int)(nextTick - priorTick) > 0) && (!priorKilled || nextKilled));
         }
+        // T-208 (5): a state nobody captured (the host grants an enemy it never tracked: only a guest has it loaded).
+        // Every captured state carries the sender's tick; a default one has no tick, no generation and no life.
+        internal static bool BlankState(uint generation, uint tick, bool alive, bool killed)
+        { return generation == 0 && tick == 0 && !alive && !killed; }
         internal static bool AcceptLife(uint generation, uint priorTick, bool priorKilled, bool newSource,
             uint nextGeneration, uint nextTick, bool nextKilled)
         {
