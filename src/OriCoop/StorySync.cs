@@ -968,7 +968,9 @@ namespace OriCoop
                 if (locked) story.SawLock = true;
                 bool running = story.Sequence != null && story.Sequence.IsRunning;
                 bool ahead = !MutateEndsOnGap && StoryLedger<Story>.TakeoverAhead(running, running ? story.Sequence.Index : 0, story.LastTakeover);
-                if (StoryLedger<Story>.LocalEnded(story, locked, running, ahead, now)) ended.Add(TokenKey(story.Sender, story.Token));
+                // The normal unlock can precede the last native action. An end carrying a rescue must
+                // wait for that tail, including when the downed seat is local to the story starter.
+                if (StoryLedger<Story>.LocalEnded(story, locked, running, ahead || Revive.AnyDowned, now)) ended.Add(TokenKey(story.Sender, story.Token));
             }
             foreach (ulong token in ended) SendEnd(token, now - Local[token].Began < 60f);
             ended.Clear();

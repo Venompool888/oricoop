@@ -925,6 +925,7 @@ namespace OriCoop
             sequence.MoonGuid = new MoonGuid(FixtureId); sequence.MoonGuid.D += 246;
             LockPlayerInputAction storyLock = go.AddComponent<LockPlayerInputAction>();
             storyLock.DurationPlayerCantMove = 1.2f; sequence.Actions.Add(storyLock);
+            WaitAction ending = go.AddComponent<WaitAction>(); ending.Duration = 1.5f; sequence.Actions.Add(ending);
             try
             {
                 Revive.Enabled = true;
@@ -944,6 +945,14 @@ namespace OriCoop
                 if (seat == 1) sequence.Perform(null);
                 yield return Wait(0.2f);
                 h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 stays down during the performance");
+                if (seat == 1)
+                {
+                    end = Now + 4f;
+                    while (!ending.IsPerforming && Now < end) yield return null;
+                    yield return Wait(0.4f);
+                    h.Check(ending.IsPerforming && StorySync.StoryActive && Revive.DownedAtSeat(2) != null,
+                        "story revive: the unlocked native ending finishes before recovery");
+                }
                 end = Now + 8f;
                 while (Revive.DownedAtSeat(2) != null && Now < end) yield return null;
                 h.Check(Revive.DownedAtSeat(2) == null, "story revive: P2 up after the performance on every seat");
