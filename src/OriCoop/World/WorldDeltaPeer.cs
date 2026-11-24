@@ -31,6 +31,9 @@ namespace OriCoop.World
         readonly Dictionary<string, DeltaObject> m_objects = new Dictionary<string, DeltaObject>();
         readonly List<CommittedEvent> m_held = new List<CommittedEvent>();
         uint m_nextBatch, m_applied;
+        // Newest batch id dropped from a full held queue while a snapshot was on its way (0 = none). The snapshot already
+        // holds every batch up to its watermark, so only a dropped batch newer than that needs another full resync.
+        uint m_droppedHeld;
         bool m_snapshot;
         public int BatchesSent, BatchesApplied, BatchesHeld, BadBatches;
 
@@ -51,7 +54,7 @@ namespace OriCoop.World
 
         public void Reset()
         {
-            m_objects.Clear(); m_held.Clear(); m_nextBatch = 0; m_applied = 0; m_snapshot = false;
+            m_objects.Clear(); m_held.Clear(); m_nextBatch = 0; m_applied = 0; m_droppedHeld = 0; m_snapshot = false;
         }
 
         DeltaObject Object(byte[] scene, byte[] id, byte schema, byte[] currentBytes)
@@ -100,7 +103,15 @@ namespace OriCoop.World
             if (m_snapshot || !canApply)
             {
                 m_held.Add(e); BatchesHeld++;
-                if (m_held.Count > MaxHeld) { m_held.RemoveAt(0); m_game.NeedResync("world delta queue overflow"); }
+                if (m_held.Count > MaxHeld)
+                {
+                    uint dropped = m_held[0].Id; m_held.RemoveAt(0);
+                    // During a snapshot the dropped (oldest) batch is normally inside it: decided at EndSnapshot. Before,
+                    // a joiner whose queue the arbiter's replay of old batches had filled asked for a second full
+                    // snapshot on the first live batch.
+                    if (m_snapshot) { if (dropped > m_droppedHeld) m_droppedHeld = dropped; }
+                    else m_game.NeedResync("world delta queue overflow");
+                }
                 return;
             }
             Apply(e);
@@ -160,6 +171,7 @@ namespace OriCoop.World
         public void EndSnapshot(uint watermark)
         {
             m_snapshot = false;
+            uint dropped = m_droppedHeld; m_droppedHeld = 0;
             CommittedEvent[] held = m_held.ToArray(); m_held.Clear();
             IAuthority authority = m_authority();
             foreach (CommittedEvent e in held)
@@ -174,6 +186,7 @@ namespace OriCoop.World
                 }
                 catch (Exception) { BadBatches++; }
             }
+            if (dropped > watermark) m_game.NeedResync("world delta queue overflow");
         }
     }
 }
