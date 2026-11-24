@@ -39,6 +39,7 @@ namespace OriCoop
             int s; if (int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_SLOT"), out s)) m_slot = s;
             Application.logMessageReceived += OnLog;
             P2Input.BotActive = true;
+            NetIntroTest.Prepare();   // T-226: the host relays INTRO observations from the start, not from its own INTRO
             Note("test harness up, slot " + m_slot + ", scenarios " + m_scenarios);
         }
 

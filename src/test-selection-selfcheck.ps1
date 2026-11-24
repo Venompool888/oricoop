@@ -123,10 +123,20 @@ foreach ($m in @($map.Mutations | Where-Object { $_.Suite -eq 'net' -and $_.Phas
 }
 foreach ($k in $TS_SuitePhases.Keys) { foreach ($x in $TS_SuitePhases[$k]) { Ok ($TS_AllPhases -contains $x) ("capped suite $k phase $x exists") } }
 # Rerun planning reads the harness's phase markers.
-$t = "[ 0.1] net role=host`n[ 0.2] === phase W`n[ 1.0] FAIL W digests`n[ 2.0] === phase CAM`n[ 3.0] PASS CAM x`n[ 4.0] === phase END`n[ 5.0] PASS G ok`n[ 0.1] net role=guest`n[ 0.2] === phase CUT`n[ 1.0] FAIL CUT step 3"
+$t = "[ 0.1] net role=host`n[ 0.2] === phase W`n[ 1.0] FAIL W digests`n[ 2.0] === phase CAM`n[ 3.0] PASS CAM x`n[ 3.5] === phase CUT`n[ 4.0] === phase END`n[ 5.0] PASS G ok`n" +
+    "[ 0.1] net role=guest`n[ 0.2] === phase W`n[ 0.5] === phase CAM`n[ 0.7] === phase CUT`n[ 1.0] FAIL CUT step 3`n[ 2.0] === phase END"
 $f = Get-FailedPhases $t
 Ok ((($f.Phases) -join ',') -eq 'W,CUT' -and -not $f.Unplaced) ('failed checks map to their phases (W,CUT; got ' + ($f.Phases -join ',') + ')')
-Ok ((Get-RerunPhases 'net' $t 'W,CAM,CUT') -eq 'W,CUT') 'rerun only the failed phases'
+Ok ((Get-RerunPhases 'net' $t 'W,CAM,CUT') -eq 'W,CUT') 'a run that went to its end: rerun only the failed phases'
+# T-226: a phase never counts as passed unless it ran. A client section without END was cut short: everything from the
+# first failed phase on is rerun (here CAM too); a phase that a finished run never marked is rerun as well.
+$cut = "[ 0.1] net role=host`n[ 0.2] === phase W`n[ 1.0] FAIL W digests`n[ 2.0] === phase CAM`n[ 3.0] PASS CAM x`n[ 4.0] === phase END`n[ 0.1] net role=guest`n[ 0.2] === phase W`n[ 0.5] === phase CAM`n[ 0.7] === phase CUT`n[ 1.0] FAIL CUT step 3"
+Ok ((Get-RerunPhases 'net' $cut 'W,CAM,CUT') -eq 'W,CAM,CUT') ('a client cut short (no END): rerun from the first failed phase on (W,CAM,CUT; got ' + (Get-RerunPhases 'net' $cut 'W,CAM,CUT') + ')')
+$skip = "[ 0.1] net role=host`n[ 0.2] === phase E3`n[ 0.3] === phase E5`n[ 1.0] FAIL E5 kill`n[ 4.0] === phase END`n[ 0.1] net role=guest`n[ 0.2] === phase E3`n[ 0.3] === phase E5`n[ 4.0] === phase END"
+Ok ((Get-RerunPhases 'net' $skip 'E3,E5,R,S4') -eq 'E5,R,S4') ('phases no client marked are rerun with the failed one (E5,R,S4; got ' + (Get-RerunPhases 'net' $skip 'E3,E5,R,S4') + ')')
+$plan = Get-RerunPlan 'net' $skip 'E3,E5,R,S4'
+Ok ((@($plan.Failed) -join ',') -eq 'E5' -and (@($plan.NotRun) -join ',') -eq 'R,S4') 'the rerun plan names the failed and the never-run phases'
+Ok ((Get-UnrunPhases $t 'W,CAM,CUT').Count -eq 0 -and (@(Get-UnrunPhases $t 'W,CAM,CUT,ESC') -join ',') -eq 'ESC' -and (@(Get-UnrunPhases 'NETTEST PASS' 'P,WO') -join ',') -eq 'P,WO') 'a passed run without the markers of a phase did not run it'
 Ok ((Get-RerunPhases 'net' ($t + "`n[ 6.0] === phase END`n[ 7.0] FAIL net no Unity errors") 'W,CAM,CUT') -eq 'W,CAM,CUT') 'a failure outside a phase reruns the same phases'
 Ok ((Get-RerunPhases 'local' '[ 1.0] FAIL x' '') -eq '') 'other suites rerun whole'
 Ok ($null -eq (Get-RerunPhases 'net' ('OWNER IS PLAYING' + "`n" + $t) '')) 'a run stopped for the owner is not rerun'
@@ -134,7 +144,13 @@ Ok ($null -eq (Get-RerunPhases 'rooms' ("ROOMS RESULT PASS`nOWNER SETTINGS CHANG
 Ok ($null -eq (Get-RerunPhases 'local' "INPUT NOT BLOCKED in test game host: no line" '')) 'a run whose test game could read the owner''s controller is never rerun'
 Ok ($null -eq (Get-RerunPhases 'net' "REFUSED copy e: it still uses the owner's Unity registry key" '')) 'a refused copy is never rerun'
 $ff = "FAIL-FAST: stopping after the first failure`n  b-guest-1.log: FAIL E5Lc kill 1 puppet death effect exactly once`n  host.log: FAIL WO9L guest water height`nno result file: fail-fast stopped the run"
-Ok ((Get-RerunPhases 'net' $ff '') -eq 'E5,WO') ('fail-fast summary checks are placed by name (E5,WO; got ' + (Get-RerunPhases 'net' $ff '') + ')')
+Ok (((Get-FailedPhases $ff).Phases -join ',') -eq 'E5,WO') ('fail-fast summary checks are placed by name (E5,WO; got ' + ((Get-FailedPhases $ff).Phases -join ',') + ')')
+# T-226: fail-fast stopped the run in E5, so E5 and every later phase never ran to its end: all of them are rerun, the
+# phases before E5 (they ran and passed) are not.
+Ok ((Get-RerunPhases 'net' $ff '') -eq 'E5,R,S4,P,WO,CAM,CUT,ESC') ('fail-fast: rerun the failed phase and every later one (E5,R,S4,P,WO,CAM,CUT,ESC; got ' + (Get-RerunPhases 'net' $ff '') + ')')
+Ok ((Get-RerunPhases 'net' $ff 'INTRO,E5,WO,CAM') -eq 'E5,WO,CAM') ('fail-fast with selected phases: from the first failed one on (E5,WO,CAM; got ' + (Get-RerunPhases 'net' $ff 'INTRO,E5,WO,CAM') + ')')
+$ffIntro = "FAIL-FAST: stopping after the first failure`n  host-1.log: FAIL INTRO barrier 0 all seats observed`nno result file: fail-fast stopped the run"
+Ok ((Get-RerunPhases 'net-newgame' $ffIntro 'INTRO,MOVE,W') -eq 'INTRO,MOVE,W') 'fail-fast in the first phase: the whole suite again'
 foreach ($pair in @(@('INTRO P2 alone retains input', 'INTRO'), @('C RTT 30..260', 'MOVE'), @('W both world digests match', 'W'), @('E3 guest sees enemy', 'E3'),
                     @('E5Lc kill', 'E5'), @('R2 host: revive glow played once', 'R'), @('S4 partner step 3 completed', 'S4'), @('PB two pushers', 'P'), @('P3L200oneway stone', 'P'), @('P1L push', 'P'),
                     @('WO9L guest water', 'WO'), @('CAM guest: pull', 'CAM'), @('CUT reset: WallJump', 'CUT'), @('Kuro gate', 'CUT'))) {

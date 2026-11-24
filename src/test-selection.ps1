@@ -234,19 +234,67 @@ function Get-FailedPhases([string]$text) {
     @{ Checks = @($checks); Phases = @($TS_AllPhases | Where-Object { $phases.Contains($_) }); Unplaced = $unplaced }
 }
 
+# Which phases a run went through (T-226). Each client's section (from "net role=") lists the phases it started
+# ("=== phase X") and ends its phase list with "=== phase END". A run that was cut short (fail-fast stopped the games, a
+# game timed out, a client wrote no result file) has a section without END or no markers at all: fail-fast prints only
+# its "  <tag>.log: FAIL <check>" summary, because the result files are written when a game finishes.
+# Returns @{ Stopped = $true if the run did not go through to its end; Marked = phases started by every client section }.
+function Get-RunPhases([string]$text) {
+    $sections = New-Object System.Collections.ArrayList; $cur = $null
+    foreach ($line in ($text -split "`r?`n")) {
+        if ($line -match '^\[[\s\d.]+\] net role=') { $cur = @{}; [void]$sections.Add($cur); continue }
+        if ($line -match '^\[[\s\d.]+\] === phase (\w+)') {
+            if ($null -eq $cur) { $cur = @{}; [void]$sections.Add($cur) }
+            $cur[$Matches[1]] = $true
+        }
+    }
+    $stopped = ($text -match '(?m)^(FAIL-FAST:|TIMEOUT:|no result file)') -or $sections.Count -eq 0 -or @($sections | Where-Object { -not $_.ContainsKey('END') }).Count -gt 0
+    $marked = @($TS_AllPhases | Where-Object { $ph = $_; $sections.Count -gt 0 -and @($sections | Where-Object { -not $_.ContainsKey($ph) }).Count -eq 0 })
+    @{ Stopped = $stopped; Marked = $marked }
+}
+# An ORICOOP_PHASES value as a phase list in run order ('' = every phase).
+function Get-PhaseList([string]$phases) {
+    if (-not $phases) { return $TS_AllPhases }
+    $l = @(($phases -split ',') | ForEach-Object { $_.Trim() } | Where-Object { $_ })
+    @($TS_AllPhases | Where-Object { $l -contains $_ })
+}
+# The phases of $phases ('' = all) that a run's output does not show every client starting: a passed rerun must have run
+# every phase it was started with, or it proves nothing about them (T-226).
+function Get-UnrunPhases([string]$text, [string]$phases) {
+    $m = (Get-RunPhases $text).Marked
+    @(Get-PhaseList $phases | Where-Object { $m -notcontains $_ })
+}
+
 # What to rerun after a failed suite: $null = nothing (owner stopped it, a safety stop, or no rerun left); '' = the whole
-# suite with the same phases; else the ORICOOP_PHASES list of only the failed phases.
+# suite with the same phases; else the ORICOOP_PHASES list of the phases to run again.
 # Safety stops are never flaky and never rerun (exit codes 5/6/7 too, see run-affected.ps1): a test that changed the
 # owner's settings (T-094) could pass the second time only because the first run had already changed them; a test game
 # that could read or rumble the owner's controller (T-085) or a copy on the owner's settings key must stop the run.
+# T-226: the rerun is the failed phases AND every selected phase that did not run. The harness runs the phases in
+# $TS_AllPhases order, so a run cut short at its first failure (fail-fast) went through only the phases before the first
+# failed one; everything from there on never ran and is rerun (it used to rerun the failed phase alone, and a pass then
+# counted the never-run phases as passed). A run that went to its end ran the phases every client marked.
 $TS_SafetyStop = 'OWNER SETTINGS CHANGED BY A TEST|changed the owner''s game settings|INPUT NOT BLOCKED|REFUSED copy|NO TEST COPY with its own Unity registry key'
-function Get-RerunPhases([string]$suite, [string]$text, [string]$firstPhases) {
+function Get-RerunPlan([string]$suite, [string]$text, [string]$firstPhases) {
     if ($text -cmatch 'OWNER IS PLAYING') { return $null }
     if ($text -cmatch $TS_SafetyStop) { return $null }
-    if ($TS_PhasedSuites -notcontains $suite) { return '' }
+    if ($TS_PhasedSuites -notcontains $suite) { return @{ Phases = ''; Failed = @(); NotRun = @() } }
+    $whole = @{ Phases = $firstPhases; Failed = @(); NotRun = @() }
     $f = Get-FailedPhases $text
-    if ($f.Unplaced -or $f.Phases.Count -eq 0) { return $firstPhases }
-    return ($f.Phases -join ',')
+    if ($f.Unplaced -or $f.Phases.Count -eq 0) { return $whole }
+    $selected = @(Get-PhaseList $firstPhases)
+    if (@($f.Phases | Where-Object { $selected -notcontains $_ }).Count) { return $whole }   # a check placed outside the run's phases
+    $run = Get-RunPhases $text
+    if ($run.Stopped) { $first = [array]::IndexOf($TS_AllPhases, $f.Phases[0]); $ran = @($selected | Where-Object { [array]::IndexOf($TS_AllPhases, $_) -lt $first }) }
+    else { $ran = $run.Marked }
+    $notRun = @($selected | Where-Object { $ran -notcontains $_ -and $f.Phases -notcontains $_ })
+    $rerun = @($selected | Where-Object { $f.Phases -contains $_ -or $notRun -contains $_ })
+    @{ Phases = $(if ($rerun.Count -eq $selected.Count) { $firstPhases } else { $rerun -join ',' }); Failed = $f.Phases; NotRun = $notRun }
+}
+function Get-RerunPhases([string]$suite, [string]$text, [string]$firstPhases) {
+    $plan = Get-RerunPlan $suite $text $firstPhases
+    if ($null -eq $plan) { return $null }
+    return $plan.Phases
 }
 
 # The ORICOOP_PHASES value for a selection ('' = every phase).

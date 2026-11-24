@@ -129,6 +129,12 @@ namespace OriCoop
                 source.gameObject.SetActive(active);
             }
         }
+        // T-226: the P2P host relays the guests' observations to each other (Forward). It used to register that relay
+        // only when its own test reached INTRO, but a guest whose test started earlier (3 players: seat 3 ~2 s before
+        // the host) sent its barrier 0 observation before: the host kept it for itself (early messages wait for their
+        // handler) but never relayed it, so seat 2 waited out "INTRO barrier 0 all seats observed" and every later
+        // barrier failed with it. TestHarness.Awake registers the relay at game start, before any session exists.
+        internal static void Prepare() { Services.Net.Forward(Message); }
         internal static IEnumerator Run(TestHarness h, int clients)
         {
             count = clients; rounds.Clear(); Services.Net.On(Message, Read); Services.Net.Forward(Message);

@@ -37,6 +37,16 @@ namespace OriCoop
             while (Time.realtimeSinceStartup < end) { KeepAlive(); yield return null; }
         }
 
+        // T-226: a push whose distance is checked lasts this much game (physics) time, capped in real time. A busy machine
+        // runs fewer physics steps per real second (Unity drops game time when a frame takes too long), so a push timed
+        // in real seconds moved the stone less and missed the distance threshold (PB, PF). Returns the real seconds used.
+        static IEnumerator GameWait(float seconds, float[] realUsed)
+        {
+            float began = Time.realtimeSinceStartup, until = Time.fixedTime + seconds, cap = began + seconds * 3f + 2f;
+            while (Time.fixedTime < until && Time.realtimeSinceStartup < cap) { KeepAlive(); yield return null; }
+            realUsed[0] = Time.realtimeSinceStartup - began;
+        }
+
         static void OnBarrier(BinaryReader r)
         {
             int step = r.ReadInt32();
@@ -297,14 +307,16 @@ namespace OriCoop
             yield return Barrier(h, 97, block, pushSetup.Started);
             if (!host) h.Check(pushSetup.Started, "PB guest grabbed the same stone while the host holds it");
             if (!host) Bot(true);
-            float pushEnd = Time.realtimeSinceStartup + 2.5f; bool guestOwned = false;
-            while (Time.realtimeSinceStartup < pushEnd)
+            // 2.5 s of game time (T-226: was 2.5 real seconds, too little push on a busy machine), capped at 9.5 real s.
+            float pushBegan = Time.realtimeSinceStartup, pushUntil = Time.fixedTime + 2.5f, pushCap = pushBegan + 9.5f; bool guestOwned = false;
+            while (Time.fixedTime < pushUntil && Time.realtimeSinceStartup < pushCap)
             {
                 KeepAlive();
                 if (host) { NetTestHarness.BotLX = 0f; P2Input.BotRT = true; }
                 if (AuthoritySource.Current.OwnerOf(PushBlockSync.StateOf(block).Key) == guestSeat) guestOwned = true;
                 yield return null;
             }
+            h.Note("PB push window: 2.50 game s in " + F(Time.realtimeSinceStartup - pushBegan) + " real s");
             Bot(false);
             yield return Wait(1.0f);
             float dx = block.Position.x - start.x;
@@ -577,7 +589,7 @@ namespace OriCoop
             // The push stays on the first 9 units of the floor (further left it rises, and an Ori that leaves the ground
             // for a frame lets go, as in the plain game).
             int frames = 0, own = 0, puppet = 0, boosted = 0;
-            float began = Time.realtimeSinceStartup, end = began + 1.6f;
+            float began = Time.realtimeSinceStartup, end = began + 1.6f, gameBegan = Time.fixedTime;
             int lastOwner = PushBlockSync.StateOf(block).OwnerSeat; bool lastOwn = true, lastPuppet = true; string events = "";
             while (Time.realtimeSinceStartup < end && (block.Position.x - resting.x) * CoopDir < 9f)
             {
@@ -596,6 +608,8 @@ namespace OriCoop
                 yield return null;
             }
             Bot(false);
+            // T-226: how loaded this PC was during the push (a busy machine shows few frames and less game time per real s).
+            h.Note("PE push window: " + frames + " frames, " + F(Time.fixedTime - gameBegan) + " game s in " + F(Time.realtimeSinceStartup - began) + " real s");
             h.Note("PE holds during the push (own Ori, partner copy, lease owner):" + (events.Length == 0 ? " no change" : events));
             float ownShare = frames == 0 ? 0f : (float)own / frames, puppetShare = frames == 0 ? 0f : (float)puppet / frames,
                 boostShare = frames == 0 ? 0f : (float)boosted / frames, travel = (block.Position.x - resting.x) * CoopDir;
@@ -644,8 +658,10 @@ namespace OriCoop
                     h.Check(false, "PF setup: push " + (k + 1) + " grabbed the stone");
                     yield break;
                 }
-                yield return Wait(1.5f);
+                float[] used = { 0f };
+                yield return GameWait(1.5f, used);   // T-226: game time, not 1.5 real seconds
                 Bot(false);
+                if (pusher) h.Note("PF push " + (k + 1) + " window: 1.50 game s in " + F(used[0]) + " real s");
                 yield return Wait(1.0f);
                 float back = s_watchBack, travel = (block.Position.x - start.x) * CoopDir; int snaps = WatchSnaps; s_watch = null;
                 yield return Barrier(h, step + 2, block);
