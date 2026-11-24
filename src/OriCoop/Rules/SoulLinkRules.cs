@@ -46,6 +46,7 @@ namespace OriCoop.Rules
 
         // Hold Y / Q: true once held for SelfHoldSeconds. Releasing starts over. Not counted while blocked
         // (loading, cutscene, pause).
+        // T-248: a single blocked frame mid-hold also starts the 2 s over (the maintainer chose "start over", not "pause").
         public static bool HoldSelf(DownedState d, bool held, bool blocked, float dt)
         {
             if (!held || blocked) { d.SelfHold = 0f; return false; }
