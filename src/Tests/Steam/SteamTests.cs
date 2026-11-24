@@ -552,6 +552,178 @@ static class SteamTests
         }
     }
 
+    // ---- T-253: the game handshake (NetPeer connect request / accept) over the Steam transport.
+    // The guest side of a link without a SteamTransport (one live transport per process): sends to the host's Steam
+    // id on channel 0 and accepts the host's session, as a guest's SteamTransport does.
+    private sealed class RawLink : IDatagramTransport
+    {
+        public static readonly EndPoint Host = new IPEndPoint(IPAddress.Parse("10.255.254.2"), 1);
+        private readonly FakeSteamApi steam;
+        private readonly ulong host;
+        public RawLink(FakeSteamApi steam, ulong host)
+        {
+            this.steam = steam;
+            this.host = host;
+            steam.P2PSessionRequested += id => { if (id == host) steam.AcceptP2PSession(id); };
+        }
+        public int LocalPort { get { return 0; } }
+        public void SendTo(byte[] data, int offset, int length, EndPoint to) { steam.SendP2PPacket(host, data, offset, length, 0); }
+        public int Receive(byte[] buffer, out EndPoint from)
+        {
+            from = null;
+            uint size;
+            ulong sender;
+            if (!steam.IsP2PPacketAvailable(out size, 0) || !steam.ReadP2PPacket(buffer, out size, out sender, 0)) return 0;
+            from = Host;
+            return (int)size;
+        }
+        public void Dispose() { }
+    }
+
+    private static List<string> Capture()
+    {
+        var lines = new List<string>();
+        SteamTransport.Trace += m => lines.Add("steam: " + m);
+        NetPeer.Trace = m => lines.Add("peer: " + m);
+        return lines;
+    }
+
+    private static bool Has(List<string> lines, string text)
+    {
+        foreach (string line in lines) if (line.IndexOf(text, StringComparison.Ordinal) >= 0) return true;
+        return false;
+    }
+
+    private static string Text(List<string> lines) { return string.Join(" | ", lines.ToArray()); }
+
+    // A host SteamTransport with its game handshake listening, and a guest that joined its lobby.
+    private static SteamTransport HostWithGuest(FakeSteamApi host, FakeSteamApi guest, out NetPeer hostPeer)
+    {
+        SteamApi.SetForTests(host);
+        SteamTransport transport = SteamTransport.Host();
+        hostPeer = new NetPeer(transport);
+        hostPeer.Listen();
+        Until(() => { SteamTransport.PumpFake(); transport.Update(); return transport.Ready; }, "transport host not ready");
+        Join(guest, transport.LobbyId, "Success");
+        return transport;
+    }
+
+    private static bool Handshake(SteamTransport transport, NetPeer hostPeer, FakeSteamApi guest, NetPeer guestPeer, int milliseconds)
+    {
+        Stopwatch watch = Stopwatch.StartNew();
+        while (watch.ElapsedMilliseconds < milliseconds)
+        {
+            SteamTransport.PumpFake();
+            guest.Pump();
+            hostPeer.Poll();
+            guestPeer.Poll();
+            if (hostPeer.State == PeerState.Connected && guestPeer.State == PeerState.Connected) return true;
+            Thread.Sleep(5);
+        }
+        return false;
+    }
+
+    // The sixth playtest: the host logged the guest's P2P session request, the guest's hello got no answer. The guest's
+    // first packet comes before Steam lists the guest in the host's lobby; a Steam that does not raise a new request
+    // after the host refused (closed) the first one never lets the handshake through.
+    private static void GuestListedLate(string dir)
+    {
+        using (var host = new FakeSteamApi(dir, 1001, null, "no-rerequest"))
+        using (var guest = new FakeSteamApi(dir, 1002, null, "late-members:0.6"))
+        {
+            List<string> lines = Capture();
+            NetPeer hostPeer;
+            using (SteamTransport transport = HostWithGuest(host, guest, out hostPeer))
+            {
+                Check(host.GetNumLobbyMembers(transport.LobbyId) == 1, "late guest: the host already lists the guest");
+                var guestPeer = new NetPeer(new RawLink(guest, host.LocalId));
+                guestPeer.Connect(RawLink.Host);
+                bool done = Handshake(transport, hostPeer, guest, guestPeer, 3000);
+                Check(done, "late guest: the handshake never completed (host " + hostPeer.State + ", guest " + guestPeer.State +
+                    "; " + transport.HandshakeReport + ") " + Text(lines));
+                Check(Has(lines, "held: not (yet) a member of lobby") && Has(lines, "s waiting for the lobby member list"),
+                    "late guest: the request was not held until Steam listed the guest: " + Text(lines));
+                Check(!Has(lines, " refused: "), "late guest: the guest's request was refused: " + Text(lines));
+                Check(transport.HandshakeStep == "packets both ways", "late guest: step " + transport.HandshakeStep);
+                Check(Has(lines, "peer: connect request (hello) sent") && Has(lines, "peer: accept (hello answer) received"),
+                    "late guest: the hello / hello answer lines are missing: " + Text(lines));
+            }
+        }
+    }
+
+    // A request from a user that never shows up in the lobby is refused once the grace runs out; one from a third
+    // user while a guest is the peer is refused at once.
+    private static void StrangerRefused(string dir)
+    {
+        using (var host = new FakeSteamApi(dir, 1001, null, ""))
+        using (var guest = new FakeSteamApi(dir, 1002, null, ""))
+        using (var stranger = new FakeSteamApi(dir, 1003, null, ""))
+        {
+            List<string> lines = Capture();
+            SteamTransport.SetMemberGraceForTests(0.3);
+            NetPeer hostPeer;
+            using (SteamTransport transport = HostWithGuest(host, guest, out hostPeer))
+            {
+                guest.LeaveLobby(transport.LobbyId);
+                Until(() => { transport.Update(); return host.GetNumLobbyMembers(transport.LobbyId) == 1; }, "stranger: the guest did not leave", host);
+                Check(stranger.SendP2PPacket(host.LocalId, Payload, 0, Payload.Length, 0), "stranger: send failed");
+                Until(() => { SteamTransport.PumpFake(); transport.Update(); return Has(lines, "1003 held"); }, "stranger: request not held: " + Text(lines));
+                Check(transport.HandshakeStep.StartsWith("session request held", StringComparison.Ordinal), "stranger: step while held: " + transport.HandshakeStep);
+                Until(() => { SteamTransport.PumpFake(); transport.Update(); return Has(lines, "1003 refused"); }, "stranger: request never refused: " + Text(lines));
+                Check(Has(lines, "after waiting"), "stranger: the refusal does not say how long it waited: " + Text(lines));
+                Check(transport.HandshakeStep.StartsWith("session request refused", StringComparison.Ordinal), "stranger: step after refusal: " + transport.HandshakeStep);
+                Check(!Available(host, 0), "stranger: a packet of the refused user got through");
+
+                // A guest connects; a third user's request is then refused without waiting.
+                Join(guest, transport.LobbyId, "Success");
+                var guestPeer = new NetPeer(new RawLink(guest, host.LocalId));
+                guestPeer.Connect(RawLink.Host);
+                Check(Handshake(transport, hostPeer, guest, guestPeer, 3000), "stranger: the guest could not connect: " + transport.HandshakeReport);
+                lines.Clear();
+                Check(stranger.SendP2PPacket(host.LocalId, Payload, 0, Payload.Length, 0), "stranger: second send failed");
+                Until(() => { SteamTransport.PumpFake(); transport.Update(); return Has(lines, "1003 refused"); }, "stranger: second request not refused: " + Text(lines));
+                Check(!Has(lines, "1003 held"), "stranger: a third user was held while a guest is connected: " + Text(lines));
+            }
+        }
+    }
+
+    // When the host's game never answers, the guest's trace names the step: hello sent N times, nothing back, and the
+    // Steam side: packets sent to the host, nothing received from it.
+    private static void GuestTraceNamesStep(string dir)
+    {
+        using (var host = new FakeSteamApi(dir, 1001, null, ""))
+        using (var guest = new FakeSteamApi(dir, 1002, null, ""))
+        {
+            ulong lobby = Create(host, 2);
+            Check(host.SetLobbyData(lobby, "oricoop", "1"), "set lobby protocol");
+            List<string> lines = Capture();
+            SteamApi.SetForTests(guest);
+            using (SteamTransport transport = SteamTransport.Join(lobby))
+            {
+                Until(() => { SteamTransport.PumpFake(); transport.Update(); return transport.Ready; }, "guest trace: not in the lobby", host);
+                Check(transport.HandshakeStep == "in the lobby, nothing sent to the host", "guest trace: step before sending: " + transport.HandshakeStep);
+                double now = 0;
+                var peer = new NetPeer(transport, () => now);
+                peer.Connect(transport.RemoteEndPoint);
+                for (int i = 0; i < 60 && peer.State == PeerState.Connecting; i++)
+                {
+                    SteamTransport.PumpFake();
+                    host.Pump();                        // the host's Steam gets the packets; its game never reads them
+                    peer.Poll();
+                    now += 250;
+                }
+                Check(peer.State == PeerState.Disconnected && peer.DisconnectReason == "no answer", "guest trace: no 'no answer' (" + peer.State + ")");
+                Check(Has(lines, "steam: first packet sent to 1001 on channel 0"), "guest trace: first send line: " + Text(lines));
+                Check(Has(lines, "peer: connect request (hello) sent to"), "guest trace: hello line: " + Text(lines));
+                Check(Has(lines, "peer: no answer after 10 s: 40 connect request(s) sent") && Has(lines, "0 packet(s) received (nothing came back)"),
+                    "guest trace: no-answer line: " + Text(lines));
+                Check(transport.HandshakeStep == "packets sent to the host, nothing received from it", "guest trace: step " + transport.HandshakeStep);
+                Check(transport.HandshakeReport.IndexOf("40 sent, 0 refused by Steam, 0 received", StringComparison.Ordinal) >= 0,
+                    "guest trace: report " + transport.HandshakeReport);
+            }
+        }
+    }
+
     private static void Run(string name, Action<string> test)
     {
         cases++;
@@ -562,6 +734,7 @@ static class SteamTests
         {
             SteamTransport.ResetForTests();
             SteamApi.SetForTests(null);
+            NetPeer.Trace = null;
             if (Directory.Exists(dir)) Directory.Delete(dir, true);
         }
     }
@@ -589,6 +762,9 @@ static class SteamTests
         Run("T-216 late join result while joining another lobby", LateJoinWhileJoiningAnother);
         Run("T-216 nothing awaited after Steam restarts", NothingAwaitedAfterSteamRestart);
         Run("T-218 a throwing invite window keeps the lobby", InviteThrows);
+        Run("T-253 a guest Steam lists late is held, then the handshake completes", GuestListedLate);
+        Run("T-253 a stranger's request is held, then refused; a third user's at once", StrangerRefused);
+        Run("T-253 the guest's trace names the step the handshake stopped at", GuestTraceNamesStep);
         Console.WriteLine("Steam: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }

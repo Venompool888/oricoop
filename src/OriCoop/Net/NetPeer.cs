@@ -75,6 +75,8 @@ namespace OriCoop.Net
         private ushort nextSequence = 1, latestSequence;
         private double lastReceive, lastSend, connectStart, lastRequest;
         private int receivedSinceAck;
+        // T-253: what a connecting client saw, for the trace when the host gives no answer.
+        private int requestsSent, heardWhileConnecting;
 
         private sealed class Fragment
         {
@@ -183,6 +185,7 @@ namespace OriCoop.Net
             if (host == null) throw new ArgumentNullException("host");
             ClearSession(); isHost = false; remote = host; session = 0; nonce = NewId();
             connectStart = NowMs; lastRequest = connectStart - 250;
+            requestsSent = heardWhileConnecting = 0;
             state = PeerState.Connecting;
         }
 
@@ -287,6 +290,7 @@ namespace OriCoop.Net
                 writer.Write(nonce); SendPacket(stream.ToArray(), remote);
             }
             lastRequest = NowMs;
+            if (requestsSent++ == 0) Say("connect request (hello) sent to " + remote + ", protocol " + (ProtocolVersionOverride == 0 ? ProtocolVersion : ProtocolVersionOverride) + "; asking again every 250 ms for 10 s");
         }
 
         private void SendAccept()
@@ -527,6 +531,8 @@ namespace OriCoop.Net
         public static Action<string> Trace;
         private int notes;
         private void Note(string message) { if (notes++ < 8 && Trace != null) Trace(message); }
+        // T-253: the few handshake milestones of a connecting client (one line each per Connect), never capped.
+        private static void Say(string message) { Action<string> t = Trace; if (t != null) t(message); }
 
         private void HandlePacket(int length, EndPoint from)
         {
@@ -575,16 +581,21 @@ namespace OriCoop.Net
                     Note("connect request accepted; accept sent to " + from);
                     return;
                 }
-                if (!Object.Equals(remote, from)) return;
+                if (!Object.Equals(remote, from)) { if (state == PeerState.Connecting) Note("packet type " + type + " from " + from + " ignored: not the host " + remote); return; }
                 if (type == Accept)
                 {
-                    if (isHost || length != 11 || id != nonce) return;
+                    if (isHost || length != 11 || id != nonce)
+                    {
+                        if (state == PeerState.Connecting) Note("accept ignored: length " + length + ", " + (id != nonce ? "for another connect request" : "isHost " + isHost));
+                        return;
+                    }
                     uint acceptedSession = reader.ReadUInt32();
                     if (acceptedSession == 0) return;
                     if (state == PeerState.Connecting)
                     {
                         session = acceptedSession; stats.RttMs = (float)(NowMs - lastRequest);
                         RecordTraffic(recvTraffic, length, false); BecomeConnected();
+                        Say("accept (hello answer) received from " + from + " after " + Math.Round(NowMs - connectStart) + " ms, " + requestsSent + " connect request(s) sent");
                     }
                     else if (state == PeerState.Connected && acceptedSession == session)
                     {
@@ -597,6 +608,7 @@ namespace OriCoop.Net
                 {
                     if (state != PeerState.Connecting || id != nonce) return;
                     string reason = ReadReason(reader, stream); RecordTraffic(recvTraffic, length, false);
+                    Say("connect request refused by " + from + ": " + reason);
                     BecomeDisconnected(reason); return;
                 }
                 if (state != PeerState.Connected || id != session) return;
@@ -650,6 +662,7 @@ namespace OriCoop.Net
                 EndPoint from; int length;
                 while ((length = transport.Receive(receiveBuffer, out from)) > 0)
                 {
+                    if (state == PeerState.Connecting) heardWhileConnecting++;
                     // Truncated or malformed UDP is discarded without touching session state.
                     try { HandlePacket(length, from); }
                     catch (EndOfStreamException) { }
@@ -657,7 +670,12 @@ namespace OriCoop.Net
                 }
                 if (state == PeerState.Connecting)
                 {
-                    if (NowMs - connectStart >= 10000) BecomeDisconnected("no answer");
+                    if (NowMs - connectStart >= 10000)
+                    {
+                        Say("no answer after 10 s: " + requestsSent + " connect request(s) sent to " + remote + ", " + heardWhileConnecting +
+                            " packet(s) received" + (heardWhileConnecting == 0 ? " (nothing came back)" : " (none was the accept of this request)"));
+                        BecomeDisconnected("no answer");
+                    }
                     else if (NowMs - lastRequest >= 250) SendRequest();
                 }
                 if (state == PeerState.Connected && NowMs - lastReceive >= TimeoutMs) BecomeDisconnected("timed out");

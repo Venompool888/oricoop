@@ -627,7 +627,7 @@ namespace OriCoop
             "lobby.save.note", "\n联机进度会自动保存到你的电脑", "\nCo-op progress is saved on your PC automatically.",
             "lobby.error.timeout", "连接超时", "Connection timed out",
             "lobby.error.noanswer", "服务器没有回应：可能没开，或者连不到它", "The server did not answer: it may be down, or the network does not reach it",   // T-201
-            "lobby.error.noanswer.host", "主机没有回应：对方可能已经关掉房间，或者两边连不通", "The host did not answer: the room may be closed, or the two networks cannot reach each other",
+            "lobby.error.noanswer.host", "已进入主机的 Steam 大厅，但主机的游戏没有回应：请两边都从 Steam 库启动游戏，然后重新邀请", "In the host's Steam lobby, but the host's game did not answer: start the game from the Steam library on both PCs, then invite again",   // T-253: Steam guests only start the handshake once inside the lobby
             "lobby.error.room", "找不到这个房间", "Room not found",
             "lobby.error.full", "房间已满", "Room is full",
             "lobby.error.address", "找不到这个地址", "Cannot find that address",

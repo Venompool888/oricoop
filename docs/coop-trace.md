@@ -68,6 +68,13 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
 - save / scene: save, load, pause/resume, difficulty (with the enemy health multiplier actually in effect),
   scene load/unload, current scene.
 - net: every 1 s RTT, loss, reliable pending/resends, remote scene; connect/disconnect with reason.
+  Steam (T-253): on every disconnect `net steam.handshake reason= host= step=`, where `step` is how far the Steam side
+  got (e.g. `session request held: the guest is not in this PC's lobby member list yet`, `session accepted, no packet
+  received from the guest`, `packets sent to the host, nothing received from it`, `packets both ways`), and the log line
+  `net: Steam: link at disconnect:` with the counts. The handshake itself logs `net: peer: connect request (hello) sent`,
+  `accept (hello answer) received ... after N ms` or `no answer after 10 s: N connect request(s) sent, M packet(s)
+  received`; the Steam side logs `P2P session request from`, `held` / `accepted` / `refused`, and the first packet sent /
+  received with its channel.
 
 ## Merge tool: `tools\merge-coop-logs.py`
 ```

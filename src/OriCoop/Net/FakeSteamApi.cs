@@ -65,6 +65,11 @@ namespace OriCoop.Net
         private bool dropCreate, dropEnter, noSession, autoInvite, invited;
         private readonly bool noOverlay;
         private readonly bool inviteThrows;   // T-218: the invite window throws when it is opened
+        // T-253 (fault no-rerequest): CloseP2PSession on a user whose session was never accepted is final: that user's
+        // later packets are dropped and no new P2PSessionRequested comes. Steam's documentation says a new request
+        // comes for the next packet; the sixth playtest could not show that it does, so the transport must not need it.
+        private readonly bool noRerequest;
+        private readonly HashSet<ulong> refusedForGood = new HashSet<ulong>();
         private long lateMembers, nextInviteScan;
         // T-216: the first CreateLobby / JoinLobby result comes this many ms late (fault late-create:<s> / late-enter:<s>).
         private long lateCreate, lateEnter;
@@ -83,6 +88,7 @@ namespace OriCoop.Net
                 else if (fault == "no-session") noSession = true;
                 else if (fault == "no-overlay") noOverlay = true;
                 else if (fault == "invite-throws") inviteThrows = true;
+                else if (fault == "no-rerequest") noRerequest = true;
                 else if (fault.StartsWith("late-members:", StringComparison.Ordinal))
                     lateMembers = (long)(double.Parse(fault.Substring("late-members:".Length), Invariant) * 1000);
                 else if (fault.StartsWith("late-create:", StringComparison.Ordinal))
@@ -362,6 +368,7 @@ namespace OriCoop.Net
 
         public bool AcceptP2PSession(ulong user)
         {
+            refusedForGood.Remove(user);
             accepted.Add(user);
             WaitingSession session;
             if (waiting.TryGetValue(user, out session))
@@ -374,6 +381,7 @@ namespace OriCoop.Net
 
         public bool CloseP2PSession(ulong user)
         {
+            if (noRerequest && !accepted.Contains(user) && waiting.ContainsKey(user)) refusedForGood.Add(user);
             accepted.Remove(user);
             waiting.Remove(user);
             ready.RemoveAll(packet => packet.Sender == user);
@@ -414,6 +422,7 @@ namespace OriCoop.Net
                 List<Packet> queue = ready;
                 if (!accepted.Contains(sender))
                 {
+                    if (refusedForGood.Contains(sender)) continue;
                     WaitingSession session;
                     if (!waiting.TryGetValue(sender, out session)) waiting.Add(sender, session = new WaitingSession());
                     queue = session.Packets;

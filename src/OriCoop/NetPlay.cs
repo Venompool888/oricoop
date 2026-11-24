@@ -809,9 +809,15 @@ namespace OriCoop
 
         static void OnDisconnected(string reason)
         {
+            Plugin.Log.LogWarning("net: disconnected: " + reason);
+            // T-253: on Steam, say which step of the link the handshake reached (session request, accept, packets each way).
+            if (UsesSteam && s_steam != null)
+            {
+                Plugin.Log.LogInfo("net: Steam: link at disconnect: " + s_steam.HandshakeReport);
+                CoopTrace.Event("net", "steam.handshake", "reason", reason, "host", IsHost, "step", s_steam.HandshakeStep);
+            }
             // T-201: creating a C-server room is a client connection too: while it has no seat yet (still on the menu), a failed
             // connection shows its reason on the host page instead of "preparing" for ever. A held refusal keeps its reason.
-            Plugin.Log.LogWarning("net: disconnected: " + reason);
             if (!s_holdRetry && (!IsHost || (s_factorySession && WaitingForSeat))) Problem = reason;
             EndLostSession(reason);
             ResetSession(IsHost && !s_factorySession);
