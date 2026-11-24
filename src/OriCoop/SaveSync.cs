@@ -62,7 +62,7 @@ namespace OriCoop
                 if (!s_guests.Loaded(seat)) return;
                 SaveWire.ReadLoaded(r); UpdateHostReady();
                 Services.Log.Info("net: guest save loaded; sending full world and progress");
-                SavesHost.Current.SendWorldSnapshot(seat);
+                SavesHost.Current.SendWorldSnapshot(seat);   // also pays off a resync this load queued (T-254)
                 SavesHost.Current.SendProgressSnapshot(seat);
             });
             Services.Net.SessionStarted += Start;
