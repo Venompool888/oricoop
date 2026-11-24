@@ -58,6 +58,15 @@ namespace OriCoop.Net
             this.beforeLeave = beforeLeave; this.afterRemove = afterRemove; this.endError = endError;
         }
 
+        // The selected transport survives peer resets and SessionEnded while online play is still active.
+        internal string ActiveTransport { get; set; }
+        internal string TransportName(Func<string> configured) { return ActiveTransport ?? NormalizeTransport(configured()); }
+        internal static string NormalizeTransport(string transport)
+        {
+            string name = (transport ?? "direct").Trim().ToLowerInvariant();
+            return name == "relay" ? "direct" : name;
+        }
+
         public Dictionary<int, Remote> Remotes { get { return remotes; } }
         public bool Started { get { return started; } }
         public event Action SessionStarted, SessionEnded;
@@ -102,6 +111,12 @@ namespace OriCoop.Net
             }
         }
         public bool SignalLost { get { return context.Connected && SilenceMs >= 1000f; } }
+
+        public bool RemoteInSession(int seat)
+        {
+            Remote remote;
+            return remotes.TryGetValue(seat, out remote) && remote.Hello;
+        }
 
         public bool IsFactoryMessage(byte type) { return context.FactorySession && type >= 176 && type <= 186; }
         public void AssignSeat(int seat) { assignSeat(seat); }

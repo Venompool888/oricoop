@@ -37,6 +37,8 @@ namespace OriCoop
             float m_t0;
             string m_out, m_role, m_tr;
             string m_cserverAddress;
+            int m_reports, m_cancelledReports;
+            bool m_restoreReportChoice, m_originalReportChoice;
             string m_steamFault = "";   // T-216: "drop-create" = the host's first Steam lobby result never comes
 
             void Note(string s) { string l = string.Format("[{0,7:F2}] {1}", Time.realtimeSinceStartup - m_t0, s); m_lines.Add(l); Plugin.Log.LogInfo("TITLEJOIN " + s); }
@@ -52,6 +54,14 @@ namespace OriCoop
                 m_steamFault = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_STEAMFAULT") ?? "";
                 m_out = Environment.GetEnvironmentVariable("ORICOOP_TEST_OUT") ?? Path.Combine(Application.dataPath, "titlejoin.txt");
                 s_tHost = this;
+                // Exercise the real welcome/permission path without sending data from either test player.
+                Authority.CServerLink.BeginEnvironmentReport = delegate(string address, byte[] token)
+                {
+                    m_reports++;
+                    Check(m_tr == "cserver" && address == m_cserverAddress && token != null && token.Length == 16,
+                        "diagnostics: report for the accepted C-server connection");
+                    return delegate { m_cancelledReports++; };
+                };
                 StartCoroutine(Run());
             }
 
@@ -275,6 +285,7 @@ namespace OriCoop
                 List<string> saved = OriCoop.Authority.CServerConfig.Servers;
                 Check(CServerListLabelsMatch() && saved.Count == before + 1 && saved[saved.Count - 1] == m_cserverAddress &&
                     CServerSavedOnDisk(m_cserverAddress), "cserver: Save appends to the persisted list");
+                yield return StartCoroutine(CheckReportPermission(saved.Count - 1));
                 yield return StartCoroutine(DeadServerList());   // T-201: first a saved server that does not answer
                 yield return StartCoroutine(Row(saved.Count - 1, 0.5f));
                 // T-171: the room list = 创建房间 / 加入房间, then the rooms (or one status row).
@@ -282,6 +293,28 @@ namespace OriCoop
                     && OriCoop.Authority.CServerConfig.Address == m_cserverAddress &&
                     OriCoop.Authority.CServerConfig.Configured == m_cserverAddress,
                     "cserver: picking the saved row selects its address and opens the room list (" + Labels + ")");
+            }
+
+            IEnumerator CheckReportPermission(int index)
+            {
+                yield return StartCoroutine(Back(0.4f));
+                yield return StartCoroutine(Row(3, 0.4f));        // Manage servers -> Environment reports
+                yield return StartCoroutine(Row(index, 0.4f));    // select a destination, without authorizing
+                m_originalReportChoice = Authority.CServerConfig.DiagnosticsAllowed(m_cserverAddress);
+                m_restoreReportChoice = true;
+                Check(LastPage == "diagnosticsconsent" && LastLabels[0] == m_cserverAddress &&
+                    HasKey(LastLabels, "diagnostics.device") && HasKey(LastLabels, "diagnostics.network") &&
+                    HasKey(LastLabels, m_originalReportChoice ? "diagnostics.disable" : "diagnostics.allow"),
+                    "diagnostics: review fields and network probes for the selected server before toggling its permission");
+                yield return StartCoroutine(Row(3, 0.4f));
+                Check(Authority.CServerConfig.DiagnosticsAllowed(m_cserverAddress) != m_originalReportChoice,
+                    "diagnostics: the player's selection changes this destination's permission");
+                if (Authority.CServerConfig.DiagnosticsAllowed(m_cserverAddress) != (m_role == "join"))
+                    yield return StartCoroutine(Row(3, 0.4f));
+                yield return StartCoroutine(Back(0.4f));         // saved servers' permission list
+                yield return StartCoroutine(Back(0.4f));         // management
+                yield return StartCoroutine(Row(2, 0.4f));       // return to ordinary server list
+                Check(CServerListLabelsMatch() && m_reports == 0, "diagnostics: editing permissions and browsing emit no report");
             }
 
             // T-176: before the code is shared, leave the room page through the Esc path (byLeave), or end the session from
@@ -563,6 +596,7 @@ namespace OriCoop
                     "guest: a room that does not exist is refused with its reason (problem '" + NetPlay.Problem + "', " + NetPlay.CurrentPhase + ")");
                 yield return StartCoroutine(TWait(4f));       // v0.2.5 connected again about twice a second here
                 int attempts = OriCoop.Authority.CServerLink.ConnectAttempts - before;
+                Check(m_reports == 0, "diagnostics: a refused join emits no report even with permission");
                 Check(attempts == 1 && NetPlay.RetryHeld, "guest: the refused join is not retried by itself (" + attempts + " connection(s) in 4 s)");
                 string reason = LastTooltip;
                 Check(LastPage == "joining" && LastLabels.Count == 2 && HasKey(LastLabels, "common.retry") && HasKey(LastLabels, "common.back")
@@ -840,7 +874,7 @@ namespace OriCoop
                 Shot("room_list");
             }
 
-            // T-171: the 房间管理页 with both players: the other PC's player appears, local seats say (你), nobody is 房主.
+            // Both players appear; the local seat and the current room owner are marked.
             IEnumerator CsRoomPageChecks(int otherSeat)
             {
                 float wait = Time.realtimeSinceStartup + 120f;
@@ -848,12 +882,18 @@ namespace OriCoop
                     && OriCoop.Authority.CServerLink.Client.SeatOnlineNow(otherSeat)))
                     yield return null;
                 Check(CsRoomPage.IsOpen, m_role + ": 房间管理页 open on the C-server (" + Labels + ")");
+                Check(m_reports == (m_role == "join" ? 1 : 0), "diagnostics: only the opted-in player starts one report on joining");
+                if (m_role == "join")
+                    Check(Authority.CServerConfig.SetDiagnosticsAllowed(m_cserverAddress, false) && m_cancelledReports == m_reports,
+                        "diagnostics: revoking permission cancels the active join report");
                 yield return StartCoroutine(TWait(2f));   // the other PC's lobby state (ping, room save) arrives every 2 s
                 Ui.CsRoomModel m = CsRoomPage.Model;
                 int mine = Players.LocalSeat;
                 Ui.CsRoomRow own = m.Row(mine), other = m.Row(otherSeat);
                 Check(!other.Empty && !other.Name.Contains(L10n.T("csroom.you")) && own.Name.EndsWith(L10n.T("csroom.you")),
                     m_role + ": room page rows: own P" + mine + " '" + own.Name + "', other P" + otherSeat + " '" + other.Name + "'");
+                Check(m.Row(1).Role == L10n.T("roles.host.cs") && m.Row(2).Role == L10n.T("roles.client.cs"),
+                    m_role + ": the room page marks the owner and member");
                 Check(m.Row(3).Empty && m.Row(4).Empty && m.Row(3).Name == L10n.T("csroom.waiting_player"),
                     m_role + ": empty seats wait for a player ('" + m.Row(3).Name + "')");
                 Check(own.Ping.EndsWith(" ms"), m_role + ": own ping shown (" + own.Ping + ")");
@@ -1008,6 +1048,8 @@ namespace OriCoop
             {
                 if (m_finished) return;
                 m_finished = true;
+                if (m_restoreReportChoice) Authority.CServerConfig.SetDiagnosticsAllowed(m_cserverAddress, m_originalReportChoice);
+                if (m_tr != "cserver") Check(m_reports == 0, "diagnostics: other transports emit no report");
                 Note("RESULT " + (m_fails == 0 && m_checks > 0 ? "PASS" : "FAIL") + " " + (m_checks - m_fails) + "/" + m_checks);
                 try { File.WriteAllText(m_out, string.Join("\n", m_lines.ToArray()) + "\n"); } catch (Exception e) { Plugin.Log.LogError(e); }
                 if (NetPlay.Enabled) NetPlay.End("title join test done");

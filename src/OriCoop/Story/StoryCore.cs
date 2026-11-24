@@ -4,6 +4,23 @@ using System.IO;
 
 namespace OriCoop.Story
 {
+    internal sealed class SpiritWellActivations
+    {
+        readonly HashSet<string> opened = new HashSet<string>();
+        public bool TryActivate(string key) { return opened.Add(key); }
+        public void Clear() { opened.Clear(); }
+        public void Write(BinaryWriter w)
+        {
+            w.Write(opened.Count);
+            foreach (string key in opened) w.Write(key);
+        }
+        public void Merge(BinaryReader r)
+        {
+            int count = r.ReadInt32();
+            for (int i = 0; i < count; i++) opened.Add(r.ReadString());
+        }
+    }
+
     internal struct StoryPoint
     {
         public float X, Y, Z;
@@ -193,11 +210,12 @@ namespace OriCoop.Story
         public byte[] Scene, Id;
         public string Path = "", State = "";
         public float X, Y, Z;
-        public bool Classified = true;
+        public bool Classified = true, WellActivation;
     }
 
     internal static class StoryWire
     {
+        const byte Classified = 1, WellActivation = 2;
         public static byte[] ReadId(BinaryReader r)
         {
             byte[] id = new byte[16];
@@ -207,7 +225,8 @@ namespace OriCoop.Story
         public static void WriteStart(BinaryWriter w, StoryStart s)
         {
             w.Write(s.Token); w.Write(s.Kind); w.Write(s.Scene); w.Write(s.Id);
-            w.Write(s.Path); w.Write(s.State); w.Write(s.X); w.Write(s.Y); w.Write(s.Z); w.Write(s.Classified);
+            w.Write(s.Path); w.Write(s.State); w.Write(s.X); w.Write(s.Y); w.Write(s.Z);
+            w.Write((byte)((s.Classified ? Classified : 0) | (s.WellActivation ? WellActivation : 0)));
         }
         public static StoryStart ReadStart(BinaryReader r)
         {
@@ -215,7 +234,9 @@ namespace OriCoop.Story
             s.Token = r.ReadUInt32(); s.Kind = r.ReadByte(); s.Scene = ReadId(r); s.Id = ReadId(r);
             s.Path = r.ReadString(); s.State = r.ReadString();
             s.X = r.ReadSingle(); s.Y = r.ReadSingle(); s.Z = r.ReadSingle();
-            s.Classified = r.BaseStream.Position >= r.BaseStream.Length || r.ReadBoolean();
+            byte flags = r.BaseStream.Position < r.BaseStream.Length ? r.ReadByte() : Classified;
+            s.Classified = (flags & Classified) != 0;
+            s.WellActivation = (flags & WellActivation) != 0;
             if (s.Kind > 1 || s.Path.Length > 4096 || s.State.Length > 4096
                 || float.IsNaN(s.X) || float.IsInfinity(s.X) || float.IsNaN(s.Y) || float.IsInfinity(s.Y)
                 || float.IsNaN(s.Z) || float.IsInfinity(s.Z)) throw new InvalidDataException("invalid StoryStart");
@@ -232,11 +253,78 @@ namespace OriCoop.Story
         public int Sender;
         public float Began, NextResolve, EndAt = -1f, NextSceneLoad;
         public int SceneLoads;
-        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
+        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true, WellActivation;
         public bool TripWait;   // T-185: its mirror start waits for this PC's own scene trip (SceneTripRule)
+        public bool StartSent;   // T-212 (4): its start went out to the partners, so its end is owed to them
+        public bool EndedEarly;  // T-212 (5): the sender's end arrived before the mirror could start here
+        public bool Started;     // its mirror really started on this PC (or failed half-way): never started late again
+    }
+    // The engine has one LockInputByAction flag, but several scripts can hold it independently.
+    internal sealed class SequenceInputLocks<TSequence, TAction> where TSequence : class where TAction : class
+    {
+        readonly HashSet<TSequence> manual = new HashSet<TSequence>();
+        readonly Dictionary<TAction, TSequence> timed = new Dictionary<TAction, TSequence>();
+        bool nativeLock;
+        public bool Any { get { return manual.Count != 0 || timed.Count != 0; } }
+        bool Locked { get { return Any || nativeLock; } }
+
+        public void LockManual(TSequence sequence, bool wasLocked)
+        {
+            if (!Any) nativeLock = wasLocked;
+            manual.Add(sequence);
+        }
+        public void LockTimed(TSequence sequence, TAction action, bool wasLocked)
+        {
+            if (!Any) nativeLock = wasLocked;
+            timed[action] = sequence;
+        }
+        public bool UnlockManual(TSequence sequence)
+        {
+            // An unlock without a matching owner also ends a native lock handed across a scene trip.
+            if (!manual.Remove(sequence)) nativeLock = false;
+            return Locked;
+        }
+        public bool EndTimed(TAction action)
+        {
+            timed.Remove(action);
+            return Locked;
+        }
+        public bool TimerRunning(Predicate<TAction> running)
+        {
+            foreach (TAction action in timed.Keys) if (running(action)) return true;
+            return false;
+        }
+        public bool HandOffManual(TSequence sequence, TSequence next)
+        {
+            if (!manual.Remove(sequence)) return false;
+            manual.Add(next);
+            return true;
+        }
+        public bool? End(TSequence sequence, TSequence next, bool sceneTrip, Action<TAction> stopTimer)
+        {
+            bool released = next != null ? HandOffManual(sequence, next) : manual.Remove(sequence);
+            if (released && next == null && sceneTrip) nativeLock = true;
+            List<TAction> stop = null;
+            foreach (KeyValuePair<TAction, TSequence> item in timed)
+            {
+                if (!EqualityComparer<TSequence>.Default.Equals(item.Value, sequence)) continue;
+                if (stop == null) stop = new List<TAction>();
+                stop.Add(item.Key);
+            }
+            if (stop != null)
+            {
+                foreach (TAction action in stop) { timed.Remove(action); stopTimer(action); }
+                released = true;
+            }
+            return released ? (bool?)Locked : null;
+        }
+        public void Clear() { manual.Clear(); timed.Clear(); nativeLock = false; }
     }
 
     internal enum StoryResolution { Retry, Drop, Watch }
+    // T-212 (3): what is cleaned up when a mirrored story ends. All: everything the mirrors changed (the last one
+    // ended). StoryOnly: other mirrors still run, so only the ended story's own script is stopped.
+    internal enum StoryCleanup { All, StoryOnly }
 
     internal sealed class StoryLedger<T> where T : StoryEntry
     {
@@ -276,13 +364,23 @@ namespace OriCoop.Story
         public void EndLocal(ulong key) { Local.Remove(key); Accepted.Remove(key); }
         public void Skip(T item) { item.Skipped = true; }
         public int LiveRemotes
-        { get { int count = 0; foreach (T item in Remote.Values) if (item.EndAt < 0) count++; return count; } }
+        { get { int count = 0; foreach (T item in Remote.Values) if (item.EndAt < 0 && !item.EndedEarly) count++; return count; } }
         public bool Watching
         {
             // T-185: a start that only waits for this PC's own scene trip is not "watching" (own Ori stays as the
-            // trip leaves it; natively nothing hides it there).
-            get { foreach (T item in Remote.Values) if ((!item.Resolved && item.Classified && !item.TripWait) || item.Watch) return true; return false; }
+            // trip leaves it; natively nothing hides it there). T-212 (5): nor is one whose sender has already ended it.
+            get { foreach (T item in Remote.Values) if ((!item.Resolved && item.Classified && !item.TripWait && !item.EndedEarly) || item.Watch) return true; return false; }
         }
+        // T-212 (5): the sender's end arrived before the mirror could start here (this PC was in a scene trip, or the
+        // story's scene was still loading). The story used to be dropped: the sender had played it, this PC never did.
+        // The entry is kept for LateStart seconds so the usual retries can still start the mirror; it is over for the
+        // sender, so it neither hides this PC's Ori ("watching") nor blocks this PC's own stories.
+        public const float LateStart = 8f;
+        // Review finding 4: a story given up on after 2 s ("watching": Resolved + Watch, no mirror) is kept as well when
+        // its end arrives; it was removed and never played although its scene became ready within the 8 s. Not kept:
+        // one whose mirror started (Started), one this PC plays itself (Resolved without Watch).
+        public static bool KeepForLateStart(T item, float now)
+        { return !item.Started && (!item.Resolved || item.Watch) && now - item.Began < LateStart; }
         static List<ulong> SeatTokens(Dictionary<ulong, T> items, int seat)
         {
             List<ulong> result = new List<ulong>();
@@ -311,6 +409,8 @@ namespace OriCoop.Story
         }
         public static StoryResolution Resolution(T item, float now, bool off)
         {
+            // T-212 (5): already over for its sender: keep trying to start it, then drop it (there is nothing to watch).
+            if (item.EndedEarly) return now - item.Began >= LateStart ? StoryResolution.Drop : StoryResolution.Retry;
             if (now - item.Began >= 2f) return !item.Classified && !off ? StoryResolution.Drop : StoryResolution.Watch;
             return StoryResolution.Retry;
         }
@@ -324,6 +424,18 @@ namespace OriCoop.Story
         // index: the last action the sequence has run (ActionSequence.Index); lastTakeover: the index of its last
         // takeover action (-1: none).
         public static bool TakeoverAhead(bool running, int index, int lastTakeover) { return running && index < lastTakeover; }
+        // T-212 (4): the end of a story is sent whenever its start was. Before, a "local only" window that opened later
+        // on the sender (a partner's lever pull or ability pedestal) swallowed the end, and partners already watching
+        // stayed hidden / locked until the 60 s timeout.
+        public static bool EndOwed(T item, bool localOnlyNow) { return item.StartSent || !localOnlyNow; }
+        // T-207 (2): a partner's story start arrives while this PC is inside a lever / pedestal "local only" window.
+        // It is mirrored unless this PC plays that very story itself: playedByOwnReplay (its sequence / controller was
+        // started by this PC's own lever or pedestal replay) or startedHereInWindow (natively here, inside the window,
+        // moments ago). Before, the window dropped every start.
+        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow, bool wellActivation = false)
+        { return wellActivation || !playedByOwnReplay && !startedHereInWindow; }
+        // remaining: mirrored stories still tracked after the ended one was removed.
+        public static StoryCleanup Cleanup(int remaining) { return remaining <= 0 ? StoryCleanup.All : StoryCleanup.StoryOnly; }
         public static bool RemoteFinished(T item, bool running, float now)
         { return now - item.Began >= 60f || item.EndAt >= 0 && (!running || now - item.EndAt >= 10f); }
     }

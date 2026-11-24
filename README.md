@@ -48,6 +48,8 @@ OriCoop 给单人游戏《奥日与黑暗森林：终极版》加上合作模式
   然后用房间码创建或加入。
 - **Steam 好友**：两边都要通过 Steam 启动游戏。
 
+自建服务器可接收用于兼容性排查的环境报告。玩家可以在「自建服务器 → 服务器管理 → 环境诊断」选择一个地址，查看字段并选择「允许上报」，随时可以在同处关闭。首次使用时默认关闭。成功加入已授权且支持诊断的服务器后，客户端通过 HTTPS 发送一份报告，包含系统版本与架构、系统和游戏语言、时区、游戏与存档所在卷的格式与剩余空间区间，以及公网出口 IP 探测结果。探测先访问 ipify，必要时再访问 icanhazip。探测站点会看到请求的来源 IP。探测失败时，报告记录失败状态，玩家照常加入。
+
 ### 自己编译
 
 需要：Windows、你自己的游戏副本、BepInEx 5（装进这个游戏副本）、Windows 自带的 .NET Framework 4.x 编译器
@@ -111,6 +113,8 @@ OriCoop adds co-op to the single-player game *Ori and the Blind Forest: Definiti
   [oricoop-server](https://github.com/Venompool888/oricoop-server), UDP 47022 by default), add it in the game under
   Your Own Server → Manage servers, then host or join with a room code.
 - **Steam friends**: both players start the game through Steam.
+
+Self-hosted servers can receive optional compatibility reports. Under **Manage servers → Environment reports**, choose a saved address to review the fields and allow or turn off reporting. Permission starts off for each server. After a successful join to an enabled, supported server, the client sends one HTTPS report containing OS version and architecture, system and game language, time zone, game/save volume formats and free-space bands, and the public IP probe result. The probe contacts ipify first and icanhazip as a fallback. Each contacted provider sees the request's source IP. A failed probe is recorded as a status and joining continues normally.
 
 ### Build
 

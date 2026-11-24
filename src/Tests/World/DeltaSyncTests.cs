@@ -48,6 +48,39 @@ static class DeltaSyncTests
         }
     }
 
+    // T-214: one map area with the given cells (face id -> WorldMapAreaState), no icons.
+    static byte[] MapStates(int[] faces, int[] levels)
+    {
+        using (MemoryStream m = new MemoryStream())
+        using (BinaryWriter w = new BinaryWriter(m))
+        {
+            w.Write(1);
+            w.Write(faces.Length); for (int i = 0; i < faces.Length; i++) { w.Write(faces[i]); w.Write(levels[i]); }
+            w.Write(0);
+            w.Write(0); w.Write(0);
+            w.Flush(); return m.ToArray();
+        }
+    }
+    // Items of that area: Cells(face, level, face, level, ...).
+    static SortedDictionary<string, byte[]> Cells(params int[] faceLevel)
+    {
+        SortedDictionary<string, byte[]> items = new SortedDictionary<string, byte[]>(StringComparer.Ordinal);
+        for (int i = 0; i + 1 < faceLevel.Length; i += 2) items["a0.s" + faceLevel[i]] = BitConverter.GetBytes(faceLevel[i + 1]);
+        return items;
+    }
+    static int Level(IDictionary<string, byte[]> items, int face)
+    {
+        byte[] value;
+        return items.TryGetValue("a0.s" + face, out value) ? BitConverter.ToInt32(value, 0) : -1;
+    }
+    sealed class OneObject : IWorldDeltaGame
+    {
+        public byte[] Bytes;
+        public bool TryRead(byte[] scene, byte[] id, out byte[] bytes) { bytes = Bytes; return Bytes != null; }
+        public void Write(byte[] scene, byte[] id, byte schema, string type, byte[] bytes) { Bytes = bytes; }
+        public void NeedResync(string why) { }
+    }
+
     static readonly byte[] Scene = new byte[16], Obj = Guid(200);
     const byte Ctl = WorldItems.SchemaController;
 
@@ -227,6 +260,7 @@ static class DeltaSyncTests
         Run = run;
         if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_WHOLE_BLOB") == "1") DeltaObject.MutateWholeBlob = true;
         if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SHARE_TRIGGERS") == "1") WorldItems.MutateShareTriggers = true;
+        if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_MAP_DOWNGRADE") == "1") WorldItems.MutateMapDowngrade = true;
 
         // ----- item split / rebuild -----
         Run("controller items: compose(template, decompose(template)) is byte-identical", delegate {
@@ -264,6 +298,76 @@ static class DeltaSyncTests
             Check(ops.Count == 0, "un-revealing an icon proposed " + ops.Count + " ops");
             SortedDictionary<string, byte[]> after = o.OnCommitted(false, 1, new List<ItemOp> { new ItemOp("r:" + Hex(Guid(31)), null) }, WorldItems.Decompose(WorldItems.SchemaMap, m));
             Check(after == null && o.Confirmed.ContainsKey("r:" + Hex(Guid(31))), "a removal of a revealed icon was applied");
+        });
+        // ----- T-214: map exploration (area states "a<i>.s<face>": Hidden 0 < Discovered 1 < Visited 2) only grows -----
+        Run("T-214 map: a late batch with a lower level, or a removal, does not take an explored cell back", delegate {
+            DeltaObject o = new DeltaObject(Cells(5, 2));
+            SortedDictionary<string, byte[]> shown = o.OnCommitted(false, 1, new List<ItemOp> { new ItemOp("a0.s5", BitConverter.GetBytes(1)) }, Cells(5, 2));
+            Check(shown == null && Level(o.Confirmed, 5) == 2, "a partner's older 'discovered' lowered a visited cell: shown "
+                + (shown == null ? "unchanged" : Dump(shown)) + ", agreed " + Level(o.Confirmed, 5));
+            shown = o.OnCommitted(false, 2, new List<ItemOp> { new ItemOp("a0.s5", null) }, Cells(5, 2));
+            Check(shown == null && Level(o.Confirmed, 5) == 2, "a removal hid a visited cell: agreed " + Level(o.Confirmed, 5));
+        });
+        Run("T-214 map: every PC ends with the highest level, whatever order the batches are in", delegate {
+            foreach (int[] order in new int[][] { new int[] { 2, 1 }, new int[] { 1, 2 } })
+            {
+                DeltaObject o = new DeltaObject(Cells());
+                SortedDictionary<string, byte[]> live = Cells();
+                uint id = 0;
+                foreach (int level in order)
+                {
+                    SortedDictionary<string, byte[]> shown = o.OnCommitted(false, ++id, new List<ItemOp> { new ItemOp("a0.s5", BitConverter.GetBytes(level)) }, live);
+                    if (shown != null) live = shown;
+                }
+                Check(Level(live, 5) == 2 && Level(o.Confirmed, 5) == 2, "order " + order[0] + "," + order[1] + ": shown " + Level(live, 5) + ", agreed " + Level(o.Confirmed, 5));
+            }
+        });
+        Run("T-214 map: a partner's higher level reaches a cell this PC raised itself and has not proposed, or not got back, yet", delegate {
+            List<ItemOp> visited = new List<ItemOp> { new ItemOp("a0.s5", BitConverter.GetBytes(2)) };
+            // Discovered here a moment ago (not proposed yet); the partner walked through it.
+            DeltaObject o = new DeltaObject(Cells());
+            SortedDictionary<string, byte[]> live = Cells(5, 1);
+            SortedDictionary<string, byte[]> shown = o.OnCommitted(false, 1, visited, live);
+            Check(shown != null && Level(shown, 5) == 2, "not proposed yet: the partner's 'visited' is not shown here: " + (shown == null ? "unchanged" : Dump(shown)));
+            Check(o.LocalChanges(shown ?? live).Count == 0, "the agreed 'visited' leaves nothing to propose: " + o.LocalChanges(shown ?? live).Count + " ops");
+            // The same with my 'discovered' already on its way to the arbiter.
+            o = new DeltaObject(Cells()); live = Cells(5, 1);
+            o.AddPending(7, o.LocalChanges(live));
+            shown = o.OnCommitted(false, 1, visited, live);
+            Check(shown != null && Level(shown, 5) == 2, "pending: the partner's 'visited' is not shown here: " + (shown == null ? "unchanged" : Dump(shown)));
+            SortedDictionary<string, byte[]> back = o.OnCommitted(true, 7, new List<ItemOp> { new ItemOp("a0.s5", BitConverter.GetBytes(1)) }, shown ?? live);
+            Check(back == null && Level(o.Confirmed, 5) == 2, "my older 'discovered' coming back lowered the cell: agreed " + Level(o.Confirmed, 5));
+            // The other way round: my unproposed 'visited' stays and is still proposed after a partner's 'discovered'.
+            o = new DeltaObject(Cells()); live = Cells(5, 2);
+            shown = o.OnCommitted(false, 1, new List<ItemOp> { new ItemOp("a0.s5", BitConverter.GetBytes(1)) }, live);
+            List<ItemOp> ops = o.LocalChanges(shown ?? live);
+            Check(shown == null && ops.Count == 1 && BitConverter.ToInt32(ops[0].Value, 0) == 2, "my unproposed 'visited' was lost: " + ops.Count + " ops");
+        });
+        Run("T-214 map: a full snapshot keeps a cell this PC explored but has not proposed yet, and the next scan proposes it", delegate {
+            DeltaObject o = new DeltaObject(Cells(3, 1));
+            SortedDictionary<string, byte[]> live = Cells(3, 1, 5, 2);              // walked through cell 5 while the snapshot was on its way
+            SortedDictionary<string, byte[]> shown = o.Reset(Cells(3, 1), live);
+            Check(Level(shown, 5) == 2, "the snapshot took the unproposed cell back: {" + Dump(shown) + "}");
+            List<ItemOp> ops = o.LocalChanges(shown);
+            Check(ops.Count == 1 && ops[0].Key == "a0.s5" && BitConverter.ToInt32(ops[0].Value, 0) == 2, "the kept cell is not proposed: " + ops.Count + " ops");
+        });
+        Run("T-214 map: a checkpoint rollback still lowers the map (this PC loaded the checkpoint, the snapshot agrees)", delegate {
+            DeltaObject o = new DeltaObject(Cells(3, 1, 5, 2));                     // agreed before the rollback
+            SortedDictionary<string, byte[]> live = Cells(3, 1);                    // this PC's own checkpoint load put the map back
+            Check(o.LocalChanges(live).Count == 0, "the rolled-back cell was proposed as a change: " + o.LocalChanges(live).Count + " ops");
+            SortedDictionary<string, byte[]> shown = o.Reset(Cells(3, 1), live);
+            Check(!shown.ContainsKey("a0.s5") && !o.Confirmed.ContainsKey("a0.s5"), "the rolled-back cell came back: {" + Dump(shown) + "}");
+        });
+        Run("T-214 map: a snapshot object is merged with the live map of this PC (WorldDeltaPeer.SnapshotObject)", delegate {
+            OneObject game = new OneObject { Bytes = MapStates(new int[] { 3, 5 }, new int[] { 1, 2 }) };
+            WorldDeltaPeer peer = new WorldDeltaPeer(delegate { return null; }, game);
+            foreach (string pass in new string[] { "first sight", "known object" })
+            {
+                byte[] applied = peer.SnapshotObject(Scene, Obj, WorldItems.SchemaMap, MapStates(new int[] { 3, 9 }, new int[] { 2, 1 }));
+                SortedDictionary<string, byte[]> items = WorldItems.Decompose(WorldItems.SchemaMap, applied);
+                Check(Level(items, 5) == 2 && Level(items, 3) == 2 && Level(items, 9) == 1,
+                    pass + ": cells 3/5/9 = " + Level(items, 3) + "/" + Level(items, 5) + "/" + Level(items, 9) + ", want 2/2/1");
+            }
         });
         Run("batch wire form round-trips (removal and value ops)", delegate {
             DeltaBatch b = new DeltaBatch { Id = 77, Scene = Guid(1), Object = Guid(2), Schema = Ctl, Type = "GameController",

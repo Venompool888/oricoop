@@ -1,5 +1,6 @@
 using System;
 using System.IO;
+using System.Reflection;
 using Game;
 using HarmonyLib;
 using UnityEngine;
@@ -12,7 +13,8 @@ namespace OriCoop
     // T-041 (#15, rules in docs\tickets\T-041.md), on top of T-043 room saves:
     // - The latest soul link is the room's latest save point: any player's soul link, spirit well or skill purchase
     //   that became the room's save (a guest's through its SaveOffer, adopted by the host). The host tells everyone
-    //   where it is (msg 69 RoomLink); a guest tells the host where the save point it offers is (same message).
+    //   where it is and which native flame the checkpoint contains (msg 69 RoomLink). A guest sends the same
+    //   information for the save it offers. Each device has just one flame, owned by the primary Ori.
     // - A downed player holds Y (pad) / Q (keyboard) for 2 s to revive at the latest soul link, alone: the world does not
     //   reload and the others keep playing. Health: the creator's health right after saving if the link was made while
     //   this player was down, otherwise full. Energy is not touched. No skill rollback (that is only the team wipe's).
@@ -40,11 +42,22 @@ namespace OriCoop
         static readonly SavePointState s_point = new SavePointState();
         static Vector3 s_linkPos;
         static int s_linkSeat;
+        static readonly FieldInfo s_nativeFlame = AccessTools.Field(typeof(SeinSoulFlame), "m_soulFlame");
+        static readonly FieldInfo s_nativeScene = AccessTools.Field(typeof(SeinSoulFlame), "m_sceneCheckpoint");
+        static readonly bool s_mutateDropPendingLink = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_DROP_PENDING_LINK") == "1";
+        static int s_nativeLinkTries;
+        internal static bool RoomFlamePending { get; private set; }
+        internal static int TestFailRoomFlameApplies;
+        static bool s_usingSharedFlame;
         static SeinCharacter s_caster;       // inside SeinSoulFlame.CastSoulFlame: the Ori making the soul link
         static bool s_charged;               // the death-save cost was taken for this cast
         // Host: where each guest device's offered save point is (msg 69 from that guest, just before its SaveOffer).
-        static readonly ReviveWire.Link[] s_offered = new ReviveWire.Link[ReviveLogic.MaxSeats + 1];
-        static readonly bool[] s_haveOffered = new bool[ReviveLogic.MaxSeats + 1];
+        // T-215 #6: one spot serves one offer (Rules.OfferedSpots).
+        static readonly OfferedSpots s_offers = new OfferedSpots(ReviveLogic.MaxSeats);
+        // T-215 planted bugs. #6: a guest tells its save point's spot only while a teammate's Ori is on its PC, and the
+        // host keeps a used spot for later offers. #7: telling the room's save point again looks like a new soul link.
+        static readonly bool s_mutateStaleOfferSpot = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STALE_OFFER_SPOT") == "1";
+        static readonly bool s_mutateResendAsNew = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_RESEND_AS_NEW") == "1";
         static readonly GameText[] s_selfHint = new GameText[ReviveLogic.MaxSeats + 1];
         static bool s_linkRegistered;
 
@@ -63,7 +76,17 @@ namespace OriCoop
         public static int TeammateArrivals;
         public static bool FirstArrivalHadPoint, FirstArrivalFromCheckpoint;
         // Test hook: forget the room's save point, as at the start of a session (this PC's own checkpoint stays).
-        internal static void TestForgetRoomSave() { s_point.SessionEnded(); s_lastLinkHealth = 0f; }
+        internal static void TestForgetRoomSave() { s_point.SessionEnded(); RoomFlamePending = false; }
+        // Test hook (T-215 #2): this PC's downed Ori completes its hold right now (the "I'm back" of a hold that began
+        // two seconds earlier, as the host receives it just after someone else's "I'm down").
+        internal static bool TestSelfReviveNow(int seat)
+        {
+            Downed d = seat >= 1 && seat <= ReviveLogic.MaxSeats ? s_down[seat] : null;
+            if (d == null || d.Remote || d.Sein == null || !s_point.Have) return false;
+            HideSelfHint(seat);
+            ReviveAtLink(d);
+            return true;
+        }
 
         // From Plugin start-up: the room link message, and the checkpoint restore that loading a game runs (the host's
         // first latest link) happens before any co-op tick.
@@ -78,6 +101,7 @@ namespace OriCoop
             if (s_linkRegistered) return;
             s_linkRegistered = true;
             Services.Net.On(MsgRoomLink, OnNetRoomLink);
+            Services.Net.PlayerLeft += delegate(int seat) { ReviveWire.Link ignored; s_offers.Take(seat, out ignored); };
             Services.Net.SessionEnded += ResetLinkState;
         }
 
@@ -85,7 +109,18 @@ namespace OriCoop
         [HarmonyPatch(typeof(SeinSoulFlame), "CastSoulFlame")]
         static class SoulLinkCast
         {
-            static void Prefix(SeinCharacter ___m_sein) { s_caster = ___m_sein; s_charged = false; }
+            static void Prefix(SeinSoulFlame __instance, SeinCharacter ___m_sein, ref GameObject ___m_checkpointMarkerGameObject,
+                ref SoulFlame ___m_soulFlame)
+            {
+                s_caster = ___m_sein; s_charged = false;
+                if (SharedFlameFor(s_caster) != null)
+                {
+                    // The extra may be borrowing the marker for its update. The new cast replaces it on the primary.
+                    ___m_checkpointMarkerGameObject = null;
+                    ___m_soulFlame = null;
+                }
+                else if (s_caster == Host.P1 && (Local || Online)) RemoveNativeFlame(__instance);
+            }
             static void Finalizer() { s_caster = null; }
         }
 
@@ -96,6 +131,122 @@ namespace OriCoop
             if (s == Host.P1) return true;
             Puppet p = Players.OfSein(s);
             return p != null && (p.IsLocal || !Services.Net.Enabled);
+        }
+
+        static SeinSoulFlame SharedFlameFor(SeinCharacter extra)
+        {
+            return Host.P1 != null && extra != Host.P1 && PlayedHere(extra) ? Host.P1.SoulFlame : null;
+        }
+
+        [HarmonyPatch(typeof(SeinSoulFlame), "SpawnSoulFlame")]
+        static class CastOnPrimary
+        {
+            static bool Prefix(SeinCharacter ___m_sein, ref MoonGuid ___m_sceneCheckpoint, Vector3 position)
+            {
+                if (s_caster == null || s_caster != ___m_sein) return true;
+                SceneRoot scene = Core.Scenes.Manager.FindLoadedSceneRootFromPosition(position);
+                if (scene != null) ___m_sceneCheckpoint = new MoonGuid(scene.MetaData.SceneMoonGuid);
+                SeinSoulFlame shared = SharedFlameFor(s_caster);
+                if (shared == null) return true;
+                PlaceNativeFlame(shared, position, new MoonGuid(___m_sceneCheckpoint));
+                return false;
+            }
+        }
+
+        // An extra uses the one marker for the native update (including Rekindle), but never owns it.
+        [HarmonyPatch(typeof(SeinSoulFlame), "UpdateCharacterState")]
+        static class UseSharedFlame
+        {
+            static void Prefix(SeinCharacter ___m_sein, ref SoulFlame ___m_soulFlame, ref GameObject ___m_checkpointMarkerGameObject,
+                ref MoonGuid ___m_sceneCheckpoint, out MoonGuid __state)
+            {
+                __state = null;
+                SeinSoulFlame shared = SharedFlameFor(___m_sein);
+                if (shared == null) return;
+                __state = ___m_sceneCheckpoint;
+                ___m_sceneCheckpoint = (MoonGuid)s_nativeScene.GetValue(shared);
+                ___m_soulFlame = (SoulFlame)s_nativeFlame.GetValue(shared);
+                ___m_checkpointMarkerGameObject = ___m_soulFlame != null ? ___m_soulFlame.gameObject : null;
+                s_usingSharedFlame = true;
+            }
+            static void Finalizer(MoonGuid __state, ref SoulFlame ___m_soulFlame, ref GameObject ___m_checkpointMarkerGameObject,
+                ref MoonGuid ___m_sceneCheckpoint)
+            {
+                if (object.ReferenceEquals(__state, null)) return;   // MoonGuid's == returns false for nulls.
+                ___m_soulFlame = null;
+                ___m_checkpointMarkerGameObject = null;
+                ___m_sceneCheckpoint = __state;
+                s_usingSharedFlame = false;
+            }
+        }
+
+        [HarmonyPatch(typeof(SeinSoulFlame), "get_InsideCheckpointMarker")]
+        static class InsideSharedFlame
+        {
+            static void Postfix(SeinCharacter ___m_sein, ref bool __result)
+            {
+                SeinSoulFlame shared = SharedFlameFor(___m_sein);
+                if (shared == null) return;
+                // SoulFlame.FixedUpdate measures the primary Ori. Check the extra against the same marker instead.
+                SoulFlame marker = (SoulFlame)s_nativeFlame.GetValue(shared);
+                __result = marker != null && marker.gameObject.activeInHierarchy
+                    && Vector3.Distance(___m_sein.Position, marker.Position) < marker.EnterRadius;
+            }
+        }
+
+        static void RemoveNativeFlame(SeinSoulFlame flame)
+        {
+            SoulFlame marker = (SoulFlame)s_nativeFlame.GetValue(flame);
+            if (marker == null) return;
+            marker.gameObject.SetActive(false);
+            flame.DestroySoulFlame();
+        }
+
+        static void PlaceNativeFlame(SeinSoulFlame flame, Vector3 at, MoonGuid scene)
+        {
+            RemoveNativeFlame(flame);
+            s_nativeScene.SetValue(flame, scene);
+            flame.SpawnSoulFlame(at);
+        }
+
+        static ReviveWire.Marker? NativeMarker(SeinSoulFlame flame)
+        {
+            if (flame == null || !flame.SoulFlameExists) return null;
+            Vector3 at = flame.SoulFlamePosition;
+            MoonGuid scene = (MoonGuid)s_nativeScene.GetValue(flame);
+            return new ReviveWire.Marker { X = at.x, Y = at.y, Z = at.z, Scene = new Guid(scene.ToByteArray()) };
+        }
+
+        internal static void TickRoomFlame()
+        {
+            if (!RoomFlamePending) return;
+            if (NetPlay.TestLoading || !NetPlay.LocalInGameplay() || OwnOri.SoulFlame == null)
+            {
+                if (s_mutateDropPendingLink) RoomFlamePending = false;
+                return;
+            }
+            try
+            {
+                if (TestFailRoomFlameApplies > 0) { TestFailRoomFlameApplies--; throw new InvalidOperationException("test: native flame not ready"); }
+                ReviveWire.Link point = s_point.Point;
+                SeinSoulFlame flame = OwnOri.SoulFlame;
+                if (SoulLinkRules.NativeMarkerChanged(point, NativeMarker(flame)))
+                {
+                    if (point.Flame.HasValue)
+                    {
+                        ReviveWire.Marker m = point.Flame.Value;
+                        Vector3 at = new Vector3(m.X, m.Y, m.Z);
+                        PlaceNativeFlame(flame, at, new MoonGuid(m.Scene));
+                        Host.Trace("player", "soullink.native", "pos", at, "scene", m.Scene);
+                    }
+                    else RemoveNativeFlame(flame);
+                }
+                RoomFlamePending = false;
+            }
+            catch (Exception e)
+            {
+                if (++s_nativeLinkTries >= 5) { RoomFlamePending = false; Services.Log.Warn("room flame could not be applied: " + e.Message); }
+            }
         }
 
         [HarmonyPatch(typeof(GameController), "CreateCheckpoint")]
@@ -112,7 +263,7 @@ namespace OriCoop
                 float after = SoulLinkRules.DeathSaveHealth(before);
                 s.Mortality.Health.SetAmount(after);
                 DeathSaves++; LastDeathSaveBefore = before; LastDeathSaveAfter = after;
-                NetHud.Toast(L10n.T("revive.death_save"));
+                NetHud.Toast(L10n.SessionText("revive.death_save"));
                 Services.Log.Info("death save by P" + PlayerOf(s) + ": health " + before.ToString("F1") + " -> " + after.ToString("F1"));
             }
 
@@ -123,7 +274,7 @@ namespace OriCoop
             {
                 try
                 {
-                    SeinCharacter s = s_caster != null ? s_caster : Local && Host.Inside && Host.P2 != null ? Host.P2 : OwnOri;
+                    SeinCharacter s = s_caster != null ? s_caster : (Local || s_usingSharedFlame) && Host.Inside && Host.P2 != null ? Host.P2 : OwnOri;
                     if (s == null || GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen()) return;
                     s_point.NoteCheckpoint(LinkAt(s, s.Mortality.Health.Amount));
                 }
@@ -136,12 +287,10 @@ namespace OriCoop
 
         static ReviveWire.Link LinkAt(SeinCharacter s, float health)
         {
-            ReviveWire.Link l;
             int seat = PlayerOf(s);
-            l.Seat = seat >= 1 && seat <= ReviveLogic.MaxSeats ? seat : Host.LocalSeat;
             Vector3 at = s.Position;
-            l.X = at.x; l.Y = at.y; l.Z = at.z; l.Health = health;
-            return l;
+            return new ReviveWire.Link { Seat = seat >= 1 && seat <= ReviveLogic.MaxSeats ? seat : Host.LocalSeat,
+                X = at.x, Y = at.y, Z = at.z, Health = health, MarkerKnown = true, Flame = NativeMarker(OwnOri.SoulFlame) };
         }
 
         // Back to the title (or a reload through it, which restores a checkpoint afterwards): the checkpoint this PC
@@ -154,52 +303,51 @@ namespace OriCoop
             static void Prefix()
             {
                 s_point.ForgetCheckpoint();
-                if (!Services.Net.Enabled || Services.Net.IsHost) s_point.SessionEnded();
+                if (!Services.Net.Enabled || Services.Net.IsHost) { s_point.SessionEnded(); RoomFlamePending = false; }
             }
         }
 
         // ---- the room's save point ------------------------------------------------------------------------------
+        // Send only alongside a prepared SaveOffer, even if the guest has no teammate's Ori loaded.
+        // Reliable messages from one device arrive in order, so the host has the spot when it handles the offer.
+        internal static void SendLinkOffer()
+        {
+            try
+            {
+                if (s_mutateStaleOfferSpot && !Online) return;
+                if (!s_point.HaveCheckpoint) { Services.Log.Info("room link: guest save without a recorded checkpoint"); return; }
+                RegisterLink();
+                ReviveWire.Link c = s_point.Checkpoint;
+                Services.Net.Send(MsgRoomLink, true, w => ReviveWire.WriteLink(w, c));
+                Services.Log.Info("room link: offering P" + c.Seat + "'s save point at (" + c.X + ", " + c.Y + ") with health " + c.Health.ToString("F1"));
+            }
+            catch (Exception e) { Services.Log.Warn("room link offer: " + e.Message); }
+        }
+
         [HarmonyPatch(typeof(SaveGameController), "PerformSave")]
         static class RoomSaveWatch
         {
-            // A guest's save becomes a SaveOffer (SaveSync.GuestSavePatch). Tell the host where it is first; reliable
-            // messages from one device arrive in order, so the host has it when it adopts the offer.
-            [HarmonyPriority(Priority.First)]
-            static void Prefix()
-            {
-                try
-                {
-                    if (!Online || Services.Net.IsHost) return;
-                    if (!s_point.HaveCheckpoint) { Services.Log.Info("room link: guest save without a recorded checkpoint"); return; }
-                    RegisterLink();
-                    ReviveWire.Link c = s_point.Checkpoint;
-                    // Send, not SendTo: a guest talks only to the host in P2P; in server mode the others ignore it.
-                    Services.Net.Send(MsgRoomLink, true, w => ReviveWire.WriteLink(w, c.Seat, c.X, c.Y, c.Z, c.Health));
-                    Services.Log.Info("room link: offering P" + c.Seat + "'s save point at (" + c.X + ", " + c.Y + ") with health " + c.Health.ToString("F1"));
-                }
-                catch (Exception e) { Services.Log.Warn("room link offer: " + e.Message); }
-            }
-
             static void Postfix(bool __runOriginal)
             {
                 try
                 {
                     if (!__runOriginal) return;   // a guest's suppressed save, or a promoted save that was blocked
                     if (Local) { if (s_point.HaveCheckpoint) ApplyLink(s_point.Checkpoint, "local save"); return; }
-                    if (!Online || !Services.Net.IsHost) return;
+                    // The room tracks its accepted marker even if revive is disabled or a teammate is loading.
+                    bool hosting = s_mutateStaleOfferSpot ? Online : Services.Net.Enabled && Services.Net.Connected;
+                    if (!hosting || !Services.Net.IsHost) return;
                     RegisterLink();
                     int offerer = SaveSync.AdoptingOfferSeat;
                     if (offerer > 0)
                     {
                         if (s_mutateLinkHostOnly) return;
                         ReviveWire.Link l;
-                        if (offerer <= ReviveLogic.MaxSeats && s_haveOffered[offerer]) l = s_offered[offerer];
-                        else
+                        if (!s_offers.Take(offerer, out l, s_mutateStaleOfferSpot))
                         {
-                            // No spot from the guest (older build): its live position is the best we have.
+                            // No spot came with this offer (older build): its live position is the best we have.
                             Vector3 at;
                             if (!Host.RemotePos(offerer, out at)) return;
-                            l.Seat = offerer; l.X = at.x; l.Y = at.y; l.Z = at.z; l.Health = 0f;
+                            l = new ReviveWire.Link { Seat = offerer, X = at.x, Y = at.y, Z = at.z };
                         }
                         // The adopted save is this PC's checkpoint now (LoadFromBytes, no CreateCheckpoint of its own).
                         s_point.NoteCheckpoint(l);
@@ -211,21 +359,34 @@ namespace OriCoop
             }
         }
 
+        internal static void RejectLinkOffer(int seat)
+        {
+            ReviveWire.Link offered;
+            if (!s_offers.Take(seat, out offered)) return;
+            if (!s_point.Have && !s_point.HaveCheckpoint) return;
+            ReviveWire.Link point = s_point.Have ? s_point.Point : s_point.Checkpoint;
+            point.Health = 0f;
+            point.OfferRejected = true;
+            Services.Net.SendTo(seat, MsgRoomLink, true, w => ReviveWire.WriteLink(w, point));
+        }
+
         static void BroadcastLink(ReviveWire.Link l, string why)
         {
             ApplyLink(l, why);
             SendRoomLink();
         }
 
-        static void SendRoomLink()
+        // repeat: told again to a PC that joined or came back from loading. T-215 #7: a repeat carries health 0, so on
+        // the PCs that already know this save point it is not a soul link made just now (a player who went down after
+        // it was made would come back with the creator's health instead of full health).
+        static void SendRoomLink(bool repeat = false)
         {
             if (!s_point.Have || !Services.Net.Enabled || !Services.Net.Connected || !Services.Net.IsHost) return;
-            int seat = s_linkSeat; Vector3 at = s_linkPos; float health = s_lastLinkHealth;
-            Services.Net.Send(MsgRoomLink, true, w => ReviveWire.WriteLink(w, seat, at.x, at.y, at.z, health));
+            ReviveWire.Link point = s_point.Point;
+            point.Health = SoulLinkRules.AnnouncedHealth(point.Health, repeat && !s_mutateResendAsNew);
+            Services.Net.Send(MsgRoomLink, true, w => ReviveWire.WriteLink(w, point));
             RoomLinksSent++;
         }
-
-        static float s_lastLinkHealth;
         static void ApplyLink(ReviveWire.Link l, string why)
         {
             s_point.NoteSave(l);
@@ -236,7 +397,8 @@ namespace OriCoop
         static void NoteSavePoint(string why)
         {
             ReviveWire.Link l = s_point.Point;
-            s_linkSeat = l.Seat; s_linkPos = new Vector3(l.X, l.Y, l.Z); s_lastLinkHealth = l.Health;
+            s_linkSeat = l.Seat; s_linkPos = new Vector3(l.X, l.Y, l.Z);
+            RoomFlamePending = Services.Net.Enabled && l.MarkerKnown; s_nativeLinkTries = 0;
             if (l.Health > 0f) SoulLinkRules.NoteLink(s_roster, l.Health);
             LinksNoted++;
             Services.Log.Info("latest soul link (" + why + "): P" + l.Seat + " at " + s_linkPos + ", creator health " + l.Health.ToString("F1"));
@@ -272,12 +434,15 @@ namespace OriCoop
                 // A guest's save point spot, ahead of its SaveOffer. Only its own seats count.
                 if (sender == Services.Net.HostSeat || sender < 1 || sender > ReviveLogic.MaxSeats || NetPlay.DeviceSeat(l.Seat) != sender)
                 { Services.Log.Info("room link: dropped a save point spot for P" + l.Seat + " from seat " + sender); return; }
-                s_offered[sender] = l; s_haveOffered[sender] = true;
+                s_offers.Note(sender, l);
                 Services.Log.Info("room link: seat " + sender + " offers its save point at (" + l.X + ", " + l.Y + "), health " + l.Health.ToString("F1"));
                 return;
             }
             if (sender != Services.Net.HostSeat) return;   // a guest -> host message relayed to us (server mode)
-            ApplyLink(l, "room save");
+            bool rejected = l.OfferRejected;
+            l.OfferRejected = false;
+            if (rejected && SaveSync.RestoreAcceptedCheckpoint()) s_point.NoteCheckpoint(l);
+            ApplyLink(l, rejected ? "save offer rejected" : "room save");
         }
 
         // After a checkpoint restore on the room's save authority (offline, or the host: a team wipe, loading the
@@ -367,17 +532,21 @@ namespace OriCoop
             int seat = d.Player;
             bool primary = d.Sein == Host.P1;
             bool pad = !primary || GameSettings.Instance != null && GameSettings.Instance.CurrentControlScheme == ControlScheme.Controller;
-            string text = s_point.Have ? L10n.F("revive.self_hold", pad ? PadY : KeyQ) : null;
-            LastSelfHint = text;
-            GameplayCamera cam = UI.Cameras.Current;
-            if (text == null || cam == null || cam.Camera == null) { HideSelfHint(seat); return; }
-            // Online the camera is elsewhere (spectating): the primary Ori's hint sits low on the screen. Other local
-            // Oris (local co-op, extra players on a device) get theirs under their own skull.
-            Vector3 at = Services.Net.Enabled && primary
-                ? cam.Camera.ViewportToWorldPoint(new Vector3(0.5f, 0.24f, -cam.Camera.transform.position.z))
-                : d.Marker + new Vector3(0f, -1.6f, 0f);
+            if (!s_point.Have) { LastSelfHint = null; HideSelfHint(seat); return; }
+            string text = L10n.F("revive.self_hold", pad ? PadY : KeyQ);
             if (s_selfHint[seat] == null) s_selfHint[seat] = new GameText("OriCoop_SelfReviveHint_P" + seat);
-            if (s_selfHint[seat].Ok) { s_selfHint[seat].SetText(text); s_selfHint[seat].Place(at, 0.032f, 0.4f, 1f); }
+            GameText hint = s_selfHint[seat];
+            // The online camera may follow a teammate, not the downed Ori. Keep the primary hint in the viewport.
+            bool shown = hint.SetText(text) && (Services.Net.Enabled && primary
+                ? hint.PlaceViewport(0.5f, 0.24f, 0.032f, 0.4f)
+                : hint.Place(d.Marker + new Vector3(0f, -1.6f, 0f), 0.032f, 0.4f, 1f));
+            LastSelfHint = shown ? text : null;
+        }
+
+        internal static bool SelfHintOnScreen(int seat)
+        {
+            GameText hint = s_selfHint[seat];
+            return hint != null && hint.OnScreen(false) && hint.OnScreen(true);
         }
 
         static void HideSelfHint(int seat)
@@ -396,9 +565,10 @@ namespace OriCoop
         {
             // The room's save point goes with the session. This PC's own latest checkpoint stays (T-202): its game goes
             // on, and it is the save point of the next session this PC hosts until that room's first save.
-            s_point.SessionEnded(); s_lastLinkHealth = 0f;
+            s_point.SessionEnded(); RoomFlamePending = false;
             TeammateArrivals = 0; FirstArrivalHadPoint = FirstArrivalFromCheckpoint = false;
-            Array.Clear(s_haveOffered, 0, s_haveOffered.Length);
+            s_offers.Clear();
+            EscapeSessionEnded();   // T-215 #3
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++) HideSelfHint(seat);
         }
     }

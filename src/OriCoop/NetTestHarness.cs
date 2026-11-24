@@ -19,6 +19,7 @@ namespace OriCoop
         public static bool BotActive;
         public static int BotButtons;
         public static float BotLX;
+        internal static bool BotLT;
         static readonly InputState s_tmp = new InputState();
         static StreamWriter s_track;
         static TestHarness s_harness;
@@ -30,6 +31,7 @@ namespace OriCoop
         static readonly Dictionary<int, Dictionary<int, ThreePacket>> s_threePackets = new Dictionary<int, Dictionary<int, ThreePacket>>();
         static double s_goAt, s_pickupAt, s_collectedAt, s_worldGoAt;
         static bool s_threeEnded, s_leaveReleased, s_done;
+        static readonly List<string> s_ownerNotices = new List<string>();
         internal static bool HostLeftInServerMode;   // T-111: the 3P server-mode check made P1 leave (CoopSaveTest skips phase L)
         static float s_threeRise, s_threeTravel, s_threeError;
         static long s_threeFrames;
@@ -824,8 +826,7 @@ namespace OriCoop
                 && a.Applied - Three(4, 1).Applied == 1 && a.Rejected - Three(4, 1).Rejected == 1,
                 "3P pickup applied once, duplicate rejected, all keys agree");
 
-            // T-115: guest-to-guest broadcasts ride the P2P host's forward table (the C-server forwards everything): a
-            // soul link (80) and a co-push report (89) sent by seat 2 must reach seat 3.
+            // Guest-to-guest broadcasts ride the P2P host's forward table. Check the cast notice and co-push report.
             int soulBefore = PartnerFx.SoulLinksReceived, pushBefore = PushBlockSync.CoPushHeard;
             yield return ThreeRound(h, 40);
             if (Players.LocalSeat == 2) { PartnerFx.TestSendSoulLink(); PushBlockSync.TestSendCoPush(); h.Note("3P seat 2 sent soul link and co-push"); }
@@ -837,7 +838,69 @@ namespace OriCoop
                     "3P guest 3 receives guest 2's soul link (80) and co-push (89) (T-115; " + (PartnerFx.SoulLinksReceived - soulBefore) + "/" + (PushBlockSync.CoPushHeard - pushBefore) + ")");
             }
             yield return ThreeRound(h, 41);
+            // Seat 2 saves while seat 3 is loading. Keep the accepted marker until seat 3 can use its own Ori again.
+            int linksBefore = Revive.LinksNoted, noticesBefore = PartnerFx.SoulLinksReceived;
+            if (Players.LocalSeat == 3)
+            {
+                NetPlay.TestLoading = true;
+                by = Time.realtimeSinceStartup + 5f;
+                while (PuppetAt(2) != null && Time.realtimeSinceStartup < by) yield return null;
+            }
+            yield return ThreeRound(h, 42);
+            if (Players.LocalSeat == 2) { Own.Energy.RestoreAllEnergy(); NetReviveTest.CastSoulLink(Own); }
+            if (Players.LocalSeat == 3)
+            {
+                by = Time.realtimeSinceStartup + 8f;
+                while ((Revive.LinkSeat != 2 || Revive.LinksNoted == linksBefore || PartnerFx.SoulLinksReceived == noticesBefore)
+                    && Time.realtimeSinceStartup < by) yield return null;
+                h.Check(Revive.LinkSeat == 2 && Revive.LinksNoted > linksBefore && PartnerFx.SoulLinksReceived == noticesBefore + 1
+                    && Revive.RoomFlamePending && PuppetAt(2) == null, "3P the cast notice arrives and the room marker waits while loading");
+                NetPlay.TestLoading = false;
+                by = Time.realtimeSinceStartup + 8f;
+                while (Revive.RoomFlamePending && Time.realtimeSinceStartup < by) yield return null;
+                string flameState;
+                bool onlyOne = NetReviveTest.OnlyNativeFlame(Own, out flameState);
+                h.Check(NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition) && onlyOne,
+                    "3P after loading, only the primary Ori's native flame is at the room link (" + flameState + ")");
+            }
+            yield return ThreeRound(h, 43);
+            // Retry a failed native spawn; an invalid cast notice must not add another flame or notice.
+            linksBefore = Revive.LinksNoted; noticesBefore = PartnerFx.SoulLinksReceived;
+            Vector3 previousLink = Revive.LinkPosition;
+            if (Players.LocalSeat == 3) Revive.TestFailRoomFlameApplies = 1;
+            yield return ThreeRound(h, 44);
+            if (Players.LocalSeat == 2)
+            {
+                Plugin.Teleport(Own, previousLink + Vector3.right * 2f);
+                yield return TestClock.WaitGame(0.2f);
+                Own.Energy.RestoreAllEnergy(); NetReviveTest.CastSoulLink(Own); PartnerFx.TestSendSoulLink(9);
+            }
+            if (Players.LocalSeat == 3)
+            {
+                by = Time.realtimeSinceStartup + 8f;
+                while ((Vector3.Distance(Revive.LinkPosition, previousLink) < 1f || Revive.RoomFlamePending
+                    || PartnerFx.SoulLinksReceived == noticesBefore) && Time.realtimeSinceStartup < by) yield return null;
+                bool failedOnce = Revive.TestFailRoomFlameApplies == 0;
+                Revive.TestFailRoomFlameApplies = 0;
+                h.Check(failedOnce && Revive.LinksNoted > linksBefore && Revive.LinkSeat == 2 && !Revive.RoomFlamePending
+                    && Vector3.Distance(Revive.LinkPosition, previousLink) >= 1f && NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition),
+                    "3P a native flame that failed to spawn is retried at the new room link");
+            }
+            yield return ThreeRound(h, 45);
+            if (Players.LocalSeat == 3)
+            {
+                string flameState;
+                bool onlyOne = NetReviveTest.OnlyNativeFlame(Own, out flameState);
+                int notices = PartnerFx.SoulLinksReceived - noticesBefore;
+                h.Check(notices == 1 && onlyOne && NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition),
+                    "3P an invalid caster seat gives no extra flame or notice (notices=" + notices + ", " + flameState + ")");
+            }
             yield return Safely(h, "3P ESC", NetEscapeTest.Run3P(h));   // T-169: mash back beside a teammate in the escape
+            // T-213 (10): seat 2 notes seat 3 as "joined after me, no load announced yet" (how a guest gets that note:
+            // Saves unit tests). When seat 2 becomes the host below it must send seat 3 its checkpoint, not take it as loaded.
+            int t213Loads = SaveSync.GuestLoads, t213Sent = SaveSync.CheckpointsSent;
+            if (NetRoute.ServerMode && Players.LocalSeat == 2) SaveSync.TestAwaitSave(3);
+            s_ownerNotices.Clear();
             yield return ThreeRound(h, 6);
             // T-111: in server mode the room outlives P1, so P1 is the one who leaves. The arbiter moves to seat 2 and
             // seat 3 must obey its host-only messages (a gate count here; intro and wipe use the same sender check).
@@ -849,6 +912,8 @@ namespace OriCoop
                 by = Time.realtimeSinceStartup + 10f;
                 while ((Players.LocalSeat == 1 ? NetRoute.HostSeat != 2 : PuppetAt(1) != null) && Time.realtimeSinceStartup < by) yield return null;
                 yield return Wait(1f);
+                h.Check(Roles.Word(2) == L10n.T("roles.host.cs") && Roles.Word(3) == L10n.T("roles.client.cs"),
+                    "3P server: role labels follow the new owner");
                 h.Check(NetPlay.IsHost == (Players.LocalSeat == 2), "3P server: only the arbiter is host, not the creator without the role (T-158, local P"
                     + Players.LocalSeat + " IsHost " + NetPlay.IsHost + ", host seat " + NetRoute.HostSeat + ")");
                 if (Players.LocalSeat == 2) { yield return Wait(0.5f); ForcedSync.TestSendCount("t158-gate", 1, 2); }
@@ -858,6 +923,7 @@ namespace OriCoop
                     while (ForcedSync.TestCount("t158-gate") != 1 && Time.realtimeSinceStartup < by) yield return null;
                     h.Check(ForcedSync.TestCount("t158-gate") == 1, "3P server: the creator obeys the arbiter's gate count (T-158)");
                     ForcedSync.TestForget("t158-gate");
+                    yield return CheckOwnerNotice(h);
                     h.Note("3P server: P1 leaving; harness completion quits this client"); yield break;
                 }
                 yield return Wait(1f);
@@ -868,6 +934,35 @@ namespace OriCoop
                 HostLeftInServerMode = PuppetAt(1) == null;
                 h.Check(PuppetAt(1) == null && NetPlay.IsHost == (Players.LocalSeat == 2),
                     "3P server: P1 left and seat 2 arbitrates now (local P" + Players.LocalSeat + ", host seat " + NetRoute.HostSeat + ")");
+                // T-213 (2, 9): for seat 3 "the host" is seat 2 now: its hello, status and position are the host's (enemy
+                // sync runs only with the host's hello; a joining guest is placed at the host's position). Mutation
+                // ORICOOP_MUTATE_PRIMARY_SEAT_ONE=1 (a guest always looks at seat 1, which has left) must fail it.
+                if (Players.LocalSeat == 3)
+                {
+                    Vector3 hostAt; bool haveHostAt = NetPlay.RemotePos(2, out hostAt);
+                    h.Check(NetPlay.RemoteHello && NetPlay.RemoteInGameplay && NetPlay.HaveRemotePos && haveHostAt
+                        && Vector3.Distance(NetPlay.LatestRemotePos, hostAt) < 0.01f,
+                        "3P server: seat 3 follows the new host: hello, status and position are seat 2's (T-213; hello " + NetPlay.RemoteHello
+                        + ", in gameplay " + NetPlay.RemoteInGameplay + ", position known " + NetPlay.HaveRemotePos + ")");
+                }
+                // T-213 (10, 9): the new host sends its checkpoint to the seat it noted as still waiting for a save; that
+                // guest loads it and is placed beside the new host. Mutation ORICOOP_MUTATE_PROMOTE_ALL_READY=1 (every
+                // remote seat taken as loaded, as before) must fail both; ORICOOP_MUTATE_PRIMARY_SEAT_ONE=1 fails seat 3's.
+                by = Time.realtimeSinceStartup + 30f;
+                if (Players.LocalSeat == 3)
+                {
+                    while (!(SaveSync.GuestLoads > t213Loads && SaveSync.Ready && SaveSync.JoinedHost) && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(SaveSync.GuestLoads > t213Loads && SaveSync.Ready && SaveSync.JoinedHost,
+                        "3P server: a guest still waiting for its first save loads the new host's checkpoint and lands beside it (T-213; loads +"
+                        + (SaveSync.GuestLoads - t213Loads) + ", ready " + SaveSync.Ready + ", beside the host " + SaveSync.JoinedHost + ")");
+                }
+                else
+                {
+                    while (!(SaveSync.CheckpointsSent > t213Sent && SaveSync.ReadyForSeat(3)) && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(SaveSync.CheckpointsSent > t213Sent && SaveSync.ReadyForSeat(3),
+                        "3P server: the new host sends its save to the waiting guest and sees it load (T-213; sent +"
+                        + (SaveSync.CheckpointsSent - t213Sent) + ", seat 3 ready " + SaveSync.ReadyForSeat(3) + ")");
+                }
                 if (Players.LocalSeat == 2)
                 {
                     yield return Wait(1f);
@@ -883,6 +978,7 @@ namespace OriCoop
                 }
                 ForcedSync.TestForget("t111-gate");
                 h.Check(Connected, "3P server: remaining players stay connected after the host left");
+                yield return CheckOwnerNotice(h);
                 // T-152: a session that drops and then leaves online play frees its socket (the parked stale client).
                 if (Players.LocalSeat == 3 && CServerLink.Client != null)
                 {
@@ -927,6 +1023,22 @@ namespace OriCoop
                 if (!s_done) throw new InvalidOperationException("3P host completion signal missing");
             }
         }
+        static void RecordOwnerNotice(string text)
+        {
+            string suffix = L10n.Zh ? " 成为新房主" : " is the new room owner";
+            if (text.EndsWith(suffix, StringComparison.Ordinal)) s_ownerNotices.Add(text);
+        }
+
+        static IEnumerator CheckOwnerNotice(TestHarness h)
+        {
+            float by = Time.realtimeSinceStartup + 30f;
+            while (NetHud.ToastsPending && Time.realtimeSinceStartup < by) yield return null;
+            string want = L10n.Zh ? "房主已离开，P2 成为新房主" : "The room owner left; P2 is the new room owner";
+            h.Check(!NetHud.ToastsPending && s_ownerNotices.Count == 1 && s_ownerNotices[0] == want,
+                "3P server: exactly one new owner notice shown on this PC (shown " + s_ownerNotices.Count + ": "
+                + string.Join(" / ", s_ownerNotices.ToArray()) + ")");
+        }
+
         // T-141: guest P2 changes a world object; guest P3, which in P2P / relay talks only to the host, must see it within
         // 3 s. Before T-141 it came only with a digest resync (two mismatching rounds 5 s apart, at least ~5-10 s).
         // T-192: since T-168 a world EVENT (GameController, an aggregate) goes as an item batch through the arbiter, which
@@ -1253,6 +1365,238 @@ namespace OriCoop
             return packet;
         }
 
+        // T-214: the last map cell by geometry (so every PC picks the same one) and a world position inside it.
+        static bool FarMapCell(out int areaIndex, out int face, out Vector3 world)
+        {
+            areaIndex = -1; face = 0; world = Vector3.zero;
+            GameWorld map = GameWorld.Instance;
+            if (map == null) return false;
+            for (int a = map.RuntimeAreas.Count - 1; a >= 0; a--)
+            {
+                CageStructureTool cage = map.RuntimeAreas[a].Area != null ? map.RuntimeAreas[a].Area.CageStructureTool : null;
+                if (cage == null) continue;
+                for (int f = cage.Faces.Count - 1; f >= 0; f--)
+                {
+                    CageStructureTool.Face c = cage.Faces[f];
+                    if (c.Triangles.Count < 3) continue;
+                    Vector3 local = (cage.Vertices[c.Vertices[c.Triangles[0]]].Position + cage.Vertices[c.Vertices[c.Triangles[1]]].Position
+                        + cage.Vertices[c.Vertices[c.Triangles[2]]].Position) / 3f;
+                    if (cage.FindFaceAtPositionFaster(local) != c) continue;
+                    if (map.RuntimeAreas[a].GetFaceState(c.ID) == WorldMapAreaState.Visited) continue;   // explored already (an earlier run of the check)
+                    areaIndex = a; face = c.ID; world = cage.transform.TransformPoint(local);
+                    return true;
+                }
+            }
+            return false;
+        }
+
+        static WorldMapAreaState MapCell(int areaIndex, int face)
+        {
+            GameWorld map = GameWorld.Instance;
+            return map == null || areaIndex >= map.RuntimeAreas.Count ? WorldMapAreaState.Hidden : map.RuntimeAreas[areaIndex].GetFaceState(face);
+        }
+
+        // T-214: a map cell the guest explores while a full world snapshot is on its way to it (a digest resync in the
+        // middle of play) stays explored there and reaches the host. Before, the snapshot replaced the whole map: the
+        // cell was hidden again on the guest and never reached the host. The cell is explored with the game's own
+        // VisitMapAreaAtPosition, which is what walking through it calls. Both PCs spend the same 6 s here.
+        // late: the snapshot waits and is applied afterwards, as when it arrives during this PC's checkpoint load
+        // (WorldSync.TestDeferApply); the kept cell must still reach the host then.
+        static IEnumerator MapKeep(TestHarness h, bool late)
+        {
+            bool host = NetPlay.IsHost;
+            float end = Time.realtimeSinceStartup + 6f;
+            string name = late ? "W map (snapshot applied late): " : "W map: ";
+            int area, face; Vector3 world;
+            if (!FarMapCell(out area, out face, out world)) { h.Check(false, name + "a far map cell is found for the snapshot check"); yield break; }
+            if (!host)
+            {
+                yield return Wait(0.5f);
+                int ended = WorldSync.SnapshotsEnded;
+                bool asked = false, marked = false, arrived = false;
+                try
+                {
+                    WorldSync.TestDeferApply = late;
+                    float by = Time.realtimeSinceStartup + 2f;
+                    while (!asked && Time.realtimeSinceStartup < by)
+                    {
+                        asked = WorldSync.TryRequestResync("T-214 test: a map cell explored during a snapshot");
+                        if (!asked) yield return null;
+                    }
+                    GameWorld.Instance.RuntimeAreas[area].VisitMapAreaAtPosition(world);   // walked through it right after the request left
+                    marked = MapCell(area, face) == WorldMapAreaState.Visited;
+                    by = Time.realtimeSinceStartup + 4f;
+                    while (WorldSync.SnapshotsEnded == ended && Time.realtimeSinceStartup < by) yield return null;
+                    arrived = WorldSync.SnapshotsEnded > ended;
+                }
+                finally { WorldSync.TestDeferApply = false; }
+                yield return null; yield return null;
+                h.Check(asked && marked && arrived, name + "the guest explored a cell and a full snapshot arrived after it (asked=" + asked
+                    + " explored=" + marked + " snapshot=" + arrived + ")");
+                h.Check(MapCell(area, face) == WorldMapAreaState.Visited, name + "a cell explored while a full snapshot was on its way is still explored (T-214, cell "
+                    + face + " of area " + area + " is " + MapCell(area, face) + ")");
+            }
+            while (MapCell(area, face) != WorldMapAreaState.Visited && Time.realtimeSinceStartup < end) yield return null;
+            if (host) h.Check(MapCell(area, face) == WorldMapAreaState.Visited, name + "the guest's cell explored during a snapshot reached the host (T-214, cell "
+                + face + " of area " + area + " is " + MapCell(area, face) + ")");
+            while (Time.realtimeSinceStartup < end) yield return null;
+        }
+
+        // One synthetic keystone (a copy of "the prefab" with this GUID) at a spot, taken through the production
+        // collector, as CollectTestKeystones does. Returns whether the copy ended up collected.
+        static bool TakeKeystoneCopy(MoonGuid id, Vector3 at)
+        {
+            GameObject go = new GameObject("OriCoop W keystone copy"); go.SetActive(false);
+            try
+            {
+                go.transform.position = at;
+                KeystonePickup pickup = go.AddComponent<KeystonePickup>();
+                pickup.MoonGuid = id; pickup.Amount = 1; pickup.OnValidate();
+                ProgressSync.PickupCollector(Own).OnCollectKeystonePickup(pickup);
+                return pickup.IsCollected;
+            }
+            finally { UnityEngine.Object.Destroy(go); }
+        }
+
+        // T-214: a pickup's GUID is shared by every copy of its prefab (the game spawns orbs, cells and keystones from one
+        // prefab in many places), so the GUID alone is not the pickup.
+        //  - The guest takes two copies (same GUID, two spots): both count. Before, the second was dropped as a duplicate.
+        //  - The first copy is not loaded on the host. The host touching its own copy there gets no second reward, and
+        //    when the copy shows up live there it is marked collected. Before, the host could take it again.
+        // Both PCs spend the same 8 s here.
+        static IEnumerator PickupCopies(TestHarness h)
+        {
+            bool host = NetPlay.IsHost;
+            float start = Time.realtimeSinceStartup, end = start + 8f;
+            MoonGuid id = new MoonGuid(0x54323134, 0x5049434b, 0x434f5059, 1);
+            Vector3 first = new Vector3(9000f, 9000f, 0f), second = new Vector3(9010f, 9000f, 0f);
+            int keys0 = Own.Inventory.Keystones, rejected0 = ProgressSync.ActionsRejected, blocked0 = ProgressSync.HostRetakesBlocked, late0 = ProgressSync.LateMarks;
+            GameObject shown = null;
+            try
+            {
+                if (!host)
+                {
+                    yield return Wait(0.5f);
+                    TakeKeystoneCopy(id, first);
+                    yield return Wait(1f);
+                    TakeKeystoneCopy(id, second);
+                }
+                while (Own.Inventory.Keystones != keys0 + 2 && Time.realtimeSinceStartup < start + 3.2f) yield return null;
+                h.Check(Own.Inventory.Keystones == keys0 + 2 && (!host || ProgressSync.ActionsRejected == rejected0),
+                    "W pickups: two copies of one prefab (same GUID, two spots) both count (T-214, keystones " + keys0 + " -> " + Own.Inventory.Keystones
+                    + ", want +2" + (host ? ", rejected " + (ProgressSync.ActionsRejected - rejected0) : "") + ")");
+                if (host)
+                {
+                    int keys = Own.Inventory.Keystones;
+                    bool gone = TakeKeystoneCopy(id, first);   // the host's own copy of the pickup the guest took
+                    h.Check(Own.Inventory.Keystones == keys && gone && ProgressSync.HostRetakesBlocked == blocked0 + 1,
+                        "W pickups: the host touching a pickup the guest already took gets no second reward (T-214, keystones " + keys + " -> "
+                        + Own.Inventory.Keystones + ", gone=" + gone + ")");
+                    // The same copy becomes live on the host (its scene loaded): marked collected without a touch.
+                    // The guest's copy had no scene (its action says "scene not known"); here the copy is inside a loaded
+                    // scene. Not knowing the scene must not stop the match: GUID and spot are enough then.
+                    shown = new GameObject("OriCoop W pickup copy"); shown.SetActive(false);
+                    foreach (SaveSceneManager manager in UnityEngine.Object.FindObjectsOfType<SaveSceneManager>())
+                        if (WorldSync.SceneOf(manager) != MoonGuid.Empty) { shown.transform.SetParent(manager.transform.root, true); break; }
+                    shown.transform.position = first;
+                    KeystonePickup pickup = shown.AddComponent<KeystonePickup>();
+                    pickup.MoonGuid = id; pickup.Amount = 1; pickup.OnValidate();
+                    shown.SetActive(true);
+                    bool inScene = WorldSync.SceneOf(pickup) != MoonGuid.Empty;
+                    float by = Time.realtimeSinceStartup + 3f;
+                    while (!pickup.IsCollected && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(inScene && pickup.IsCollected && !shown.activeSelf && ProgressSync.LateMarks > late0,
+                        "W pickups: a pickup the guest took where the host had nothing loaded is marked collected once it shows up there (T-214, collected="
+                        + pickup.IsCollected + " lateMarks=" + (ProgressSync.LateMarks - late0) + " waiting=" + ProgressSync.UnmarkedPickups
+                        + " copy inside a scene=" + inScene + ")");
+                }
+                while (Time.realtimeSinceStartup < end) yield return null;
+            }
+            finally { if (shown != null) UnityEngine.Object.Destroy(shown); }
+        }
+
+        // T-214 (item 6): the player who takes a max-health / max-energy cell is the one it refills. A guest's cell is
+        // collected by the host's game; before, the host was refilled and the guest only got the higher maximum.
+        // Synthetic cells through the production collector. Both PCs spend the same 10 s here.
+        static IEnumerator CellRefill(TestHarness h)
+        {
+            bool host = NetPlay.IsHost;
+            float start = Time.realtimeSinceStartup, end = start + 10f;
+            SeinCharacter own = Own;
+            int maxHealth = own.Mortality.Health.MaxHealth; float maxEnergy = own.Energy.Max;
+            float healthBefore = own.Mortality.Health.Amount, energyBefore = own.Energy.Current;
+            // Both players are hurt and have spent energy.
+            float hurt = Mathf.Max(1f, maxHealth - 4f), spent = Mathf.Max(0f, maxEnergy - 1f);
+            own.Mortality.Health.SetAmount(hurt); own.Energy.Current = spent;
+            if (!host)
+            {
+                yield return Wait(0.5f);
+                GameObject go = new GameObject("OriCoop W health cell"); go.SetActive(false);
+                try
+                {
+                    go.transform.position = new Vector3(9100f, 9000f, 0f);
+                    MaxHealthContainerPickup cell = go.AddComponent<MaxHealthContainerPickup>();
+                    cell.MoonGuid = new MoonGuid(0x54323134, 0x43454c4c, 1, 1); cell.OnValidate();
+                    ProgressSync.PickupCollector(own).OnCollectMaxHealthContainerPickup(cell);
+                }
+                finally { UnityEngine.Object.Destroy(go); }
+                yield return Wait(0.5f);
+                go = new GameObject("OriCoop W energy cell"); go.SetActive(false);
+                try
+                {
+                    go.transform.position = new Vector3(9110f, 9000f, 0f);
+                    MaxEnergyContainerPickup cell = go.AddComponent<MaxEnergyContainerPickup>();
+                    cell.MoonGuid = new MoonGuid(0x54323134, 0x43454c4c, 2, 1); cell.Amount = 1; cell.OnValidate();
+                    ProgressSync.PickupCollector(own).OnCollectMaxEnergyContainerPickup(cell);
+                }
+                finally { UnityEngine.Object.Destroy(go); }
+            }
+            while ((own.Mortality.Health.MaxHealth != maxHealth + 4 || own.Energy.Max != maxEnergy + 1f) && Time.realtimeSinceStartup < start + 3.5f) yield return null;
+            yield return Wait(0.3f);
+            h.Check(own.Mortality.Health.MaxHealth == maxHealth + 4 && own.Energy.Max == maxEnergy + 1f,
+                "W cells: the guest's health cell and energy cell raise the shared maximum (health " + maxHealth + " -> " + own.Mortality.Health.MaxHealth
+                + ", energy " + F(maxEnergy) + " -> " + F(own.Energy.Max) + ")");
+            if (host) h.Check(own.Mortality.Health.Amount == hurt && own.Energy.Current == spent,
+                "W cells: the host is not refilled by the cells the guest took (T-214, health " + F(hurt) + " -> " + F(own.Mortality.Health.Amount)
+                + ", energy " + F(spent) + " -> " + F(own.Energy.Current) + ")");
+            else h.Check(own.Mortality.Health.Amount == own.Mortality.Health.MaxHealth && own.Energy.Current == own.Energy.Max,
+                "W cells: the guest is refilled by the cells it took (T-214, health " + F(own.Mortality.Health.Amount) + " of " + own.Mortality.Health.MaxHealth
+                + ", energy " + F(own.Energy.Current) + " of " + F(own.Energy.Max) + ")");
+            // The energy cell's own message (SeinPickupProcessor.EnergyContainerSequence: the host's game shows it for the
+            // guest's cell and mirrors it to the guest as a story) waits for a button press. Nobody presses one in a test
+            // game: left open, it held both Oris through the phases after W (E3, E5, R, S4 of the full 2-player suite
+            // failed). Close it the way the player's button does, on both PCs, and put health / energy back.
+            GameController gc = GameController.Instance;
+            int closed = 0; float nextClose = 0f;
+            while (Time.realtimeSinceStartup < end - 0.5f)
+            {
+                float now = Time.realtimeSinceStartup;
+                if (now >= nextClose && (SessionRules.LocalLocked || gc.LockInput || gc.LockInputByAction)) { closed += ClosePopups(); nextClose = now + 0.5f; }
+                yield return null;
+            }
+            own.Mortality.Health.SetAmount(Mathf.Min(healthBefore, own.Mortality.Health.MaxHealth));
+            own.Energy.Current = Mathf.Min(energyBefore, own.Energy.Max);
+            h.Check(!SessionRules.LocalLocked && !gc.LockInput && !gc.LockInputByAction && !StorySync.StoryActive,
+                "W cells: nobody is held once the cell's message is closed (held=" + SessionRules.LocalLocked + " popup=" + SessionRules.PopupOpen
+                + " lockInput=" + gc.LockInput + " byAction=" + gc.LockInputByAction + " story=" + StorySync.StoryActive + " closed=" + closed + ")");
+            while (Time.realtimeSinceStartup < end) yield return null;
+        }
+
+        // Closes open native messages the way the player's button press does (InteractiveMessageBox.EndMessageBox; hiding
+        // alone left GameController.LockInput set for ~20 s, T-156). Returns how many it closed.
+        static int ClosePopups()
+        {
+            int closed = 0;
+            foreach (UnityEngine.Object o in UnityEngine.Object.FindObjectsOfType(typeof(InteractiveMessageBox)))
+            {
+                InteractiveMessageBox box = o as InteractiveMessageBox;
+                if (box != null && box.MessageBox != null
+                    && Traverse.Create(box).Field("m_state").GetValue<InteractiveMessageBox.State>() != InteractiveMessageBox.State.Inactive)
+                { box.EndMessageBox(); closed++; }
+            }
+            return closed + SessionRules.HideSkippedPopups();
+        }
+
         static IEnumerator SharedWorld(TestHarness h)
         {
             h.Note("phase W shared save, world, and host progress"); Bot(0, 0);
@@ -1277,6 +1621,10 @@ namespace OriCoop
                     // No wait after the last step: the guest moves on to the quit test right away, so its final
                     // barrier may still be unacknowledged when it closes.
                     if (step < 9) yield return Safely(h, "W barrier " + step, WorldBarrier(h, step));
+                    if (step == 5) yield return Safely(h, "W map", MapKeep(h, false));
+                    if (step == 5) yield return Safely(h, "W map late", MapKeep(h, true));
+                    if (step == 5) yield return Safely(h, "W pickups", PickupCopies(h));
+                    if (step == 5) yield return Safely(h, "W cells", CellRefill(h));
                 }
             }
             finally
@@ -1914,7 +2262,9 @@ namespace OriCoop
                 h.Check(s_vitalsAt.Count == 2 && took.Count == 2, "bottom bars: host's P2 bar showed both guest changes (damage, energy use)");
                 h.Check(took.Count == 2 && took[0] <= 1f && took[1] <= 1f, "bottom bars: each within 1 s of the guest's change");
             }
-            h.Check(BottomHud.Count == 1 && BottomHud.Visible(partner) && BottomHud.LabelText(partner) == Roles.Tag(partner),
+            string barLabel = NetPlay.UsesCServer
+                ? L10n.F("hud.role", Roles.Tag(partner), L10n.T(host ? "roles.client.cs" : "roles.host.cs")) : Roles.Tag(partner);
+            h.Check(BottomHud.Count == 1 && BottomHud.Visible(partner) && BottomHud.LabelText(partner) == barLabel,
                 "bottom bars: one bar, for " + Roles.Tag(partner) + ", shown on the " + (host ? "host" : "guest") + " (" + BottomHud.Count + ")");
             h.Check(BottomHud.VitalsSent > 0 && BottomHud.VitalsReceived > 0, "bottom bars: vitals sent " + BottomHud.VitalsSent + " and received " + BottomHud.VitalsReceived);
             try
@@ -1933,8 +2283,8 @@ namespace OriCoop
         // screenshot of each side is kept next to the result file (net-roles-host.png / net-roles-guest.png).
         static IEnumerator RoleTag(TestHarness h, bool host)
         {
-            // In the game's language: "P2 · 伙伴" / "P2 - Partner" (host side), "P1 · 主机" / "P1 - Host" (guest side).
-            string want = L10n.F("roles.label", Roles.Tag(host ? 2 : 1), L10n.T(host ? "roles.partner" : "roles.host"));
+            string roleKey = NetPlay.UsesCServer ? (host ? "roles.client.cs" : "roles.host.cs") : (host ? "roles.client" : "roles.host");
+            string want = L10n.F("roles.label", Roles.Tag(host ? 2 : 1), L10n.T(roleKey));
             float by = Time.realtimeSinceStartup + 3f;
             while (!P2Hud.Visible && Time.realtimeSinceStartup < by) yield return null;
             h.Check(Roles.Mine == (host ? 1 : 2) && Roles.Partner == (host ? 2 : 1), "net roles: this PC is " + (host ? "P1 (host)" : "P2 (guest)"));
@@ -1978,7 +2328,7 @@ namespace OriCoop
             {
                 if (!TestHarness.Enabled || !NetPlay.Enabled || !BotActive) return true;
                 s_tmp.Swap();
-                P2Input.Fill(s_tmp, BotButtons, BotLX, 0, 0, 0, false, P2Input.BotRT, false);   // BotRT: Glide / grab for phase P
+                P2Input.Fill(s_tmp, BotButtons, BotLX, 0, 0, 0, BotLT, P2Input.BotRT, false);
                 s_tmp.Swap();
                 return false;
             }
@@ -2056,12 +2406,14 @@ namespace OriCoop
             s_goAt = s_pickupAt = s_collectedAt = s_worldGoAt = 0; s_threeEnded = s_leaveReleased = s_done = false;
             NetPlay.TestSignalReceived += ReadTestSignal;
             NetPlay.SessionEnded += ThreeSessionEnded;
+            if (ClientCount == 3) NetHud.ToastShown += RecordOwnerNotice;
             if (ClientCount == 3 || ClientCount == 4 || Environment.GetEnvironmentVariable("ORICOOP_NET_LOCAL_PLAYERS") == "1") NetPlay.On(MsgThreeTest, ReadThree);
             try { yield return Safely(h, ClientCount == 4 ? "4P suite" : "net suite", RunCore(h)); }
             finally
             {
                 NetPlay.TestSignalReceived -= ReadTestSignal;
                 NetPlay.SessionEnded -= ThreeSessionEnded;
+                NetHud.ToastShown -= RecordOwnerNotice;
                 Stop();
             }
         }
@@ -2276,7 +2628,12 @@ namespace OriCoop
                 yield return Safely(h, "FACE", NetFacingTest.Run(h));   // partner facing during wall jumps (NetFacingTest.cs, T-199)
             AfterMove:
                 if (PhaseOn("W") && Mark(h, "W")) yield return SharedWorld(h);
-                if (PhaseOn("E3") && Mark(h, "E3")) yield return Safely(h, "E3", SharedEnemies(h));
+                if (PhaseOn("E3") && Mark(h, "E3"))
+                {
+                    yield return Safely(h, "E3", SharedEnemies(h));
+                    yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 70);
+                    yield return Safely(h, "E3 skill FX", ChargeFlameFx(h));
+                }
                 if (PhaseOn("E5") && Mark(h, "E5")) yield return Safely(h, "E5", EnemySyncTest.Run(h));   // enemy AI/death/damage/difficulty (EnemySyncTest.cs, enemy-sync)
                 if (PhaseOn("R") && Mark(h, "R")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 60); yield return Safely(h, "R", NetReviveTest.Run(h)); }   // online downed/revive
                 if (PhaseOn("S4") && Mark(h, "S4")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62); yield return Safely(h, "S4", NetStoryTest.Run(h)); }
@@ -2307,6 +2664,63 @@ namespace OriCoop
                     }
                 }
             G:
+                // T-213 (1): the transport fails before a goodbye was read from the connection (a Steam guest whose host
+                // left the lobby). The session must end as after a goodbye: the host's Ori goes at once and the
+                // session-ended handlers run once. Mutation ORICOOP_MUTATE_FAIL_KEEPS_REMOTES=1 must fail both checks.
+                // T-213 (4): a straggler of the seat's previous player arrives: one frame far ahead of the partner's stream,
+                // 40 units away. The partner's Ori must not freeze there until the real ticks catch up (minutes): frames
+                // keep playing and it stays with its owner. Mutation ORICOOP_MUTATE_NO_STREAM_RESTART=1 must fail it.
+                if (!host && ClientCount == 2 && Connected && P2Context.P2 != null && NetPlay.HaveRemotePos)
+                {
+                    Vector3 staleReal = NetPlay.LatestRemotePos; long staleFrames = NetPlay.FramesPlayed;
+                    NetPlay.TestStaleFrame(NetRoute.HostSeat, 100000u, staleReal + Vector3.right * 40f);
+                    yield return Wait(1.5f);
+                    float staleDrift = Vector3.Distance(NetPlay.LatestRemotePos, staleReal);
+                    float staleApart = P2Context.P2 != null ? Vector3.Distance(P2Context.P2.Position, NetPlay.LatestRemotePos) : -1f;
+                    h.Check(NetPlay.FramesPlayed - staleFrames > 30 && staleDrift < 10f && staleApart >= 0f && staleApart < 3f,
+                        "G a stale frame far ahead of the partner's stream does not freeze its Ori (T-213; frames played +" + (NetPlay.FramesPlayed - staleFrames)
+                        + ", known position moved " + F(staleDrift) + ", Ori " + F(staleApart) + " from it)");
+                }
+                if (!host && ClientCount == 2 && !NetPlay.ServerForwardsAll && Connected)
+                {
+                    int failEnds = SessionRules.Disconnects; bool failHadPuppet = P2Context.P2 != null;
+                    // T-213 review (8): a companion return of the partner's Ori fails (test hook) and is to be tried
+                    // again a quarter of a second later; the Ori is removed before that. The retry goes with it.
+                    // Before, the entry kept the removed Ori until some later return failed.
+                    Puppet failPuppet = Players.First; bool retryNoted = false;
+                    bool failCompanion = failPuppet != null && failPuppet.Sein != null && failPuppet.Companion != null;
+                    if (failCompanion)
+                    {
+                        P2Extras.TestFailReturns = 1;
+                        P2Extras.ReturnCompanion(failPuppet, "test: fails, then its Ori is removed");
+                        P2Extras.TestFailReturns = 0;
+                        retryNoted = P2Extras.ReturnRetriesKept > 0;
+                    }
+                    MenuScreenManager menu = UI.Menu;
+                    SeinCharacter ori = Own;
+                    bool checkMap = PhaseOn("S4") && menu != null && !menu.MainMenuVisible && GameMapUI.Instance != null && ori != null && !ori.IsSuspended;
+                    if (checkMap)
+                    {
+                        menu.ShowWorldMap(false);
+                        h.Check(SessionRules.LiveMap && !ori.IsSuspended, "G map: the guest's map is live before the disconnect");
+                    }
+                    NetPlay.TestTransportFailure("test: the transport failed");
+                    if (checkMap)
+                    {
+                        h.Check(menu.MainMenuVisible && !SessionRules.LiveMap && ori.IsSuspended, "G map: disconnect restores the native pause");
+                        menu.HideMenuScreen(true);
+                        h.Check(!menu.MainMenuVisible && !ori.IsSuspended, "G map: closing the offline map resumes Ori");
+                    }
+                    float failGoneBy = Time.realtimeSinceStartup + 1f;
+                    while (P2Context.P2 != null && Time.realtimeSinceStartup < failGoneBy) yield return null;
+                    h.Note("G transport failure: puppet before=" + failHadPuppet + " after=" + (P2Context.P2 != null) + " remotes=" + NetPlay.RemoteSeats.Length
+                        + " session ends +" + (SessionRules.Disconnects - failEnds) + " problem '" + NetPlay.Problem + "'");
+                    h.Check(P2Context.P2 == null && NetPlay.RemoteSeats.Length == 0, "G a failed transport removes the partner's Ori and its seat within 1 s");
+                    h.Check(SessionRules.Disconnects == failEnds + 1, "G a failed transport ends the session once (" + (SessionRules.Disconnects - failEnds) + ")");
+                    if (!failCompanion) h.Note("G the partner's Ori has no companion in this save: the removed-Ori retry check is not judged");
+                    else h.Check(retryNoted && P2Extras.ReturnRetriesKept == 0, "G a companion return that was to be tried again goes with its Ori when that is removed (T-213; noted "
+                        + retryNoted + ", kept " + P2Extras.ReturnRetriesKept + ")");
+                }
                 if (host)
                 {
                     start = Time.realtimeSinceStartup;

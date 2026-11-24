@@ -2,7 +2,6 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Globalization;
-using System.Reflection;
 using Game;
 using HarmonyLib;
 using UnityEngine;
@@ -173,41 +172,34 @@ namespace OriCoop
             }
         }
 
-        // T-138: the extra local player's soul link (the save flame; T-029's message 80) appears beside it on every
-        // device. Its own device casts it the way the extra's own update does: in the extra's context.
-        static readonly FieldInfo s_extraFlameField = typeof(SeinSoulFlame).GetField("m_soulFlame", BindingFlags.Instance | BindingFlags.NonPublic);
-        static SoulFlame FlameOf(SeinCharacter s) { return s == null || s.SoulFlame == null ? null : s_extraFlameField.GetValue(s.SoulFlame) as SoulFlame; }
-
         static IEnumerator LocalExtraSoulLink(TestHarness h)
         {
             bool owner = Players.LocalSeat == 2;
-            SoulFlame before = FlameOf(Players.OriOf(localExtra));
-            int sent = PartnerFx.SoulLinksSent, shown = PartnerFx.SoulLinksShown;
-            yield return ThreeRound(h, 603, ClientCount);   // every device has its "before" flame
+            int notices = PartnerFx.SoulLinksReceived, sent = PartnerFx.SoulLinksSent;
+            yield return ThreeRound(h, 603, ClientCount);
             SeinCharacter extra = Players.OriOf(localExtra);
             h.Check(extra != null, "locals: the extra's Ori exists for the soul link");
             if (extra == null) yield break;
             if (owner)
             {
-                Puppet puppet = PuppetAt(localExtra);
-                P2Context.Enter(puppet);
-                try { typeof(SeinSoulFlame).GetMethod("CastSoulFlame", BindingFlags.Instance | BindingFlags.NonPublic).Invoke(extra.SoulFlame, null); }
+                extra.Energy.RestoreAllEnergy();
+                P2Context.Enter(PuppetAt(localExtra));
+                try { NetReviveTest.CastSoulLink(extra); }
                 finally { P2Context.Exit(); }
-                SoulFlame mine = FlameOf(extra);
-                h.Check(mine != null && mine != before && Vector3.Distance(mine.Position, extra.Position) < 0.5f,
-                    "locals: the extra casts a soul link at its own position (T-138)");
-                h.Check(PartnerFx.SoulLinksSent == sent + 1, "locals: the extra's soul link is sent to the other devices ("
-                    + (PartnerFx.SoulLinksSent - sent) + ")");
+                h.Check(NetReviveTest.NativeLinkAt(Own, extra.Position) && extra.SoulFlame.InsideCheckpointMarker,
+                    "locals: an extra casts and can use the primary's native link at the extra's spot");
+                h.Check(PartnerFx.SoulLinksSent == sent + 1, "locals: the extra sends one cast notice");
             }
-            else
-            {
-                float end = Time.realtimeSinceStartup + 5f; SoulFlame seen = null;
-                while (Time.realtimeSinceStartup < end) { seen = FlameOf(extra); if (seen != null && seen != before) break; yield return null; }
-                bool appeared = seen != null && seen != before;
-                float d = appeared ? Vector3.Distance(seen.Position, extra.Position) : -1f;
-                h.Check(appeared && seen.gameObject.activeInHierarchy && d < 2f && PartnerFx.SoulLinksShown > shown,
-                    "locals: the extra's soul link flame appears beside it on this device (T-138, " + (appeared ? F(d) : "none") + ")");
-            }
+            float end = Time.realtimeSinceStartup + 8f;
+            while ((Revive.RoomFlamePending || Revive.LinkSeat != localExtra || !NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition))
+                && Time.realtimeSinceStartup < end) yield return null;
+            yield return TestClock.WaitGame(Time.fixedDeltaTime);
+            string flameState;
+            bool onlyOne = NetReviveTest.OnlyNativeFlame(Own, out flameState);
+            h.Check(Revive.HaveLink && Revive.LinkSeat == localExtra && NetReviveTest.NativeLinkAt(Own, Revive.LinkPosition) && onlyOne,
+                "locals: each device has one native flame on its primary Ori, at the extra's accepted save point (seat=" + Revive.LinkSeat
+                + ", point=" + Revive.LinkPosition.ToString("F3") + ", " + flameState + ")");
+            if (!owner) h.Check(PartnerFx.SoulLinksReceived == notices + 1, "locals: the extra's cast notice arrives");
         }
 
         // T-202 (#285): the extra local player (a second player on one PC) goes down and holds its own Y: it comes back
@@ -247,6 +239,48 @@ namespace OriCoop
             h.Check(Revive.DownedAtSeat(localExtra) == null && Revive.Revives == revives && TestHarness.RestoreCheckpointCalls == restores,
                 "locals: the extra's own comeback clears its skull on every device: no teammate revive, no reload (T-202)");
             yield return ThreeRound(h, 606, ClientCount);
+        }
+
+        // T-213 (6): the PC with the extra local player loads: here it reports loading and stops sending, as a real load
+        // does, and its extra comes back 6 units away. On the other PCs the extra's last position must be forgotten
+        // while its PC loads, and afterwards its Ori must appear at the new place without being pulled to the old one
+        // (its last frames from before the load must not go out again). Mutations ORICOOP_MUTATE_EXTRA_KEEPS_STREAM=1
+        // (the others keep the extra's old frames and position) and ORICOOP_MUTATE_EXTRA_KEEPS_HISTORY=1 (the old
+        // frames are sent again) must each fail it.
+        static IEnumerator LocalExtraAfterLoad(TestHarness h)
+        {
+            bool owner = Players.LocalSeat == 2;
+            SeinCharacter extra = Players.OriOf(localExtra);
+            h.Check(extra != null, "locals: the extra is there before its PC loads (T-213)");
+            if (extra == null) yield break;
+            Vector3 before = extra.Position, known;
+            yield return ThreeRound(h, 610, ClientCount);
+            long snaps = NetPlay.TestSnaps(localExtra);
+            if (owner) NetPlay.TestReportLoading = true;
+            float until = Time.realtimeSinceStartup + 6f;
+            bool forgot = owner;
+            while (!forgot && Time.realtimeSinceStartup < until) { forgot = !NetPlay.RemotePos(localExtra, out known); if (!forgot) yield return null; }
+            if (!owner) h.Check(forgot, "locals: the extra's last position is forgotten while its PC loads (T-213)");
+            yield return ThreeRound(h, 611, ClientCount);
+            if (owner)
+            {
+                Plugin.Teleport(Players.OriOf(localExtra), before + Vector3.right * 6f);
+                OnlineLocalPlayers.PositionChanged();
+                yield return LocalWait(0.5f);
+                NetPlay.TestReportLoading = false;
+            }
+            until = Time.realtimeSinceStartup + 12f;
+            while ((Players.Remotes.Count != ClientCount || PuppetAt(localExtra) == null || PuppetAt(localExtra).Sein == null) && Time.realtimeSinceStartup < until) yield return null;
+            yield return LocalWait(1f);
+            if (!owner)
+            {
+                Puppet back = PuppetAt(localExtra);
+                float moved = back != null && back.Sein != null ? Mathf.Abs(back.Sein.Position.x - before.x) : -1f;
+                long pulled = NetPlay.TestSnaps(localExtra) - snaps;
+                h.Check(moved > 3f && pulled == 0, "locals: after its PC loaded, the extra appears at its new place and is never pulled to the old one (T-213; moved "
+                    + F(moved) + ", pulled " + pulled + " times)");
+            }
+            yield return ThreeRound(h, 612, ClientCount);
         }
 
         static IEnumerator LocalPlayersCore(TestHarness h)
@@ -295,11 +329,30 @@ namespace OriCoop
             yield return ThreeRound(h, 592, ClientCount);
             OnlineRoomScreen.Continue();
             Puppet extraPuppet = PuppetAt(localExtra);
+            bool extraOwner = Players.LocalSeat == 2;
             Vector3 start = extraPuppet.Sein.Position;
-            if (Players.LocalSeat == 2) { P2Input.BotActive = true; P2Input.BotLX = 1; }
-            yield return LocalWait(2f);
-            if (Players.LocalSeat == 2) P2Input.BotLX = 0;
-            h.Check(extraPuppet.Sein.Position.x > start.x + 1f, "locals: extra moves by independent input on every observer");
+            bool sampled = false;
+            try
+            {
+                if (extraOwner)
+                {
+                    UI.Menu.ShowAreaMap();
+                    P2Input.BotActive = true; P2Input.BotLX = 1;
+                }
+                for (float end = Time.realtimeSinceStartup + 2f; Time.realtimeSinceStartup < end; )
+                {
+                    sampled |= extraPuppet.Input.Horizontal > 0.5f;
+                    yield return null;
+                }
+                if (extraOwner) h.Check(GameMapUI.Instance.IsVisible && !Own.Controller.CanMove,
+                    "locals: the primary seat has the map open and cannot steer its Ori");
+                h.Check(sampled && extraPuppet.Sein.Position.x > start.x + 1f,
+                    "locals: extra moves by independent input on every observer while its primary seat views the map");
+            }
+            finally
+            {
+                if (extraOwner) { P2Input.BotLX = 0; UI.Menu.HideMenuScreen(true); }
+            }
             yield return ThreeRound(h, 593, ClientCount);
             yield return LocalExtraBars(h);
             yield return LocalExtraSoulLink(h);
@@ -455,6 +508,14 @@ namespace OriCoop
                 "locals: guest's own Ori comes back without a checkpoint reload");
             Bot(0, 0);
             yield return ThreeRound(h, 602, ClientCount);
+            if (NetPlay.IsHost) UI.Menu.ShowAreaMap();
+            try
+            {
+                yield return LocalExtraAfterLoad(h);
+                if (NetPlay.IsHost) h.Check(GameMapUI.Instance.IsVisible && Players.Remotes.Count == ClientCount,
+                    "locals: the host rebuilds the guest's puppets while the map is still open");
+            }
+            finally { if (NetPlay.IsHost) UI.Menu.HideMenuScreen(true); }
             OnlineRoomScreen.Show(delegate { }); yield return LocalWait(0.5f);
             if (Players.LocalSeat == 2) h.Check(OnlineRoomScreen.Click("room.remove." + localExtra), "locals: guest clicks drawn remove button");
             deadline = Time.realtimeSinceStartup + 12f;

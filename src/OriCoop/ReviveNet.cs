@@ -56,14 +56,38 @@ namespace OriCoop
         {
             Downed d = s_roster.Take(seat);
             RestoreDowned(d, false);
-            s_haveSafe[seat] = false;
-            if (Online && Services.Net.IsHost && AnyDowned && AllDown(null))
+            s_haveSafe[seat] = false; s_haveSeen[seat] = false;
+            HostWipeIfAllDown();   // the last player standing left: the host's grace decides (TickOnline)
+        }
+
+        // T-215 #2: the host declares "everyone is down" only once that stayed true for WipeGrace.Seconds. A teammate's
+        // "I'm back" (62) that left before another teammate's "I'm down" (60) can arrive after it; deciding the moment
+        // the 60 arrived rolled back a player who was already up.
+        static readonly WipeGrace s_wipe = new WipeGrace();
+        // Planted bug: decide the moment everyone looks down, as before T-215.
+        static readonly bool s_mutateWipeNoGrace = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WIPE_NO_GRACE") == "1";
+        public static int WipesHeldBack;   // times everyone looked down and somebody turned out to be up within the grace
+
+        static void TickWipe()
+        {
+            if (!Services.Net.IsHost) { s_wipe.Reset(); return; }
+            bool armed = s_wipe.Armed;
+            bool allDown = AnyDowned && AllDown(null);
+            if (s_wipe.Tick(allDown, Time.realtimeSinceStartup, WipeGrace.Seconds)) DeclareWipe();
+            else if (armed && !s_wipe.Armed)
             {
-                FinalDeaths++; NetBothDown++;
-                Services.Net.Send(MsgBothDown, true, w => { });
-                ReleaseRemoteDowned();
-                KillP1Normally();
+                WipesHeldBack++;
+                Services.Log.Info("online: everyone looked down, but a teammate was already up: no reload");
             }
+        }
+
+        static void DeclareWipe()
+        {
+            FinalDeaths++; NetBothDown++;
+            Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
+            Services.Net.Send(MsgBothDown, true, w => { });
+            ReleaseRemoteDowned(); // T-026: the partners' skulls go now, not when their puppets later vanish
+            KillP1Normally();
         }
 
         // Called from the OnKill prefix for the LOCAL Ori online. true = turned into downed (skip the game's death).
@@ -75,13 +99,15 @@ namespace OriCoop
             bool partnerDown = AllDown(p1);
             if (ReviveLogic.DecideOnlineDeath(partnerDown, partnerDown && Services.Net.IsHost) == DeathOutcome.Checkpoint)
             {
-                // The guest is already down and now the host: both out. Tell the guest, then die normally.
-                FinalDeaths++; NetBothDown++;
-                Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
-                Services.Net.Send(MsgBothDown, true, w => { });
-                ReleaseRemoteDowned(); // T-026: the partners' skulls go now, not when their puppets later vanish
-                if (p1 != Host.P1) { MakeDowned(p1); KillP1Normally(); return true; }
-                return false;
+                if (s_mutateWipeNoGrace)
+                {
+                    // Before T-215: the guest is already down and now the host: both out, decided at once.
+                    DeclareWipeNow(p1);
+                    return p1 != Host.P1;
+                }
+                // T-215 #2: the host goes down last. It is down like anyone else; the wipe follows once everyone has
+                // been down for the grace (TickWipe), in case a teammate's "I'm back" is still on its way.
+                Services.Log.Info("online: the host went down last: reload after the grace unless a teammate is already up");
             }
             // Down; the partner can revive us. (Guest with the host already down: the host decides on our message.)
             MakeDowned(p1);
@@ -99,6 +125,7 @@ namespace OriCoop
             if (!Online)
             {
                 ResetSpectate();
+                s_wipe.Reset();
                 s_seenRemote = 0;   // back online: tell everyone our seats' state again (T-166)
                 if (AnyDowned && Services.Net.Enabled && !Services.Net.Connected) ClearAll("partner disconnected", Host.P1 != null);
                 HideStaleSelfHints();
@@ -115,10 +142,13 @@ namespace OriCoop
                 if (Services.Net.IsHost)
                 {
                     NoteTeammateArrival();
-                    if (!told) SendRoomLink();   // T-041: a PC that joined or reloaded learns the latest soul link
+                    // T-041: a PC that joined or reloaded learns the latest soul link. T-215 #7: as a repeat, so the
+                    // PCs that already know it do not take it for a soul link made just now.
+                    if (!told) SendRoomLink(true);
                 }
             }
             s_seenRemote = seen;
+            TickWipe();   // T-215 #2 (host): everyone down for the whole grace -> the reload
             foreach (int localSeat in Players.LocalSeats)
             {
                 Downed own = s_down[localSeat];
@@ -235,15 +265,22 @@ namespace OriCoop
             Services.Log.Info("online: partner downed at " + marker + " (hold Spirit Flame near the skull to revive)");
         }
 
+        // A message changed who is down. The host's decision is TickWipe's (every frame, after the grace); only the
+        // planted bug still decides here, the moment the message arrives.
         static void HostWipeIfAllDown()
         {
-            if (!Services.Net.IsHost || !AnyDowned || !AllDown(null)) return;
-            // We (host) were already down and now the guest: both out.
+            if (!s_mutateWipeNoGrace || !Online || !Services.Net.IsHost || !AnyDowned || !AllDown(null)) return;
+            DeclareWipe();
+        }
+
+        // Planted bug only (ORICOOP_MUTATE_WIPE_NO_GRACE): the host's own death with everyone else down, as before T-215.
+        static void DeclareWipeNow(SeinCharacter dying)
+        {
             FinalDeaths++; NetBothDown++;
             Services.Log.Info("online: both Oris are down (host decides): checkpoint reload");
             Services.Net.Send(MsgBothDown, true, w => { });
             ReleaseRemoteDowned();
-            KillP1Normally();
+            if (dying != Host.P1) { MakeDowned(dying); KillP1Normally(); }
         }
 
         // T-166: a PC that was loading (or rejoined) had no puppets meanwhile, so it ignored the downed messages of that
@@ -311,13 +348,31 @@ namespace OriCoop
             if (NetPlay.DeviceSeat(rescuer) != Services.Net.Sender) return;
             d.Rescuer = rescuer;
             if (!Players.IsLocal(seat)) return;
+            ApplyRevive(d, seat, SeinAt(rescuer), health);
+        }
+
+        // This PC's downed Ori is revived by a teammate's PC. saver: the rescuer's Ori here, or null when it is not on
+        // this PC any more (T-215 #1: the revive still completes, at the skull).
+        static void ApplyRevive(Downed d, int seat, SeinCharacter saver, float health)
+        {
             s_down[seat] = null;
-            RestoreDowned(d, true, SeinAt(rescuer), health);
+            RestoreDowned(d, true, saver, health);
             if (d.Sein != null) PartnerFx.PlayRevive(d.Sein, d.Sein.Position);
             NetRevivesApplied++;
             SendRevived(seat, d.Sein.Position);
             Services.Log.Info("online: revived by the partner with " + health.ToString("F1") + " health");
         }
+
+        // Test hooks (NetReviveTest R7). A teammate's "revived you" arrives after its Ori left this PC (#1); the host
+        // tells the room's save point again, as when a PC joins (#7).
+        internal static bool TestReviveWithoutRescuer(int seat, float health)
+        {
+            Downed d = seat >= 1 && seat <= ReviveLogic.MaxSeats ? s_down[seat] : null;
+            if (d == null || d.Remote || d.Sein == null) return false;
+            ApplyRevive(d, seat, null, health);
+            return true;
+        }
+        internal static void TestResendRoomLink() { SendRoomLink(true); }
 
         static void OnNetRevived(BinaryReader r)
         {

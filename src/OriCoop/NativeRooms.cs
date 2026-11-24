@@ -201,7 +201,7 @@ namespace OriCoop
                     {
                         RoomDialRow(rows, true, zh);
                         RoomDialRow(rows, false, zh);
-                        RoomRow(rows, L10n.T("rooms.join", zh), L10n.T("lobby.connect.desc", zh),
+                        RoomRow(rows, L10n.T("rooms.join", zh), L10n.T("lobby.connect.desc.cs", zh),
                             delegate { p.JoinWithCode(s_roomsCode, s_roomsPassword); });
                     }
                     else if (s_page == PageRoomPassword)

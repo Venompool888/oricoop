@@ -186,6 +186,33 @@ static class EscapeTests
             Check(!EscapeRules.TryRead(new BinaryReader(new MemoryStream(new byte[] { 1, 2, 0, 0, 0, 0, 0, 0, 0, 0 })), out t), "truncated");
         });
 
+        // ---- T-215 #3: the "bring the team" work owed after a finish ---------------------------------------------------
+        Run("T-215 #3 pending finish: the fallback and the extras each come due once, at their time", delegate {
+            PendingFinish p = new PendingFinish();
+            Check(!p.Active, "active before any finish");
+            p.Begin(EscapeRules.Ginso, 2, 103f, 102f);
+            Check(p.Active && p.Escape == EscapeRules.Ginso && p.Finisher == 2, "not active after a finish");
+            Check(!p.TakeExtras(101.9f) && !p.TakeFallback(102.9f), "due early");
+            Check(p.TakeExtras(102f) && !p.TakeExtras(102.1f), "extras: not due at their time, or due twice");
+            Check(p.Active, "settled while the fallback is still owed");
+            Check(p.TakeFallback(103f) && !p.TakeFallback(104f), "fallback: not due at its time, or due twice");
+            Check(!p.Active && p.Escape == EscapeRules.Ginso, "still active after both, or the escape id was lost");
+        });
+        Run("T-215 #3 pending finish: nothing owed when the times are 0", delegate {
+            PendingFinish p = new PendingFinish();
+            p.Begin(EscapeRules.Horu, 1, 0f, 101.2f);   // the finisher's own PC: no fallback
+            Check(!p.TakeFallback(1000f), "a fallback that was never owed");
+            Check(p.TakeExtras(101.2f) && !p.Active, "extras");
+        });
+        Run("T-215 #3 pending finish: the session's end drops what is still owed", delegate {
+            PendingFinish p = new PendingFinish();
+            p.Begin(EscapeRules.Ginso, 2, 103f, 102f);
+            p.Clear();   // the player ended the session and stays in its own game
+            Check(!p.Active, "still active after the session ended");
+            Check(!p.TakeFallback(103f) && !p.TakeFallback(1000f), "pulled to the finisher after the session ended");
+            Check(!p.TakeExtras(102f) && !p.TakeExtras(1000f), "extras moved after the session ended");
+        });
+
         Console.WriteLine("ESCAPE " + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
         return failed == 0 ? 0 : 1;
     }

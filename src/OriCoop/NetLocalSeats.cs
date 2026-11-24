@@ -122,7 +122,13 @@ namespace OriCoop
         {
             foreach (RemoteState other in s_remotes.Values)
                 if (other != primary && DeviceSeat(other.Seat) == primary.Seat)
-                { other.Hello = primary.Hello; other.InGameplay = primary.InGameplay; other.Scene = primary.Scene; other.Version = primary.Version; }
+                {
+                    other.Hello = primary.Hello; other.InGameplay = primary.InGameplay; other.Scene = primary.Scene; other.Version = primary.Version;
+                    // T-213 (6): a PC that is not in gameplay (loading) takes all its seats along. The extra local players
+                    // kept their buffered frames and last position: after the load their Oris appeared at the old place and
+                    // replayed the old frames before jumping to the new one.
+                    if (!other.InGameplay && !s_mutateExtraKeepsStream) ClearStream(other);
+                }
         }
         static void ReconcileSeats()
         {
@@ -145,8 +151,10 @@ namespace OriCoop
             }
             foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
             {
-                if (s_seats.Owner(remote.Seat) == 0 || Array.IndexOf(LocalSeats, remote.Seat) >= 0)
+                int owner = s_seats.Owner(remote.Seat);
+                if (owner == 0 || Array.IndexOf(LocalSeats, remote.Seat) >= 0)
                 { Leave(remote, "seat released"); continue; }
+                if (owner != s_lastOwners[remote.Seat] && remote.Puppet != null) PartnerSkillFx.StopGlow(remote.Puppet);
                 remote.Peer = null;
             }
             for (int seat = 1; seat <= 4; seat++)

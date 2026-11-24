@@ -12,6 +12,43 @@ namespace OriCoop.Authority
     public static class CServerLink
     {
         static CServerClient s_client;
+        static RoomOwnerNotice s_ownerNotice;
+        internal static Func<string, byte[], Action> BeginEnvironmentReport = CreateReport;
+        static Action s_cancelReport;
+        static string s_reportAddress;
+
+        internal static void DiagnosticsConsentChanged()
+        {
+            if (s_cancelReport != null && !CServerConfig.DiagnosticsAllowed(s_reportAddress)) CancelDiagnostics();
+        }
+
+        static void CancelDiagnostics()
+        {
+            if (s_cancelReport != null) s_cancelReport();
+            s_cancelReport = null;
+            s_reportAddress = null;
+        }
+
+        static void StartDiagnostics(string address, byte[] token)
+        {
+            try
+            {
+                if (!CServerConfig.DiagnosticsAllowed(address) || token == null) return;
+                s_reportAddress = address;
+                s_cancelReport = BeginEnvironmentReport(address, token);
+            }
+            catch (Exception) { Plugin.Log.LogWarning("cserver: environment diagnostics unavailable"); }
+        }
+        static Action CreateReport(string address, byte[] token)
+        {
+            // Unity settings are read on the game thread. Start snapshots the token and queues the disk/network work.
+            string language = null, saveDirectory = null;
+            try { if (GameSettings.Instance != null) language = GameSettings.Instance.Language.ToString(); } catch (Exception) { }
+            try { saveDirectory = CoopSaves.Folder; } catch (Exception) { }
+            string host = address.Substring(0, address.LastIndexOf(':'));
+            return Diagnostics.JoinReportJob.Start(host, language, UnityEngine.Application.dataPath, saveDirectory, token).Cancel;
+        }
+
         static bool s_installed;
         static string s_lastCode = ""; static byte[] s_lastToken;
         static bool s_lastCreated;   // T-173: s_lastCode's room was created by this PC (a token rejoin keeps CServerClient.Created)
@@ -36,8 +73,16 @@ namespace OriCoop.Authority
             // T-113: before NetPlay.End says goodbye, free our seats on the server so a rejoin (or anyone) gets them now.
             NetPlay.Leaving = delegate
             {
+                CancelDiagnostics();
                 if (s_client == null) return;
-                try { s_client.ReleaseAll(); Plugin.Log.LogInfo("cserver: leaving, released seat P" + s_client.PrimarySeat); }
+                try
+                {
+                    // T-213: wait (at most 0.4 s, normally one round trip) for the server to have the release before
+                    // NetPlay.End says goodbye; arriving together, the goodbye won and the seat stayed held for 60 s.
+                    int seat = s_client.PrimarySeat;
+                    bool acknowledged = s_client.ReleaseAll(400, null);
+                    Plugin.Log.LogInfo("cserver: leaving, released seat P" + seat + (acknowledged ? "" : " (no acknowledgement from the server within 0.4 s: the seat may stay held for a minute)"));
+                }
                 catch (Exception e) { Plugin.Log.LogWarning("cserver: release on leave: " + e.Message); }
             };
             NetPlay.SendToOverride = delegate(int seat, byte type, bool reliable, Action<BinaryWriter> body)
@@ -89,8 +134,14 @@ namespace OriCoop.Authority
             c.RejoinFallsBackToJoin = rejoin;
             c.RejoinCreated = rejoin && s_lastCreated;
             c.Private = RoomServiceSession;   // T-173 (review F10): its room info never reaches the public room list
+            bool joinedOnce = false;
             c.SeatAssigned += delegate(int seat)
             {
+                if (!joinedOnce && seat > 0 && s_client == c)
+                {
+                    joinedOnce = true;
+                    StartDiagnostics(server.Trim(), c.Token);
+                }
                 s_seated = true;
                 NetPlay.RoomCodeOverride = c.Code;
                 s_lastCode = c.Code; s_lastToken = c.Token; s_lastCreated = c.Created;
@@ -136,15 +187,28 @@ namespace OriCoop.Authority
             c.Peer.Disconnected += delegate(string why)
             {
                 if (s_client != c) return;
+                CancelDiagnostics();
                 Plugin.Log.LogInfo("cserver: disconnected (" + why + ")");
                 Unroute(); s_client = null; s_stale = c;
             };
             s_client = c;
+            s_ownerNotice = new RoomOwnerNotice();
             ConnectAttempts++;
             NetRoute.UseServer(c);
             AuthoritySource.UseServer(c.Authority, c.Receive);
             Plugin.Log.LogInfo("cserver: connecting (" + (rejoin ? "rejoin " + code : isHost ? "new room" : "join " + code) + ")");
             return c.Peer;
+        }
+
+        internal static void TickOwnerNotice()
+        {
+            CServerClient c = s_client;
+            if (c == null) return;
+            int owner = c.ArbiterSeat;
+            int previousOwner = s_ownerNotice.TakePreviousOwner(owner, c.SeatOnlineNow(c.PrimarySeat), c.Peer.NowMs);
+            if (previousOwner == 0) return;
+            string key = c.SeatOnlineNow(previousOwner) ? "hud.owner.changed" : "hud.owner.left";
+            NetHud.Toast(L10n.F(key, Roles.Tag(owner)));
         }
 
         // T-173 (review F10): this session plays a room-service room (我的房间 or a password room): RoomSession is active
@@ -171,6 +235,7 @@ namespace OriCoop.Authority
 
         static void Teardown()
         {
+            CancelDiagnostics();
             // T-152: a dropped session's client is parked in s_stale (NetPlay may still poll it until the next Create).
             // Leaving online play (NetPlay.End -> Stopped, after Close) must free its UDP socket too.
             if (s_stale != null && !s_mutateKeepStale) { try { s_stale.Leave(); } catch { } s_stale = null; }

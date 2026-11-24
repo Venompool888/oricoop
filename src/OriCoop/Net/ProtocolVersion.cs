@@ -10,8 +10,11 @@ namespace OriCoop.Net
     // net8: RoomLink (msg 69) carries the room's latest save point and the saver's health (T-041).
     // net9: EscapeDone (msg 92): one player reached an escape's end, the team is brought there (T-169).
     // net10: LobbyState / LobbyStart (msgs 94 / 95): the C-server room page's ready, ping, room save and start (T-171).
+    // net11: a pickup action (msg 21) carries the pickup's scene and spot (T-214): a net10 PC's actions cannot be read.
+    // New and ignored by net10: GateRelease (msg 97, T-207), the prologue clock and log (msg 96 kinds 2 and 3, T-205).
+    // net12: RoomLink carries the native flame and save rejection; story starts and world snapshots sync well activations.
     internal static class ProtocolVersion
     {
-        public const string Mod = "0.2.0-net10";
+        public const string Mod = "0.2.0-net12";
     }
 }

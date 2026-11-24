@@ -37,7 +37,7 @@ namespace OriCoop
         public static string LastReviveEffect = "", LastReviveSound = "";
         public static float LastHurtPlayedAt = -1f, LastReviveAt = -1f;
         public static bool LastHurtStateOn, LastHurtAnimOn;
-        public static int SoulLinksSent, SoulLinksShown, SoulLinksReceived;
+        public static int SoulLinksSent, SoulLinksReceived;
 
         static bool s_registered;
 
@@ -52,34 +52,31 @@ namespace OriCoop
             s_registered = true;
             Services.Net.On(MsgPuppetFx, OnNetPuppetFx);
             Services.Net.On(MsgSoulLink, OnNetSoulLink);
-            // T-115: guests only talk to the P2P host: it must relay a guest's soul link flame to the other guests.
+            // Guests only talk to the P2P host: it relays their cast notices to the other guests.
             if (!PushBlockSync.s_mutateNoForward) Services.Net.Forward(MsgSoulLink);
         }
-        // T-115 net test: announce a soul link at our own position (the partners spawn the native flame on our puppet).
-        internal static void TestSendSoulLink()
+        // Test: send the cast notice without changing the room save.
+        internal static void TestSendSoulLink() { TestSendSoulLink(Host.LocalSeat); }
+        // seat: the seat the message names (a test may name one that no player can have).
+        internal static void TestSendSoulLink(int seat)
         {
             if (Host.P1 == null) return;
-            int seat = Host.LocalSeat; Vector3 at = Host.P1.Position;
+            Vector3 at = Host.P1.Position;
             Services.Net.Send(MsgSoulLink, true, w => { w.Write((byte)seat); w.Write(at.x); w.Write(at.y); w.Write(at.z); });
         }
 
-        // ---- soul link (T-029) -----------------------------------------------------------------------------------------
-        // Saving with a soul link places the game's own flame (SeinSoulFlame.CheckpointMarker, with its appear flash). The
-        // partner's game blocks the puppet's soul-flame logic online, so it never placed one: send where ours appeared and
-        // that game spawns the same native flame on our puppet (replacing the previous one; it goes with the puppet).
-        // T-138: the same for this device's extra local players (T-059): their Oris are puppets here, but ours to report.
+        // Message 80 only announces the cast. The accepted room save supplies the native marker.
         [HarmonyPatch(typeof(SeinSoulFlame), "CastSoulFlame")]
         static class SoulLinkWatch
         {
-            static void Postfix(SeinSoulFlame __instance, SoulFlame ___m_soulFlame)
+            static void Postfix(SeinCharacter ___m_sein)
             {
                 try
                 {
-                    if (!Online || ___m_soulFlame == null) return;
-                    SeinCharacter caster = OwnedCaster(__instance);
-                    int seat = caster != null ? Host.SeatOf(caster) : 0;
+                    if (!Online || ___m_sein != Host.P1 && !OwnedLocalPuppet(___m_sein)) return;
+                    int seat = Host.SeatOf(___m_sein);
                     if (seat < 1) return;
-                    Vector3 at = ___m_soulFlame.Position;
+                    Vector3 at = Host.P1.SoulFlame.SoulFlamePosition;
                     Services.Net.Send(MsgSoulLink, true, w => { w.Write((byte)seat); w.Write(at.x); w.Write(at.y); w.Write(at.z); });
                     SoulLinksSent++;
                     Log("soul link of P" + seat + " at " + at + " sent to the other devices");
@@ -88,30 +85,12 @@ namespace OriCoop
             }
         }
 
-        // The Ori this device owns that cast `flame`: its own, or one of its extra local players'; null for another device's.
-        static SeinCharacter OwnedCaster(SeinSoulFlame flame)
-        {
-            if (flame == null) return null;
-            if (Host.P1 != null && Host.P1.SoulFlame == flame) return Host.P1;
-            foreach (Puppet p in Players.Remotes)
-                if (p != null && p.IsLocal && p.Sein != null && p.Sein.SoulFlame == flame) return p.Sein;
-            return null;
-        }
-
         static void OnNetSoulLink(BinaryReader r)
         {
             int seat = r.ReadByte();
-            Vector3 at = new Vector3(r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
+            if (seat < 1 || seat > Players.MaxSeats || Players.IsLocal(seat)) return;
             SoulLinksReceived++;
-            // T-041 (#15): everyone else is told; the creator sees only the game's own "soul link made".
-            if (seat >= 1 && !Players.IsLocal(seat)) NetHud.Toast(L10n.F("revive.link_made", Roles.Tag(seat)));
-            SeinCharacter s = Revive.SeinAt(seat);
-            if (s == null || s == Host.P1 || s.SoulFlame == null || OwnedLocalPuppet(s)) { Log("got soul link for seat " + seat + " but no puppet"); return; }
-            s.SoulFlame.DestroySoulFlame();
-            s.SoulFlame.SpawnSoulFlame(at);
-            SoulLinksShown++;
-            Log("partner P" + seat + " soul link flame shown at " + at);
-            Host.Trace("player", "soullink.fx", "who", "P" + seat, "pos", at);
+            NetHud.Toast(L10n.F("revive.link_made", Roles.Tag(seat)));
         }
 
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected && Host.P1 != null; } }

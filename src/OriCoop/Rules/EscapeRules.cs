@@ -29,6 +29,40 @@ namespace OriCoop.Rules
         public float Pending;    // presses not yet shown (the ring never fills faster than MashMinSeconds)
     }
 
+    // The "bring the team" work a PC still owes after a finish: its own Ori goes beside a remote finisher if the game's
+    // end did not take it there (fallback), and its extra local Oris join the primary one. T-215 #3: all of it is
+    // dropped when the session ends, or a player who stays in its own game would still be pulled to the finisher.
+    public sealed class PendingFinish
+    {
+        public int Escape, Finisher;
+        float m_fallbackAt, m_extrasAt;   // real time; 0 = not owed
+
+        public bool Active { get { return m_fallbackAt > 0f || m_extrasAt > 0f; } }
+
+        public void Begin(int escape, int finisher, float fallbackAt, float extrasAt)
+        {
+            Escape = escape; Finisher = finisher; m_fallbackAt = fallbackAt; m_extrasAt = extrasAt;
+        }
+
+        // true once, when the fallback placement is due.
+        public bool TakeFallback(float now)
+        {
+            if (m_fallbackAt <= 0f || now < m_fallbackAt) return false;
+            m_fallbackAt = 0f;
+            return true;
+        }
+
+        // true once, when the extra local Oris should join the primary one.
+        public bool TakeExtras(float now)
+        {
+            if (m_extrasAt <= 0f || now < m_extrasAt) return false;
+            m_extrasAt = 0f;
+            return true;
+        }
+
+        public void Clear() { Escape = 0; Finisher = 0; m_fallbackAt = 0f; m_extrasAt = 0f; }
+    }
+
     public static class EscapeRules
     {
         public const byte MsgEscapeDone = 92;   // docs/net-msg-ids.md

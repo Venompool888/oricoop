@@ -39,6 +39,23 @@ namespace OriCoop.World
         // e.g. the host's checkpoint rollback, can do that).
         public static bool NeverRemoved(string key) { return key.StartsWith("r:"); }
 
+        // T-214: map exploration only grows. An area state item "a<i>.s<face>" is the game's WorldMapAreaState (Hidden 0 <
+        // Discovered 1 < Visited 2; decomp RuntimeGameWorldArea only ever raises one). A partner's older batch or a full
+        // snapshot never lowers or removes one here (DeltaObject); only this PC's own checkpoint load does, and that is
+        // the game's load, not this code. Before, the last writer won: a snapshot that arrived while this PC walked took
+        // back the cells it had not proposed yet, and a late "discovered" replaced a "visited".
+        // Test-only mutation ORICOOP_MUTATE_MAP_DOWNGRADE=1 (WorldSync.InitDelta): last writer wins again.
+        public static bool MutateMapDowngrade;
+        public static bool OnlyGrows(string key)
+        {
+            if (MutateMapDowngrade || key.Length < 4 || key[0] != 'a') return false;
+            int dot = key.IndexOf('.');
+            return dot > 0 && dot + 1 < key.Length && key[dot + 1] == 's';
+        }
+        public static bool HasGrowing(byte schema) { return schema == SchemaMap && !MutateMapDowngrade; }
+        // `value` is a higher level than `old` (null = the cell is not there).
+        public static bool Higher(byte[] value, byte[] old) { return value != null && (old == null || ToInt(value) > ToInt(old)); }
+
         static int Count(BinaryReader r)
         {
             int count = r.ReadInt32();

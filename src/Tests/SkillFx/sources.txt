@@ -1,0 +1,2 @@
+OriCoop\Fx\SkillFxWire.cs
+OriCoop\Fx\SkillFxReplay.cs

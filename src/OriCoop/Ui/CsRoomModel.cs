@@ -6,9 +6,7 @@ namespace OriCoop.Ui
     // T-171: the C-server room page (房间管理页) as plain data, no Unity, so the unit tests drive it.
     // The page (CsRoomPage) fills Seats from the C-server roster and the players' lobby states every frame,
     // asks this model what to draw (rows, bottom bar) and feeds it navigation and key presses; the model
-    // answers with the action to run. C-server rooms have no host: the "manager" is the device owning the
-    // lowest online seat (the creator while it is there, CServerClient.ArbiterSeat); only the manager sees
-    // 开始游戏 / 换存档 / 踢出, and nothing on the page names it.
+    // answers with the action to run. The roster's arbiter seat supplies the room owner label.
     // T-189: CopyCode, Back and ConfirmLeave belong to the in-game page (pause menu -> 房间管理) only.
     internal enum CsRoomAction { None, Start, Ready, SwitchSave, Kick, Leave, OpenCode, CopyCode, Back, ConfirmLeave }
 
@@ -28,7 +26,7 @@ namespace OriCoop.Ui
         public int Seat;
         public bool Empty, Selected;
         public bool Picked;     // the bar has the focus and 踢出 would act on this player
-        public string Label, Name, Ping, Status;
+        public string Label, Name, Role, Ping, Status;
         public bool Ready;
     }
 
@@ -118,6 +116,7 @@ namespace OriCoop.Ui
         // bar asks to confirm.
         public bool InGame, HasCode, LeaveAsked;
         public int FocusBar;     // index into Bar() while FocusRow == BarRow
+        public int OwnerSeat;
         Func<string, string> m_text;
 
         public CsRoomModel(Func<string, string> text)
@@ -218,11 +217,13 @@ namespace OriCoop.Ui
             {
                 row.Empty = true;
                 row.Name = m_text("csroom.waiting_player");
+                row.Role = "";
                 row.Ping = "-";
                 row.Status = m_text("csroom.waiting");
                 return row;
             }
             row.Name = s.Nick + (s.Local ? " " + m_text("csroom.you") : "");
+            row.Role = m_text(L10n.RoleKey(true, seat == OwnerSeat));
             row.Ping = s.RttMs < 0 || !s.Online ? "-" : s.RttMs + " ms";
             if (InGame) row.Status = m_text(!s.Online ? "csroom.offline" : s.Local ? "csroom.local" : "csroom.remote");   // T-189: no ready in the game
             else row.Status = !s.Online ? m_text("csroom.offline") : s.Playing ? m_text("csroom.playing") : m_text(s.Ready ? "csroom.ready" : "csroom.not_ready");

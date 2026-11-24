@@ -21,7 +21,9 @@ namespace OriCoop
         const int PageServerList = 8, PageServerAdd = 9, PageServerRemove = 10;
         const int PageRoomsMenu = 17, PageServerManage = 18;   // T-095: 我的房间 submenu, 服务器管理
         const int PageRooms = 11, PageRoomView = 12, PageRoomCreate = 13, PageRoomJoin = 14, PageRoomPassword = 15, PageRoomSlots = 16;
-        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots", "roomsmenu", "servermanage" };
+        const int PageDiagnosticsList = 19, PageDiagnosticsConsent = 20;
+        static string s_diagnosticsAddress = "";
+        static readonly string[] PageNames = { "main", "online", "role", "entry", "hosting", "joining", "coop", "servermode", "serverlist", "serveradd", "serverremove", "rooms", "roomview", "roomcreate", "roomjoin", "roompassword", "roomslots", "roomsmenu", "servermanage", "diagnosticslist", "diagnosticsconsent" };
         const string RoomAlphabet = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";   // legacy letter codes (text entry); new codes are digits 2-9 typed on the dial (T-046)
         const string IpAlphabet = "0123456789.:";
         const string CServerHostAlphabet = "abcdefghijklmnopqrstuvwxyz0123456789.-";
@@ -118,10 +120,11 @@ namespace OriCoop
             if (IsRoomsPage) return RoomRows(zh);
             bool roomCode = UsesRoomCode, direct = s_transport == "direct";
             var r = new List<string[]>();
-            if (s_page == PageServerList || s_page == PageServerRemove)
+            if (s_page == PageServerList || s_page == PageServerRemove || s_page == PageDiagnosticsList)
             {
+                string pick = s_page == PageDiagnosticsList ? "diagnostics.pick" : s_page == PageServerRemove ? "server.remove.pick" : "server.pick";
                 foreach (string server in OriCoop.Authority.CServerConfig.Servers)
-                    r.Add(new[] { server, L10n.T(s_page == PageServerRemove ? "server.remove.pick" : "server.pick", zh) });
+                    r.Add(new[] { server, L10n.T(pick, zh) });
                 if (r.Count == 0) r.Add(new[] { L10n.T("server.none", zh), L10n.T("common.back.desc", zh) });
             }
             else if (s_page == PageServerManage)
@@ -129,6 +132,16 @@ namespace OriCoop
                 r.Add(new[] { L10n.T("server.add", zh), L10n.T("server.add.desc", zh) });
                 r.Add(new[] { L10n.T("server.remove", zh), L10n.T("server.remove.desc", zh) });
                 r.Add(new[] { L10n.T("server.list", zh), L10n.T("server.list.desc", zh) });
+                r.Add(new[] { L10n.T("diagnostics.title", zh), L10n.T("diagnostics.pick", zh) });
+            }
+            else if (s_page == PageDiagnosticsConsent)
+            {
+                bool enabled = Authority.CServerConfig.DiagnosticsAllowed(s_diagnosticsAddress);
+                r.Add(new[] { s_diagnosticsAddress, L10n.T("diagnostics.purpose", zh) });
+                r.Add(new[] { L10n.T("diagnostics.device", zh), L10n.T("diagnostics.fields", zh) });
+                r.Add(new[] { L10n.T("diagnostics.network", zh), L10n.T("diagnostics.providers", zh) });
+                r.Add(new[] { L10n.T(enabled ? "diagnostics.disable" : "diagnostics.allow", zh),
+                    string.Format(L10n.T(enabled ? "diagnostics.enabled" : "diagnostics.disabled", zh), s_diagnosticsAddress) });
             }
             else if (s_page == PageServerAdd)
             {
@@ -156,7 +169,7 @@ namespace OriCoop
                 if (s_entryKind == 0 && !s_editing && !s_legacyCode) help += "\n" + L10n.T("lobby.room.legacy", zh);   // T-046: older letter codes still work
                 r.Add(new[] { EntryDisplay(zh), help });
                 if (CServerEntry) r.Add(new[] { L10n.T("common.save", zh), L10n.T("cserver.save.desc", zh) });
-                else r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T("lobby.connect.desc", zh) + SaveNote(zh) });
+                else r.Add(new[] { L10n.T("lobby.connect", zh), L10n.T(roomCode ? "lobby.connect.desc.cs" : "lobby.connect.desc", zh) + SaveNote(zh) });
                 r.Add(new[] { L10n.T("common.back", zh), L10n.T("common.back.desc", zh) });
             }
             else if (s_page == PageHost)
@@ -184,11 +197,12 @@ namespace OriCoop
                 string status;
                 if (NetPlay.PartnerHere)
                 {
-                    string who = !string.IsNullOrEmpty(NetPlay.SteamPartnerName) ? NetPlay.SteamPartnerName : L10n.T("lobby.partner", zh);
-                    status = string.Format(L10n.T("lobby.partner.joined", zh), who);
+                    string who = roomCode ? Roles.Tag(Roles.Partner)
+                        : !string.IsNullOrEmpty(NetPlay.SteamPartnerName) ? NetPlay.SteamPartnerName : L10n.T("lobby.partner", zh);
+                    status = string.Format(L10n.T(L10n.ModeKey("lobby.partner.joined", roomCode), zh), who);
                 }
                 else if (!string.IsNullOrEmpty(NetPlay.Problem)) status = L10n.T(FriendlyError(NetPlay.Problem, false), zh);
-                else status = L10n.T(canStart ? "lobby.start.ready" : "lobby.start.preparing", zh);
+                else status = L10n.T(canStart ? L10n.ModeKey("lobby.start.ready", roomCode) : "lobby.start.preparing", zh);
                 r.Add(new[] { L10n.T("lobby.start", zh), status });
                 r.Add(new[] { L10n.T("common.cancel", zh), L10n.T("lobby.host.cancel.desc", zh) });
             }
@@ -400,7 +414,25 @@ namespace OriCoop
             {
                 if (index == 0) { s_cserverHost = ""; s_cserverPort = ""; s_testState = 0; GoPage(PageServerAdd, 0); }
                 else if (index == 1) GoPage(PageServerRemove, 0);
-                else { LoadCServer(); GoPage(PageServerList, 0); }
+                else if (index == 2) { LoadCServer(); GoPage(PageServerList, 0); }
+                else GoPage(PageDiagnosticsList, 0);
+            }
+            else if (s_page == PageDiagnosticsList)
+            {
+                List<string> servers = Authority.CServerConfig.Servers;
+                if (index < 0 || index >= servers.Count) { LobbyBack(); return; }
+                s_diagnosticsAddress = servers[index];
+                GoPage(PageDiagnosticsConsent, 0);
+            }
+            else if (s_page == PageDiagnosticsConsent)
+            {
+                if (index == 3)
+                {
+                    bool enabled = Authority.CServerConfig.DiagnosticsAllowed(s_diagnosticsAddress);
+                    if (!Authority.CServerConfig.SetDiagnosticsAllowed(s_diagnosticsAddress, !enabled)) ToastKey("cserver.addr.save_failed");
+                    else GoPage(PageDiagnosticsConsent, 0);
+                }
+                else GoPage(PageDiagnosticsConsent, index + 1);
             }
             else if (s_page == PageServerList)
             {
@@ -539,6 +571,8 @@ namespace OriCoop
         static void LobbyBack()
         {
             if (IsRoomsPage) { RoomBack(); return; }
+            if (s_page == PageDiagnosticsConsent) { GoPage(PageDiagnosticsList, Math.Max(0, Authority.CServerConfig.Servers.IndexOf(s_diagnosticsAddress))); return; }
+            if (s_page == PageDiagnosticsList) { GoPage(PageServerManage, 3); return; }
             if (s_page == PageServerManage) { GoPage(PageServerMode, ServerModeRoomsRow + 1); return; }
             if (s_page == PageServerList || s_page == PageServerAdd || s_page == PageServerRemove)
             { GoPage(PageServerManage, s_page == PageServerAdd ? 0 : s_page == PageServerRemove ? 1 : 2); return; }
@@ -1090,7 +1124,7 @@ namespace OriCoop
             if (s_mgr == null || s_items.Count < 2) return;
             // T-200: the 我的房间 menu has five rows when the server did not answer and this PC has rooms (try again / new /
             // join / list / back): more than the orb's fixed places, so it scrolls like a list then.
-            bool list = s_page == PageServerList || s_page == PageServerRemove || (IsRoomsPage && (s_page != PageRoomsMenu || count > MaxItems));
+            bool list = s_page == PageServerList || s_page == PageServerRemove || s_page == PageDiagnosticsList || (IsRoomsPage && (s_page != PageRoomsMenu || count > MaxItems));
             s_mgr.ItemDirection = list ? CleverMenuItemSelectionManager.Direction.TopToBottom : s_itemDirection;
             int focus = Mathf.Clamp(s_mgr.Index, 0, Math.Max(0, count - 1));
             if (focus < s_listTop) s_listTop = focus;

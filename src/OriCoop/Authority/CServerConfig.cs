@@ -13,6 +13,57 @@ namespace OriCoop.Authority
         static BepInEx.Configuration.ConfigEntry<string> s_list;
         static BepInEx.Configuration.ConfigEntry<bool> s_migrated;
         static bool s_listReady;
+        static BepInEx.Configuration.ConfigEntry<string> s_diagnosticsServers;
+
+        static BepInEx.Configuration.ConfigEntry<string> DiagnosticsServers
+        {
+            get
+            {
+                if (s_diagnosticsServers == null && Plugin.Instance != null)
+                {
+                    s_diagnosticsServers = Plugin.Instance.Config.Bind("Net", "DiagnosticsServers", "",
+                        "Optional environment reports for compatibility. List of explicitly allowed game servers (host:port, separated by ';'). After joining, ipify or icanhazip sees your source IP; the joined host receives OS, architecture, languages, time zone, disk type/free-space bands and the probe result via HTTPS. Empty = off.");
+                    s_diagnosticsServers.SettingChanged += delegate { CServerLink.DiagnosticsConsentChanged(); };
+                }
+                return s_diagnosticsServers;
+            }
+        }
+
+        public static bool DiagnosticsAllowed(string server)
+        {
+            if (!IsValidAddress(server)) return false;
+            var entry = DiagnosticsServers;
+            if (entry == null) return false;
+            foreach (string address in (entry.Value ?? "").Split(';'))
+                if (string.Equals(address.Trim(), server, StringComparison.OrdinalIgnoreCase)) return true;
+            return false;
+        }
+
+        public static bool SetDiagnosticsAllowed(string server, bool enabled)
+        {
+            if (!IsValidAddress(server)) return false;
+            var entry = DiagnosticsServers;
+            if (entry == null) return false;
+            string previous = entry.Value;
+            List<string> servers = new List<string>();
+            foreach (string raw in (previous ?? "").Split(';'))
+            {
+                string address = raw.Trim();
+                if (IsValidAddress(address) && !string.Equals(address, server, StringComparison.OrdinalIgnoreCase)) servers.Add(address);
+            }
+            if (enabled) servers.Add(server);
+            try
+            {
+                entry.Value = string.Join(";", servers.ToArray());
+                Plugin.Instance.Config.Save();
+                return true;
+            }
+            catch (Exception)
+            {
+                try { entry.Value = previous; } catch (Exception) { }
+                return false;
+            }
+        }
 
         public static string Configured
         {
@@ -108,6 +159,8 @@ namespace OriCoop.Authority
             if (!LoadList()) return false;
             List<string> servers = Servers;
             if (index < 0 || index >= servers.Count) return false;
+            string removed = servers[index];
+            if (DiagnosticsAllowed(removed) && !SetDiagnosticsAllowed(removed, false)) return false;
             servers.RemoveAt(index);
             return SaveList(servers);
         }

@@ -136,9 +136,17 @@ namespace OriCoop.World
         // A snapshot blob of an aggregate object arrived: returns the bytes to show (snapshot + my pending batches).
         public byte[] SnapshotObject(byte[] scene, byte[] id, byte schema, byte[] bytes)
         {
+            SortedDictionary<string, byte[]> snapshot = WorldItems.Decompose(schema, bytes);
+            // T-214: the map as this PC has it now; what it explored and has not proposed yet stays (DeltaObject.Reset).
+            IDictionary<string, byte[]> current = null; byte[] live;
+            if (WorldItems.HasGrowing(schema) && m_game.TryRead(scene, id, out live) && live != null) current = WorldItems.Decompose(schema, live);
             DeltaObject o;
-            if (!m_objects.TryGetValue(Key(scene, id), out o)) { m_objects[Key(scene, id)] = new DeltaObject(WorldItems.Decompose(schema, bytes)); return bytes; }
-            return WorldItems.Compose(schema, bytes, o.Reset(WorldItems.Decompose(schema, bytes)));
+            if (!m_objects.TryGetValue(Key(scene, id), out o))
+            {
+                o = new DeltaObject(snapshot); m_objects[Key(scene, id)] = o;
+                if (current == null) return bytes;
+            }
+            return WorldItems.Compose(schema, bytes, o.Reset(snapshot, current));
         }
 
         // The snapshot sender captured this object (it is what the receivers get): it is the agreed state from now on.

@@ -21,6 +21,7 @@ namespace OriCoop
         static readonly SeatReadiness s_guests = new SeatReadiness();
         static readonly HostPromotion s_promotion = new HostPromotion();
         static byte[] s_pending;
+        static byte[] s_hostCheckpointBytes;
         static byte[] s_loadingBytes;
         static byte[] s_titleLoadBytes;   // guest joining from an empty slot: PerformLoad reads these (GuestJoin.cs)
         static Stopwatch s_loadWatch;
@@ -43,6 +44,10 @@ namespace OriCoop
         // latest save point is that guest's (Revive.SoulLink).
         public static int AdoptingOfferSeat { get; private set; }
         static readonly bool s_mutateNoSaveOffer = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_SAVEOFFER") == "1";
+        static readonly bool s_mutatePromoteAllReady = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PROMOTE_ALL_READY") == "1";
+        public static int CheckpointsSent;   // T-213 test: checkpoints this player sent as the host
+        // Test only (T-213): as if this seat had joined after this guest and not announced its load yet.
+        internal static void TestAwaitSave(int seat) { s_guests.SawJoin(seat); }
 
         public static void Init()
         {
@@ -52,7 +57,8 @@ namespace OriCoop
             Services.Net.On(SaveWire.LoadedMessage, delegate(BinaryReader r)
             {
                 int seat = Services.Net.Sender;
-                if (!Services.Net.IsHost || !s_guests.Loaded(seat)) return;
+                if (!Services.Net.IsHost) { s_guests.SawLoaded(seat); return; }   // T-213 (10): a guest notes who has loaded
+                if (!s_guests.Loaded(seat)) return;
                 SaveWire.ReadLoaded(r); UpdateHostReady();
                 Services.Log.Info("net: guest save loaded; sending full world and progress");
                 SavesHost.Current.SendWorldSnapshot(seat);
@@ -60,8 +66,10 @@ namespace OriCoop
             });
             Services.Net.SessionStarted += Start;
             Services.Net.SessionEnded += Reset;
-            Services.Net.PlayerJoined += delegate(int seat) { if (Services.Net.IsHost) s_guests.Join(seat); };
-            Services.Net.PlayerLeft += delegate(int seat) { if (Services.Net.IsHost) { s_guests.Leave(seat); UpdateHostReady(); } };
+            // T-213 (10): a guest that has finished its own join notes every seat that joins after it, until that seat
+            // announces its load (SeatReadiness.SawJoin): if this guest becomes the host, that seat still needs a save.
+            Services.Net.PlayerJoined += delegate(int seat) { if (Services.Net.IsHost) s_guests.Join(seat); else if (s_joined) s_guests.SawJoin(seat); };
+            Services.Net.PlayerLeft += delegate(int seat) { s_guests.Leave(seat); if (Services.Net.IsHost) UpdateHostReady(); };
             CoopSaves.Init();
         }
 
@@ -71,6 +79,7 @@ namespace OriCoop
             s_guests.Clear();
             s_promotion.Reset();
             s_pending = null;
+            s_hostCheckpointBytes = null;
             s_loadingBytes = null;
             s_titleLoadBytes = null;
             s_loadWatch = null;
@@ -101,6 +110,9 @@ namespace OriCoop
             if (Players.IsLocal(seat)) return true;
             return s_guests.ReadyForSeat(NetPlay.DeviceSeat(seat), Services.Net.IsHost, Ready);
         }
+
+        // T-214 (host): the guest whose checkpoint has been out longest without its load being reported; 0 = none.
+        internal static int WaitingGuest(out float seconds) { return s_guests.LongestWait(Services.Clock.RealTime, out seconds); }
 
         static void UpdateHostReady()
         {
@@ -292,7 +304,7 @@ namespace OriCoop
                 {
                     SaveWire.WriteSave(w, HaveCheckpointPosition, HostCheckpointPosition.x, HostCheckpointPosition.y, HostCheckpointPosition.z, bytes);
                 });
-                s_guests.MarkSent(seat);
+                s_guests.MarkSent(seat, Services.Clock.RealTime); CheckpointsSent++;
                 Services.Log.Info("net: sent checkpoint " + bytes.Length + " bytes in " + watch.ElapsedMilliseconds
                     + " ms; live host sample=" + HostCheckpointPosition);
             }
@@ -320,6 +332,7 @@ namespace OriCoop
                 if (bytes.Length > SaveWire.MaximumSaveBytes) throw new InvalidDataException("save exceeds NetPeer's 4 MB limit");
                 string timeline = CoopSaves.Timeline;
                 SeatSkillSync.Report();
+                Revive.SendLinkOffer();
                 Services.Net.Send(SaveWire.SaveOffer, true, delegate(BinaryWriter w) { SaveWire.WriteSaveOffer(w, timeline, bytes); });
                 GuestSavesOffered++;
                 Services.Log.Info("net: guest save offered to the room (" + bytes.Length + " bytes, base " + Short(timeline) + ")");
@@ -332,9 +345,14 @@ namespace OriCoop
             int seat = Services.Net.Sender;
             string timeline;
             byte[] bytes;
-            try { bytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveOffer(r, out timeline), "save offer"); }
-            catch (Exception e) { Services.Log.Warn("net: bad save offer from seat " + seat + ": " + e.Message); return; }
             bool host = Services.Net.IsHost;
+            try { bytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveOffer(r, out timeline), "save offer"); }
+            catch (Exception e)
+            {
+                if (host) Revive.RejectLinkOffer(seat);
+                Services.Log.Warn("net: bad save offer from seat " + seat + ": " + e.Message);
+                return;
+            }
             OfferVerdict verdict = SaverPick.Judge(host, !Ready || s_loading || s_hostAdopt || s_disabled || s_adoptingOffer,
                 host && s_guests.ReadyForSeat(seat, true, Ready),
                 CoopSaves.RoomSlotLive, CoopSaves.Timeline, timeline);
@@ -342,6 +360,7 @@ namespace OriCoop
             if (verdict != OfferVerdict.Accept)
             {
                 OffersRejected++;
+                if (host) Revive.RejectLinkOffer(seat);
                 Services.Log.Info("net: save offer from seat " + seat + " not taken: " + verdict + " (base " + Short(timeline)
                     + ", room " + Short(CoopSaves.Timeline) + ")");
                 return;
@@ -367,13 +386,20 @@ namespace OriCoop
 
         static string Short(string hash) { return string.IsNullOrEmpty(hash) ? "-" : hash.Length > 8 ? hash.Substring(0, 8) : hash; }
 
+        internal static bool RestoreAcceptedCheckpoint()
+        {
+            byte[] bytes = CoopSaves.CommitBytes ?? s_hostCheckpointBytes;
+            // Load only the in-memory checkpoint; the live game keeps running.
+            return bytes != null && GameController.Instance.SaveGameController.LoadFromBytes(bytes);
+        }
+
         static void Receive(BinaryReader r)
         {
             if (Services.Net.IsHost || s_loading || s_pending != null || s_disabled) return;
             HaveCheckpointPosition = SaveWire.ReadHasPosition(r);
             SavePosition p = SaveWire.ReadCoordinates(r);
             HostCheckpointPosition = new Vector3(p.X, p.Y, p.Z);
-            s_pending = SeatSkillSync.ForLoad(SaveWire.ReadSaveBytes(r), "checkpoint transfer");
+            s_pending = s_hostCheckpointBytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveBytes(r), "checkpoint transfer");
             if (CoopSaves.CommitsReceived == 0) CheckpointsBeforeCommit++;
             if (CopySlotAtCheckpoint == -2) CopySlotAtCheckpoint = CoopSaves.SessionSlot;
             Ready = false; JoinedHost = false;
@@ -433,9 +459,14 @@ namespace OriCoop
             try
             {
                 int[] seats = NetPlay.RemoteSeats;
-                foreach (int seat in seats) s_guests.JoinReady(seat);
+                // T-213 (10): not every remote seat plays the co-op world yet. One that joined after this player and has
+                // not announced its load still waits for its first save: it stays unsent, and Tick sends it this (the
+                // new) host's checkpoint. Marked sent and ready like the others, it waited for the old host for ever.
+                if (s_mutatePromoteAllReady) foreach (int seat in seats) s_guests.JoinReady(seat);
+                else s_guests.Promote(seats);
                 Ready = true;
-                Services.Log.Info("net: this guest is now the host; " + seats.Length + " seat(s) already in the world");
+                Services.Log.Info("net: this guest is now the host; " + seats.Length + " remote seat(s)"
+                    + (s_guests.HasUnsent ? ", at least one still waits for its first save: sending this host's checkpoint" : ", all already in the world"));
                 CoopSaves.Promote();
             }
             catch (Exception e) { Services.Log.Warn("net: taking over as host: " + e); }
