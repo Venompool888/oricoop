@@ -1003,6 +1003,16 @@ namespace OriCoop
             }
             yield return NetTestHarness.CheckCheckpointSkills(h, "R skills: back to the checkpoint tree and points",
                 checkpointTree, checkpointPoints, loads0);
+            // Step 201 captured the saver's position before CreateCheckpoint. Compare the final playable
+            // position on each PC, after the guest has acknowledged the authoritative checkpoint transfer.
+            SaveReport checkpoint = save;
+            if (host) s_partnerSteps.TryGetValue(201, out checkpoint);
+            Vector3 settled = Own != null ? Own.Position : Vector3.zero;
+            h.Check(Own != null && checkpoint != null && checkpoint.HasPosition
+                && Mathf.Abs(settled.x - checkpoint.Position.x) <= 0.25f
+                && Mathf.Abs(settled.y - checkpoint.Position.y) <= 0.5f,
+                "R3 team wipe respawns this seat at the saved checkpoint (T-243; final=" + settled.ToString("F2")
+                + ", expected=" + (checkpoint == null ? "missing" : checkpoint.Position.ToString("F2")) + ")");
             yield return Barrier(h, 10);
             yield return SoulLink(h, host);
             yield return DeathRules(h, host);

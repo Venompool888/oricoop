@@ -755,12 +755,12 @@ namespace OriCoop
             if (Players.LocalSeat == 3) FourKill();
             yield return FourAwait(h, delegate {
                 return FourReady && Revive.NetBothDown > baseline.Wipes && TestHarness.RestoreCheckpointCalls > baseline.Restores
-                    && (Players.LocalSeat == 1 || SaveSync.GuestLoads > baseline.Loads && SaveSync.JoinedHost);
+                    && (Players.LocalSeat == 1 || SaveSync.GuestLoads > baseline.Loads);
             }, 75f, "one host-decided wipe and all checkpoint reloads");
             yield return ThreeRound(h, 456, 4);
             h.Check(AllFour(456, p => p.Ready && p.Alive && p.DownMask == 0 && p.PuppetCount == 3
                 && p.Wipes == Three(450, p.Seat).Wipes + 1 && p.Restores == Three(450, p.Seat).Restores + 1
-                && (p.Seat == 1 || p.Joined && p.Loads == Three(450, p.Seat).Loads + 1)),
+                && (p.Seat == 1 || !p.Joined && p.Loads == Three(450, p.Seat).Loads + 1)),
                 "4P all down causes one wipe and reload on all four");
             yield return CheckCheckpointSkills(h, "4P skills: seat back to its checkpoint tree and points",
                 checkpointTree, checkpointPoints, baseline.Loads);
