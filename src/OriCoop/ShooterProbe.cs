@@ -50,7 +50,7 @@ namespace OriCoop
                     prefix == null ? null : new HarmonyMethod(AccessTools.Method(typeof(ShooterProbe), prefix)),
                     postfix == null ? null : new HarmonyMethod(AccessTools.Method(typeof(ShooterProbe), postfix)),
                     null,
-                    finalizer == null ? null : new HarmonyMethod(AccessTools.Method(typeof(ShooterProbe), finalizer)));
+                    finalizer == null ? null : new HarmonyMethod(AccessTools.Method(typeof(ShooterProbe), finalizer)), null);
             }
             catch { failed.Add("ShooterProbe:" + (type == null ? "?" : type.Name) + "." + method); }
         }
