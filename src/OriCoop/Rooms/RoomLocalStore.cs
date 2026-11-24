@@ -219,7 +219,11 @@ namespace OriCoop.Rooms
             List<long> versions = new List<long>();
             foreach (string file in Directory.GetFiles(history, "v*.sav"))
             {
-                versions.Add(long.Parse(Path.GetFileNameWithoutExtension(file).Substring(1)));
+                // Only our own vN.sav files: a stray "v5 - Copy.sav" must not make every later save of the room throw.
+                long number;
+                if (long.TryParse(Path.GetFileNameWithoutExtension(file).Substring(1), System.Globalization.NumberStyles.AllowLeadingSign,
+                    System.Globalization.CultureInfo.InvariantCulture, out number) && Path.GetFileName(file) == "v" + number + ".sav")
+                    versions.Add(number);
             }
             versions.Sort();
             while (versions.Count > 10)
