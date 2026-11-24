@@ -154,7 +154,7 @@ namespace OriCoop
             ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
             s_symbols.Clear(); s_remoteSymbols.Clear(); s_pendingHits.Clear(); s_shots.Clear(); s_victimHits.Clear(); s_copies.Clear();
             s_session = false; s_active = null; s_attackDepth = 0; s_spawning = s_applying = s_puppetDeath = false;
-            s_fxPrefabs.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
+            s_fxPrefabs.Clear(); s_animationMisses.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
             s_scanAt = s_streamAt = s_logAt = 0; BytesSent = BytesReceived = EstimatedWireBytesSent = 0; Unmirrored = KeptScenes = UnresolvedProjectiles = 0;
         }
         static void Send(byte type, bool reliable, Action<BinaryWriter> body, int seat = 0)
@@ -805,13 +805,24 @@ namespace OriCoop
             if (string.IsNullOrEmpty(name)) return null;
             if (s_animations.TryGetValue(name, out result) && result != null) return result;
             s_animations.Remove(name);
+            // Puppet -> ApplyPose asks for the owner's animation every frame. A name the full scan below did not find
+            // is not scanned for again within a second: before, each frame searched every animation asset (and built
+            // two key strings for each) for as long as the owner played it.
+            float failed;
+            if (s_animationMisses.TryGetValue(name, out failed) && Now >= failed && Now - failed < 1f) return null;
             foreach (UnityEngine.Object o in Resources.FindObjectsOfTypeAll(typeof(TextureAnimationWithTransitions)))
             {
                 TextureAnimationWithTransitions a = o as TextureAnimationWithTransitions;
-                if (a != null && !s_animations.ContainsKey(AnimationKey(a))) s_animations.Add(AnimationKey(a), a);
+                if (a == null) continue;
+                string key = AnimationKey(a);
+                if (!s_animations.ContainsKey(key)) s_animations.Add(key, a);
             }
-            s_animations.TryGetValue(name, out result); if (result == null) Warn("animation unresolved " + name); return result;
+            s_animations.TryGetValue(name, out result);
+            if (result == null) { s_animationMisses[name] = Now; Warn("animation unresolved " + name); }
+            else s_animationMisses.Remove(name);
+            return result;
         }
+        static readonly Dictionary<string, float> s_animationMisses = new Dictionary<string, float>();
         static void ApplyPose(Actor a, State s, Vector3 position)
         {
             Enemy e = a.Entity; if (e == null) return;
