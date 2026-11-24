@@ -313,19 +313,32 @@ namespace OriCoop
         }
         static bool SimulationPrefix(Component __instance, out Call __state)
         {
-            __state = new Call(); __state.Previous = s_active;
+            // This runs for every patched Update/FixedUpdate/LateUpdate of every entity, controller and movement
+            // component, in single player too. The state only has something to undo (s_active, the attack depth, the
+            // puppet context) for a puppet attack or a tracked enemy, so only those get one; the finalizer skips null.
+            __state = null;
             if (!Active) return true;
-            __state.Attack = __instance is SpiritFlameProjectile || __instance is ChargeFlameBurst || __instance is GrenadeBurst
-                || (__instance != null && __instance.GetType().Name.IndexOf("SpiritGrenade", StringComparison.Ordinal) == 0);
+            Actor previous = s_active;
+            bool attack = __instance is SpiritFlameProjectile || __instance is ChargeFlameBurst || __instance is GrenadeBurst
+                || (__instance != null && GrenadeType(__instance.GetType()));
             PuppetAttack tag = __instance == null ? null : __instance.GetComponentInParent<PuppetAttack>();
-            if (tag != null && tag.IsPuppet) { s_attackDepth++; __state.PuppetAttack = true; }
+            if (tag != null && tag.IsPuppet) { s_attackDepth++; __state = new Call(); __state.Previous = previous; __state.PuppetAttack = true; }
             Actor a = For(__instance);
             if (a == null) return true;
+            if (__state == null) { __state = new Call(); __state.Previous = previous; }
+            __state.Attack = attack;
             s_active = a;
             bool run = s_applying || a.Entity == null || !Supported(a.Entity) || (Mine(a) && a.RestoreController == null);
             if (run && !__state.Attack && a.Entity != null && !s_host.Inside && s_host.P2IsNearer(a.Entity.Position))
             { s_host.Enter(s_host.NearestPuppet(a.Entity.Position)); __state.Entered = true; }
             return run;
+        }
+        // Type.Name builds a new string on every call in this game's Mono; a type's name never changes.
+        static readonly Dictionary<Type, bool> s_grenadeTypes = new Dictionary<Type, bool>();
+        static bool GrenadeType(Type t)
+        {
+            bool grenade; if (s_grenadeTypes.TryGetValue(t, out grenade)) return grenade;
+            grenade = t.Name.IndexOf("SpiritGrenade", StringComparison.Ordinal) == 0; s_grenadeTypes.Add(t, grenade); return grenade;
         }
         static void StartPrefix(Component __instance, out bool __state)
         {
