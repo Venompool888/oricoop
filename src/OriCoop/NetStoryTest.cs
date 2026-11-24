@@ -947,16 +947,16 @@ namespace OriCoop
                 while (Revive.DownedAtSeat(2) == null && Now < end) yield return null;
                 h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 down before the performance");
                 yield return Wait(0.8f);   // each device's normal Vitals sender publishes the setup
-                yield return barrier(1);
                 int starts = seat == 1 ? StorySync.StartsSent : StorySync.StartsMirrored;
+                yield return barrier(1);
                 if (seat == 1) puzzle.Perform(null);
                 end = Now + 8f;
                 while (((seat == 1 ? StorySync.StartsSent : StorySync.StartsMirrored) == starts || StorySync.StoryActive)
                     && Now < end) yield return null;
-                yield return barrier(3);
                 h.Check((seat == 1 ? StorySync.StartsSent : StorySync.StartsMirrored) == starts + 1 && !StorySync.StoryActive,
                     "story revive: letterbox-only puzzle finished on each seat");
                 h.Check(Revive.DownedAtSeat(2) != null, "story revive: a letterbox-only puzzle leaves P2 down");
+                yield return barrier(3);
                 if (seat == 1) sequence.Perform(null);
                 yield return Wait(0.2f);
                 h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 stays down during the performance");
