@@ -171,6 +171,9 @@ namespace OriCoop.Rooms
             leaving = false;
             leaveQueued = false;
             UploadStopped = false;
+            // No backup download until enter says we join (Mode sets it then): left at 0 (or a past value), the next
+            // Tick downloaded the whole save before the enter reply, and a host then downloaded it a second time.
+            nextBackup = double.MaxValue;
             int entered = ++generation;
             Call(delegate
             {
