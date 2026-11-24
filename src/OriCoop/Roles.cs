@@ -2,9 +2,7 @@ using UnityEngine;
 
 namespace OriCoop
 {
-    // Player roles as the players see them. Internally each PC drives its own Ori in slot 1 (P2Context.P1) and shows
-    // the partner in slot 2 (P2Context.P2). Online that slot number is NOT the role: the host is always P1 and the guest
-    // always P2, on both screens. Local co-op (one PC): slot = role, as before.
+    // A player keeps their seat number when the room's authority changes. Internal character slots are separate.
     public static class Roles
     {
         // Same colours as the controller menu: P1 blue, P2 gold.
@@ -40,16 +38,19 @@ namespace OriCoop
             return "#" + k.r.ToString("x2") + k.g.ToString("x2") + k.b.ToString("x2") + k.a.ToString("x2");
         }
 
-        // Online: what the role means. P1 = 主机 Host, P2 = 伙伴 Partner.
-        public static string WordZh(int role) { return L10n.T(role == 1 && NetPlay.Enabled ? "roles.host" : "roles.partner"); }
-        public static string WordEn(int role) { return L10n.T(role == 1 && NetPlay.Enabled ? "roles.host" : "roles.partner"); }
+        public static string Word(int seat)
+        {
+            if (!NetPlay.Enabled) return L10n.T("roles.partner");
+            bool server = NetPlay.UsesCServer;
+            return L10n.T(L10n.RoleKey(server, seat == (server ? CsLobby.ManagerSeat : 1)));
+        }
 
-        // The partner's overhead label (online): "P1 · 主机" / "P2 · 伙伴", plus the Steam name when there is one.
+        // The other player's overhead label, plus the Steam name when there is one.
         public static string PartnerLabel()
         {
             int r = Partner;
             string name = NetPlay.SteamPartnerName;
-            return string.IsNullOrEmpty(name) ? L10n.F("roles.label", Tag(r), WordZh(r)) : L10n.F("roles.named_label", Tag(r), WordZh(r), name);
+            return string.IsNullOrEmpty(name) ? L10n.F("roles.label", Tag(r), Word(r)) : L10n.F("roles.named_label", Tag(r), Word(r), name);
         }
     }
 }

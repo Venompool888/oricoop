@@ -43,6 +43,7 @@ namespace OriCoop
             // T-195 (EnemySync.Swarm.cs): a piece a Swarm split into. Root = the family's placeholder actor, Node = its
             // place in the family tree (SwarmFamily). Pieces have no placeholder; they follow Root's owner.
             public Actor Root; public int Node; public GameObject Prefab; public float PieceLoot; public bool PiecesIndexed;
+            public float HoldDistance;   // T-208 (3): a family held without its scene: how near its nearest live piece is to this PC's Ori
         }
         sealed class Body { public Rigidbody Rigidbody; public bool Kinematic, Gravity; }
         sealed class DamageStamp { public ulong Id; public bool Puppet; }
@@ -75,7 +76,7 @@ namespace OriCoop
         static IEnemyHost s_host;
         static Actor s_active; static int s_attackDepth; static bool s_applying, s_spawning, s_session, s_restoringController, s_puppetDeath;
         static float s_fxWindow; static int s_fxCount; static DifficultyMode s_difficulty;
-        static uint s_sequence; static float s_scanAt, s_streamAt, s_logAt, s_tokenTime, s_tokens;
+        static HitIds s_ids; static float s_scanAt, s_streamAt, s_logAt, s_tokenTime, s_tokens;
         static readonly List<Vector3> s_pinPositions = new List<Vector3>();
         public static long BytesSent, BytesReceived, EstimatedWireBytesSent;
         public static int Unmirrored, KeptScenes, UnresolvedProjectiles;
@@ -84,7 +85,7 @@ namespace OriCoop
         static bool Active { get { return Services.Net.Enabled && Services.Net.Connected && s_host.RemoteHello && s_session; } }
         static bool Mine(Actor a) { RefreshOwnership(a); return a.Mine(s_host.LocalSeat); }
         static string Key(MoonGuid scene, MoonGuid id) { return scene.ToString() + ":" + id.ToString(); }
-        static ulong NextId() { return ((ulong)s_host.LocalSeat << 32) | ++s_sequence; }
+        static ulong NextId() { if (s_ids == null) s_ids = NewIds(); return s_ids.Next(s_host.LocalSeat); }   // T-208 (6): Enemies/HitIds.cs
         static float Now { get { return Services.Clock.RealTime; } }
         static SeinCharacter Local { get { return s_host.Local; } }
 
@@ -139,13 +140,14 @@ namespace OriCoop
         {
             Reset();
             EnemyAuthority.StartSession(NetRoute.ServerMode);
-            s_session = true; s_tokens = Budget / 4f; s_tokenTime = Now;
+            s_session = true; s_tokens = Budget / 4f; s_tokenTime = Now; s_ids = NewIds();
             if (DifficultyController.Instance != null)
             { s_difficulty = DifficultyController.Instance.Difficulty; Services.Log.Info("E3T difficulty=" + s_difficulty); }
         }
         static void Reset()
         {
             foreach (Actor a in s_actors.Values) { EnemyAuthority.Policy.Release(a.Key); RestoreBodies(a); }
+            DropCopies();   // T-208 (2): before the index of the pieces is cleared
             EnemyAuthority.Policy = null;
             foreach (ProjectileIdentity p in s_copies) if (p != null) InstantiateUtility.Destroy(p.gameObject);
             ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
@@ -216,6 +218,7 @@ namespace OriCoop
         static bool Supported(Enemy e)
         {
             if (e.Animation == null || e.Controller == null) return false;
+            if (s_testUnsupported != null) { Actor tested; if (s_entities.TryGetValue(e.GetInstanceID(), out tested) && tested.Key == s_testUnsupported) return false; }
             if (e is SwarmEnemy) return !s_mutateSwarmLocal;
             return e.Animation.SpriteMirror != null && Array.IndexOf(MirroredTypes, e.GetType()) >= 0;
         }
@@ -230,6 +233,7 @@ namespace OriCoop
             if (p == null || p.MoonGuid == null || !EnemyPlaceholder(p)) return null;
             SceneRoot root = SceneRoot.FindFromTransform(p.transform); if (root == null || root.MetaData == null) return null;
             string key = Key(root.MetaData.SceneMoonGuid, p.MoonGuid); Actor a;
+            if (s_testHidden.Count > 0 && s_testHidden.Contains(key)) return null;   // tests: as if its scene were not loaded here
             if (!s_actors.TryGetValue(key, out a))
             {
                 a = new Actor(); a.Key = key; a.Id = new MoonGuid(p.MoonGuid); a.Scene = new MoonGuid(root.MetaData.SceneMoonGuid);
@@ -297,6 +301,9 @@ namespace OriCoop
         static void FreezeBodies(Actor a)
         {
             if (a.Entity == null || a.Bodies.Count > 0) return;
+            // T-208 (7): a class that is not mirrored runs on every PC (a ShootingSpider swings on its rope joints);
+            // the ownership messages froze its rigidbodies on the PCs that do not own it while its AI went on.
+            if (!Supported(a.Entity) && !s_mutateFreezeAll) return;
             foreach (Rigidbody rb in a.Entity.GetComponentsInChildren<Rigidbody>(true))
             {
                 Body b = new Body(); b.Rigidbody = rb; b.Kinematic = rb.isKinematic; b.Gravity = rb.useGravity; a.Bodies.Add(b);
@@ -482,7 +489,7 @@ namespace OriCoop
             // Only the host reads presence reports (every other receiver dropped them after creating an entry, which made
             // every guest track, and report, every enemy the host ever saw). (T-147)
             if (Services.Net.IsHost) return;
-            Send(Presence, true, delegate(BinaryWriter w) { WriteId(w, a); WriteVector(w, a.Origin); w.Write(a.Loaded); });
+            Send(Presence, true, delegate(BinaryWriter w) { WriteId(w, a); WriteVector(w, a.Origin); w.Write(a.Present); });
             a.PresenceSent(delegate { return Now; });
         }
         static void ReadPresence(BinaryReader r)
@@ -501,7 +508,7 @@ namespace OriCoop
             if (EnemyAuthority.Policy.UsesLeases) { RefreshOwnership(a); return; }
             if (!Services.Net.IsHost || a.PendingTakeover) return;
             int desired = PolicyDesiredOwner(a);
-            int decision = a.BeginDecision(desired, s_host.LocalSeat);
+            int decision = a.BeginDecision(desired, s_host.LocalSeat, Now);
             if (decision == 0) { Grant(a, false); return; }
             if (decision == 1)
             {
@@ -534,21 +541,22 @@ namespace OriCoop
         }
         static float OwnerDistance(Actor a, int seat, Vector3 position)
         {
-            if (seat == s_host.LocalSeat) return a.Loaded && Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity;
+            if (seat == s_host.LocalSeat) return a.Present && Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity;
             Vector3 remote;
             return a.LoadedSeats.Contains(seat) && s_host.RemotePos(seat, out remote) ? Vector3.Distance(position, remote) : float.PositiveInfinity;
         }
         static int DesiredOwner(Actor a)
         {
+            if (TestOwnerSeat != 0 && a.Key == TestOwnerKey) return TestOwnerSeat;   // tests (E5k): the owner asked for
             int remoteCount = s_host.RemoteCount;
             if (remoteCount <= 1)
-                return EnemyOwnership.DesiredOwner(remoteCount, a.Loaded, a.LoadedSeats, a.OwnerSeat, 1, null, a.OwnerChangedAt, null, null, null);
+                return EnemyOwnership.DesiredOwner(remoteCount, a.Present, a.LoadedSeats, a.OwnerSeat, 1, null, a.OwnerChangedAt, null, null, null);
             return DesiredMultiOwner(a, remoteCount);
         }
         static int DesiredMultiOwner(Actor a, int remoteCount)
         {
             Vector3 position = Mine(a) && a.Entity != null ? a.Entity.Position : a.Latest.Position;
-            return EnemyOwnership.DesiredOwner(remoteCount, a.Loaded, a.LoadedSeats, a.OwnerSeat, s_host.LocalSeat,
+            return EnemyOwnership.DesiredOwner(remoteCount, a.Present, a.LoadedSeats, a.OwnerSeat, s_host.LocalSeat,
                 delegate { return Now; }, a.OwnerChangedAt, delegate(int seat) { return OwnerDistance(a, seat, position); },
                 delegate { return Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity; }, RemoteDistances(a, position));
         }
@@ -572,19 +580,35 @@ namespace OriCoop
             if (operation == 0)
             {
                 if (!a.CanFreeze(Services.Net.Sender, s_host.LocalSeat, epoch)) return;
+                if (TestKillAtFreeze == a.Key && a.Entity != null && a.Entity.DamageReciever != null && Local != null)
+                {   // tests (E5k): this PC's enemy dies just before the freeze reached it
+                    TestKillAtFreeze = "";
+                    ApplyHit(a, new Damage(a.Entity.DamageReciever.Health + 1000f, Vector2.zero, a.Entity.Position, DamageType.SpiritFlame, Local.gameObject), NextId());
+                }
                 State s = a.Placeholder != null ? Capture(a, true) : a.Latest;
                 a.Frozen = true; FreezeBodies(a);
+                if (TestSwallowHandoff == a.Key) { TestSwallowHandoff = ""; return; }   // tests (E5k): this handoff is lost
                 Send(Handoff, true, delegate(BinaryWriter w) { WriteId(w, a); EnemyWire.WriteHandoff(w, epoch, owner); WriteState(w, a, s, true); }); return;
             }
             a.Origin = ReadVector(r); State state = ReadState(r, a, true);
             if (!a.CanAcceptGrant(Services.Net.IsHost, Services.Net.Sender, epoch)) return;
             bool changed = a.GrantChanged(owner, epoch);
             if (!changed && owner == s_host.LocalSeat) return; // A presence refresh cannot rewind the owner's simulation.
+            // T-208 review 2: the owner stays, only the epoch moves (a handoff given up, or its target left). The state
+            // in this grant is the host's copy of that owner's own, possibly older than what the owner did last (a
+            // death the frozen host dropped). The owner goes on with its own state and tells everyone; the others take
+            // the host's copy only if it is newer than theirs.
+            bool sameOwner = a.Known && a.OwnerSeat == owner && !s_mutateCancelResets;
+            bool kept = changed && sameOwner && owner == s_host.LocalSeat;
             a.ApplyGrant(owner, epoch);
-            ReceiveState(a, state, changed);
+            // T-208 (5): the host grants an enemy it never saw with a state nobody captured. Nobody applies that state;
+            // the new owner goes on from its own enemy (Resume -> Seed) and tells the others.
+            if (!kept && (s_mutateBlankGrant || !EnemyOwnership.BlankState(state.Generation, state.Tick, state.Alive, state.Killed))) ReceiveState(a, state, changed && !sameOwner);
             if (changed && !Mine(a)) a.ExpectFirstSnapshot = true;
             if (Mine(a)) Resume(a); else FreezeBodies(a);
-            if (changed) Trace("owner change", a, "ReadAuthority");
+            if (kept && !EnemyOwnership.BlankState(a.Latest.Generation, a.Latest.Tick, a.Latest.Alive, a.Latest.Killed))
+                SendLife(a, a.Latest.Killed ? (byte)2 : (byte)3);
+            if (changed) Trace("owner change", a, "ReadAuthority" + (kept ? " (kept its own state)" : ""));
         }
         static void ReadHandoff(BinaryReader r)
         {
@@ -631,6 +655,7 @@ namespace OriCoop
         }
         static void Resume(Actor a)
         {
+            if (Unseeded(a)) { Seed(a); return; }   // T-208 (5)
             SetPlaceholder(a, a.Latest);
             if (a.Placeholder != null && a.Latest.Killed) { a.Placeholder.DestroyCurrentInstance(); Bind(a); }
             else if (a.Placeholder != null && a.Latest.Alive && a.Placeholder.CurrentEntity == null)
@@ -679,7 +704,13 @@ namespace OriCoop
         static void ReadLife(BinaryReader r)
         {
             Actor a = ReadId(r); uint epoch = r.ReadUInt32(); byte kind = r.ReadByte(); ulong hit = r.ReadUInt64(); a.Origin = ReadVector(r); State s = ReadState(r, a, true);
-            if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, true)) return;
+            if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, true))
+            {
+                // T-208 (1): a split piece's life message from the PC that simulated it until a moment ago
+                // (review 1: by its family's history, which a piece this PC never heard of shares)
+                if (a.Root != null && !s_mutateNoLateLife && a.Root.AcceptLateLife(s_host.LocalSeat, epoch, Services.Net.Sender)) LateLife(a, s, hit);
+                return;
+            }
             if (!EnemyOwnership.AcceptLife(a.Generation, a.Latest.Tick, a.Latest.Killed, a.ExpectFirstSnapshot, s.Generation, s.Tick, s.Killed)) return;
             a.LastHit = hit; ReceiveState(a, s, true);
             if (kind == 2) a.DeathTime = Now;
@@ -804,12 +835,15 @@ namespace OriCoop
         static class EnemySeesPartnerHorizontally
         {
             [HarmonyPriority(Priority.First)]
-            static bool Prefix(SeeSeinHorizontalyTrigger __instance, out bool __state)
+            internal static bool Prefix(SeeSeinHorizontalyTrigger __instance, out bool __state)
             {
                 __state = false; if (!Active) return true; Actor a = For(__instance); if (a == null) return true;
                 if (a.Entity != null && Supported(a.Entity) && !Mine(a)) return false;
                 object nearest = s_host.NearestPuppet(__instance.transform.position);
                 SeinCharacter player = nearest != null ? s_host.PuppetSein(nearest) : Local;
+                // T-208 (8): a cutscene can take the local Ori away while the session goes on. With no player to look
+                // for, this look is skipped; before, the line below threw on every fixed step.
+                if ((player == null || player.Controller == null) && !s_mutateSightNoPlayer) return false;
                 s_horizontalPlayer.SetValue(__instance, player.Controller.Transform);
                 if (nearest != null && !s_host.Inside) { s_host.Enter(nearest); __state = true; }
                 return true;
@@ -1369,10 +1403,18 @@ namespace OriCoop
                     if (EnemyAuthority.Policy.UsesLeases)
                     {
                         Vector3 position = a.Entity != null ? a.Entity.Position : a.Origin;
-                        a.UpdateInterest(a.Key, Vector3.Distance(position, Local.Position), a.SceneRadius);
+                        float interest = Vector3.Distance(position, Local.Position);
+                        if (a.Holding) interest = Mathf.Min(interest, a.HoldDistance);   // T-208 (3): the pieces it still simulates
+                        a.UpdateInterest(a.Key, interest, a.SceneRadius);
                         RefreshOwnership(a);
                     }
-                    else if (Services.Net.IsHost && a.OwnerSeat != PolicyDesiredOwner(a)) Decide(a);
+                    else if (Services.Net.IsHost)
+                    {
+                        // T-208 (9): the handoff the host waits for was refused or lost (EnemyAuthority.TakeoverOverdue)
+                        if (a.TakeoverOverdue(Now) && !s_mutateNoTakeoverLimit)
+                        { a.CancelTakeover(); a.Buffer.Clear(); Grant(a, true); Trace("owner change", a, "handoff overdue: back to P" + a.OwnerSeat); }
+                        if (a.OwnerSeat != PolicyDesiredOwner(a)) Decide(a);
+                    }
                 }
             }
             float dt = Mathf.Max(0, Now - s_tokenTime); s_tokenTime = Now; s_tokens = Mathf.Min(Budget / 4f, s_tokens + dt * Budget);

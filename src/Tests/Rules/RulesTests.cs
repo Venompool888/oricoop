@@ -388,6 +388,7 @@ static class RulesTests
         });
         SpectateTests.Run(Run);
         SoulLinkTests.Run(Run);
+        ReviveLeftoverTests.Run(Run);
         Console.WriteLine("RULES" + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
         return failed == 0 ? 0 : 1;
     }

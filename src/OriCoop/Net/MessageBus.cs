@@ -189,6 +189,11 @@ namespace OriCoop.Net
                 if (!session.Remotes.TryGetValue(Sender, out remote))
                 {
                     if (context.IsHost && !context.FactorySession) return;
+                    // T-213: a seat is introduced by a reliable message (its Hello, or one that overtook the Hello). An
+                    // unreliable one can be a straggler of a seat that already left: the reliable "left" notice overtakes
+                    // that seat's last frames packet. An entry made for it never said hello and never leaves, so when the
+                    // last real teammate left, the session did not end.
+                    if (!reliable) return;
                     remote = context.CreateRemote(Sender);
                     session.Remotes.Add(Sender, remote);
                 }

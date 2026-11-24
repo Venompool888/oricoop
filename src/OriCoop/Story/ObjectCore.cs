@@ -49,5 +49,7 @@ namespace OriCoop.Story
         public void Mark(T id, float now) { played[id] = now; }
         public bool Recent(T id, float now, float duration)
         { float last; return played.TryGetValue(id, out last) && now - last < duration; }
+        // T-212 (7): a loaded save is from before those plays (the ability pedestal is unused again).
+        public void Clear() { played.Clear(); }
     }
 }

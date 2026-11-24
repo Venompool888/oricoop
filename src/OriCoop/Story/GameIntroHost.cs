@@ -108,6 +108,8 @@ namespace OriCoop.Story
         }
         public void SetIntroHeld(int seat, bool held)
         {
+            // T-205: not the story's own character while this PC plays the host's prologue along (StorySync.IntroHeld).
+            if (held && StorySync.IntroExempt(seat)) held = false;
             HeldOri previous;
             heldOris.TryGetValue(seat, out previous);
             SeinCharacter ori = OriAt(seat);

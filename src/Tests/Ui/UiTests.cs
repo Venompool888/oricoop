@@ -53,6 +53,26 @@ static class UiTests
     {
         L10n.LanguageCode = delegate { return s_language; };
 
+        Run("C-server labels the current authority Room owner and everyone else Member", delegate {
+            Equal("房主", L10n.T(L10n.RoleKey(true, true), true));
+            Equal("成员", L10n.T(L10n.RoleKey(true, false), true));
+            Equal("Room owner", L10n.T(L10n.RoleKey(true, true), false));
+            Equal("Member", L10n.T(L10n.RoleKey(true, false), false));
+        });
+        Run("Steam and LAN label the authority Host and the other role Client", delegate {
+            Equal("主机", L10n.T(L10n.RoleKey(false, true), true));
+            Equal("客机", L10n.T(L10n.RoleKey(false, false), true));
+            Equal("Host", L10n.T(L10n.RoleKey(false, true), false));
+            Equal("Client", L10n.T(L10n.RoleKey(false, false), false));
+        });
+        Run("save wait and comparison choose the wording for the current mode", delegate {
+            Equal("正在等待房主存档…", L10n.T(L10n.ModeKey("session.waiting", true), true));
+            Equal("正在等待主机存档…", L10n.T(L10n.ModeKey("session.waiting", false), true));
+            Equal("Use the member's progress", L10n.T(L10n.ModeKey("saves.use_partner", true), false));
+            Equal("Use the partner's progress", L10n.T(L10n.ModeKey("saves.use_partner", false), false));
+            Equal("common.back", L10n.ModeKey("common.back", true));
+        });
+
         Run("join error: server key takes precedence and keeps its original spelling", delegate {
             Equal("Server.Err.Full", JoinErrorText.Key("Server.Err.Full", true, true));
         });

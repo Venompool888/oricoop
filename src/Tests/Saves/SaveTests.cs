@@ -45,6 +45,16 @@ partial class SaveTests
             Check(!RoomSaveSelection.CanSelect(true, false, true, false), "negotiated network save is fixed");
             Check(!RoomSaveSelection.CanSelect(true, false, false, true), "persistent room backup target is fixed");
         });
+        Run("T-214 seat readiness: who has not reported its checkpoint load, and for how long", delegate {
+            SeatReadiness waiting = new SeatReadiness(); waiting.Join(2); waiting.Join(4); float waited;
+            Check(waiting.LongestWait(10f, out waited) == 0, "a seat without a sent checkpoint is waiting");
+            waiting.MarkSent(2, 10f); waiting.MarkSent(4, 30f);
+            Check(waiting.LongestWait(40f, out waited) == 2 && waited == 30f, "longest wait is seat 2 for 30 s, got " + waited);
+            waiting.Loaded(2);
+            Check(waiting.LongestWait(40f, out waited) == 4 && waited == 10f, "after seat 2 loaded: seat 4 for 10 s, got " + waited);
+            waiting.Loaded(4);
+            Check(waiting.LongestWait(40f, out waited) == 0, "everyone loaded, still waiting");
+        });
         Run("save message round trip", SaveRoundTrip);
         Run("seat readiness after departure", SeatReady);
         Run("device primary rebind preserves save handshake", delegate {
@@ -93,6 +103,9 @@ partial class SaveTests
         Run("T-126 promoted host never saves into its own slot", PromotedHostSaveSlot);
         Run("T-126 promoted host does not offer its own slot", PromotedGuestDoesNotOffer);
         Run("T-126 seats in the world are ready after promotion", PromotedHostSeatsReady);
+        Run("T-213 promoted host sends its save to a seat still waiting for its first one", PromotedHostSendsToWaitingSeat);
+        Run("T-213 a waiting mark ends with the seat, the session and the promotion", WaitingSeatMarkEnds);
+        Run("T-213 the promotion keeps a seat that joined after the role change unsent", PromotionKeepsSeatJoinedAfterRoleChange);
         // T-157: after SaveSync disabled itself (failed load) a restart is a real quit to the title, not its load.
         Run("load restart: only while loading and not disabled", delegate {
             Check(LoadRestart.IsOwn(true, false), "a running load restart was taken for a quit");
