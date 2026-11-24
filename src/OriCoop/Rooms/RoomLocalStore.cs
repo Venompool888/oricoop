@@ -134,11 +134,17 @@ namespace OriCoop.Rooms
         // "r"/"s" + hex) are accepted, so a hostile server cannot write or delete outside the store ("..\..", "C:\").
         static string Id(string id)
         {
-            if (string.IsNullOrEmpty(id) || id.Length > 64) throw new ArgumentException("bad room/save id");
+            if (!ValidId(id)) throw new ArgumentException("bad room/save id");
+            return id;
+        }
+
+        static bool ValidId(string id)
+        {
+            if (string.IsNullOrEmpty(id) || id.Length > 64) return false;
             foreach (char c in id)
                 if (!((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9') || c == '_' || c == '-'))
-                    throw new ArgumentException("bad room/save id");
-            return id;
+                    return false;
+            return true;
         }
 
         public void SaveRoom(RoomBackupInfo info)
@@ -146,16 +152,20 @@ namespace OriCoop.Rooms
             RoomWire.AtomicWrite(Path.Combine(Path.Combine(root, Id(info.Id)), "room.dat"), info.Encode().Encode());
         }
 
+        // One unreadable record (a room.dat torn by a power cut or a crash, an empty file, a folder that is not a room)
+        // is skipped: it must not hide every other room or break the page that lists them.
         public List<RoomBackupInfo> ListRooms()
         {
             List<RoomBackupInfo> list = new List<RoomBackupInfo>();
             foreach (string directory in Directory.GetDirectories(root))
             {
                 string path = Path.Combine(directory, "room.dat");
-                if (File.Exists(path))
-                {
-                    list.Add(RoomBackupInfo.Read(RoomWire.Fields.Decode(File.ReadAllBytes(path))));
-                }
+                if (!File.Exists(path)) continue;
+                RoomBackupInfo info;
+                try { info = RoomBackupInfo.Read(RoomWire.Fields.Decode(File.ReadAllBytes(path))); }
+                catch (Exception) { continue; }
+                if (!ValidId(info.Id)) continue;   // no usable id: it could be neither entered nor deleted (Id throws)
+                list.Add(info);
             }
             return list;
         }
