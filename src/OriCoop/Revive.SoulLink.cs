@@ -399,7 +399,7 @@ namespace OriCoop
             ReviveWire.Link l = s_point.Point;
             s_linkSeat = l.Seat; s_linkPos = new Vector3(l.X, l.Y, l.Z);
             RoomFlamePending = Services.Net.Enabled && l.MarkerKnown; s_nativeLinkTries = 0;
-            if (l.Health > 0f) SoulLinkRules.NoteLink(s_roster, l.Health);
+            SoulLinkRules.NoteLink(s_roster, l.Health);   // T-248: a 0-health save point leaves the downed players' revive health alone
             LinksNoted++;
             Services.Log.Info("latest soul link (" + why + "): P" + l.Seat + " at " + s_linkPos + ", creator health " + l.Health.ToString("F1"));
             Host.Trace("player", "soullink.room", "who", "P" + l.Seat, "pos", s_linkPos);
@@ -472,6 +472,28 @@ namespace OriCoop
             }
         }
 
+        // T-248: what the hold Y / Q of each downed local Ori is doing, as last traced (null: not down / not traced yet).
+        static readonly string[] s_selfHoldState = new string[ReviveLogic.MaxSeats + 1];
+
+        // T-248: trace why the hold does (not) count whenever that changes: a playtest log then says why a downed player
+        // never came back (no save point, an escape, gameplay suspended, loading, input locked, paused, or no button seen).
+        static void TraceSelfHold(Downed d, bool suppressed, bool held)
+        {
+            GameController gc = GameController.Instance;
+            string state = SoulLinkRules.SelfHoldState(s_point.Have, suppressed, gc == null, gc != null && gc.GameplaySuspended,
+                gc != null && gc.IsLoadingGame, gc != null && gc.InputLocked, SessionRules.LocalPaused, held);
+            int seat = d.Player;
+            if (seat < 1 || seat > ReviveLogic.MaxSeats || s_selfHoldState[seat] == state) return;
+            s_selfHoldState[seat] = state;
+            bool refused = SoulLinkRules.SelfHoldRefused(state);
+            Host.Trace("player", "revive.self_hold", "who", "P" + seat, "state", state, "refused", refused,
+                "q", Input.GetKey(KeyCode.Q), "bash", Core.Input.Bash.IsPressed,
+                "lockInput", gc != null && gc.LockInput, "lockByAction", gc != null && gc.LockInputByAction,
+                "localLocked", SessionRules.LocalLocked, "screen", SessionRules.ScreenInputLocked(d.Sein),
+                "gateWait", ForcedSync.IsLocked(d.Sein), "timeScale", Time.timeScale, "link", s_linkPos);
+            if (refused && held) Services.Log.Info("P" + seat + " holds Y / Q at the latest soul link but it does not count: " + state);
+        }
+
         // Each Ori reads its own controls: P1 the game's input (pad Y, or Q on the keyboard), every other local Ori
         // (local co-op P2-P4, extra players on an online device) its own puppet input, where Y is the game's Bash.
         static bool HoldingY(SeinCharacter s)
@@ -495,6 +517,8 @@ namespace OriCoop
             bool suppressed = false;
             try { suppressed = GiveUpSuppressed != null && GiveUpSuppressed(); }
             catch (Exception e) { Services.Log.Warn("GiveUpSuppressed: " + e.Message); }
+            bool held = HoldingY(d.Sein);
+            TraceSelfHold(d, suppressed, held);
             if (suppressed)
             {
                 SoulLinkRules.HoldSelf(d, false, true, 0f);   // starts over
@@ -502,7 +526,7 @@ namespace OriCoop
                 HideSelfHint(d.Player);
                 return;
             }
-            if (s_point.Have && SoulLinkRules.HoldSelf(d, HoldingY(d.Sein), SelfBlocked, Time.deltaTime))
+            if (s_point.Have && SoulLinkRules.HoldSelf(d, held, SelfBlocked, Time.deltaTime))
             {
                 HideSelfHint(d.Player);
                 ReviveAtLink(d);
@@ -559,7 +583,7 @@ namespace OriCoop
         static void HideStaleSelfHints()
         {
             for (int seat = 1; seat <= ReviveLogic.MaxSeats; seat++)
-                if (s_down[seat] == null || s_down[seat].Remote) HideSelfHint(seat);
+                if (s_down[seat] == null || s_down[seat].Remote) { HideSelfHint(seat); s_selfHoldState[seat] = null; }
         }
 
         static void ResetLinkState()

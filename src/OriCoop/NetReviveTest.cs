@@ -149,7 +149,8 @@ namespace OriCoop
         //       the host's; the guest holds Y: still down after 1 s, back after 2 s, alone at the link with the host's
         //       health after saving. Nobody's world reloads.
         //   R5b the host is down; the guest makes a soul link (its own death save), offered to the room (SaveOffer).
-        //       The host adopts it, so the latest link is the guest's; the host holds Y and comes back there.
+        //       The host adopts it, so the latest link is the guest's; the host opens the pause menu (it stays open, T-248),
+        //       closes it, holds Y and comes back there.
         //   R5c the host goes down again: the latest link is older than this down, so holding Y gives full health.
         static IEnumerator DeathRules(TestHarness h, bool host)
         {
@@ -261,6 +262,15 @@ namespace OriCoop
                     + F(Vector3.Distance(Revive.LinkPosition, Puppet.Position)) + ")");
                 h.Check(d != null && Mathf.Abs(d.LinkHealth - creator) < 0.01f,
                     "R5b host: revive health is the guest's after saving (" + (d != null ? F(d.LinkHealth) : "-") + " vs " + F(creator) + ")");
+                // T-248 (#336): downed, after the guest's soul link, the host can still open the pause menu (settings,
+                // quit); before, every screen of a downed Ori was closed again the next frame.
+                UI.Menu.ShowMenuScreen();
+                yield return Wait(0.5f);
+                h.Check(Revive.DownedOf(1) != null && UI.MainMenuVisible && UI.Menu.CurrentScreen == MenuScreenManager.Screens.Pause,
+                    "R5b host: downed after the guest's soul link, the pause menu opens and stays open (visible="
+                    + UI.MainMenuVisible + ", screen " + UI.Menu.CurrentScreen + ")");
+                UI.Menu.HideMenuScreen(true);
+                yield return Wait(0.3f);
                 yield return HoldSelfUntilUp(4f);
                 h.Check(Revive.SelfRevives == self0 + 1 && Revive.DownedOf(1) == null, "R5b host: holding Y revives at the guest's soul link");
                 h.Check(Vector3.Distance(Own.Position, Revive.LinkPosition) < 1.5f && Mathf.Abs(Own.Mortality.Health.Amount - creator) < 0.01f,

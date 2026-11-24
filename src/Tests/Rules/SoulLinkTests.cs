@@ -68,6 +68,14 @@ static class SoulLinkTests
             Check(!SoulLinkRules.HoldSelf(d, true, true, 3f), "revived while blocked");
             Check(Near(d.SelfHold, 0f), "blocked hold kept " + d.SelfHold);
         });
+        run("T-248: one refused frame mid-hold starts the 2 s over (maintainer's rule, not a pause)", delegate {
+            DownedState d = new DownedState();
+            Check(!SoulLinkRules.HoldSelf(d, true, false, 1.9f), "done after 1.9 s");
+            Check(!SoulLinkRules.HoldSelf(d, true, true, 0.016f), "done on a refused frame");
+            Check(Near(d.SelfHold, 0f), "a refused frame kept " + d.SelfHold + " s instead of starting over");
+            Check(!SoulLinkRules.HoldSelf(d, true, false, 1.9f), "the refused frame only paused the hold");
+            Check(SoulLinkRules.HoldSelf(d, true, false, 0.2f), "a full 2 s after the refusal did not revive");
+        });
         run("self revive cancels a teammate's revive in progress", delegate {
             DownedState d = new DownedState();
             ReviveLogic.BeginHold(d, 3); d.Progress = 0.6f; d.Given = 4f;
