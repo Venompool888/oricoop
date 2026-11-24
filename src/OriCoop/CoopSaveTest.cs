@@ -53,6 +53,7 @@ namespace OriCoop
             {
                 h.Check(CoopSaves.Outcome == "new" || CoopSaves.Outcome == "same", "L lineage outcome on a fresh pair = " + CoopSaves.Outcome);
                 CheckHostLink(h);
+                yield return NetTestHarness.CheckKeyAfterExit(h);
             }
             else
             {

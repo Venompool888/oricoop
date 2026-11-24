@@ -1324,6 +1324,29 @@ namespace OriCoop
                 + expectedKeys + "), collected=" + taken + " (expected " + collected + "), door used=" + BitConverter.ToInt32(door, 4));
         }
 
+        // The usual lineage checks inspect the last checkpoint that was shared. Run the offline host save
+        // afterwards: a new save with no member present is legitimately ahead of that shared fingerprint.
+        static int s_keyExitBalance = -1;
+        internal static IEnumerator CheckKeyAfterExit(TestHarness h)
+        {
+            int keysBeforeExit = s_keyExitBalance;
+            s_keyExitBalance = -1;
+            if (keysBeforeExit < 0) yield break;
+            SaveGameController save = GameController.Instance.SaveGameController;
+            byte[] rollback = save.SaveToBytes();   // what a downed host is about to reload after the last guest leaves
+            CheckKeyCheckpoint(h, rollback, keysBeforeExit, false, "last guest left, before a new save");
+            GameController.Instance.CreateCheckpoint();
+            save.PerformSave();
+            CheckKeyCheckpoint(h, File.ReadAllBytes(save.CurrentSaveFilePath), keysBeforeExit + 1, true, "host saved after exit");
+            if (!save.LoadFromBytes(rollback)) throw new InvalidDataException("T-249 restore");
+            GameController.Instance.RestoreCheckpoint();
+            float by = Time.realtimeSinceStartup + 10f;
+            while (GameController.Instance.IsLoadingGame && Time.realtimeSinceStartup < by) yield return null;
+            h.Check(!GameController.Instance.IsLoadingGame && Own.Inventory.Keystones == keysBeforeExit,
+                "W T-249 native rollback restores pre-pickup inventory (" + Own.Inventory.Keystones + ", expected " + keysBeforeExit + ")");
+            CheckKeyCheckpoint(h, save.SaveToBytes(), keysBeforeExit, false, "native rollback leaves key available");
+        }
+
         static void CollectTestKeystones(int amount, MoonGuid id = null)
         {
             SeinCharacter own = Own;
@@ -2706,6 +2729,7 @@ namespace OriCoop
                     if (host)
                     {
                         keysBeforeExit = Own.Inventory.Keystones;
+                        s_keyExitBalance = keysBeforeExit;
                         PrepareKeyCheckpoint();
                         PublishWorldBarrier(h, 24900, false);
                     }
@@ -2797,22 +2821,7 @@ namespace OriCoop
                     h.Note("G elapsed=" + F(Time.realtimeSinceStartup - start) + " puppet=" + (P2Context.P2 != null) + " " + NetPlay.StatusLine());
                     h.Check(P2Context.P2 == null, "G puppet removed within 7 s");
                     h.Check(NetPlay.CurrentPhase == NetPlay.Phase.Waiting, "G host Listening within 7 s");
-                    if (keyExit)
-                    {
-                        SaveGameController save = GameController.Instance.SaveGameController;
-                        byte[] rollback = save.SaveToBytes();   // what a downed host is about to reload after the last guest leaves
-                        CheckKeyCheckpoint(h, rollback, keysBeforeExit, false, "last guest left, before a new save");
-                        GameController.Instance.CreateCheckpoint();
-                        save.PerformSave();
-                        CheckKeyCheckpoint(h, File.ReadAllBytes(save.CurrentSaveFilePath), keysBeforeExit + 1, true, "host saved after exit");
-                        if (!save.LoadFromBytes(rollback)) throw new InvalidDataException("T-249 restore");
-                        GameController.Instance.RestoreCheckpoint();
-                        float by = Time.realtimeSinceStartup + 10f;
-                        while (GameController.Instance.IsLoadingGame && Time.realtimeSinceStartup < by) yield return null;
-                        h.Check(!GameController.Instance.IsLoadingGame && Own.Inventory.Keystones == keysBeforeExit,
-                            "W T-249 native rollback restores pre-pickup inventory (" + Own.Inventory.Keystones + ", expected " + keysBeforeExit + ")");
-                        CheckKeyCheckpoint(h, save.SaveToBytes(), keysBeforeExit, false, "native rollback leaves key available");
-                    }
+
                 }
                 // Lag test ①: a persistent world-digest mismatch must not trigger a full resync every 5 s (was 9-19 per run).
                 h.Note("digest resyncs=" + WorldSync.DigestResyncs + " deferred=" + WorldSync.DigestResyncsDeferred);
