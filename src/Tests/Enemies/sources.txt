@@ -1,6 +1,7 @@
 OriCoop\Seams\Seams.cs
 OriCoop\Enemies\EnemyAuthority.cs
 OriCoop\Enemies\EnemyWire.cs
+OriCoop\Enemies\EnemyVisuals.cs
 OriCoop\Enemies\VictimHits.cs
 OriCoop\Enemies\SwarmFamily.cs
 OriCoop\Enemies\HitIds.cs

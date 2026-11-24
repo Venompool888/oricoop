@@ -151,8 +151,10 @@ namespace OriCoop
             }
             foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
             {
-                if (s_seats.Owner(remote.Seat) == 0 || Array.IndexOf(LocalSeats, remote.Seat) >= 0)
+                int owner = s_seats.Owner(remote.Seat);
+                if (owner == 0 || Array.IndexOf(LocalSeats, remote.Seat) >= 0)
                 { Leave(remote, "seat released"); continue; }
+                if (owner != s_lastOwners[remote.Seat] && remote.Puppet != null) PartnerSkillFx.StopGlow(remote.Puppet);
                 remote.Peer = null;
             }
             for (int seat = 1; seat <= 4; seat++)

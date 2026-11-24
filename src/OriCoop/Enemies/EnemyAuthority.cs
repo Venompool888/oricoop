@@ -89,6 +89,13 @@ namespace OriCoop.Enemies
         internal float SceneRadius = float.PositiveInfinity;
         internal uint Epoch = 1, PendingEpoch, Generation = 0;
 
+        internal bool BeginEntityLife(bool sameLife, uint minimumGeneration)
+        {
+            if (sameLife && Generation != 0) return false;
+            Generation = Math.Max(Generation + 1, minimumGeneration);
+            return true;
+        }
+
         internal bool Mine(int localSeat) { return Known && !Frozen && OwnerSeat == localSeat; }
         internal void Presence(int seat, bool loaded) { if (loaded) LoadedSeats.Add(seat); else LoadedSeats.Remove(seat); }
         // T-147: report a load or an unload once; refresh only enemies this PC has loaded. An enemy it only heard of

@@ -20,7 +20,8 @@ namespace OriCoop
 
         static IEnumerator Leftovers(TestHarness h)
         {
-            const int step = 30; string tag = s_tag + "k"; Packet chosen = new Packet(); Vector3 saved = Own.Position;
+            const int step = 300;   // Barrier reports persist across scenarios, so E5k uses its own range.
+            string tag = s_tag + "k"; Packet chosen = new Packet(); Vector3 saved = Own.Position;
             bool immortal = Own.Mortality.DamageReciever.IsImmortal; Own.Mortality.DamageReciever.IsImmortal = true;
             GameObject blast = Own.Level.OnLevelUpGameObject; Own.Level.OnLevelUpGameObject = null;   // as in Swarm: no level-up blast in here
             try

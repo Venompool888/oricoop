@@ -171,7 +171,7 @@ namespace OriCoop
             Seams.GameServices.Install();
             NativeGui.PageChanged = L10nProbe.Where;   // test-side hooks wired here so production code never reads test flags
             NativeModeMenu.SuppressAutomaticMenu = delegate { return TestHarness.Enabled; };
-            SaveSync.Init(); Revive.Init(); WorldSync.Init(); ProgressSync.Init(); Saves.SeatSkillSync.Init(); EnemySync.Init();
+            SaveSync.Init(); Revive.Init(); WorldSync.Init(); ProgressSync.Init(); Saves.SeatSkillSync.Init(); EnemySync.Init(); PartnerSkillFx.Init();
             NetPlay.DevicePrimaryChanged += SaveSync.RebindDevice;
             SessionRules.Init(); NetHud.Init(); OriCoop.Authority.CServerLink.Install();
             P2Context.PatchProximityTypes(H);
@@ -637,6 +637,7 @@ namespace OriCoop
 
         public static void DespawnPuppet(Puppet puppet)
         {
+            PartnerSkillFx.StopGlow(puppet);
             SeinCharacter p2 = puppet.Sein;
             if (p2 != null)
             {

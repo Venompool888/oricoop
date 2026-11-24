@@ -54,7 +54,7 @@ namespace OriCoop
         static bool FamilyAhead(int step)
         {
             foreach (int received in s_partnerSteps.Keys)
-                if (received > step + s_offset && received >= 100 + s_offset && received < 240 + s_offset) return true;
+                if (received > step + s_offset && received >= 100 + s_offset && received < 100 + Families.Length * 10 + s_offset) return true;
             return false;
         }
         static IEnumerator Barrier(TestHarness h, int step, string key, bool family = false, float timeout = 30f, string extra = null)
@@ -263,6 +263,7 @@ namespace OriCoop
                 yield return Barrier(h, 12, chosen.Key);
                 if (!Has(12)) yield break;
                 bool stable = BothSameGrant(chosen, 12) && Agreement(chosen.Key, 12);
+                if (stable) yield return JumperEffects(h, chosen, owner);
                 HashSet<string> states = new HashSet<string>(); float travel = 0f;
                 Vector3 previous = EnemySync.Inspect(chosen.Key).Position;
                 for (int i = 0; i < 60; i++)
@@ -290,6 +291,30 @@ namespace OriCoop
                 if (!string.IsNullOrEmpty(chosen.Key)) EnemySync.EndTestEnemy(chosen.Key);
                 Own.Mortality.DamageReciever.IsImmortal = immortal; Plugin.Teleport(Own, saved);
             }
+        }
+        static IEnumerator JumperEffects(TestHarness h, Packet chosen, bool owner)
+        {
+            Vector3 at = chosen.Origin;
+            if (owner)
+            {
+                int sent = EnemySync.FxSent;
+                EnemySync.TestEmitJumperEffects(chosen.Key, at);
+                h.Check(EnemySync.FxSent == sent + 2, s_tag + "a owner sent both native frog effects");
+            }
+            else
+            {
+                const string stomp = "jumperEnemyStompEffect", land = "jumperEnemyLandEffect";
+                bool stomped = false, landed = false;
+                float end = Now + 2f;
+                while (Now < end && !(stomped && landed))
+                {
+                    stomped |= EnemySync.TestHasEffect(stomp, at); landed |= EnemySync.TestHasEffect(land, at);
+                    yield return null;
+                }
+                h.Check(stomped, s_tag + "a mirror spawned " + stomp);
+                h.Check(landed, s_tag + "a mirror spawned " + land);
+            }
+            yield return Barrier(h, 14, chosen.Key);
         }
         static IEnumerator DamageOnce(TestHarness h)
         {
@@ -594,7 +619,7 @@ namespace OriCoop
         }
         static readonly string[] Families = { "StarSlugEnemy", "AcidSlugEnemy", "DropSlugEnemy", "JumperEnemy",
             "SpitterEnemy", "RammingEnemy", "KamikazeSootEnemy", "DashOwlEnemy", "FishEnemy", "MortarWormEnemy",
-            "FloatingRockTurretEnemy", "FloatingRockLaserEnemy", "ShootingSpider", "JumpShootShark" };
+            "FloatingRockTurretEnemy", "FloatingRockLaserEnemy", "ShootingSpider", "JumpShootShark", "ArmouredRammingEnemy" };
         static void CollectFamilies(Dictionary<string, Packet> found) { CollectFamilies(found, null); }
         static void CollectFamilies(Dictionary<string, Packet> found, object at)
         {
@@ -707,7 +732,8 @@ namespace OriCoop
                 if (owner && SameGrant(chosen, EnemySync.Inspect(chosen.Key))) EnemySync.PrepareTestEnemy(chosen.Key, 80f);
                 yield return Barrier(h, step + 2, chosen.Key, true);
                 if (!Has(step + 2)) yield break;
-                bool mirrored = Array.IndexOf(Families, cls) < 9, mirrorSeen = p.Mirrored, engaged = false, stable = true;
+                bool rhino = cls == "ArmouredRammingEnemy";
+                bool mirrored = Array.IndexOf(Families, cls) < 9 || rhino, mirrorSeen = p.Mirrored, engaged = false, stable = true;
                 float travel = 0f, nearest = float.PositiveInfinity;
                 Vector3 previous = p.Position; HashSet<string> states = new HashSet<string>();
                 for (int i = 0; i < 80; i++)
@@ -747,6 +773,22 @@ namespace OriCoop
                 h.Check(Agreement(chosen.Key, step + 3), s_tag + " " + cls + " peers agree on one owner/epoch after simulation");
                 if (!owner && mirrored) h.Check(Vector3.Distance(final, Part[step + 3].Position) < 5f, s_tag + " " + cls + " final peer positions differ <5");
                 if (crawler) CrawlerAngle(h, cls, step + 3, crawlerTarget);
+                if (rhino)
+                {
+                    p = EnemySync.Inspect(chosen.Key);
+                    h.Check(p.Mirrored && p.ClassName == "ArmouredRammingEnemy", s_tag + " armoured ram is mirrored before armour breaks");
+                    uint generation = p.Generation;
+                    yield return Barrier(h, step + 6, chosen.Key, true);
+                    if (!Has(step + 6)) yield break;
+                    if (EnemySync.Inspect(chosen.Key).Owner) EnemySync.TestAttack(chosen.Key, 1f, false, DamageType.Stomp);
+                    float changeBy = Now + 3f;
+                    while (Now < changeBy && EnemySync.Inspect(chosen.Key).ClassName != "RammingEnemy") yield return null;
+                    p = EnemySync.Inspect(chosen.Key);
+                    h.Check(p.Present && p.Mirrored && p.ClassName == "RammingEnemy" && p.Generation > generation,
+                        s_tag + " broken armour replaced the entity at the same key on this peer");
+                    yield return Barrier(h, step + 7, chosen.Key, true);
+                    if (!Has(step + 7)) yield break;
+                }
                 // Suicidal families may have respawned during the sample; kill a live instance on both peers.
                 yield return FamilyPresence(chosen);
                 p = EnemySync.Inspect(chosen.Key);
@@ -769,6 +811,14 @@ namespace OriCoop
                 h.Check(!EnemySync.Inspect(chosen.Key).Present, s_tag + " " + cls + " mirror kill removed entity within 2s");
                 if (!owner)
                 {
+                    if (rhino)
+                    {
+                        bool explosion = false;
+                        foreach (DeadEnemyRagdoll corpse in UnityEngine.Object.FindObjectsOfType<DeadEnemyRagdoll>())
+                            if (corpse.name.StartsWith("rammingEnemyDeath", StringComparison.Ordinal)
+                                && Vector3.Distance(corpse.transform.position, p.Position) < 8f) explosion = true;
+                        h.Check(explosion, s_tag + " ram's native death explosion prefab spawned on the mirror");
+                    }
                     if (hasDeathAction) h.Check(EnemySync.DeathEffects == deaths + 1, s_tag + " " + cls + " puppet death effect exactly once");
                     else h.Note(s_tag + " " + cls + " has no DeathAction");
                 }

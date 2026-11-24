@@ -21,9 +21,10 @@ static class WorldTests
         Run("held events for one object come out in arrival order", delegate {
             HeldEvents<Ev> q = new HeldEvents<Ev>(); int dropped;
             q.Add(new Ev { Name = "damage", Scene = "a" }); q.Add(new Ev { Name = "collapse", Scene = "a" });
+            Check(q.Any(e => e.Name == "damage" && e.Scene == "a"), "deferred damage is visible before replay");
             List<Ev> got = q.TakeReady(e => e.Gone, e => e.Scene == "a", out dropped);
             Check(got.Count == 2 && got[0].Name == "damage" && got[1].Name == "collapse", "order " + string.Join(",", got.ConvertAll(e => e.Name).ToArray()));
-            Check(q.Count == 0 && dropped == 0, "left " + q.Count + " dropped " + dropped);
+            Check(q.Count == 0 && dropped == 0 && !q.Any(e => e.Name == "damage"), "no deferred damage remains");
         });
         Run("events of a scene still loading stay held, in order", delegate {
             HeldEvents<Ev> q = new HeldEvents<Ev>(); int dropped;
@@ -140,6 +141,7 @@ static class WorldTests
         });
         DeltaSyncTests.Register(Run);   // T-168
         MirrorHoldTests.Register(Run);  // T-172
+        DigestRepairTests.Register(Run);
         Console.WriteLine("World: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }

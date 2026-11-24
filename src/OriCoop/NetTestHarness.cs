@@ -2622,7 +2622,12 @@ namespace OriCoop
                 yield return Safely(h, "FACE", NetFacingTest.Run(h));   // partner facing during wall jumps (NetFacingTest.cs, T-199)
             AfterMove:
                 if (PhaseOn("W") && Mark(h, "W")) yield return SharedWorld(h);
-                if (PhaseOn("E3") && Mark(h, "E3")) yield return Safely(h, "E3", SharedEnemies(h));
+                if (PhaseOn("E3") && Mark(h, "E3"))
+                {
+                    yield return Safely(h, "E3", SharedEnemies(h));
+                    yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 70);
+                    yield return Safely(h, "E3 skill FX", ChargeFlameFx(h));
+                }
                 if (PhaseOn("E5") && Mark(h, "E5")) yield return Safely(h, "E5", EnemySyncTest.Run(h));   // enemy AI/death/damage/difficulty (EnemySyncTest.cs, enemy-sync)
                 if (PhaseOn("R") && Mark(h, "R")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 60); yield return Safely(h, "R", NetReviveTest.Run(h)); }   // online downed/revive
                 if (PhaseOn("S4") && Mark(h, "S4")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 62); yield return Safely(h, "S4", NetStoryTest.Run(h)); }

@@ -160,7 +160,7 @@ static class EnemyTests
             Check(states[1].OwnerSeat == 1 && states[1].Epoch == 3, "rejoin refresh");
         });
     }
-    static int Main() { VictimHitsTests.Run(Run); SwarmFamilyTests.Run(Run); LeftoverTests.Run(Run); AuthorityTests(); EnemyOwnerPolicyTests.Run(Run); WireTests(); Console.WriteLine("Enemies: " + count + " cases, " + failures + " failed"); return failures == 0 ? 0 : 1; }
+    static int Main() { VictimHitsTests.Run(Run); SwarmFamilyTests.Run(Run); LeftoverTests.Run(Run); AuthorityTests(); EnemyOwnerPolicyTests.Run(Run); WireTests(); EnemyVisualTests.Register(Run); Console.WriteLine("Enemies: " + count + " cases, " + failures + " failed"); return failures == 0 ? 0 : 1; }
     static byte[] Bytes(Action<BinaryWriter> write)
     { MemoryStream s = new MemoryStream(); BinaryWriter w = new BinaryWriter(s); write(w); w.Flush(); return s.ToArray(); }
     static BinaryReader Reader(byte[] bytes) { return new BinaryReader(new MemoryStream(bytes)); }
