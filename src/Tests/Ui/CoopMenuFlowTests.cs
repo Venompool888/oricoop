@@ -172,6 +172,9 @@ static class CoopMenuFlowTests
                     Check(text.Contains("10.0.0.5:47022"), "page " + page + " room-code row names the server: " + text);
                 }
             Check(L10n.T("title.local", true) == "本地同屏", "local play keeps its name (T-154)");
+            // The room-code dial joins a running game (C-server room code); a 我的房间 invite code is another code that needs
+            // the room password, so the join row says where that one goes.
+            Check(L10n.T("title.join.code.desc", true).Contains("我的房间") && L10n.T("title.join.code.desc", false).Contains("My rooms"), "join room-code row points 我的房间 invite codes to 我的房间");
         });
 
         run("co-op menu: every Chinese character of the flow is in the baked glyph atlas", delegate {

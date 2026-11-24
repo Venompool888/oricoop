@@ -584,7 +584,7 @@ namespace OriCoop
             "title.host.code.desc", "在你的服务器上开房，把房间码发给朋友\n当前服务器：{0}", "Open a room on your server and send its code to your friends.\nServer: {0}",
             "title.host.lan.desc", "同一个路由器下的朋友输入你的 IP 地址加入", "Friends on the same WiFi or LAN join with your IP address.",
             "title.join.steam.desc", "等待并接受朋友的 Steam 邀请。在标题画面直接接受邀请也会自动加入", "Wait for and accept your friend's Steam invite. Accepting it on the title screen joins by itself too.",
-            "title.join.code.desc", "输入朋友发来的 6 位房间码\n当前服务器：{0}", "Enter the six-digit room code your friend sent.\nServer: {0}",
+            "title.join.code.desc", "输入朋友开好一局后发来的 6 位房间码。我的房间的邀请码不在这里输入：请到 自建服务器 → 我的房间 → 加入房间\n当前服务器：{0}", "Enter the six-digit room code your friend sent once their game is up. A My rooms invite code goes in Your Own Server -> My rooms -> Join room instead.\nServer: {0}",
             "title.join.lan.desc", "输入主机的 IP 地址和端口（同一局域网）", "Enter the host's IP address and port (same LAN).",
             "title.code.noserver.desc", "房间码要用你自己的服务器。还没有添加服务器：选这里先添加一台", "Room codes need a server you run yourself. No server added yet: choose this to add one.",
             "title.code.noserver", "还没有服务器：先在这里添加一台，然后回到创建房间或加入房间", "No server yet: add one here, then go back to Host a Game or Join a Game.",
