@@ -253,7 +253,7 @@ namespace OriCoop.Story
         public int Sender;
         public float Began, NextResolve, EndAt = -1f, NextSceneLoad;
         public int SceneLoads;
-        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true, WellActivation;
+        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
         public bool TripWait;   // T-185: its mirror start waits for this PC's own scene trip (SceneTripRule)
         public bool StartSent;   // T-212 (4): its start went out to the partners, so its end is owed to them
         public bool EndedEarly;  // T-212 (5): the sender's end arrived before the mirror could start here
@@ -432,8 +432,8 @@ namespace OriCoop.Story
         // It is mirrored unless this PC plays that very story itself: playedByOwnReplay (its sequence / controller was
         // started by this PC's own lever or pedestal replay) or startedHereInWindow (natively here, inside the window,
         // moments ago). Before, the window dropped every start.
-        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow, bool wellActivation = false)
-        { return wellActivation || !playedByOwnReplay && !startedHereInWindow; }
+        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow)
+        { return !playedByOwnReplay && !startedHereInWindow; }
         // remaining: mirrored stories still tracked after the ended one was removed.
         public static StoryCleanup Cleanup(int remaining) { return remaining <= 0 ? StoryCleanup.All : StoryCleanup.StoryOnly; }
         public static bool RemoteFinished(T item, bool running, float now)

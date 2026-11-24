@@ -77,8 +77,6 @@ static partial class StoryTests
     {
         public readonly StoryLedger<Run> Ledger = new StoryLedger<Run>();
         public readonly Bus Bus;
-        public readonly SpiritWellActivations Wells = new SpiritWellActivations();
-        public bool LocallyPlayed;
         readonly Clock clock;
         public StoryPeer(Bus bus, Clock c)
         {
@@ -93,11 +91,8 @@ static partial class StoryTests
         void StartReceived(BinaryReader r)
         {
             byte[] bytes = Bytes(r); StoryStart data = StoryWire.ReadStart(r);
-            Run run = new Run { Sender = Bus.Sender, Token = data.Token, Key = data.Path, Classified = data.Classified,
-                WellActivation = data.WellActivation };
-            if (!StoryLedger<Run>.MirrorInsideWindow(LocallyPlayed, false, run.WellActivation)
-                || !Ledger.CanReceive(run, Bus.IsHost, clock.RealTime)) return;
-            if (run.WellActivation) Wells.TryActivate(run.Key);
+            Run run = new Run { Sender = Bus.Sender, Token = data.Token, Key = data.Path, Classified = data.Classified };
+            if (data.WellActivation || !Ledger.CanReceive(run, Bus.IsHost, clock.RealTime)) return;
             if (!Bus.IsHost)
             {
                 List<ulong> superseded = new List<ulong>();
@@ -121,7 +116,6 @@ static partial class StoryTests
             if (Bus.IsHost) Bus.Relay(Bus.Sender, 52, bytes);
             Run run; if (Ledger.Remote.TryGetValue(key, out run)) Ledger.Skip(run);
         }
-        public ulong StartWell(string key) { return Wells.TryActivate(key) ? Start(key, true) : 0; }
         public ulong Start(string key, bool wellActivation = false)
         {
             Run run = new Run { Key = key, Classified = true };
@@ -212,16 +206,11 @@ static partial class StoryTests
             Equal(true, p4.Ledger.Remote.ContainsKey(key)); Equal(3, p4.Ledger.Remote[key].Sender);
             p3.Skip(key); Equal(true, p4.Ledger.Remote[key].Skipped); p3.End(key); Equal(0, p4.Ledger.Remote.Count);
         });
-        Check("spirit well: a guest's first activation overrides the host's local-only state and reaches the other guest", delegate {
+        Check("spirit well: a legacy activation story from a guest is neither mirrored nor forwarded", delegate {
             Network n = new Network(); Clock c = new Clock(); StoryPeer host = Peer(n, c, 1), saver = Peer(n, c, 2), other = Peer(n, c, 3);
-            host.LocallyPlayed = other.LocallyPlayed = true;
-            host.Wells.TryActivate("well");
-            ulong key = saver.StartWell("well");
-            Equal(true, host.Ledger.Remote[key].WellActivation);
-            Equal(true, other.Ledger.Remote[key].WellActivation);
-            Equal(2, other.Ledger.Remote[key].Sender);
-            saver.End(key); c.RealTime = 4f;
-            Equal(0UL, other.StartWell("well"));
+            ulong key = saver.Start("well", true);
+            Equal(false, host.Ledger.Remote.ContainsKey(key));
+            Equal(false, other.Ledger.Remote.ContainsKey(key));
         });
         Check("spirit well: a late joiner learns opened wells without losing a newer activation", delegate {
             SpiritWellActivations host = new SpiritWellActivations(), guest = new SpiritWellActivations();

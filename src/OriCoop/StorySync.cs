@@ -63,7 +63,7 @@ namespace OriCoop
         static readonly Dictionary<string, float> Performed = new Dictionary<string, float>();
         static readonly Dictionary<string, bool> Classification = new Dictionary<string, bool>();
         sealed class Candidate { public Story Story; public int Before; public float At; }
-        struct StartCall { public bool Root, LocalOnly, LocalWellSave, WellActivation; public int Before; public Vector3 Position; }
+        struct StartCall { public bool Root, LocalOnly; public int Before; public Vector3 Position; }
         static readonly Dictionary<string, Candidate> Pending = new Dictionary<string, Candidate>();
         static float s_statsAt;
         public static int StartsSeen, StartsSent, StartsMirrored;
@@ -80,7 +80,6 @@ namespace OriCoop
         static readonly HashSet<ActionSequence> LocalWellSequences = new HashSet<ActionSequence>();
         static readonly SpiritWellActivations WellActivations = new SpiritWellActivations();
         static int s_localOnlyDepth, s_localOnlyRunDepth, s_localWellDepth;
-        static ActionSequence s_wellOpening;
         internal static bool LocalWellSave { get { return s_localWellDepth > 0; } }
         internal static void WriteWellActivations(BinaryWriter w) { WellActivations.Write(w); }
         internal static void MergeWellActivations(BinaryReader r) { WellActivations.Merge(r); }
@@ -352,15 +351,14 @@ namespace OriCoop
         }
         static void Consider(Story story, StartCall call)
         {
-            story.WellActivation = call.WellActivation;
             // T-207 (2): a story this PC starts natively inside its lever / pedestal window (see PlayingLocally).
-            if (CutsceneGuard.PedestalWindow && !story.WellActivation) WindowStarts.Mark(KeyOf(story), Time.realtimeSinceStartup);
-            if (!story.WellActivation && LocalOnlyStory(story)) return;
+            if (CutsceneGuard.PedestalWindow) WindowStarts.Mark(KeyOf(story), Time.realtimeSinceStartup);
+            if (LocalOnlyStory(story)) return;
             if (!Online || s_mirroring || PuppetCall || LiveRemotes() != 0 || StoryHost.Current.WorldApplying
                 || (story.Sequence != null && s_sourceActionDepth > 0)
                 || GameController.Instance == null || GameController.Instance.IsLoadingGame) return;
             story.Key = KeyOf(story); story.Position = call.Position;
-            bool classified = story.Sequence != null ? story.WellActivation || IsStorySequence(story.Sequence) : StoryController(story.Controller);
+            bool classified = story.Sequence != null ? IsStorySequence(story.Sequence) : StoryController(story.Controller);
             story.Classified = classified;
             if (classified || (TakeoverMask() & ~call.Before) != 0) { Begin(story); return; }
             if (!Pending.ContainsKey(story.Key)) Pending[story.Key] = new Candidate { Story = story, Before = call.Before, At = Time.realtimeSinceStartup };
@@ -546,7 +544,7 @@ namespace OriCoop
         { return story.Kind + ":" + story.Scene + ":" + story.Id + ":" + story.Path + ":" + story.State; }
         static void Begin(Story story)
         {
-            if (!story.WellActivation && LocalOnlyStory(story)) return;
+            if (LocalOnlyStory(story)) return;
             if (!Online || s_mirroring || PuppetCall || Own == null || StoryHost.Current.WorldApplying
                 || GameController.Instance == null || GameController.Instance.IsLoadingGame) return;
             // Mirrored timelines continue invoking nested actions after Perform has returned. Retain
@@ -561,7 +559,7 @@ namespace OriCoop
                 StoryWire.WriteStart(w, new StoryStart { Token = story.Token, Kind = story.Kind,
                     Scene = story.Scene.ToByteArray(), Id = story.Id.ToByteArray(), Path = story.Path, State = story.State,
                     X = story.Position.x, Y = story.Position.y, Z = story.Position.z,
-                    Classified = story.Classified, WellActivation = story.WellActivation });
+                    Classified = story.Classified });
             });
             StartsSent++; story.StartSent = true;
             Services.Log.Info("net: story start " + story.Token + " " + story.Key);
@@ -572,13 +570,16 @@ namespace OriCoop
             Story story = new Story(); story.Sender = Services.Net.Sender; story.Token = data.Token; story.Kind = data.Kind;
             story.Scene = GameStoryHost.ReadGuid(data.Scene); story.Id = GameStoryHost.ReadGuid(data.Id);
             story.Path = data.Path; story.State = data.State; story.Position = new Vector3(data.X, data.Y, data.Z);
-            story.Classified = data.Classified; story.WellActivation = data.WellActivation;
-            if (!Online || Remote.ContainsKey(TokenKey(story.Sender, story.Token)) || PlayingLocally(story)) return;
+            story.Classified = data.Classified;
+            if (!Online) return;
+            // Earlier net12 builds announced the first well visit as a story. The pedestal and teleporter
+            // already synchronize through their native save objects, including when their scene is unloaded.
+            if (data.WellActivation) { WellActivations.TryActivate(WellKey(story.Scene, story.Id)); return; }
+            if (Remote.ContainsKey(TokenKey(story.Sender, story.Token)) || PlayingLocally(story)) return;
             if (CutsceneGuard.PedestalWindow) MirroredInWindow++;
             LastStoryActivity = Time.realtimeSinceStartup;
             story.Key = KeyOf(story);
             if (!Ledger.CanReceive(story, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
-            if (story.WellActivation) WellActivations.TryActivate(WellKey(story.Scene, story.Id));
             if (!Services.Net.IsHost)
             {
                 List<ulong> superseded = new List<ulong>();
@@ -629,7 +630,7 @@ namespace OriCoop
             bool scoped = MutateWindowDropsStarts && CutsceneGuard.PedestalWindow
                 || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0 || LocalOnlyScoped(story);
             bool startedHere = !MutateWindowDropsStarts && WindowStarts.Recent(KeyOf(story), Time.realtimeSinceStartup, WindowDedupe);
-            return !StoryLedger<Story>.MirrorInsideWindow(scoped, startedHere, story.WellActivation);
+            return !StoryLedger<Story>.MirrorInsideWindow(scoped, startedHere);
         }
         static ActionSequence FindSequence(Story story)
         {
@@ -709,8 +710,7 @@ namespace OriCoop
                 {
                     story.Sequence = FindSequence(story);
                     if (story.Sequence == null) return false;
-                    if (story.WellActivation) LocalOnly.Remove(story.Sequence);
-                    else if (LocalOnly.Contains(story.Sequence))
+                    if (LocalOnly.Contains(story.Sequence))
                     {
                         // Already played here by our own pedestal replay (CutsceneGuard): track only.
                         story.Resolved = true; story.Sequence = null;
@@ -1039,12 +1039,20 @@ namespace OriCoop
         [HarmonyPatch(typeof(SavePedestal), "SaveOnPedestal")]
         static class WellSave
         {
-            static void Prefix(SavePedestal __instance, out ActionSequence __state)
+            static void Prefix(SavePedestal __instance, out bool __state)
             {
-                __state = s_wellOpening;
-                s_wellOpening = Online && !PuppetCall ? __instance.OnOpenedAction as ActionSequence : null;
+                __state = Online && !PuppetCall;
+                if (!__state) return;
+                ActionSequence opening = __instance.OnOpenedAction as ActionSequence;
+                if (opening != null && opening.MoonGuid != null && opening.MoonGuid != MoonGuid.Empty)
+                    WellActivations.TryActivate(WellKey(SceneOf(opening), opening.MoonGuid));   // net12 snapshot for older guests
+                EnterLocalOnly(opening);
+                s_localWellDepth++;
             }
-            static void Finalizer(ActionSequence __state) { s_wellOpening = __state; }
+            static void Finalizer(bool __state)
+            {
+                if (__state) { s_localWellDepth--; ExitLocalOnly(); }
+            }
         }
         [HarmonyPatch(typeof(ActionSequence), "Perform")]
         static class SequenceStart
@@ -1054,18 +1062,9 @@ namespace OriCoop
                 __state = new StartCall();
                 bool replay = s_mirroring || s_replayActionDepth > 0 || OwnedSequences.Contains(__instance);
                 bool canStart = __instance.enabled && __instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty;
-                if (!replay && __instance == s_wellOpening && canStart)
-                {
-                    __state.WellActivation = WellActivations.TryActivate(WellKey(SceneOf(__instance), __instance.MoonGuid));
-                    if (__state.WellActivation) LocalOnly.Remove(__instance);
-                    else { __state.LocalWellSave = true; s_localWellDepth++; EnterLocalOnly(null); }
-                }
-                if (!replay && !__state.WellActivation && (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0)) LocalOnly.Add(__instance);
+                if (!replay && (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0)) LocalOnly.Add(__instance);
                 if (!replay && LocalWellSave) LocalWellSequences.Add(__instance);
                 else LocalWellSequences.Remove(__instance);
-                if (s_mirroring && Mirrored.Contains(__instance))
-                    foreach (SavePedestal well in SavePedestal.All)
-                        if (well.OnOpenedAction == __instance) { well.MarkAsUsed(); break; }
                 __state.Root = s_entryDepth == 0 && canStart;
                 if (__state.Root) { s_entryDepth++; __state.Before = TakeoverMask(); __state.Position = Own == null ? Vector3.zero : Own.Position; }
                 if (replay && s_native != null && Remote.Count > 0 && !PuppetCall)
@@ -1090,7 +1089,6 @@ namespace OriCoop
             static Exception Finalizer(StartCall __state, Exception __exception)
             {
                 if (__state.Root) s_entryDepth--;
-                if (__state.LocalWellSave) { ExitLocalOnly(); s_localWellDepth--; }
                 return __exception;
             }
         }
