@@ -228,10 +228,21 @@ namespace OriCoop.Rooms
             {
                 return null;
             }
-            RoomWire.Fields f = RoomWire.Fields.Decode(File.ReadAllBytes(Path.Combine(path, "current.dat")));
-            version = f.GetLong("version", 0);
-            summary = f.GetString("summary");
-            return File.ReadAllBytes(Path.Combine(path, "current.sav"));
+            // A backup that cannot be read (torn current.dat, missing current.sav) counts as none: the caller then
+            // downloads the whole save. It used to throw on the main thread inside RoomSession.Download, which left a
+            // holder without a slot beating the lease (nobody else could host) and the 我的房间 action waiting for good.
+            try
+            {
+                RoomWire.Fields f = RoomWire.Fields.Decode(File.ReadAllBytes(Path.Combine(path, "current.dat")));
+                byte[] data = File.ReadAllBytes(Path.Combine(path, "current.sav"));
+                version = f.GetLong("version", 0);
+                summary = f.GetString("summary");
+                return data;
+            }
+            catch (FormatException) { }
+            catch (IOException) { }
+            catch (UnauthorizedAccessException) { }
+            return null;
         }
 
         public void DeleteRoom(string roomId)
