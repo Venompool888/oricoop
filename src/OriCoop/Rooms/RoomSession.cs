@@ -74,7 +74,7 @@ namespace OriCoop.Rooms
         public double BeatSeconds = 30, BackupSeconds = 60, WaitSeconds = 2;
         int generation, slot = -1;
         bool liveSent, waiting, polling, uploading, leaving, leaveQueued;
-        double now, nextBeat, nextBackup, waitUntil;
+        double now, nextBeat, nextBackup, waitUntil, nextLive;
         long lastPlayed;
         byte[] queued;
         string queuedSummary;
@@ -210,6 +210,7 @@ namespace OriCoop.Rooms
                         return;
                     }
                     liveSent = false;
+                    nextLive = 0;
                     nextBeat = now + BeatSeconds;
                     game.Host(slot, server);
                     lastPlayed = game.PlayedSeconds;
@@ -260,7 +261,7 @@ namespace OriCoop.Rooms
         {
             now = seconds;
             if (!Active || leaving) return;
-            if (Holder && slot >= 0 && !liveSent && !string.IsNullOrEmpty(game.LiveCode))
+            if (Holder && slot >= 0 && !liveSent && now >= nextLive && !string.IsNullOrEmpty(game.LiveCode))
             {
                 liveSent = true;
                 string code = game.LiveCode;
@@ -271,7 +272,10 @@ namespace OriCoop.Rooms
                 {
                     if (!r.Ok)
                     {
+                        // Retried at the beat pace: retrying on the next frame sent a request (and showed the error)
+                        // about once per round trip for as long as the server kept refusing (e.g. not_host).
                         liveSent = false;
+                        nextLive = now + BeatSeconds;
                         Fail(r.Error);
                     }
                 });
