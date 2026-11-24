@@ -70,6 +70,11 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `shooter.start` (id, scene, path, guid, actions, caller = the game frames that started it, ori_dist),
   `shooter.action` / `shooter.holder` / `shooter.projectile` (fields read by reflection, once each), `shooter.holders`
   (count), `shooter.spawn` (each projectile's pos, vel, gravity, life, angle to own Ori / to the partner).
+- world, T-250 timer phase (`src\OriCoop\WorldSync.cs`, rules in `World\TimerPhase.cs`): the host sends the phase of
+  every `OnTimerPerformAction` / `TimedTrigger` in its loaded scenes every 0.7-1.3 s (world message 12). A guest takes it
+  only when its own is more than 0.25 s off and neither side is within 0.25 s of a restart: `timer.phase` (key, type,
+  path, local, host, verdict), first 200 per process. The 5 s `net: world bytes/sec` log line adds
+  `timers sent= taken= in_step= near_restart=`.
 - save / scene: save, load, pause/resume, difficulty (with the enemy health multiplier actually in effect),
   scene load/unload, current scene.
 - net: every 1 s RTT, loss, reliable pending/resends, remote scene; connect/disconnect with reason.
@@ -96,4 +101,5 @@ line of either end (`--summary` shows `utc_offset=` and `clock_fix=` per file; `
 header, the mirrored "loaded" line, a scene line, P1 player samples, the newest line less than 2 s old, and no IP.
 `-Net` runs `run-nettest.ps1` with the trace redirected and requires both ends to share one session id, and each end's
 own `LogOutput.log` to have every OriCoop line UTC stamped, one `clock: utc_offset=` header and a `clock: offset vs`
-line. Unit tests for the formats and the offset math: `srcun-unittests.ps1 -Only Clock`.
+line. Unit tests for the formats and the offset math: `src
+un-unittests.ps1 -Only Clock`.

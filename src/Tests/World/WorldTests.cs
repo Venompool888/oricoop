@@ -142,6 +142,7 @@ static class WorldTests
         DeltaSyncTests.Register(Run);   // T-168
         MirrorHoldTests.Register(Run);  // T-172
         DigestRepairTests.Register(Run);
+        TimerPhaseTests.Register(Run);  // T-250
         Console.WriteLine("World: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;
     }
