@@ -9,9 +9,11 @@
 # Exit 0 = everything that ran passed.
 #   -Files a,b  use these paths instead of git (relative to the repo root).   -All  every suite (nightly / release).   -Summary f  also write the summary to file f.
 # T-096: net-newgame runs only its own phases before a merge (src\test-selection.ps1 $TS_SuitePhases; -All
-# runs everything). A failed suite is rerun ONCE, with only the phases of its failed checks (2-player net suites) or
-# whole (the other suites, 30-250 s): passing the second time = FLAKY (counts as a pass, logged to
-# logs\flaky-checks.tsv with the checks that failed); failing again = FAIL. $env:ORICOOP_RERUN=0 turns reruns off.
+# runs everything). A failed suite is rerun ONCE, with only the phases of its failed checks plus every phase that never
+# ran (2-player net suites; T-226: fail-fast stops at the first failure, so the phases after it never ran) or whole (the
+# other suites, 30-250 s): passing the second time = FLAKY (counts as a pass, logged to logs\flaky-checks.tsv with the
+# checks that failed); failing again = FAIL. A rerun that passes without running every phase it was given is a FAIL: a
+# phase that never ran never counts as passed. $env:ORICOOP_RERUN=0 turns reruns off.
 #   -FakeSuites DIR  (run-affected-selftest.ps1 only) suite scripts come from DIR; no selfcheck, unit tests or build.
 param([string]$Base = 'main', [switch]$WorkingTree, [switch]$DryRun, [ValidateRange(1, 5)][int]$Parallel = 2, [string[]]$Files, [switch]$All, [string]$Summary, [string]$FakeSuites = '')
 $ErrorActionPreference = 'Stop'
@@ -117,12 +119,18 @@ while ($queue.Count -gt 0 -or $running.Count -gt 0) {
         $prev = $times[$r.Name]
         $times[$r.Name] = $(if ($prev) { @(($prev[0] + [int]($got - $r.Start)), ($prev[1] + [int]($now - $got))) } else { @([int]($got - $r.Start), [int]($now - $got)) })
         $failed = @((Get-FailedPhases $text).Checks)
-        $rerun = $null
+        $rerun = $null; $plan = $null
         # Exit 2 (owner playing / no copy), 4 (gave up waiting for a copy), 5 / 6 / 7 (safety stops) are never rerun.
-        if ($status -eq 'FAIL' -and $job.Try -eq 1 -and $env:ORICOOP_RERUN -ne '0' -and @(2, 4, 5, 6, 7) -notcontains $r.Proc.ExitCode) { $rerun = Get-RerunPhases $r.Name $text $job.Phases }
+        if ($status -eq 'FAIL' -and $job.Try -eq 1 -and $env:ORICOOP_RERUN -ne '0' -and @(2, 4, 5, 6, 7) -notcontains $r.Proc.ExitCode) { $plan = Get-RerunPlan $r.Name $text $job.Phases }
+        if ($null -ne $plan) { $rerun = $plan.Phases }
+        # T-226: a 2-player rerun that passed without every client starting each phase it was given proves nothing about those.
+        $unrun = @($(if ($job.Try -gt 1 -and $status -eq 'PASS' -and $TS_PhasedSuites -contains $r.Name) { Get-UnrunPhases $text $job.Phases }))
         if ($rerun -ne $null) {
-            $status = 'FAIL, rerun ' + $(if ($rerun -and $rerun -ne $job.Phases) { 'phases ' + $rerun } else { 'whole suite' })
+            $status = 'FAIL, rerun ' + $(if ($rerun -and $rerun -ne $job.Phases) { 'phases ' + $rerun } else { 'whole suite' }) +
+                $(if ($plan.NotRun.Count) { ' (failed ' + ($plan.Failed -join ',') + '; never ran ' + ($plan.NotRun -join ',') + ')' } else { '' })
             $queue.Enqueue([pscustomobject]@{ Name = $r.Name; Phases = $rerun; Try = 2; First = $failed })
+        } elseif ($unrun.Count) {
+            $status = 'FAIL (the rerun passed without running phase ' + ($unrun -join ',') + '; a phase that never ran is no pass)'
         } elseif ($job.Try -gt 1 -and $status -eq 'PASS') {
             $status = 'FLAKY (failed, then passed on the rerun: ' + $(if ($job.First.Count) { ($job.First | Select-Object -First 5) -join ' | ' } else { 'no check named' }) + ')'
             $flaky[$r.Name] = $job.First

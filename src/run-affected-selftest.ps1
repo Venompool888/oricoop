@@ -30,16 +30,31 @@ if ($env:FAKE_LOCAL -eq 'flaky' -and $n -eq 1) { '[   1.00] FAIL visual self-che
 Set-Content (Join-Path $fake 'run-titlejoin.ps1') ($common + [Environment]::NewLine + @'
 '[   1.00] PASS host: in game'; '[   2.00] RESULT PASS 1/1'; 'TITLEJOIN direct PASS'
 '@)
+# Like the harness, the fake net suite marks every phase it runs ("=== phase X", ORICOOP_PHASES or all) and then END.
 Set-Content (Join-Path $fake 'run-nettest.ps1') ($common + [Environment]::NewLine + @'
+$ph = @($(if ($env:ORICOOP_PHASES) { $env:ORICOOP_PHASES -split ',' } else { @('INTRO', 'MOVE', 'W', 'E3', 'E5', 'R', 'S4', 'P', 'WO', 'CAM', 'CUT', 'ESC') }))
+$pb = 'PB the guest''s push moved the held stone'
+if ($plain -and $env:FAKE_NET -eq 'failfast' -and $n -eq 1) {
+    # T-226: fail-fast stopped the games at the first failure (phase P): its summary only, no result files, no markers.
+    'FAIL-FAST: stopping after the first failure; set ORICOOP_FAIL_FAST=0 for a full run. Failures so far:'; ('  host-1.log: FAIL ' + $pb)
+    '--- host-result.txt ---'; ('no result file: fail-fast stopped the run after: ' + $pb)
+    '--- guest-result.txt ---'; ('no result file: fail-fast stopped the run after: ' + $pb); 'NETTEST FAIL'; exit 1
+}
 '[   0.10] net role=host'
 if ($plain -and $env:FAKE_NET -eq 'wo') {
-    '[   0.20] === phase INTRO'; '[   1.00] PASS INTRO gameplay fixture ready'; '[   2.00] === phase WO'; '[   3.00] FAIL WO1 lever state matches'
+    foreach ($x in $ph) { '[   1.00] === phase ' + $x; $(if ($x -eq 'WO') { '[   3.00] FAIL WO1 lever state matches' } else { '[   1.00] PASS ' + $x + ' ok' }) }
     '[   4.00] === phase END'; '[   5.00] PASS G puppet removed within 7 s'; '[   6.00] RESULT FAIL'; 'NETTEST FAIL'; exit 1
+}
+if ($plain -and $env:FAKE_NET -eq 'pfail' -and $n -eq 1) {
+    foreach ($x in $ph) { '[   1.00] === phase ' + $x; $(if ($x -eq 'P') { '[   2.00] FAIL ' + $pb } else { '[   1.00] PASS ' + $x + ' ok' }) }
+    '[   4.00] === phase END'; '[   6.00] RESULT FAIL'; 'NETTEST FAIL'; exit 1
 }
 if ($plain -and $env:FAKE_NET -eq 'startup' -and $n -eq 1) {
     '[   0.20] FAIL net puppet appears within 40 s'; '[   6.00] RESULT FAIL'; 'NETTEST FAIL'; exit 1
 }
-'[   0.20] === phase MOVE'; '[   1.00] PASS C still Connected'; '[   2.00] === phase END'; '[   6.00] RESULT PASS 2/2'; 'NETTEST PASS'
+if ($plain -and $env:FAKE_RERUN -eq 'first-phase-only' -and $n -eq 2) { $ph = @($ph[0]) }   # a broken rerun: runs only its first phase, passes
+foreach ($x in $ph) { '[   1.00] === phase ' + $x; '[   1.00] PASS ' + $x + ' ok' }
+'[   2.00] === phase END'; '[   6.00] RESULT PASS 2/2'; 'NETTEST PASS'
 '@)
 
 function Invoke-Fake([hashtable]$vars, [string[]]$files) {
@@ -93,6 +108,26 @@ Expect (@($r.Calls).Count -eq 1 -and $r.Out -match 'AFFECTED FAIL') 'ORICOOP_RER
 # 4. a failure outside any phase (start-up) reruns the suite with the same phases.
 $r = Invoke-Fake @{ FAKE_NET = 'startup' } 'src/OriCoop/WorldObjSync.cs'
 Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=R,WO' }).Count -eq 2 -and $r.Out -match '(?m)^net: FLAKY') 'start-up failure: rerun with the same phases (R,WO); passing then = FLAKY'
+
+# 4b. T-226: fail-fast stopped the run at its first failure (PB, phase P) before the result files existed. S4 ran before
+#     P and passed; P failed; WO and CAM never ran. The rerun runs P, WO and CAM (not P alone: a pass of P then counted
+#     WO and CAM as passed although they never ran), and passing then = FLAKY.
+$tf = 'src/OriCoop/NetStoryTest.cs,src/OriCoop/NetPhysTest.cs,src/OriCoop/NetWorldObjTest.cs,src/OriCoop/NetCameraTest.cs'
+$r = Invoke-Fake @{ FAKE_NET = 'failfast' } $tf
+Expect ($r.Out -match 'PLAN: .*net \[S4,P,WO,CAM\]') 'plan: net runs S4,P,WO,CAM (four net test files)'
+Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=S4,P,WO,CAM' }).Count -eq 1 -and @($r.Calls | Where-Object { $_ -eq 'run-nettest phases=P,WO,CAM' }).Count -eq 1 -and @($r.Calls).Count -eq 2) ('fail-fast in P: rerun P and the phases that never ran (P,WO,CAM), not S4 (calls: ' + ($r.Calls -join ' | ') + ')')
+Expect ($r.Out -match 'net: FAIL, rerun phases P,WO,CAM \(failed P; never ran WO,CAM\)') 'the rerun line names the failed phase and the phases that never ran'
+Expect ($r.Out -match '(?m)^net: FLAKY' -and $r.Code -eq 0) 'fail-fast, then the rerun of every phase left passes: FLAKY'
+
+# 4c. T-226: a run that went to its end (every phase marked, END) and failed in P: the later phases ran and passed, so
+#     only P is rerun.
+$r = Invoke-Fake @{ FAKE_NET = 'pfail' } $tf
+Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=P' }).Count -eq 1 -and @($r.Calls).Count -eq 2 -and $r.Out -match '(?m)^net: FLAKY') ('a full run failing in P: rerun P only (calls: ' + ($r.Calls -join ' | ') + ')')
+
+# 4d. T-226: a rerun that passes without running every phase it was given (here only P of P,WO,CAM) is no pass: the
+#     phases it skipped never ran in either run.
+$r = Invoke-Fake @{ FAKE_NET = 'failfast'; FAKE_RERUN = 'first-phase-only' } $tf
+Expect ($r.Out -match '(?m)^net: FAIL \(the rerun passed without running phase WO,CAM' -and $r.Out -match 'AFFECTED FAIL' -and $r.Code -eq 1 -and @($r.Flaky).Count -eq 0) 'a rerun that skipped phases WO,CAM: FAIL, not FLAKY'
 
 # 5. A file whose module selects every phase (M7): net keeps them all, net-newgame only its own phases (T-096; net-relay,
 #    the other capped suite, went with the relay in T-159).
