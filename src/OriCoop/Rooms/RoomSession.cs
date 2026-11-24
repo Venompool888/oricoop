@@ -197,6 +197,8 @@ namespace OriCoop.Rooms
             if (mode == "host")
             {
                 Holder = true;
+                // A waiting player's beat can answer host: no longer waiting, or Tick gave the lease up at the wait deadline.
+                waiting = false;
                 Download(delegate(byte[] data)
                 {
                     if (!Active || leaving) return;

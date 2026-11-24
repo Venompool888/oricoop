@@ -1,0 +1,5 @@
+OriCoop\Rooms\RoomWire.cs
+OriCoop\Rooms\RoomJobs.cs
+OriCoop\Rooms\RoomLocalStore.cs
+OriCoop\Rooms\RoomClient.cs
+OriCoop\Rooms\RoomSession.cs
