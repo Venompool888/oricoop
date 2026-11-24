@@ -115,6 +115,7 @@ namespace OriCoop
             BindKeys();
             s_open = true; s_inGame = true;
             s_fromPause = PauseMenuEntry.Suspend();
+            SessionRules.ScreenOpened();
             s_ignoreUntil = Time.unscaledTime + 0.3f;
             s_gate.Block(Time.unscaledTime, 0.3f);   // the press that picked 房间管理 is still down
             s_model.ResetFocus();

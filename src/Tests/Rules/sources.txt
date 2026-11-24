@@ -5,3 +5,4 @@ OriCoop\Rules\MenuPresence.cs
 OriCoop\Rules\ReviveWire.cs
 OriCoop\Rules\InviteRules.cs
 OriCoop\Rules\SoulLinkRules.cs
+OriCoop\Rules\ScreenDebts.cs

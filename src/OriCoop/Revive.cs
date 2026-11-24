@@ -336,7 +336,7 @@ namespace OriCoop
 
         public static bool SaverHolding(SeinCharacter saver)
         {
-            return Host.SaverHolding(saver);
+            return !SessionRules.ScreenInputLocked(saver) && Host.SaverHolding(saver);
         }
 
         public static bool SaverNear(SeinCharacter saver, Downed d)
@@ -354,8 +354,8 @@ namespace OriCoop
             bool multi = MultiRevive;
             SeinCharacter saver = multi ? Rescuer(d, true) : Partner(d.Sein);
             d.Holding = false;
-            // No reviving through a menu: online a menu no longer freezes the world, so check the saver's own menus too.
-            bool saverInMenu = Host.CoopMenuOpen || (UI.MainMenuVisible && (saver == Host.P1 || !Services.Net.Enabled));
+            bool saverInMenu = SessionRules.NoPause ? SessionRules.ScreenInputLocked(saver)
+                : Host.CoopMenuOpen || (UI.MainMenuVisible && (saver == Host.P1 || !Services.Net.Enabled));
             if (!multi && !Alive(saver) || GameController.Instance == null || GameController.Instance.GameplaySuspended || saverInMenu) return;
             if (multi && saver == null) { ReviveLogic.Release(d); return; }
             bool holding = multi || SaverNear(saver, d) && SaverHolding(saver);

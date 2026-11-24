@@ -103,7 +103,7 @@ namespace OriCoop
             DUP = 1, DDOWN = 2, DLEFT = 4, DRIGHT = 8;
         // T-199: FlagFaceKnown says FlagFaceLeft is meaningful (a frame from an older build has neither: facing is then
         // left to the puppet's own replay, as before). Two spare bits of the same byte: the frame's size is unchanged.
-        const int FlagLT = 1, FlagRT = 2, FlagNeutral = 4, FlagFaceKnown = 8, FlagFaceLeft = 16, FlagMap = 32;
+        const int FlagLT = 1, FlagRT = 2, FlagNeutral = 4, FlagFaceKnown = 8, FlagFaceLeft = 16, FlagScreen = 32;
 
         public struct Frame
         {
@@ -1057,13 +1057,13 @@ namespace OriCoop
         static void SendSeatFrame(int seat, SeinCharacter p1, uint tick)
         {
             GameController gc = GameController.Instance;
-            bool map = seat == Players.LocalSeat && SessionRules.LiveMap;
-            bool neutral = map || gc == null || gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.InputLocked || ForcedSync.IsLocked(p1)
+            bool screen = SessionRules.ScreenInputLocked(p1);
+            bool neutral = screen || gc == null || gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.InputLocked || ForcedSync.IsLocked(p1)
                 || p1.Controller == null || !p1.Controller.CanMove || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput;
 
             Frame f = new Frame();
             f.Tick = tick;
-            if (map) f.Flags |= FlagMap;
+            if (screen) f.Flags |= FlagScreen;
             if (!neutral)
             {
                 // Core.Input holds P1's input (keyboard or pad) for this step; encode it pad-style.
@@ -1191,8 +1191,8 @@ namespace OriCoop
             }
             if ((f.Flags & FlagFaceKnown) != 0) { remote.HaveFace = true; remote.FaceLeft = (f.Flags & FlagFaceLeft) != 0; }
             ApplyFacing(remote);
-            // Replay the map lock as well as neutral buttons so an aiming puppet cancels its cast.
-            remote.Puppet.MapInputLocked = (f.Flags & FlagMap) != 0;
+            // Replay the screen lock as well as neutral buttons to cancel casts.
+            remote.Puppet.ScreenInputLocked = (f.Flags & FlagScreen) != 0;
             if ((f.Flags & FlagNeutral) != 0) { HoldNeutral(remote); return; }
             P2Input.Fill(remote.Puppet.Input, f.Buttons, DQ(f.LX), DQ(f.LY), DQ(f.RX), DQ(f.RY), (f.Flags & FlagLT) != 0, (f.Flags & FlagRT) != 0, false);
         }
