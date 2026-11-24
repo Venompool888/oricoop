@@ -29,6 +29,8 @@ namespace OriCoop.World
         readonly Func<IAuthority> m_authority;
         readonly IWorldDeltaGame m_game;
         readonly Dictionary<string, DeltaObject> m_objects = new Dictionary<string, DeltaObject>();
+        // Objects the snapshot on its way has replaced so far (SnapshotObject): my pending batches are shown on top there.
+        readonly HashSet<string> m_snapshotObjects = new HashSet<string>();
         readonly List<CommittedEvent> m_held = new List<CommittedEvent>();
         uint m_nextBatch, m_applied;
         bool m_snapshot;
@@ -131,7 +133,7 @@ namespace OriCoop.World
         }
 
         // ---------- full snapshots ----------
-        public void BeginSnapshot() { m_snapshot = true; }
+        public void BeginSnapshot() { if (!m_snapshot) m_snapshotObjects.Clear(); m_snapshot = true; }
 
         // A snapshot blob of an aggregate object arrived: returns the bytes to show (snapshot + my pending batches).
         public byte[] SnapshotObject(byte[] scene, byte[] id, byte schema, byte[] bytes)
@@ -141,6 +143,7 @@ namespace OriCoop.World
             IDictionary<string, byte[]> current = null; byte[] live;
             if (WorldItems.HasGrowing(schema) && m_game.TryRead(scene, id, out live) && live != null) current = WorldItems.Decompose(schema, live);
             DeltaObject o;
+            m_snapshotObjects.Add(Key(scene, id));
             if (!m_objects.TryGetValue(Key(scene, id), out o))
             {
                 o = new DeltaObject(snapshot); m_objects[Key(scene, id)] = o;
@@ -169,8 +172,15 @@ namespace OriCoop.World
                 if (authority == null || e.From != authority.LocalSeat) continue;
                 try
                 {
-                    DeltaBatch batch = DeltaBatch.Decode(e.Data); DeltaObject o;
-                    if (m_objects.TryGetValue(Key(batch.Scene, batch.Object), out o)) o.Acknowledge(batch.Id);
+                    DeltaBatch batch = DeltaBatch.Decode(e.Data); DeltaObject o; string key = Key(batch.Scene, batch.Object);
+                    if (!m_objects.TryGetValue(key, out o) || !o.IsPending(batch.Id)) continue;
+                    o.Acknowledge(batch.Id);
+                    // SnapshotObject showed this batch on top of the snapshot, which already has it, and maybe a partner's
+                    // later change of the same item: show the agreed value again.
+                    byte[] current;
+                    if (!m_snapshotObjects.Contains(key) || !m_game.TryRead(batch.Scene, batch.Object, out current)) continue;
+                    SortedDictionary<string, byte[]> visible = o.Superseded(batch.Ops, WorldItems.Decompose(batch.Schema, current));
+                    if (visible != null) m_game.Write(batch.Scene, batch.Object, batch.Schema, batch.Type, WorldItems.Compose(batch.Schema, current, visible));
                 }
                 catch (Exception) { BadBatches++; }
             }
