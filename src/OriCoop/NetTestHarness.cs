@@ -1289,7 +1289,42 @@ namespace OriCoop
             return true;
         }
 
-        static void CollectTestKeystones(int amount)
+        // Unloaded scene from the host's last checkpoint. The guest takes its registered keystone just before leaving.
+        static readonly MoonGuid WKeyScene = new MoonGuid(0x54323439, 1, 0, 0);
+        static readonly MoonGuid WKey = new MoonGuid(0x54323439, 2, 0, 0);
+        static readonly MoonGuid WKeyDoor = new MoonGuid(0x54323439, 3, 0, 0);
+
+        static void PrepareKeyCheckpoint()
+        {
+            SaveScene scene = Game.Checkpoint.SaveGameData.InsertScene(WKeyScene);
+            SaveObject key = new SaveObject(WKey), door = new SaveObject(WKeyDoor);
+            key.Data.MemoryStream.Write(new byte[5], 0, 5);       // PickupBase: timer, collected
+            door.Data.MemoryStream.Write(new byte[16], 0, 16);   // DoorWithSlots: counts, normal
+            scene.SaveObjects.Add(key);
+            scene.SaveObjects.Add(door);
+            GameController.Instance.CreateCheckpoint();
+        }
+
+        static void CheckKeyCheckpoint(TestHarness h, byte[] bytes, int expectedKeys, bool collected, string source)
+        {
+            // The late join and the slot writer both serialize this archive. Read it back independently,
+            // including the inventory, pickup, and the neighboring door record in the unloaded scene.
+            SaveGameData data = new SaveGameData();
+            using (BinaryReader r = new BinaryReader(new MemoryStream(bytes)))
+            {
+                if (!new SaveSlotInfo().LoadFromReader(r) || !data.LoadFromReader(r)) throw new InvalidDataException("key checkpoint");
+            }
+            MoonGuid inventory = SaveSceneManager.Master.SaveSerializeToId(Own.Inventory);
+            int keys = BitConverter.ToInt32(data.Master.SaveObjects.Find(o => o.Id == inventory).Data.MemoryStream.ToArray(), 0);
+            SaveScene scene = data.GetScene(WKeyScene);
+            bool taken = scene.SaveObjects.Find(o => o.Id == WKey).Data.MemoryStream.ToArray()[4] != 0;
+            byte[] door = scene.SaveObjects.Find(o => o.Id == WKeyDoor).Data.MemoryStream.ToArray();
+            h.Check(keys == expectedKeys && taken == collected && BitConverter.ToInt32(door, 4) == 0,
+                "W T-249 " + source + ": archive has " + keys + " keys (expected "
+                + expectedKeys + "), collected=" + taken + " (expected " + collected + "), door used=" + BitConverter.ToInt32(door, 4));
+        }
+
+        static void CollectTestKeystones(int amount, MoonGuid id = null)
         {
             SeinCharacter own = Own;
             SeinPickupProcessor collector = ProgressSync.PickupCollector(own);
@@ -1302,7 +1337,7 @@ namespace OriCoop
                 KeystonePickup pickup = go.AddComponent<KeystonePickup>();
                 // Runtime orbs may have no stable world GUID. This still exercises the production
                 // pickup collector prefix, reliable event, host effect, and progress replication.
-                pickup.MoonGuid = MoonGuid.Empty; pickup.Amount = amount;
+                pickup.MoonGuid = id ?? MoonGuid.Empty; pickup.Amount = amount;
                 pickup.OnValidate();
                 collector.OnCollectKeystonePickup(pickup);
             }
@@ -2664,6 +2699,26 @@ namespace OriCoop
                     }
                 }
             G:
+                bool keyExit = ClientCount == 2 && PhaseOn("W") && !NetPlay.ServerForwardsAll && Connected;
+                int keysBeforeExit = -1;
+                if (keyExit)
+                {
+                    if (host)
+                    {
+                        keysBeforeExit = Own.Inventory.Keystones;
+                        PrepareKeyCheckpoint();
+                        PublishWorldBarrier(h, 24900, false);
+                    }
+                    else
+                    {
+                        yield return WorldBarrier(h, 24900);
+                        keysBeforeExit = PartnerWorld(24900).Keys;
+                        CollectTestKeystones(1, WKey);
+                    }
+                    float by = Time.realtimeSinceStartup + 6f;
+                    while (Own.Inventory.Keystones != keysBeforeExit + 1 && Time.realtimeSinceStartup < by) yield return null;
+                    h.Check(Own.Inventory.Keystones == keysBeforeExit + 1, "W T-249 guest pickup credited before disconnect");
+                }
                 // T-213 (1): the transport fails before a goodbye was read from the connection (a Steam guest whose host
                 // left the lobby). The session must end as after a goodbye: the host's Ori goes at once and the
                 // session-ended handlers run once. Mutation ORICOOP_MUTATE_FAIL_KEEPS_REMOTES=1 must fail both checks.
@@ -2742,6 +2797,22 @@ namespace OriCoop
                     h.Note("G elapsed=" + F(Time.realtimeSinceStartup - start) + " puppet=" + (P2Context.P2 != null) + " " + NetPlay.StatusLine());
                     h.Check(P2Context.P2 == null, "G puppet removed within 7 s");
                     h.Check(NetPlay.CurrentPhase == NetPlay.Phase.Waiting, "G host Listening within 7 s");
+                    if (keyExit)
+                    {
+                        SaveGameController save = GameController.Instance.SaveGameController;
+                        byte[] rollback = save.SaveToBytes();   // what a downed host is about to reload after the last guest leaves
+                        CheckKeyCheckpoint(h, rollback, keysBeforeExit, false, "last guest left, before a new save");
+                        GameController.Instance.CreateCheckpoint();
+                        save.PerformSave();
+                        CheckKeyCheckpoint(h, File.ReadAllBytes(save.CurrentSaveFilePath), keysBeforeExit + 1, true, "host saved after exit");
+                        if (!save.LoadFromBytes(rollback)) throw new InvalidDataException("T-249 restore");
+                        GameController.Instance.RestoreCheckpoint();
+                        float by = Time.realtimeSinceStartup + 10f;
+                        while (GameController.Instance.IsLoadingGame && Time.realtimeSinceStartup < by) yield return null;
+                        h.Check(!GameController.Instance.IsLoadingGame && Own.Inventory.Keystones == keysBeforeExit,
+                            "W T-249 native rollback restores pre-pickup inventory (" + Own.Inventory.Keystones + ", expected " + keysBeforeExit + ")");
+                        CheckKeyCheckpoint(h, save.SaveToBytes(), keysBeforeExit, false, "native rollback leaves key available");
+                    }
                 }
                 // Lag test ①: a persistent world-digest mismatch must not trigger a full resync every 5 s (was 9-19 per run).
                 h.Note("digest resyncs=" + WorldSync.DigestResyncs + " deferred=" + WorldSync.DigestResyncsDeferred);
