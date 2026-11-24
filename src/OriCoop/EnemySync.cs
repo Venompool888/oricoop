@@ -154,7 +154,7 @@ namespace OriCoop
             ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
             s_symbols.Clear(); s_remoteSymbols.Clear(); s_pendingHits.Clear(); s_shots.Clear(); s_victimHits.Clear(); s_copies.Clear();
             s_session = false; s_active = null; s_attackDepth = 0; s_spawning = s_applying = s_puppetDeath = false;
-            s_fxPrefabs.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
+            s_fxPrefabs.Clear(); s_animationMisses.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
             s_scanAt = s_streamAt = s_logAt = 0; BytesSent = BytesReceived = EstimatedWireBytesSent = 0; Unmirrored = KeptScenes = UnresolvedProjectiles = 0;
         }
         static void Send(byte type, bool reliable, Action<BinaryWriter> body, int seat = 0)
@@ -217,13 +217,26 @@ namespace OriCoop
             if (e.Animation == null || e.Controller == null) return false;
             if (s_testUnsupported != null) { Actor tested; if (s_entities.TryGetValue(e.GetInstanceID(), out tested) && tested.Key == s_testUnsupported) return false; }
             if (e is SwarmEnemy) return !s_mutateSwarmLocal;
-            return e.Animation.SpriteMirror != null && EnemyVisuals.MirroredClass(e.GetType().Name);
+            return e.Animation.SpriteMirror != null && MirroredType(e.GetType());
+        }
+        // Per-type answers of the class checks that read Type.Name, which builds a new string on every call in this
+        // game's Mono. Supported runs several times per enemy per frame (Tick -> Puppet, the animation, sight and
+        // simulation patches); a type's name and base classes never change, so each type is looked at once.
+        static readonly Dictionary<Type, bool> s_mirroredTypes = new Dictionary<Type, bool>();
+        static readonly Dictionary<Type, bool> s_placeholderTypes = new Dictionary<Type, bool>();
+        static bool MirroredType(Type t)
+        {
+            bool mirrored; if (s_mirroredTypes.TryGetValue(t, out mirrored)) return mirrored;
+            mirrored = EnemyVisuals.MirroredClass(t.Name); s_mirroredTypes.Add(t, mirrored); return mirrored;
         }
         static bool EnemyPlaceholder(RespawningPlaceholder p)
         {
-            string n = p.GetType().Name;
-            return (n.IndexOf("EnemyPlaceholder", StringComparison.Ordinal) >= 0 || p is JumpShootSharkPlaceholder || p is ShootingSpiderPlaceholder)
+            Type t = p.GetType(); bool enemy;
+            if (s_placeholderTypes.TryGetValue(t, out enemy)) return enemy;
+            string n = t.Name;
+            enemy = (n.IndexOf("EnemyPlaceholder", StringComparison.Ordinal) >= 0 || p is JumpShootSharkPlaceholder || p is ShootingSpiderPlaceholder)
                 && !(s_mutateSwarmLocal && p is SwarmEnemyPlaceholder);
+            s_placeholderTypes.Add(t, enemy); return enemy;
         }
         static Actor Track(RespawningPlaceholder p, bool sameLife = false)
         {
@@ -313,19 +326,32 @@ namespace OriCoop
         }
         static bool SimulationPrefix(Component __instance, out Call __state)
         {
-            __state = new Call(); __state.Previous = s_active;
+            // This runs for every patched Update/FixedUpdate/LateUpdate of every entity, controller and movement
+            // component, in single player too. The state only has something to undo (s_active, the attack depth, the
+            // puppet context) for a puppet attack or a tracked enemy, so only those get one; the finalizer skips null.
+            __state = null;
             if (!Active) return true;
-            __state.Attack = __instance is SpiritFlameProjectile || __instance is ChargeFlameBurst || __instance is GrenadeBurst
-                || (__instance != null && __instance.GetType().Name.IndexOf("SpiritGrenade", StringComparison.Ordinal) == 0);
+            Actor previous = s_active;
+            bool attack = __instance is SpiritFlameProjectile || __instance is ChargeFlameBurst || __instance is GrenadeBurst
+                || (__instance != null && GrenadeType(__instance.GetType()));
             PuppetAttack tag = __instance == null ? null : __instance.GetComponentInParent<PuppetAttack>();
-            if (tag != null && tag.IsPuppet) { s_attackDepth++; __state.PuppetAttack = true; }
+            if (tag != null && tag.IsPuppet) { s_attackDepth++; __state = new Call(); __state.Previous = previous; __state.PuppetAttack = true; }
             Actor a = For(__instance);
             if (a == null) return true;
+            if (__state == null) { __state = new Call(); __state.Previous = previous; }
+            __state.Attack = attack;
             s_active = a;
             bool run = s_applying || a.Entity == null || !Supported(a.Entity) || (Mine(a) && a.RestoreController == null);
             if (run && !__state.Attack && a.Entity != null && !s_host.Inside && s_host.P2IsNearer(a.Entity.Position))
             { s_host.Enter(s_host.NearestPuppet(a.Entity.Position)); __state.Entered = true; }
             return run;
+        }
+        // Type.Name builds a new string on every call in this game's Mono; a type's name never changes.
+        static readonly Dictionary<Type, bool> s_grenadeTypes = new Dictionary<Type, bool>();
+        static bool GrenadeType(Type t)
+        {
+            bool grenade; if (s_grenadeTypes.TryGetValue(t, out grenade)) return grenade;
+            grenade = t.Name.IndexOf("SpiritGrenade", StringComparison.Ordinal) == 0; s_grenadeTypes.Add(t, grenade); return grenade;
         }
         static void StartPrefix(Component __instance, out bool __state)
         {
@@ -779,13 +805,24 @@ namespace OriCoop
             if (string.IsNullOrEmpty(name)) return null;
             if (s_animations.TryGetValue(name, out result) && result != null) return result;
             s_animations.Remove(name);
+            // Puppet -> ApplyPose asks for the owner's animation every frame. A name the full scan below did not find
+            // is not scanned for again within a second: before, each frame searched every animation asset (and built
+            // two key strings for each) for as long as the owner played it.
+            float failed;
+            if (s_animationMisses.TryGetValue(name, out failed) && Now >= failed && Now - failed < 1f) return null;
             foreach (UnityEngine.Object o in Resources.FindObjectsOfTypeAll(typeof(TextureAnimationWithTransitions)))
             {
                 TextureAnimationWithTransitions a = o as TextureAnimationWithTransitions;
-                if (a != null && !s_animations.ContainsKey(AnimationKey(a))) s_animations.Add(AnimationKey(a), a);
+                if (a == null) continue;
+                string key = AnimationKey(a);
+                if (!s_animations.ContainsKey(key)) s_animations.Add(key, a);
             }
-            s_animations.TryGetValue(name, out result); if (result == null) Warn("animation unresolved " + name); return result;
+            s_animations.TryGetValue(name, out result);
+            if (result == null) { s_animationMisses[name] = Now; Warn("animation unresolved " + name); }
+            else s_animationMisses.Remove(name);
+            return result;
         }
+        static readonly Dictionary<string, float> s_animationMisses = new Dictionary<string, float>();
         static void ApplyPose(Actor a, State s, Vector3 position)
         {
             Enemy e = a.Entity; if (e == null) return;
@@ -1058,15 +1095,22 @@ namespace OriCoop
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool InPartnerScreen(Vector3 position, Vector3 partner)
         { return Math.Abs(position.x - partner.x) <= 26f && Math.Abs(position.y - partner.y) <= 18f; }
+        // NearPartner and RemoteDistance run several times per enemy per frame (Tick, the frustum, boundary and
+        // on-screen patches). RemotePositions is an iterator: a new object (and a new Values view) per call. The
+        // remotes are keyed by their seat (1..MaxSeats), so asking each seat gives the same positions without it;
+        // both only take "any" or the minimum, so the order does not matter.
         static bool NearPartner(Vector3 position)
         {
-            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) if (InPartnerScreen(position, remote.Value)) return true;
+            Vector3 remote;
+            for (int seat = 1; seat <= Players.MaxSeats; seat++)
+                if (s_host.RemotePos(seat, out remote) && InPartnerScreen(position, remote)) return true;
             return false;
         }
         static float RemoteDistance(Vector3 position)
         {
-            float distance = float.PositiveInfinity;
-            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) distance = Mathf.Min(distance, Vector3.Distance(position, remote.Value));
+            float distance = float.PositiveInfinity; Vector3 remote;
+            for (int seat = 1; seat <= Players.MaxSeats; seat++)
+                if (s_host.RemotePos(seat, out remote)) distance = Mathf.Min(distance, Vector3.Distance(position, remote));
             return distance;
         }
         static bool Protect(Actor a)
@@ -1440,6 +1484,7 @@ namespace OriCoop
                 __result = false; return false;
             }
         }
+        static readonly List<Actor> s_candidates = new List<Actor>();
         public static void Tick()
         {
             if (!Active) return;
@@ -1483,7 +1528,7 @@ namespace OriCoop
                 }
             }
             float dt = Mathf.Max(0, Now - s_tokenTime); s_tokenTime = Now; s_tokens = Mathf.Min(Budget / 4f, s_tokens + dt * Budget);
-            List<Actor> candidates = new List<Actor>();
+            List<Actor> candidates = s_candidates; candidates.Clear();   // one list for every frame
             foreach (Actor a in s_actors.Values)
             {
                 if (a.Entity != null && Now >= a.NextTrace && (Vector3.Distance(a.Entity.Position, Local.Position) <= 30f
@@ -1518,6 +1563,7 @@ namespace OriCoop
                 Send(Snapshots, false, delegate(BinaryWriter w) { w.Write((byte)1); WriteId(w, a); w.Write(a.Epoch); WriteState(w, a, s, false); });
                 s_tokens -= EstimatedWireBytesSent - bytes; a.Priority = 0; a.LastSent = Now;
             }
+            candidates.Clear();
             FlushHits(); FlushShots();
             for (int i = s_copies.Count - 1; i >= 0; i--)
             { ProjectileIdentity p = s_copies[i]; if (p == null || Now >= p.Expires || !p.gameObject.activeInHierarchy) { if (p != null && p.gameObject.activeInHierarchy) InstantiateUtility.Destroy(p.gameObject); s_copies.RemoveAt(i); } }
@@ -1575,15 +1621,29 @@ namespace OriCoop
             fsm.IState current = e.Controller.StateMachine.CurrentState;
             if (current.GetType() == typeof(fsm.State))
             {
-                FieldInfo state = AccessTools.Field(e.GetType(), "State");
+                FieldInfo state = StatesField(e.GetType());
                 if (state != null)
                 {
                     object states = state.GetValue(e);
-                    foreach (FieldInfo field in states.GetType().GetFields(BindingFlags.Instance | BindingFlags.Public))
+                    foreach (FieldInfo field in StateFields(states.GetType()))
                         if (object.ReferenceEquals(field.GetValue(states), current)) return field.Name;
                 }
             }
             return current.GetType().FullName;
+        }
+        // StateName runs for every captured state (Tick -> Capture for each snapshot sent, up to ~20 a second per
+        // enemy): the reflection lookups behind it are the same for a type every time, so they are made once per type.
+        static readonly Dictionary<Type, FieldInfo> s_statesFields = new Dictionary<Type, FieldInfo>();
+        static readonly Dictionary<Type, FieldInfo[]> s_stateFields = new Dictionary<Type, FieldInfo[]>();
+        static FieldInfo StatesField(Type enemy)
+        {
+            FieldInfo field; if (s_statesFields.TryGetValue(enemy, out field)) return field;
+            field = AccessTools.Field(enemy, "State"); s_statesFields.Add(enemy, field); return field;
+        }
+        static FieldInfo[] StateFields(Type states)
+        {
+            FieldInfo[] fields; if (s_stateFields.TryGetValue(states, out fields)) return fields;
+            fields = states.GetFields(BindingFlags.Instance | BindingFlags.Public); s_stateFields.Add(states, fields); return fields;
         }
         // Test helper: the owner (re)spawns a tracked enemy whose placeholder is loaded but has no live instance.
         public static void EnsureSpawned(string key)
