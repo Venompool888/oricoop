@@ -840,7 +840,7 @@ namespace OriCoop
                 Shot("room_list");
             }
 
-            // T-171: the 房间管理页 with both players: the other PC's player appears, local seats say (你), nobody is 房主.
+            // Both players appear; the local seat and the current room owner are marked.
             IEnumerator CsRoomPageChecks(int otherSeat)
             {
                 float wait = Time.realtimeSinceStartup + 120f;
@@ -854,6 +854,8 @@ namespace OriCoop
                 Ui.CsRoomRow own = m.Row(mine), other = m.Row(otherSeat);
                 Check(!other.Empty && !other.Name.Contains(L10n.T("csroom.you")) && own.Name.EndsWith(L10n.T("csroom.you")),
                     m_role + ": room page rows: own P" + mine + " '" + own.Name + "', other P" + otherSeat + " '" + other.Name + "'");
+                Check(m.Row(1).Role == L10n.T("roles.host.cs") && m.Row(2).Role == L10n.T("roles.client.cs"),
+                    m_role + ": the room page marks the owner and member");
                 Check(m.Row(3).Empty && m.Row(4).Empty && m.Row(3).Name == L10n.T("csroom.waiting_player"),
                     m_role + ": empty seats wait for a player ('" + m.Row(3).Name + "')");
                 Check(own.Ping.EndsWith(" ms"), m_role + ": own ping shown (" + own.Ping + ")");

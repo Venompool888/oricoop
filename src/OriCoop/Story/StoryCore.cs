@@ -234,9 +234,25 @@ namespace OriCoop.Story
         public int SceneLoads;
         public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
         public bool TripWait;   // T-185: its mirror start waits for this PC's own scene trip (SceneTripRule)
+        public bool StartSent;   // T-212 (4): its start went out to the partners, so its end is owed to them
+        public bool EndedEarly;  // T-212 (5): the sender's end arrived before the mirror could start here
+        public bool Started;     // its mirror really started on this PC (or failed half-way): never started late again
+    }
+    // Review of T-212 (3), finding 6: the game has one LockInputByAction flag. When one mirrored story's lock action is
+    // stopped while other mirrors run, the flag stays only if another mirrored lock action is still inside its own
+    // duration; a lock action that has run out no longer holds it (it used to count, and the flag then stayed until
+    // the remaining mirror's cleanup).
+    public static class MirrorLocks
+    {
+        // endsAt: game time at which the lock action's own duration runs out.
+        public static bool Held(float now, float endsAt) { return now < endsAt; }
+        public static bool KeepFlag(int othersStillHeld) { return othersStillHeld > 0; }
     }
 
     internal enum StoryResolution { Retry, Drop, Watch }
+    // T-212 (3): what is cleaned up when a mirrored story ends. All: everything the mirrors changed (the last one
+    // ended). StoryOnly: other mirrors still run, so only the ended story's own script is stopped.
+    internal enum StoryCleanup { All, StoryOnly }
 
     internal sealed class StoryLedger<T> where T : StoryEntry
     {
@@ -276,13 +292,23 @@ namespace OriCoop.Story
         public void EndLocal(ulong key) { Local.Remove(key); Accepted.Remove(key); }
         public void Skip(T item) { item.Skipped = true; }
         public int LiveRemotes
-        { get { int count = 0; foreach (T item in Remote.Values) if (item.EndAt < 0) count++; return count; } }
+        { get { int count = 0; foreach (T item in Remote.Values) if (item.EndAt < 0 && !item.EndedEarly) count++; return count; } }
         public bool Watching
         {
             // T-185: a start that only waits for this PC's own scene trip is not "watching" (own Ori stays as the
-            // trip leaves it; natively nothing hides it there).
-            get { foreach (T item in Remote.Values) if ((!item.Resolved && item.Classified && !item.TripWait) || item.Watch) return true; return false; }
+            // trip leaves it; natively nothing hides it there). T-212 (5): nor is one whose sender has already ended it.
+            get { foreach (T item in Remote.Values) if ((!item.Resolved && item.Classified && !item.TripWait && !item.EndedEarly) || item.Watch) return true; return false; }
         }
+        // T-212 (5): the sender's end arrived before the mirror could start here (this PC was in a scene trip, or the
+        // story's scene was still loading). The story used to be dropped: the sender had played it, this PC never did.
+        // The entry is kept for LateStart seconds so the usual retries can still start the mirror; it is over for the
+        // sender, so it neither hides this PC's Ori ("watching") nor blocks this PC's own stories.
+        public const float LateStart = 8f;
+        // Review finding 4: a story given up on after 2 s ("watching": Resolved + Watch, no mirror) is kept as well when
+        // its end arrives; it was removed and never played although its scene became ready within the 8 s. Not kept:
+        // one whose mirror started (Started), one this PC plays itself (Resolved without Watch).
+        public static bool KeepForLateStart(T item, float now)
+        { return !item.Started && (!item.Resolved || item.Watch) && now - item.Began < LateStart; }
         static List<ulong> SeatTokens(Dictionary<ulong, T> items, int seat)
         {
             List<ulong> result = new List<ulong>();
@@ -311,6 +337,8 @@ namespace OriCoop.Story
         }
         public static StoryResolution Resolution(T item, float now, bool off)
         {
+            // T-212 (5): already over for its sender: keep trying to start it, then drop it (there is nothing to watch).
+            if (item.EndedEarly) return now - item.Began >= LateStart ? StoryResolution.Drop : StoryResolution.Retry;
             if (now - item.Began >= 2f) return !item.Classified && !off ? StoryResolution.Drop : StoryResolution.Watch;
             return StoryResolution.Retry;
         }
@@ -324,6 +352,17 @@ namespace OriCoop.Story
         // index: the last action the sequence has run (ActionSequence.Index); lastTakeover: the index of its last
         // takeover action (-1: none).
         public static bool TakeoverAhead(bool running, int index, int lastTakeover) { return running && index < lastTakeover; }
+        // T-212 (4): the end of a story is sent whenever its start was. Before, a "local only" window that opened later
+        // on the sender (a partner's lever pull or ability pedestal) swallowed the end, and partners already watching
+        // stayed hidden / locked until the 60 s timeout.
+        public static bool EndOwed(T item, bool localOnlyNow) { return item.StartSent || !localOnlyNow; }
+        // T-207 (2): a partner's story start arrives while this PC is inside a lever / pedestal "local only" window.
+        // It is mirrored unless this PC plays that very story itself: playedByOwnReplay (its sequence / controller was
+        // started by this PC's own lever or pedestal replay) or startedHereInWindow (natively here, inside the window,
+        // moments ago). Before, the window dropped every start.
+        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow) { return !playedByOwnReplay && !startedHereInWindow; }
+        // remaining: mirrored stories still tracked after the ended one was removed.
+        public static StoryCleanup Cleanup(int remaining) { return remaining <= 0 ? StoryCleanup.All : StoryCleanup.StoryOnly; }
         public static bool RemoteFinished(T item, bool running, float now)
         { return now - item.Began >= 60f || item.EndAt >= 0 && (!running || now - item.EndAt >= 10f); }
     }

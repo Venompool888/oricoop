@@ -64,13 +64,15 @@ namespace OriCoop.Rules
         public bool GuestNeedsSlot { get { return GuestJoin.NeedSlotChoice; } }
         public bool PrologueWatching { get { return SharedPrologue.Watching; } }
         public bool HostInPrologue { get { return SharedPrologue.HostPlaying; } }
+        public bool PrologueCatchingUp { get { return SharedPrologue.CatchingUp; } }
+        public float PrologueCatchUpProgress { get { return SharedPrologue.CatchUpProgress; } }
         public bool IncomingProgress(out int have, out int total)
         {
             have = total = 0;
             return NetPlay.Peer != null && NetPlay.Peer.IncomingProgress(out have, out total);
         }
         public bool L10nProbeOn { get { return L10nProbe.On; } }
-        public string Text(string key) { return L10n.T(key); }
+        public string Text(string key) { return L10n.SessionText(key); }
         public string Format(string key, params object[] args) { return L10n.F(key, args); }
         public bool NativeGuiAvailable { get { return NativeGui.Available; } }
         public void BeginPage(string page) { NativeGui.BeginPage(page); }

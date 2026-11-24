@@ -9,7 +9,7 @@ using OriCoop.Enemies;
 
 namespace OriCoop
 {
-    public static class EnemySyncTest
+    public static partial class EnemySyncTest
     {
         const byte MsgBarrier = 68;
         sealed class Packet
@@ -810,7 +810,8 @@ namespace OriCoop
                 finally { NetPlay.SetSim(0, 0, 0f, 0f); s_offset = 0; s_tag = "E5"; }
                 yield break;
             }
-            yield return Jumper(h); yield return DamageOnce(h); yield return Death(h); yield return Swarm(h); yield return Hard(h);
+            if (Environment.GetEnvironmentVariable("ORICOOP_E5_ONLY") == "LEFT") { yield return Leftovers(h); yield break; }   // T-208: only the leftover checks (E5k)
+            yield return Jumper(h); yield return DamageOnce(h); yield return Death(h); yield return Swarm(h); yield return Leftovers(h); yield return Hard(h);
             // E6 (every enemy family, ~5 min with E6L) is opt-in: ORICOOP_NET_E6=1, with ORICOOP_HARNESS_SEC raised (default suite budget 420 s).
             bool e6 = Environment.GetEnvironmentVariable("ORICOOP_NET_E6") == "1";
             Dictionary<string, Packet> families = new Dictionary<string, Packet>(); s_tag = "E6";

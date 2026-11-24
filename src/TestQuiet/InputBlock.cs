@@ -6,10 +6,17 @@
 // vibration / capabilities) or a reading method of UnityEngine.Input is rewritten to call a stub instead: no pad is
 // connected, vibration is dropped, no key, button, axis or mouse button is pressed, and the mouse never moves.
 // The extern XInput functions and Unity's internal calls cannot be patched themselves, so their callers are.
+// T-227: the same holds for every native DEVICE function the mod (or the game) imports on its own (hid.dll,
+// setupapi.dll, an XInput dll, DirectInput, the joystick functions of winmm). The mod's PlayStation pad support
+// (T-178) reads the pad over HID, asks XInput through an import of its own and hands the pad to the game as XInput
+// slot 0: with a DualSense connected, a test game read the owner's controller, and the self-test below said so
+// ("pad 0 still reads as connected"). Now an import with the XInput wrapper's signature goes to the same stub, and
+// a method that calls any other device import does not run at all: no device is found, opened or read.
 using System;
 using System.Collections.Generic;
 using System.Reflection;
 using System.Reflection.Emit;
+using System.Runtime.InteropServices;
 using BepInEx.Logging;
 using HarmonyLib;
 using J2i.Net.XInputWrapper;
@@ -51,6 +58,15 @@ namespace OriCoop.TestQuiet
         public static string[] U_GetJoystickNames() { return new string[0]; }
         public static int U_get_touchCount() { return 0; }
 
+        // Test-only mutation ORICOOP_MUTATE_NO_NATIVE_PAD_BLOCK=1: as before T-227 (only the XInput wrapper's and Unity's
+        // calls are rewritten). The self-test must then fail on the mod's own device imports, pad connected or not.
+        public static bool MutateNoNativeBlock;
+        public static int DeviceImports, SkippedMethods;
+        static readonly Dictionary<MethodBase, string> s_imports = new Dictionary<MethodBase, string>();   // device import -> "dll!function"
+        static readonly HashSet<MethodBase> s_noStub = new HashSet<MethodBase>();    // device imports without a stub: their callers do not run
+        static readonly List<string> s_unblocked = new List<string>();                // callers of a device import that still run
+        public static bool SkipDeviceCaller() { return false; }
+
         static readonly Dictionary<MethodBase, MethodInfo> s_map = new Dictionary<MethodBase, MethodInfo>();
         static readonly HashSet<MethodBase> s_patched = new HashSet<MethodBase>();
         static readonly HashSet<string> s_scanned = new HashSet<string>();
@@ -73,11 +89,58 @@ namespace OriCoop.TestQuiet
             }
         }
 
+        // The dll of a native device function this method imports ("hid", "xinput9_1_0", ...), or null.
+        static string DeviceImport(MethodBase m, out string function)
+        {
+            function = null;
+            if ((m.Attributes & MethodAttributes.PinvokeImpl) == 0) return null;
+            object[] found;
+            try { found = m.GetCustomAttributes(typeof(DllImportAttribute), false); } catch { return null; }
+            if (found == null || found.Length == 0) return null;
+            DllImportAttribute import = (DllImportAttribute)found[0];
+            string dll = (import.Value ?? "").ToLowerInvariant();
+            int slash = Math.Max(dll.LastIndexOf('/'), dll.LastIndexOf('\\'));
+            if (slash >= 0) dll = dll.Substring(slash + 1);
+            if (dll.EndsWith(".dll")) dll = dll.Substring(0, dll.Length - 4);
+            function = string.IsNullOrEmpty(import.EntryPoint) ? m.Name : import.EntryPoint;
+            bool device = dll.StartsWith("xinput") || dll == "hid" || dll == "setupapi" || dll.StartsWith("dinput")
+                || (dll == "winmm" && function.StartsWith("joy", StringComparison.OrdinalIgnoreCase));
+            return device ? dll : null;
+        }
+
+        // An XInput import with the wrapper's own signature (the mod's VirtualPads.GetRealState) gets the wrapper's stub.
+        static MethodInfo StubFor(MethodBase import, string dll, string function)
+        {
+            if (!dll.StartsWith("xinput")) return null;
+            MethodInfo method = import as MethodInfo;
+            if (method == null) return null;
+            foreach (MethodInfo stub in typeof(InputBlock).GetMethods(BindingFlags.Public | BindingFlags.Static))
+            {
+                if (stub.Name != "X_" + function || stub.ReturnType != method.ReturnType) continue;
+                ParameterInfo[] a = stub.GetParameters(), b = method.GetParameters();
+                if (a.Length != b.Length) continue;
+                bool same = true;
+                for (int i = 0; i < a.Length && same; i++) same = a[i].ParameterType == b[i].ParameterType;
+                if (same) return stub;
+            }
+            return null;
+        }
+
+        static List<MethodBase> MethodsOf(Type t)
+        {
+            const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
+            List<MethodBase> methods = new List<MethodBase>();
+            try { methods.AddRange(t.GetMethods(all)); methods.AddRange(t.GetConstructors(all)); } catch { }
+            return methods;
+        }
+
         // Scans the target assemblies loaded so far (call again later for assemblies loaded after the first call).
         public static void Apply(Harmony harmony, ManualLogSource log)
         {
             BuildMap();
             HarmonyMethod transpiler = new HarmonyMethod(typeof(InputBlock).GetMethod("Transpiler", BindingFlags.NonPublic | BindingFlags.Static));
+            HarmonyMethod skip = new HarmonyMethod(typeof(InputBlock).GetMethod("SkipDeviceCaller", BindingFlags.Public | BindingFlags.Static));
+            List<Type> fresh = new List<Type>();
             foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
             {
                 string name = asm.GetName().Name;
@@ -86,24 +149,41 @@ namespace OriCoop.TestQuiet
                 Type[] types;
                 try { types = asm.GetTypes(); }
                 catch (ReflectionTypeLoadException e) { types = Array.FindAll(e.Types, t => t != null); }
-                const BindingFlags all = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static | BindingFlags.Instance | BindingFlags.DeclaredOnly;
-                foreach (Type t in types)
-                {
-                    List<MethodBase> methods = new List<MethodBase>();
-                    try { methods.AddRange(t.GetMethods(all)); methods.AddRange(t.GetConstructors(all)); } catch { continue; }
-                    foreach (MethodBase m in methods)
-                    {
-                        if (m.IsAbstract || m.ContainsGenericParameters || s_patched.Contains(m) || !Calls(m)) continue;
-                        try { harmony.Patch(m, null, null, transpiler); s_patched.Add(m); }
-                        catch (Exception e) { log.LogWarning("TestQuiet: input block could not patch " + t.FullName + "::" + m.Name + ": " + e.Message); }
-                    }
-                }
+                fresh.AddRange(types);
             }
+            // First every device import of the new assemblies (T-227), then the methods that call into a device.
+            foreach (Type t in fresh)
+                foreach (MethodBase m in MethodsOf(t))
+                {
+                    string function, dll = DeviceImport(m, out function);
+                    if (dll == null || s_imports.ContainsKey(m)) continue;
+                    s_imports[m] = dll + "!" + function; DeviceImports++;
+                    if (s_map.ContainsKey(m) || MutateNoNativeBlock) continue;     // the wrapper's own imports have their stubs already
+                    MethodInfo stub = StubFor(m, dll, function);
+                    if (stub != null) s_map[m] = stub; else s_noStub.Add(m);
+                }
+            foreach (Type t in fresh)
+                foreach (MethodBase m in MethodsOf(t))
+                {
+                    if (m.IsAbstract || m.ContainsGenericParameters || s_patched.Contains(m)) continue;
+                    bool mapped; MethodBase noStub, import;
+                    if (!Calls(m, out mapped, out noStub, out import)) continue;
+                    try
+                    {
+                        if (noStub != null) { harmony.Patch(m, skip); s_patched.Add(m); SkippedMethods++; }
+                        else if (mapped) { harmony.Patch(m, null, null, transpiler); s_patched.Add(m); }
+                    }
+                    catch (Exception e) { log.LogWarning("TestQuiet: input block could not patch " + t.FullName + "::" + m.Name + ": " + e.Message); }
+                    // The self-test's rule: no method that calls a device import still runs it.
+                    if (import != null && !s_patched.Contains(m)) s_unblocked.Add(t.FullName + "::" + m.Name + " calls " + s_imports[import]);
+                }
         }
 
-        // Does the method's IL call one of the mapped methods? (call / callvirt with a method token)
-        static bool Calls(MethodBase m)
+        // What of ours the method's IL calls (call / callvirt with a method token): a mapped method (rewritten to its
+        // stub), a device import without a stub (the method must not run), any device import at all.
+        static bool Calls(MethodBase m, out bool mapped, out MethodBase noStub, out MethodBase import)
         {
+            mapped = false; noStub = null; import = null;
             byte[] il;
             try { MethodBody body = m.GetMethodBody(); if (body == null) return false; il = body.GetILAsByteArray(); }
             catch { return false; }
@@ -116,9 +196,17 @@ namespace OriCoop.TestQuiet
                 if (table != 0x0A && table != 0x06) continue;
                 MethodBase callee;
                 try { callee = m.Module.ResolveMethod(token); } catch { continue; }
-                if (callee != null && s_map.ContainsKey(callee)) return true;
+                if (callee == null) continue;
+                if (s_map.ContainsKey(callee)) mapped = true;
+                if (s_noStub.Contains(callee)) noStub = callee;
+                if (s_imports.ContainsKey(callee)) import = callee;
             }
-            return false;
+            return mapped || noStub != null || import != null;
+        }
+        static bool Calls(MethodBase m)
+        {
+            bool mapped; MethodBase noStub, import;
+            return Calls(m, out mapped, out noStub, out import) && mapped;
         }
 
         static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
@@ -137,6 +225,9 @@ namespace OriCoop.TestQuiet
         public static string Verify()
         {
             const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance | BindingFlags.Static;
+            // T-227: no method that calls a native device function may still run it (named first: it says where the leak is).
+            if (s_unblocked.Count > 0)
+                return "a native device function is not blocked: " + s_unblocked[0] + (s_unblocked.Count > 1 ? " (and " + (s_unblocked.Count - 1) + " more)" : "");
             Type xc = typeof(XboxController);
             MethodInfo update = xc.GetMethod("UpdateState", any);
             if (update == null || !s_patched.Contains(update)) return "XboxController.UpdateState not patched";
@@ -151,6 +242,34 @@ namespace OriCoop.TestQuiet
             if (SetStateCalls == before) return "a vibration request did not reach the stub";
             try { update.Invoke(update.IsStatic ? null : pad, new object[update.GetParameters().Length]); } catch { }
             if (pad.IsConnected) return "pad 0 still reads as connected";
+            return VerifyNative();
+        }
+
+        // T-227: the mod's PlayStation pad reader finds and maps nothing.
+        static string VerifyNative()
+        {
+            Assembly mod = null;
+            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies()) if (asm.GetName().Name == "OriCoop") mod = asm;
+            Type hid = mod == null ? null : mod.GetType("OriCoop.Pads.PsHid"), pads = mod == null ? null : mod.GetType("OriCoop.Pads.VirtualPads");
+            if (hid == null || pads == null) return null;      // a build without PlayStation pad support
+            // The reader imports hid.dll: finding none of its imports means the scan above cannot see imports at all.
+            bool seen = false;
+            foreach (KeyValuePair<MethodBase, string> import in s_imports) if (import.Key.DeclaringType == hid) seen = true;
+            if (!seen) return "the mod's PlayStation pad reader is there but its device imports were not found";
+            const BindingFlags any = BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Static;
+            try
+            {
+                hid.GetMethod("Tick", any).Invoke(null, null);                 // a scan right now: blocked = it finds nothing
+                int open = (int)hid.GetProperty("Count", any).GetValue(null, null);
+                if (open != 0) return "the mod's PlayStation pad reader opened " + open + " device(s)";
+                MethodInfo virtualState = pads.GetMethod("TryGetVirtual", any);
+                for (int slot = 0; slot < 4; slot++)
+                {
+                    object[] args = { slot, new XInputState() };
+                    if ((bool)virtualState.Invoke(null, args)) return "the mod hands a pad to the game on XInput slot " + slot;
+                }
+            }
+            catch (Exception e) { return "native pad self-test threw " + (e.InnerException ?? e).GetType().Name + ": " + (e.InnerException ?? e).Message; }
             return null;
         }
     }

@@ -128,10 +128,19 @@ namespace OriCoop
             return g.wButtons != 0 || g.bLeftTrigger > 20 || g.bRightTrigger > 20;
         }
 
+        // Test-only mutation: the prologue counts as a menu again (every local device reaches the game there).
+        static readonly bool s_mutatePrologueMenu = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PROLOGUE_ANY_DEVICE") == "1";
+
         public static bool InMenu()
         {
+            // T-209 (1): online, the new-game prologue is gameplay for this filter although no grown Ori exists in
+            // it: Naru and the small Ori are P1's to control and its "press a button" waits are P1's to answer, so
+            // only the primary seat's device reaches the game (a second local player's keyboard walked Naru). The
+            // pause menu, a loading screen and a suspended game are menus there as everywhere else.
+            bool prologue = NetPlay.Enabled && !s_mutatePrologueMenu && GameStateMachine.Instance != null
+                && GameStateMachine.Instance.CurrentState == GameStateMachine.State.Prologue;
             SeinCharacter s = Characters.Sein;
-            if (s == null || !s.gameObject.activeInHierarchy) return true;
+            if (!prologue && (s == null || !s.gameObject.activeInHierarchy)) return true;
             if (UI.MainMenuVisible) return true;
             GameController gc = GameController.Instance;
             if (gc != null && (gc.GameplaySuspendedForUI || gc.IsLoadingGame)) return true;
@@ -139,17 +148,24 @@ namespace OriCoop
             return false;
         }
 
+        // Test only: this key counts as held down on the real keyboard (test games get no key presses), wherever the
+        // game is allowed to read the keyboard at all.
+        internal static KeyCode TestKeyHeld = KeyCode.None;
+
         // Keep the game's primary input sampler (and its button edges) intact. Only filter the other device.
         [HarmonyPatch(typeof(KeyCodeButtonInput), "GetButton")]
         static class PadOnly
         {
-            static bool Prefix(ref bool __result)
+            static bool Prefix(KeyCodeButtonInput __instance, ref bool __result)
             {
-                if (NetPlay.Enabled)
+                bool read;
+                if (NetPlay.Enabled) read = InMenu() || OnlineLocalPlayers.InputOf(Players.LocalSeat).Kind != InputDevice.DeviceKind.Pad;
+                else read = Players.Remotes.Count <= 1 || P1Pad < 0 || InMenu();
+                if (read)
                 {
-                    if (InMenu() || OnlineLocalPlayers.InputOf(Players.LocalSeat).Kind != InputDevice.DeviceKind.Pad) return true;
+                    if (TestKeyHeld == KeyCode.None || __instance.KeyCode != TestKeyHeld) return true;
+                    __result = true; return false;
                 }
-                else if (Players.Remotes.Count <= 1 || P1Pad < 0 || InMenu()) return true;
                 __result = false; return false;
             }
         }

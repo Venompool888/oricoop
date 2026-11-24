@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using OriCoop.Authority;
 using OriCoop.Net;
 
 static class NetCoreTests
@@ -150,6 +151,47 @@ static class NetCoreTests
 
     static int Main()
     {
+        Run("owner notice: a token rejoin's first online roster is silent even after waiting with our seat offline", delegate {
+            RoomOwnerNotice notice = new RoomOwnerNotice();
+            Equal(0, notice.TakePreviousOwner(2, false, 0));
+            Equal(0, notice.TakePreviousOwner(2, false, 1000));
+            Equal(0, notice.TakePreviousOwner(1, true, 1200));
+            Equal(0, notice.TakePreviousOwner(1, true, 1800));
+        });
+        Run("owner notice: a remote owner's brief offline/online roster pair does not announce either flip", delegate {
+            RoomOwnerNotice notice = new RoomOwnerNotice();
+            Equal(0, notice.TakePreviousOwner(1, true, 0));
+            Equal(0, notice.TakePreviousOwner(1, true, 600));
+            Equal(0, notice.TakePreviousOwner(2, true, 700));
+            Equal(0, notice.TakePreviousOwner(1, true, 900));
+            Equal(0, notice.TakePreviousOwner(1, true, 1500));
+        });
+        Run("owner notice: one settled handover is announced, including when the new owner is local", delegate {
+            RoomOwnerNotice notice = new RoomOwnerNotice();
+            Equal(0, notice.TakePreviousOwner(1, true, 0));
+            Equal(0, notice.TakePreviousOwner(1, true, 600));
+            Equal(0, notice.TakePreviousOwner(2, true, 700));
+            Equal(1, notice.TakePreviousOwner(2, true, 1300));
+            Equal(0, notice.TakePreviousOwner(2, true, 1900));
+        });
+        Run("menu Steam and LAN transports still override the C-server default in session-end callbacks", delegate {
+            foreach (string transport in new[] { "steam", "direct" })
+            {
+                Rig r = new Rig(true, false, false);
+                Func<string> configured = delegate { return "cserver"; };
+                r.Session.ActiveTransport = transport;
+                SessionMachine.Remote remote = r.Add(2, r.Single);
+                r.Session.AnnounceHello(remote, r.Session.MarkHello(remote));
+                string seen = null;
+                r.Session.SessionEnded += delegate { seen = r.Session.TransportName(configured); };
+                r.Session.Leave(remote);
+                Equal(transport, seen);
+                r.Session.Reset();
+                Equal(transport, r.Session.TransportName(configured));
+                r.Session.ActiveTransport = null;
+                Equal("cserver", r.Session.TransportName(configured));
+            }
+        });
         Run("handler receives body and sender", delegate {
             Rig r = new Rig(false, false, false); int got = 0, sender = 0;
             r.Bus.On(70, delegate(BinaryReader b) { got = b.ReadInt32(); sender = r.Bus.Sender; });
@@ -329,6 +371,22 @@ static class NetCoreTests
             Rig r = new Rig(false, false, false); r.Seat = 2; r.Add(3, null); Action<BinaryWriter> body = delegate(BinaryWriter w) { w.Write((byte)3); };
             r.Receive(5, 3, true, 0, body); Equal(1, r.Session.Remotes.Count); r.Receive(5, 1, true, 0, body); Equal(0, r.Session.Remotes.Count); Equal("cleanup:3,left:3", Events(r));
         });
+        // T-213 (5): the "seat left" notice is reliable and can overtake that seat's last unreliable frames packet.
+        Run("a late unreliable packet from a seat that left creates no remote, and the session still ends", delegate {
+            Rig r = new Rig(false, true, false); r.Seat = 2;
+            r.Receive(1, 1, true, 0, Hello); r.Receive(1, 3, true, 0, Hello); r.Receive(2, 3, true, 0, Gameplay);
+            r.Session.RemoteLeft(3); r.Events.Clear();
+            r.Receive(3, 3, false, 0, Empty);
+            Equal(1, r.Session.Remotes.Count); Equal(0, r.CoreFrames);
+            r.Session.RemoteLeft(1);
+            Equal("cleanup:1,left:1,end", Events(r)); Check(!r.Session.Started, "session still started");
+        });
+        Run("an unreliable message never introduces a seat, a reliable one still does", delegate {
+            Rig r = new Rig(false, false, false); r.Seat = 2; int got = 0; r.Bus.On(70, delegate(BinaryReader b) { got++; });
+            r.Receive(70, 3, false, 0, Empty); Equal(0, got); Equal(0, r.Session.Remotes.Count);
+            r.Receive(70, 3, true, 0, Empty); Equal(1, got); Equal(1, r.Session.Remotes.Count);
+            r.Receive(70, 3, false, 0, Empty); Equal(2, got);
+        });
         Run("end session catches subscriber exception and resets state", delegate {
             Rig r = new Rig(false, true, false); r.Seat = 2; r.Receive(1, 1, true, 0, Hello); r.Events.Clear();
             r.Session.SessionEnded += delegate { throw new Exception("oops"); }; r.Session.EndSession(); r.Session.EndSession();
@@ -378,6 +436,7 @@ static class NetCoreTests
             host.Bus.Forward(70); int hostSender = 0, guestSender = 0, value = 0;
             host.Bus.On(70, delegate(BinaryReader reader) { hostSender = host.Bus.Sender; Equal(1234, reader.ReadInt32()); });
             guest3.Bus.On(70, delegate(BinaryReader reader) { guestSender = guest3.Bus.Sender; value = reader.ReadInt32(); });
+            guest3.Receive(1, 2, true, 0, Hello);   // T-213: seat 2 is introduced by its (reliable) hello; an unreliable message never introduces a seat
             guest2.Bus.Send(70, false, delegate(BinaryWriter writer) { writer.Write(1234); });
             Packet incoming = guest2.Single.Sent[0]; host.Bus.Dispatch(incoming.Bytes, incoming.Reliable, 2);
             Equal(0, to2.Sent.Count); Equal(1, to3.Sent.Count);
@@ -509,6 +568,45 @@ static class NetCoreTests
             Check(SessionMachine.OwnDisconnectReason("timed out", true, "returned to the title screen") == "timed out", "another reason on a closed connection");
             Check(SessionMachine.OwnDisconnectReason(null, false, null) == "", "no reason");
             Check(SessionMachine.OwnDisconnectReason(goodbye, true, null) == "left: ", "no why");
+        });
+        // T-213 (4): a straggler of a seat's previous player (a much higher tick) had set the play position: the new
+        // player's frames, far behind it, were all dropped as "late copies" until their ticks caught up.
+        if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_STREAM_RESTART") == "1") FrameBufferTrim.MutateNoRestart = true;
+        Run("frame admission: late copies are dropped, a frame far behind the play position restarts the stream", delegate {
+            Equal(FrameBufferTrim.Admit.Take, FrameBufferTrim.Judge(false, 0, 5));
+            Equal(FrameBufferTrim.Admit.Take, FrameBufferTrim.Judge(true, 100, 100));
+            Equal(FrameBufferTrim.Admit.Take, FrameBufferTrim.Judge(true, 100, 100100));
+            Equal(FrameBufferTrim.Admit.Drop, FrameBufferTrim.Judge(true, 100, 99));
+            Equal(FrameBufferTrim.Admit.Drop, FrameBufferTrim.Judge(true, 5000, 5000 - (uint)FrameBufferTrim.RestartGap));
+            Equal(FrameBufferTrim.Admit.Restart, FrameBufferTrim.Judge(true, 5000, 4999 - (uint)FrameBufferTrim.RestartGap));
+            Equal(FrameBufferTrim.Admit.Restart, FrameBufferTrim.Judge(true, 100000, 7));
+        });
+        // T-213 review (5): the previous player of the seat had sent only a few hundred frames, so its straggler put the
+        // play position a few hundred ticks ahead of the new player: those frames were dropped one by one for up to
+        // 17 s. A real late copy is at most about 36 ticks back (32 packets, 4 frames each packet).
+        Run("frame admission: a frame a few hundred ticks behind the play position restarts the stream too", delegate {
+            Equal(FrameBufferTrim.Admit.Drop, FrameBufferTrim.Judge(true, 700, 700 - 36));
+            Equal(FrameBufferTrim.Admit.Restart, FrameBufferTrim.Judge(true, 700, 100));
+            Equal(FrameBufferTrim.Admit.Restart, FrameBufferTrim.Judge(true, 400, 1));
+        });
+        Run("frame admission follows a tick wraparound", delegate {
+            Equal(FrameBufferTrim.Admit.Take, FrameBufferTrim.Judge(true, uint.MaxValue - 1, 2));
+            Equal(FrameBufferTrim.Admit.Drop, FrameBufferTrim.Judge(true, 2, uint.MaxValue - 1));
+        });
+        // The stream as NetPlay.Receive keeps it: a play position, set by the first frame and moved on by playing.
+        Run("a new player's low ticks play again after a straggler of the previous player", delegate {
+            bool havePlay = false; uint playTick = 0; int taken = 0;
+            Action<uint> receive = delegate(uint tick) {
+                FrameBufferTrim.Admit admit = FrameBufferTrim.Judge(havePlay, playTick, tick);
+                if (admit == FrameBufferTrim.Admit.Drop) return;
+                if (admit == FrameBufferTrim.Admit.Restart) havePlay = false;
+                taken++;
+                if (!havePlay) { havePlay = true; playTick = tick; }
+            };
+            receive(1); receive(2); playTick = 3;          // the new player's first frames, played
+            receive(90000); playTick = 90001;              // the previous player's straggler, played (the catch-up jumps to it)
+            taken = 0; for (uint tick = 3; tick < 10; tick++) receive(tick);
+            Equal(7, taken); Equal(3u, playTick);
         });
         Console.WriteLine("NetCore: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;

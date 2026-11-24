@@ -35,7 +35,7 @@ namespace OriCoop
         void Awake()
         {
             m_out = Environment.GetEnvironmentVariable("ORICOOP_TEST_OUT") ?? "oricoop_test.txt";
-            m_scenarios = Environment.GetEnvironmentVariable("ORICOOP_SCENARIOS") ?? "lifecycle,interact,menu,visual,bottomhud,companion,move,camera,fourplayer,platform,pause,p2death,revive,teleport,pool,enemy,pickup,p1death,bothdown,title";
+            m_scenarios = Environment.GetEnvironmentVariable("ORICOOP_SCENARIOS") ?? "lifecycle,interact,menu,visual,bottomhud,companion,move,camera,fourplayer,platform,pause,p2death,revive,teleport,pool,enemy,pickup,afterblack,p1death,bothdown,title";
             int s; if (int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_SLOT"), out s)) m_slot = s;
             Application.logMessageReceived += OnLog;
             P2Input.BotActive = true;
@@ -251,6 +251,7 @@ namespace OriCoop
             if (Want("enemy")) yield return StartCoroutine(Enemy());
             if (Want("enemytrigger")) yield return StartCoroutine(EnemyTrigger());
             if (Want("pickup")) yield return StartCoroutine(Pickup());
+            if (Want("afterblack")) yield return StartCoroutine(StoryLeftoverTest.AfterBlack(this));   // T-212 (1)
             if (Want("p1death")) { bool rv = Revive.Enabled; Revive.Enabled = false; yield return StartCoroutine(P1Death()); Revive.Enabled = rv; }
             if (Want("bothdown")) yield return StartCoroutine(BothDown());
             if (Want("title")) yield return StartCoroutine(ReturnToTitle());
@@ -1390,6 +1391,25 @@ namespace OriCoop
                 Check(c2.CurrentState == Ori.State.Hovering && d < 5f, "companion: a P2 companion left on a scripted move comes back (state " + c2.CurrentState + ", d=" + F(d) + ")");
                 if (VisualInvariants.Violations > v0) VisualInvariants.Kinds.Remove("companion stuck in a scripted move");
                 Check(UI.Cameras.Current.Target != P2.Transform, "camera: still shared after the self-check returned the companion");
+
+                // T-213 (8): the game's own return call throws once (as it did right after a spawn in playtest 4). The
+                // return is tried again: the companion follows P2 within a second, long before the 4 s self-check above.
+                // Mutation ORICOOP_MUTATE_NO_COMPANION_RETRY=1 must fail it.
+                yield return StartCoroutine(Wait(1f));
+                P2Context.Enter();
+                c2.MoveOriToPosition(P2.Position + new Vector3(5f, 3f, 0f), 1f);
+                P2Context.Exit();
+                yield return StartCoroutine(Wait(0.3f));
+                int fails = P2Extras.CompanionReturnFailures, retries = P2Extras.CompanionReturnRetries;
+                P2Extras.TestFailReturns = 1;
+                P2Extras.ReturnCompanion("test: the first return throws");
+                bool leftAway = c2.CurrentState != Ori.State.Hovering && P2Extras.CompanionReturnFailures == fails + 1;
+                yield return StartCoroutine(Wait(1f));
+                P2Extras.TestFailReturns = 0;
+                d = Vector3.Distance(c2.transform.position, P2.Position);
+                Check(leftAway && c2.CurrentState == Ori.State.Hovering && d < 5f && P2Extras.CompanionReturnRetries > retries,
+                    "companion: a return that threw is tried again and the companion follows P2 within 1 s (T-213; failed first " + leftAway
+                    + ", state " + c2.CurrentState + ", d=" + F(d) + ", retries " + (P2Extras.CompanionReturnRetries - retries) + ")");
             }
             m_visualBaseline = VisualInvariants.Violations;
             Check(m_errors == err0, "companion: no errors");

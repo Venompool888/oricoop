@@ -46,6 +46,41 @@ namespace OriCoop.Rules
         {
             d.Progress = 0f; d.Given = 0f; d.Holding = false; d.NeedRelease = false; d.Rescuer = 0;
         }
+
+        // T-215 #7: the creator's health the host puts in a RoomLink (msg 69). A repeat (told again to a PC that
+        // joined or came back from loading) carries 0: on the PCs that already know the link it must not count as a
+        // soul link made just now, or a player who went down after it was made would come back with its health.
+        public static float AnnouncedHealth(float creatorHealth, bool repeat)
+        {
+            return repeat ? 0f : creatorHealth;
+        }
+    }
+
+    // T-215 #6: where each guest device's offered save point is (msg 69 from that guest, just before its SaveOffer).
+    // One spot serves one offer: an offer that arrives without a spot must not get the spot of an earlier one.
+    public sealed class OfferedSpots
+    {
+        readonly ReviveWire.Link[] m_spot;
+        readonly bool[] m_have;
+        public OfferedSpots(int maxSeats) { m_spot = new ReviveWire.Link[maxSeats + 1]; m_have = new bool[maxSeats + 1]; }
+
+        public void Note(int device, ReviveWire.Link spot)
+        {
+            if (device < 0 || device >= m_have.Length) return;
+            m_spot[device] = spot; m_have[device] = true;
+        }
+
+        // The spot for the offer being adopted now. keep: the planted bug (the spot stays for later offers).
+        public bool Take(int device, out ReviveWire.Link spot, bool keep = false)
+        {
+            spot = default(ReviveWire.Link);
+            if (device < 0 || device >= m_have.Length || !m_have[device]) return false;
+            spot = m_spot[device];
+            if (!keep) m_have[device] = false;
+            return true;
+        }
+
+        public void Clear() { System.Array.Clear(m_have, 0, m_have.Length); }
     }
 
     // T-202 (#285): the room's save point, i.e. where holding Y / Q brings a downed player back. A downed player must

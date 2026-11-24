@@ -65,7 +65,7 @@ namespace OriCoop
                 if (NetPlay.Connected && Now >= resend) { Send(Local[step]); resend = Now + 1f; }
                 yield return null;
             }
-            string label = step >= 700 ? "SEIN " : step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
+            string label = step >= 800 ? "LEFT " : step >= 700 ? "SEIN " : step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
             h.Check(Remote.ContainsKey(step), label + "barrier " + step + " received");
             h.Check(Acknowledged.Contains(step), label + "barrier " + step + " acknowledged");
             if (Remote.ContainsKey(step)) h.Check(!Remote[step].Failed, label + "partner step " + step + " completed");
@@ -77,7 +77,7 @@ namespace OriCoop
         internal static IEnumerator Step(TestHarness h, int step, IEnumerator routine)
         {
             int failures = Failures(h); bool failed = false;
-            string label = step >= 700 ? "SEIN " : step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
+            string label = step >= 800 ? "LEFT " : step >= 700 ? "SEIN " : step >= 600 ? "LOOK " : step >= 400 ? "GATE " : "CUT ";
             Stack<IEnumerator> stack = new Stack<IEnumerator>(); stack.Push(routine);
             try
             {
@@ -761,10 +761,20 @@ namespace OriCoop
             // Free for > 3 s shortly after a story: the state in which a86950a's fade repair cancelled SaveSync's
             // checkpoint-reload fade (its callback never ran, the reload timed out and SaveSync switched itself off).
             yield return Wait(3.5f);
+            // T-212 (6): a gate that fired just before the reload (the players died right after its story began).
+            ForcedSync.TestMarkFired("t212-reload");
+            bool firedBefore = ForcedSync.TestRecentlyFired("t212-reload"); int gateClears = ForcedSync.RestoreClears;
+            // T-212 (7): an ability pedestal cutscene played just before a save from before it is loaded.
+            CutsceneGuard.TestMarkPlayed(FixtureId);
+            bool playedBefore = CutsceneGuard.TestPlayedRecently(FixtureId); int playedClears = CutsceneGuard.PlayedClears;
             BreakSpiritHud(); GameController.Instance.RestoreCheckpoint();
             yield return Wait(4f);
             float end = Now + 75f;
             while ((!SaveSync.Ready || Own == null || GameController.Instance.IsLoadingGame) && Now < end) yield return null;
+            h.Check(firedBefore && ForcedSync.RestoreClears > gateClears && !ForcedSync.TestRecentlyFired("t212-reload"),
+                "CUT reload: a gate that fired before the reload takes players again (not ignored for the rest of its 15 s)");
+            h.Check(playedBefore && CutsceneGuard.PlayedClears > playedClears && !CutsceneGuard.TestPlayedRecently(FixtureId),
+                "CUT reload: a pedestal cutscene played before the reload is not taken for a repeat afterwards (a partner's next activation plays here)");
             h.Check(SaveSync.Ready, "CUT reload: save sync ready again (checkpoint reload finished)");
             h.Check(SpiritFollows(), "CUT reload: spirit follows");
             h.Check(HudRestored(), "CUT reload: HUD restored");
@@ -1233,6 +1243,7 @@ namespace OriCoop
             LeverDone:
                 // Checkpoint restore last: it reloads the area (the lever needs the live scene state).
                 yield return Step(h, 40, Repair(h));
+                yield return Step(h, 800, NetStoryLeftoverTest.Run(h));   // T-207 / T-212: story mirror leftovers
                 yield return Step(h, 45, FadeGuard(h));
                 yield return Step(h, 50, Reload(h));
                 if (NetPlay.IsHost) Own.PlayerAbilities.SetAbility(AbilityType.WallJump, original);

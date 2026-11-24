@@ -165,12 +165,15 @@ namespace OriCoop.Authority
             return null;
         }
 
-        // "甲, 乙" for a room row; a nameless seat (older servers send "" for a PC without Steam) shows as P<n>.
-        public static string PlayersLine(CsRoomListEntry room)
+        // The server lists online seats in ascending order, so the first one is the arbiter.
+        public static string PlayersLine(CsRoomListEntry room, string ownerMark = null)
         {
             List<string> names = new List<string>();
             for (int i = 0; i < room.Nicks.Count; i++)
-                names.Add(string.IsNullOrEmpty(room.Nicks[i]) ? "P" + (i + 1) : room.Nicks[i]);
+            {
+                string name = string.IsNullOrEmpty(room.Nicks[i]) ? "P" + (i + 1) : room.Nicks[i];
+                names.Add(i == 0 && ownerMark != null ? name + " (" + ownerMark + ")" : name);
+            }
             return string.Join(", ", names.ToArray());
         }
     }

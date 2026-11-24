@@ -40,6 +40,8 @@ namespace OriCoop
             if (DeltaObject.MutateWholeBlob) Plugin.Log.LogWarning("net: MUTATION world items sent whole (ORICOOP_MUTATE_WORLD_WHOLE_BLOB)");
             WorldItems.MutateShareTriggers = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SHARE_TRIGGERS") == "1";
             if (WorldItems.MutateShareTriggers) Plugin.Log.LogWarning("net: MUTATION string triggers shared between PCs (ORICOOP_MUTATE_SHARE_TRIGGERS, pre-T-183)");
+            WorldItems.MutateMapDowngrade = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_MAP_DOWNGRADE") == "1";
+            if (WorldItems.MutateMapDowngrade) Plugin.Log.LogWarning("net: MUTATION map exploration can be lowered by a snapshot or a late batch (ORICOOP_MUTATE_MAP_DOWNGRADE, pre-T-214)");
             IAuthority touch = AuthoritySource.Current;   // registers the 0xB0-0xBA handlers now (events may come before our first use)
             AuthoritySource.AnyCommitted += delegate(CommittedEvent e) {
                 if (e.Kind != DeltaBatch.Kind || !NetPlay.Connected || VersionRefused()) return;

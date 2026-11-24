@@ -44,8 +44,15 @@ namespace OriCoop.Story
         public bool Fizzled(string key, float now, float lastStoryAt)
         {
             float at;
-            return fired.TryGetValue(key, out at) && now - at >= FizzleSeconds && now - at < 15f && lastStoryAt < at;
+            return !queued.Contains(key) && fired.TryGetValue(key, out at) && now - at >= FizzleSeconds && now - at < 15f && lastStoryAt < at;
         }
+        // T-207 review (1): a fire the host still has in its queue (it has not found the trigger yet: the host's players
+        // were moved to the forcing player's area and the area is loading, up to 10 s). Such a fire has not come to
+        // nothing: the 3 s guess must leave its mark alone, or the forcing player's next request queues the same area a
+        // second time and the first request's give-up then wipes the second one's mark.
+        readonly HashSet<string> queued = new HashSet<string>();
+        public void SetQueued(string key, bool on) { if (on) queued.Add(key); else queued.Remove(key); }
+        public bool Queued(string key) { return queued.Contains(key); }
         public List<string> FizzledKeys(float now, float lastStoryAt)
         {
             List<string> keys = new List<string>();
@@ -53,6 +60,9 @@ namespace OriCoop.Story
             return keys;
         }
         public void Release(string key) { fired.Remove(key); }
+        // T-212 (6): a checkpoint restore puts the game's own triggers back (a TriggerOnce is armed again); a mark from
+        // before it would make the area ignore every player for the rest of its 15 s.
+        public void ClearFired() { fired.Clear(); queued.Clear(); }
         public IEnumerable<string> ActiveKeys(float now)
         { foreach (string key in gates.Keys) if (Count(key, now) > 0 && !RecentlyFired(key, now)) yield return key; }
     }
@@ -78,6 +88,32 @@ namespace OriCoop.Story
         }
         public void Reset() { elapsed = 0f; }
     }
+    // T-212 (2): a forced fire whose trigger the host has not loaded. Before: the host waited 3 s, dropped the request
+    // without a word and was never pulled over; the forcing player's ring stayed full and could not ask again.
+    static class GateForce
+    {
+        public const float NotFound = 3f;      // no position to go to (older build): give up as before
+        public const float AfterMove = 10f;    // the host's players were moved to the area: wait for it to load
+        public const float RetryAfter = 4f;    // nothing fired this long after a force: the ring may be held again
+
+        // sinceStart: seconds since the request (not moved) or since the host's players were moved there.
+        public static bool GiveUp(float sinceStart, bool moved) { return sinceStart >= (moved ? AfterMove : NotFound); }
+        public static bool Rearm(float sinceForce, bool fired) { return !fired && sinceForce >= RetryAfter; }
+        // T-207 review (2): the position in a force request comes from the forcing PC. The host only goes there when it
+        // is where that player stands (the host knows the player's position; a gate area is a few units wide).
+        // dx, dy: from the forcing player's Ori to the position in the request.
+        public const float MaxHintDistance = 40f;
+        public static bool HintNear(float dx, float dy) { return dx * dx + dy * dy <= MaxHintDistance * MaxHintDistance; }
+    }
+    // T-207 (4): finding a gate's trigger walks every Trigger and CutsceneTrigger in memory. For an area this PC has
+    // not loaded (a partner waits there) that walk ran twice every frame (the presence check and the ward drawing).
+    // An unresolved gate is looked for again at most every Retry seconds.
+    static class GateResolve
+    {
+        public const float Retry = 0.5f;
+        // lastTry: when it was last looked for (negative: never).
+        public static bool Due(float now, float lastTry) { return lastTry < 0f || now - lastTry >= Retry; }
+    }
     static class GateWire
     {
         static string Key(BinaryReader r)
@@ -98,6 +134,22 @@ namespace OriCoop.Story
         }
         public static void WriteForce(BinaryWriter w, string key) { w.Write(key); }
         public static string ReadForce(BinaryReader r) { return Key(r); }
+        // T-212 (2): the forcing PC adds where the trigger is, so a host that has not loaded that area can go there.
+        // The position is optional on the wire: a body that ends after the key (older build) reads as "no position".
+        public static void WriteForce(BinaryWriter w, string key, float x, float y, float z) { w.Write(key); w.Write(x); w.Write(y); w.Write(z); }
+        public static string ReadForce(BinaryReader r, out bool hasPosition, out float x, out float y, out float z)
+        {
+            string key = Key(r); x = y = z = 0f;
+            hasPosition = r.BaseStream.CanSeek && r.BaseStream.Length - r.BaseStream.Position >= 12;
+            if (hasPosition) { x = Position(r); y = Position(r); z = Position(r); }
+            return key;
+        }
+        // T-207 (3): host -> all, "the fire of this area came to nothing" (the game's trigger refused it, or the host
+        // never found it). Every PC forgets the fired mark at once. Before, a PC guessed from "no story began within
+        // 3 s" (GateTable.Fizzled, kept as a fallback), and any unrelated story in those 3 s made it guess wrong: the
+        // area then ignored the players for the full 15 s.
+        public static void WriteRelease(BinaryWriter w, string key) { w.Write(key); }
+        public static string ReadRelease(BinaryReader r) { return Key(r); }
         public static void WriteFire(BinaryWriter w, string key, float x, float y, float z) { w.Write(key); w.Write(x); w.Write(y); w.Write(z); }
         public static string ReadFire(BinaryReader r, out float x, out float y, out float z)
         { string key = Key(r); x = Position(r); y = Position(r); z = Position(r); return key; }

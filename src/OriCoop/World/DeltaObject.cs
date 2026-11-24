@@ -48,6 +48,12 @@ namespace OriCoop.World
 
         static void Put(IDictionary<string, byte[]> items, ItemOp op)
         {
+            if (WorldItems.OnlyGrows(op.Key))   // T-214: the highest level wins, in any order
+            {
+                byte[] old; items.TryGetValue(op.Key, out old);
+                if (WorldItems.Higher(op.Value, old)) items[op.Key] = op.Value;
+                return;
+            }
             if (op.Value == null) { if (!WorldItems.NeverRemoved(op.Key)) items.Remove(op.Key); }
             else items[op.Key] = op.Value;
         }
@@ -66,10 +72,14 @@ namespace OriCoop.World
             foreach (KeyValuePair<string, byte[]> item in to)
             {
                 byte[] old;
-                if (!from.TryGetValue(item.Key, out old) || !Same(old, item.Value)) ops.Add(new ItemOp(item.Key, item.Value));
+                bool had = from.TryGetValue(item.Key, out old);
+                if (had && Same(old, item.Value)) continue;
+                // T-214: a lower level than the agreed one is this PC's own rollback, not a change to propose.
+                if (had && WorldItems.OnlyGrows(item.Key) && !WorldItems.Higher(item.Value, old)) continue;
+                ops.Add(new ItemOp(item.Key, item.Value));
             }
             foreach (string key in from.Keys)
-                if (!to.ContainsKey(key) && !WorldItems.NeverRemoved(key)) ops.Add(new ItemOp(key, null));
+                if (!to.ContainsKey(key) && !WorldItems.NeverRemoved(key) && !WorldItems.OnlyGrows(key)) ops.Add(new ItemOp(key, null));
             return ops;
         }
 
@@ -105,10 +115,13 @@ namespace OriCoop.World
             bool changed = false;
             foreach (ItemOp op in ops)
             {
-                if (busy.Contains(op.Key)) continue;
+                // T-214: not for an item that only grows: there the highest level wins, not the latest writer, so my own
+                // lower level (unproposed or pending) must not hide a partner's higher one here.
+                if (busy.Contains(op.Key) && !WorldItems.OnlyGrows(op.Key)) continue;
                 byte[] now, want;
                 bool have = visible.TryGetValue(op.Key, out now), wanted = m_confirmed.TryGetValue(op.Key, out want);
                 if (have == wanted && (!have || Same(now, want))) continue;
+                if (WorldItems.OnlyGrows(op.Key) && !WorldItems.Higher(wanted ? want : null, have ? now : null)) continue;
                 if (wanted) visible[op.Key] = want; else visible.Remove(op.Key);
                 changed = true;
             }
@@ -117,11 +130,23 @@ namespace OriCoop.World
 
         // A full snapshot (join, digest resync, host rollback) replaced the object: it is the new Confirmed. Returns the
         // items to show = the snapshot with my still-pending batches on top (they come back from the arbiter later).
-        public SortedDictionary<string, byte[]> Reset(IDictionary<string, byte[]> snapshot)
+        // T-214: `current` = the live object's items right now (null = not known). Exploration this PC has and the
+        // snapshot lacks (walked since the last scan, or while the snapshot was on its way) stays on top as well; it is
+        // not in Confirmed, so the next scan proposes it. After this PC's own checkpoint load `current` is the rolled-back
+        // map, so a rollback still lowers it.
+        public SortedDictionary<string, byte[]> Reset(IDictionary<string, byte[]> snapshot, IDictionary<string, byte[]> current = null)
         {
             m_confirmed.Clear();
             foreach (KeyValuePair<string, byte[]> item in snapshot) m_confirmed[item.Key] = item.Value;
-            return Expected();
+            SortedDictionary<string, byte[]> visible = Expected();
+            if (current != null)
+                foreach (KeyValuePair<string, byte[]> item in current)
+                {
+                    if (!WorldItems.OnlyGrows(item.Key)) continue;
+                    byte[] shown; visible.TryGetValue(item.Key, out shown);
+                    if (WorldItems.Higher(item.Value, shown)) visible[item.Key] = item.Value;
+                }
+            return visible;
         }
 
         // Drops pending batches older than `keep` newest (a batch that never came back, e.g. the arbiter changed).

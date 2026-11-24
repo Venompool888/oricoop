@@ -12,7 +12,7 @@ namespace OriCoop
 {
     public static class ForcedSync
     {
-        const byte StateMessage = 83, CountMessage = 84, ForceMessage = 85, FireMessage = 86;
+        const byte StateMessage = 83, CountMessage = 84, ForceMessage = 85, FireMessage = 86, ReleaseMessage = 97;
         public static readonly bool Off = Environment.GetEnvironmentVariable("ORICOOP_GATE_OFF") == "1";
         static GateTable s_table = new GateTable();
         sealed class Gate
@@ -24,7 +24,7 @@ namespace OriCoop
             // T-110: presence per seat (the primary and each extra local player of this PC).
             public readonly bool[] SeatIn = new bool[GateSeats.MaxSeat + 1], SeatSent = new bool[GateSeats.MaxSeat + 1];
             public readonly float[] SeatRefresh = new float[GateSeats.MaxSeat + 1];
-            public float LeftAt = -1f, CountAt;
+            public float LeftAt = -1f, CountAt, ResolveAt = -1f;   // ResolveAt: when its trigger was last looked for (T-207)
             public int Count, Total, SentCount = -1, SentTotal = -1;
             public GatePillars Pillars;
         }
@@ -32,7 +32,8 @@ namespace OriCoop
         {
             public Gate Gate;
             public float Requested, At;
-            public bool Sent;
+            public bool Sent, HasHint, Moved;   // T-212: Hint = the forcing PC's trigger position
+            public Vector3 Hint;
         }
         static readonly Dictionary<string, Gate> Gates = new Dictionary<string, Gate>();
         static readonly List<PendingFire> Pending = new List<PendingFire>();
@@ -43,7 +44,8 @@ namespace OriCoop
         // player whose own trigger attempt passed counts as present.
         static readonly bool MutateFireChecksButton = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GATE_FIRE_BUTTON") == "1";
         static readonly bool MutateNoAdopt = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GATE_NO_ADOPT") == "1";
-        public static int Adopted, Fizzles;
+        public static int Adopted, Fizzles, MovedToForce, ForceRearms;
+        static string s_forceKey; static float s_forceAt;   // T-212 (2): this PC's last force request
         static GameText s_top, s_bottom;
         static GlowRing s_ring;
         public static string LocalGateKey { get; private set; }
@@ -75,10 +77,44 @@ namespace OriCoop
         {
             Services.Net.On(StateMessage, ReceiveState); Services.Net.On(CountMessage, ReceiveCount);
             Services.Net.On(ForceMessage, ReceiveForce); Services.Net.On(FireMessage, ReceiveFire);
+            Services.Net.On(ReleaseMessage, ReceiveRelease);
             Services.Net.PlayerLeft += Forget;
             Services.Net.SessionEnded += Clear;
         }
         static void Forget(int seat) { s_table.Forget(seat); }
+        // T-212 (6): the gate fired, the players died soon after and the checkpoint put the game's trigger back; the
+        // fired mark was only cleared when the session ended, so the area ignored presses / walking in for the rest of
+        // its 15 s. Called on every checkpoint restore (CutsceneGuard.RestoreRepair).
+        // Test-only mutation ORICOOP_MUTATE_GATE_KEEP_FIRED_ON_RESTORE: the marks survive the restore again.
+        static readonly bool MutateKeepFired = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GATE_KEEP_FIRED_ON_RESTORE") == "1";
+        public static int RestoreClears;
+        internal static void CheckpointRestored()
+        {
+            if (MutateKeepFired) return;
+            s_table.ClearFired(); Pending.Clear(); RestoreClears++;
+        }
+        // T-207 (3): the host knows what became of a fire (the native trigger took it or refused it; the trigger was
+        // never found) and tells everyone when it came to nothing: the fired mark goes at once on every PC.
+        // Test-only mutation ORICOOP_MUTATE_GATE_NO_RELEASE: nobody is told; each PC guesses from the story clock again.
+        static readonly bool MutateNoRelease = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GATE_NO_RELEASE") == "1";
+        public static int Releases;
+        static void ReleaseFire(string key, string why)
+        {
+            if (MutateNoRelease) return;
+            s_table.Release(key); Releases++;
+            Services.Net.Send(ReleaseMessage, true, delegate(BinaryWriter w) { GateWire.WriteRelease(w, key); });
+            Plugin.Log.LogInfo("gate fire released (" + why + ") key=" + key);
+            CoopTrace.Event("story", "gate.released", "key", key, "why", why);
+        }
+        static void ReceiveRelease(BinaryReader r)
+        {
+            string key = GateWire.ReadRelease(r);
+            if (!Online || Services.Net.IsHost || Services.Net.Sender != Services.Net.HostSeat) return;
+            s_table.Release(key); Releases++;
+            Plugin.Log.LogInfo("gate fire released by the host key=" + key);
+        }
+        internal static void TestMarkFired(string key) { s_table.MarkFired(key, Now); }
+        internal static bool TestRecentlyFired(string key) { return s_table.RecentlyFired(key, Now); }
         static void Clear()
         {
             foreach (Gate gate in Gates.Values) if (gate.Pillars != null) gate.Pillars.Destroy();
@@ -104,9 +140,16 @@ namespace OriCoop
             gate.Rect = cutscene != null ? Utility.RectFromBounds(cutscene.GetComponent<Collider>().bounds)
                 : Utility.RectFromBounds(Utility.BoundsFromTransform(component.transform));
         }
+        // T-207 (4): the walk over every trigger in memory ran twice a frame for an area this PC has not loaded (Adopt and
+        // the ward drawing). An unresolved gate is looked for at most every GateResolve.Retry seconds.
+        // Test-only mutation ORICOOP_MUTATE_GATE_SCAN_EVERY_FRAME: every call walks again.
+        static readonly bool MutateScanEveryFrame = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_GATE_SCAN_EVERY_FRAME") == "1";
+        public static int Scans;
         static void Resolve(Gate gate)
         {
             if (gate.Object != null) return;
+            if (!MutateScanEveryFrame && !GateResolve.Due(Now, gate.ResolveAt)) return;
+            gate.ResolveAt = Now; Scans++;
             foreach (Trigger trigger in Resources.FindObjectsOfTypeAll<Trigger>())
                 if (trigger != null && StorySync.ComponentKey(trigger) == gate.Key) { Attach(gate, trigger); return; }
             foreach (CutsceneTrigger trigger in Resources.FindObjectsOfTypeAll<CutsceneTrigger>())
@@ -203,20 +246,53 @@ namespace OriCoop
         }
         static void ReceiveForce(BinaryReader r)
         {
-            string key = GateWire.ReadForce(r);
-            if (Online && Services.Net.IsHost) Force(key, Services.Net.Sender);
+            bool has; float x, y, z; string key = GateWire.ReadForce(r, out has, out x, out y, out z);
+            if (Online && Services.Net.IsHost) Force(key, Services.Net.Sender, has, new Vector3(x, y, z));
         }
         // device: the forcing PC's primary seat. Its force counts when any of that PC's seats is inside.
-        static void Force(string key, int device)
+        // at: where the forcing PC's trigger is (T-212: for a host that has not loaded that area).
+        static void Force(string key, int device, bool hasAt, Vector3 at)
         {
             if (s_table.RecentlyFired(key, Now) || device != Players.LocalSeat && !s_table.AnyInside(key, SeatsOf(device), Now)) return;
-            Log("force", key, device, s_table.Count(key, Now), Total); Fire(key);
+            if (hasAt && !HintPlausible(device, at))
+            {
+                HintsRefused++; hasAt = false;
+                Plugin.Log.LogInfo("gate force: the position in the request is not where the forcing player stands; ignored key=" + key + " seat=" + device);
+            }
+            Log("force", key, device, s_table.Count(key, Now), Total); Fire(key, hasAt, at);
         }
-        static void Fire(string key)
+        // T-207 review (2): the host only goes to a position that is near one of the forcing PC's players.
+        public static int HintsRefused;
+        static bool HintPlausible(int device, Vector3 at)
         {
-            if (s_table.RecentlyFired(key, Now)) return;
-            s_table.MarkFired(key, Now);
-            Pending.Add(new PendingFire { Gate = Get(key), Requested = Now });
+            if (device == Players.LocalSeat) return true;
+            foreach (int seat in SeatsOf(device))
+                foreach (Puppet puppet in Players.Remotes)
+                    if (puppet.Seat == seat && puppet.Sein != null
+                        && GateForce.HintNear(puppet.Sein.Position.x - at.x, puppet.Sein.Position.y - at.y)) return true;
+            return false;
+        }
+        static void Fire(string key) { Fire(key, false, Vector3.zero); }
+        static void Fire(string key, bool hasAt, Vector3 at)
+        {
+            if (s_table.RecentlyFired(key, Now) || s_table.Queued(key)) return;   // queued: one request per area (T-207 review 1)
+            s_table.MarkFired(key, Now); s_table.SetQueued(key, true);
+            Pending.Add(new PendingFire { Gate = Get(key), Requested = Now, HasHint = hasAt, Hint = at });
+        }
+        // T-212 (2): the host has not loaded the forced trigger's area. Its players go to the forcing player's trigger
+        // (the fire would pull them there anyway); the request then waits for the area to load.
+        static void MoveToHint(PendingFire pending)
+        {
+            pending.Moved = true; pending.Requested = Now; MovedToForce++;
+            foreach (int seat in Players.LocalSeats)
+            {
+                SeinCharacter ori = Players.OriOf(seat);
+                if (ori == null) continue;
+                Plugin.Teleport(ori, pending.Hint + new Vector3((seat - 1) * 0.7f - 1f, 0.5f, 0));
+                if (seat == Players.LocalSeat) CutsceneGuard.SnapSpirit("gate");
+            }
+            Plugin.Log.LogInfo("gate fire: trigger not loaded here; moved to the forcing player's area key=" + pending.Gate.Key);
+            CoopTrace.Event("story", "gate.moved", "key", pending.Gate.Key);
         }
         static void ReceiveFire(BinaryReader r)
         {
@@ -249,8 +325,14 @@ namespace OriCoop
                 Resolve(gate);
                 if (gate.Object == null)
                 {
-                    if (Now - pending.Requested >= 3f)
-                    { Plugin.Log.LogInfo("gate fire: trigger not found key=" + gate.Key); Pending.RemoveAt(i); }
+                    if (pending.HasHint && !pending.Moved) MoveToHint(pending);
+                    else if (GateForce.GiveUp(Now - pending.Requested, pending.Moved))
+                    {
+                        // Nothing was fired: the area takes requests again at once (not after the 15 s of a real fire).
+                        Plugin.Log.LogInfo("gate fire: trigger not found key=" + gate.Key + " moved=" + pending.Moved);
+                        CoopTrace.Event("story", "gate.notfound", "key", gate.Key, "moved", pending.Moved);
+                        s_table.SetQueued(gate.Key, false); s_table.Release(gate.Key); ReleaseFire(gate.Key, "trigger not found"); Pending.RemoveAt(i);
+                    }
                     continue;
                 }
                 if (!pending.Sent)
@@ -278,8 +360,9 @@ namespace OriCoop
                             Plugin.Log.LogInfo("gate fire refused by the trigger key=" + gate.Key + " active=" + trigger.Active
                                 + " running=" + (duration != null && duration.IsPerforming) + " condition=" + met);
                             CoopTrace.Event("story", "gate.refused", "key", gate.Key, "active", trigger.Active, "condition", met);
+                            ReleaseFire(gate.Key, "refused by the trigger");
                         }
-                        if (met) trigger.DoTrigger(false);
+                        else trigger.DoTrigger(false);
                     }
                     else
                     {
@@ -287,13 +370,13 @@ namespace OriCoop
                         WasTriggered.SetValue(cutscene, true); cutscene.Cutscene.ChangeState(cutscene.State);
                     }
                 }
-                finally { s_firing = false; Pending.RemoveAt(i); }
+                finally { s_firing = false; s_table.SetQueued(gate.Key, false); Pending.RemoveAt(i); }
             }
         }
         static void Select(string key)
         {
             if (LocalGateKey == key) return;
-            LocalGateKey = key; Meter.Reset();
+            LocalGateKey = key; Meter.Reset(); s_forceKey = null;
             if (key == null) { LastCount = LastTotal = 0; return; }
             Gate gate = Gates[key]; LastCount = gate.Count; LastTotal = gate.Total;
         }
@@ -341,8 +424,18 @@ namespace OriCoop
                 if (Meter.Update(Core.Input.Bash.IsPressed, Time.deltaTime))
                 {
                     Forces++; Log("force", local.Key, Players.LocalSeat, LastCount, LastTotal);
-                    if (Services.Net.IsHost) Force(local.Key, Players.LocalSeat);
+                    Resolve(local);
+                    bool hasAt = local.Object != null; Vector3 at = hasAt ? local.Object.transform.position : Vector3.zero;
+                    if (Services.Net.IsHost) Force(local.Key, Players.LocalSeat, hasAt, at);
+                    else if (hasAt) Services.Net.Send(ForceMessage, true, delegate(BinaryWriter w) { GateWire.WriteForce(w, local.Key, at.x, at.y, at.z); });
                     else Services.Net.Send(ForceMessage, true, delegate(BinaryWriter w) { GateWire.WriteForce(w, local.Key); });
+                    s_forceKey = local.Key; s_forceAt = Now;
+                }
+                // T-212 (2): the force changed nothing (the host dropped it): the ring can be held again.
+                else if (s_forceKey == local.Key && GateForce.Rearm(Now - s_forceAt, s_table.RecentlyFired(local.Key, Now)))
+                {
+                    Meter.Reset(); s_forceKey = null; ForceRearms++;
+                    Plugin.Log.LogInfo("gate force had no effect after " + GateForce.RetryAfter.ToString("0") + " s; the ring can be held again key=" + local.Key);
                 }
                 Show();
             }

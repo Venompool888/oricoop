@@ -41,6 +41,14 @@ namespace OriCoop
         static readonly Downed[] s_down = s_roster.Seats;
         static readonly Vector3[] s_safe = new Vector3[ReviveLogic.MaxSeats + 1];
         static readonly bool[] s_haveSafe = new bool[ReviveLogic.MaxSeats + 1];
+        // T-215 #4: where each Ori was at the last look (every 0.2 s, grounded or not). An Ori further from it than any
+        // movement allows has changed area, teleported or reloaded: its last solid ground no longer counts.
+        static readonly Vector3[] s_seen = new Vector3[ReviveLogic.MaxSeats + 1];
+        static readonly bool[] s_haveSeen = new bool[ReviveLogic.MaxSeats + 1];
+        // T-215 planted bugs: the skull keeps the last solid ground wherever the Ori went (#4); a revive whose
+        // rescuer's Ori is gone only un-hides the downed Ori, at 0 health (#1).
+        static readonly bool s_mutateStaleSkull = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STALE_SKULL") == "1";
+        static readonly bool s_mutateReviveNeedsRescuer = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_REVIVE_NEEDS_RESCUER") == "1";
         static float s_safeTimer;
         static bool s_passThrough;            // our own final-death call must reach the game
         static bool s_subscribed;
@@ -197,7 +205,12 @@ namespace OriCoop
             Downed d = new Downed();
             d.Sein = s; d.Player = player;
             bool local = s == Host.P1;
-            d.Marker = s_haveSafe[player] ? s_safe[player] : s.Position;
+            // The skull goes to the last solid ground, unless the Ori left it behind since the last look (T-215 #4:
+            // killed right after a door, a teleport or a reload, before it stood anywhere in the new place).
+            Vector3 here = s.Position;
+            bool seen = s_haveSeen[player] && !s_mutateStaleSkull;
+            Vector3 moved = seen ? here - s_seen[player] : Vector3.zero;
+            d.Marker = SafeGroundRules.UseSafeGround(s_haveSafe[player], seen, moved.x, moved.y) ? s_safe[player] : here;
             s.Mortality.Health.SetAmount(0f);
             if (local)
             {
@@ -249,12 +262,18 @@ namespace OriCoop
                 s.gameObject.SetActive(true);
                 Host.SetCompanionActive(s, true);
             }
-            if (place && saver != null)
+            // T-215 #1: also when the saver's Ori is not here any more (it left or is loading while its "revived you"
+            // was on the way): the revive is completed at the skull. Before, the Ori was only un-hidden, at 0 health.
+            if (place && (saver != null || !s_mutateReviveNeedsRescuer))
             {
-                Host.Teleport(s, saver.Position + new Vector3(saver.FaceLeft ? 1f : -1f, 0f, 0f));
-                s.Mortality.Health.SetAmount(Mathf.Clamp(health, 1f, s.Mortality.Health.MaxHealth));
+                Vector3 from = saver != null ? saver.Position : d.Marker;
+                float x, y;
+                ReviveLogic.ReviveSpot(saver != null, from.x, from.y, saver != null && saver.FaceLeft, d.Marker.x, d.Marker.y, out x, out y);
+                Host.Teleport(s, new Vector3(x, y, from.z));
+                s.Mortality.Health.SetAmount(ReviveLogic.RevivedHealth(health, s.Mortality.Health.MaxHealth));
                 s.Mortality.DamageReciever.MakeInvincible(1.5f);
                 if (Host.IsPuppet(s)) Host.ReturnCompanion(s, "revived");
+                if (saver == null) Services.Log.Info("P" + d.Player + " revived at its skull: the rescuer's Ori is not here any more");
             }
         }
 
@@ -291,7 +310,13 @@ namespace OriCoop
             foreach (int seat in PresentSeats)
             {
                 SeinCharacter s = SeinAt(seat);
-                if (Alive(s) && Grounded(s)) { s_safe[seat] = s.Position; s_haveSafe[seat] = true; }
+                Vector3 here;
+                try { here = s.Position; } catch (Exception) { continue; }   // an Ori still being built or torn down
+                // T-215 #4: it moved further than any movement allows since the last look: the old ground is behind it.
+                if (s_haveSeen[seat] && !s_mutateStaleSkull && SafeGroundRules.Relocated(here.x - s_seen[seat].x, here.y - s_seen[seat].y))
+                    s_haveSafe[seat] = false;
+                s_seen[seat] = here; s_haveSeen[seat] = true;
+                if (Alive(s) && Grounded(s)) { s_safe[seat] = here; s_haveSafe[seat] = true; }
             }
         }
 
@@ -402,7 +427,7 @@ namespace OriCoop
         internal static void ForgetOfflineExtra(int seat)
         {
             s_roster.Take(seat);
-            s_haveSafe[seat] = false;
+            s_haveSafe[seat] = false; s_haveSeen[seat] = false;
         }
 
         // P2 leaves (F10, title screen...) or online mode starts while someone is down.

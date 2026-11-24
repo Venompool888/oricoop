@@ -43,6 +43,8 @@ namespace OriCoop.TestQuiet
             // Test-only mutation switch ORICOOP_MUTATE_NO_INPUT_BLOCK=1: no blocking and no line, so the launcher must refuse.
             if (m_quiet && !Flag("ORICOOP_MUTATE_NO_INPUT_BLOCK"))
             {
+                // T-227 test-only mutation: the mod's own device imports are left alone; the self-test must say so.
+                InputBlock.MutateNoNativeBlock = Flag("ORICOOP_MUTATE_NO_NATIVE_PAD_BLOCK");
                 m_harmony = new Harmony("local.oricoop.testquiet.input");
                 try { InputBlock.Apply(m_harmony, Logger); } catch (Exception e) { m_blockError = e.GetType().Name + ": " + e.Message; }
                 Harmony h = m_harmony; BepInEx.Logging.ManualLogSource log = Logger;
@@ -79,7 +81,8 @@ namespace OriCoop.TestQuiet
                 try { InputBlock.Apply(m_harmony, Logger); m_blockError = InputBlock.Verify(); }
                 catch (Exception e) { m_blockError = e.GetType().Name + ": " + e.Message; }
             }
-            if (m_blockError == null) Logger.LogInfo("TestQuiet: physical input blocked, vibration blocked (" + InputBlock.Sites + " call sites)");
+            if (m_blockError == null) Logger.LogInfo("TestQuiet: physical input blocked, vibration blocked (" + InputBlock.Sites + " call sites, "
+                + InputBlock.DeviceImports + " device imports, " + InputBlock.SkippedMethods + " device methods off)");
             else Logger.LogError("TestQuiet: INPUT BLOCK FAILED: " + m_blockError);
         }
 
