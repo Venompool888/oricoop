@@ -105,6 +105,11 @@ namespace OriCoop
             SeatSkillSync.RebindDevice(previous, primary);
         }
 
+        // Host (T-254): this remote device seat plays the world (its checkpoint load is announced, not pending).
+        internal static bool GuestPlaysWorld(int deviceSeat) { return s_guests.ReadyForSeat(deviceSeat, true, true); }
+        static readonly Func<int, bool> s_guestPlaysWorld = GuestPlaysWorld;
+        internal static Func<int, bool> GuestPlaysWorldCheck { get { return s_guestPlaysWorld; } }
+
         public static bool ReadyForSeat(int seat)
         {
             if (Services.Net.IsHost && Players.IsLocal(seat) && !Services.Net.Connected) return true;

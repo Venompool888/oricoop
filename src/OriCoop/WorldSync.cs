@@ -141,7 +141,7 @@ namespace OriCoop
             }
             if (s_snapshotRequests.Any)
             {
-                bool all; int[] seats = s_snapshotRequests.Take(NetPlay.RemoteSeats, out all);
+                bool all; int[] seats = s_snapshotRequests.Take(NetPlay.RemoteSeats, SaveSync.GuestPlaysWorldCheck, out all);
                 if (all) { SendSnapshot(0, "queued"); ProgressSync.SendSnapshot(); }
                 foreach (int seat in seats) { SendSnapshot(seat, "queued"); ProgressSync.SendSnapshot(seat); }
             }

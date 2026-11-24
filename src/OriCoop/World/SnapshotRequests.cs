@@ -1,3 +1,4 @@
+using System;
 using System.Collections.Generic;
 
 namespace OriCoop.World
@@ -6,7 +7,8 @@ namespace OriCoop.World
     // a resync (RestoreCheckpoint) AND announced its load (SaveSync LoadedMessage); the host sent one snapshot to that
     // seat on the load and a second, broadcast one on the next tick for the queued request. Now a guest's request is
     // owed to that seat only, and any snapshot actually sent pays off what it covers: a broadcast pays off everything,
-    // a snapshot to one seat pays off that seat's request and its share of a queued broadcast.
+    // a snapshot to one seat pays off that seat's request and its share of a queued broadcast. A seat still loading a
+    // checkpoint is not sent a queued snapshot: its load announcement brings its own (SaveSync), which pays it off.
     public sealed class SnapshotRequests
     {
         readonly HashSet<int> m_seats = new HashSet<int>();     // seats owed a snapshot of their own
@@ -32,21 +34,28 @@ namespace OriCoop.World
             if (m_all) m_covered.Add(seat);
         }
 
-        // What to send now, then cleared. broadcast = one snapshot to everyone (seats is then empty); otherwise one
-        // snapshot per listed seat, ascending. remoteSeats = the seats in the session now (a queued broadcast that some
-        // seats already got turns into per-seat sends to the rest).
-        public int[] Take(int[] remoteSeats, out bool broadcast)
+        // What to send now. broadcast = one snapshot to everyone (seats is then empty); otherwise one snapshot per
+        // listed seat, ascending. remoteSeats = the seats in the session now (owed seats that left are dropped);
+        // loaded(seat) = that seat plays the world (false while it loads a checkpoint: it stays owed, not sent).
+        // What is returned counts as sent; whatever is still owed afterwards stays queued.
+        public int[] Take(int[] remoteSeats, Func<int, bool> loaded, out bool broadcast)
         {
             broadcast = false;
-            List<int> seats = new List<int>(m_seats);
-            if (m_all)
+            List<int> send = new List<int>(), waiting = new List<int>();
+            foreach (int s in remoteSeats)
             {
-                if (m_covered.Count == 0) { broadcast = true; seats.Clear(); }
-                else foreach (int s in remoteSeats) if (!m_covered.Contains(s) && !seats.Contains(s)) seats.Add(s);
+                if (!Pending(s)) continue;
+                if (loaded(s)) send.Add(s); else waiting.Add(s);
             }
-            seats.Sort();
+            if (m_all && m_covered.Count == 0 && waiting.Count == 0 && send.Count == remoteSeats.Length && send.Count != 0)
+            {
+                broadcast = true; Clear();
+                return new int[0];
+            }
+            send.Sort();
             Clear();
-            return seats.ToArray();
+            foreach (int s in waiting) m_seats.Add(s);   // still owed, to that seat alone
+            return send.ToArray();
         }
 
         public void Clear() { m_all = false; m_seats.Clear(); m_covered.Clear(); }
