@@ -45,10 +45,22 @@ namespace OriCoop.Net
             socket.SendTo(data, offset, length, SocketFlags.None, to);
         }
 
+        // ReceiveFrom replaces the endpoint it is given; this template itself is never changed.
+        private static readonly EndPoint AnyEndPoint = new IPEndPoint(IPAddress.Any, 0);
+
         public int Receive(byte[] buffer, out EndPoint from)
         {
-            from = new IPEndPoint(IPAddress.Any, 0);
-            try { return socket.ReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref from); }
+            from = null;
+            try
+            {
+                // A nonblocking ReceiveFrom on an empty socket throws (would block). Every poll ends that way, so
+                // ask first instead of paying for a SocketException (and an endpoint) once per peer per frame.
+                if (!socket.Poll(0, SelectMode.SelectRead)) return 0;
+                EndPoint sender = AnyEndPoint;
+                int length = socket.ReceiveFrom(buffer, 0, buffer.Length, SocketFlags.None, ref sender);
+                from = sender;
+                return length;
+            }
             catch (SocketException) { from = null; return 0; }
         }
 
