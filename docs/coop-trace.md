@@ -65,6 +65,11 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
 - story / cam / hud: action sequence request/start/end, ability cutscene start/end, cutscene state changes, ability
   pedestal, camera lock/unlock and scripted takeover/release, HUD show/hide (alpha, letterbox), dialog/subtitle
   show/hide, Sein spirit follow target.
+- phys, T-250 probe (`src\OriCoop\ShooterProbe.cs`): level mechanisms that shoot (non-story sequences with a
+  `SpawnProjectileAction`, or named `shootProjectile`). First 4 starts per shooter per scene visit, 300 per process:
+  `shooter.start` (id, scene, path, guid, actions, caller = the game frames that started it, ori_dist),
+  `shooter.action` / `shooter.holder` / `shooter.projectile` (fields read by reflection, once each), `shooter.holders`
+  (count), `shooter.spawn` (each projectile's pos, vel, gravity, life, angle to own Ori / to the partner).
 - save / scene: save, load, pause/resume, difficulty (with the enemy health multiplier actually in effect),
   scene load/unload, current scene.
 - net: every 1 s RTT, loss, reliable pending/resends, remote scene; connect/disconnect with reason.

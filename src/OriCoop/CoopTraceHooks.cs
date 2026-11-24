@@ -100,6 +100,7 @@ namespace OriCoop
             Patch(failed, typeof(DifficultyController), "SetDifficulty", null, "DifficultyAfter");
             Patch(failed, typeof(SceneRoot), "LateStart", null, "SceneLoaded");
             Patch(failed, typeof(SceneRoot), "Unload", "SceneUnloading", null);
+            ShooterProbe.Init(failed);   // T-250 probe: projectile-shooter sequences (trace only)
             if (failed.Count != 0) Plugin.Log.LogWarning("trace hooks failed: " + string.Join(", ", failed.ToArray()));
         }
 
@@ -778,6 +779,7 @@ namespace OriCoop
 
         static void SceneLoaded(SceneRoot __instance)
         {
+            try { if (__instance.MetaData != null) ShooterProbe.SceneLoaded(__instance.MetaData.SceneName); } catch { }
             try { if (!CoopTrace.On("scene", 1)) return; CoopTrace.Event("scene", "load", "id", __instance, "scene", __instance.MetaData.SceneName, "guid", __instance.MetaData.SceneMoonGuid); } catch { }
         }
 
