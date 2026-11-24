@@ -115,6 +115,7 @@ partial class SaveTests
         Run("co-op save paths", FolderPathTests);
         Run("first empty co-op slot", EmptyCoopSlotTests);
         RunRoomSaveTests();
+        RunWipeRestoreTests();
         return failures == 0 ? 0 : 1;
     }
 }

@@ -357,6 +357,7 @@ namespace OriCoop
                 return;
             }
             OfferVerdict verdict = SaverPick.Judge(host, !Ready || s_loading || s_hostAdopt || s_disabled || s_adoptingOffer,
+                host && s_guests.Restoring,   // T-242: another seat still loads the wipe's checkpoint
                 host && s_guests.ReadyForSeat(seat, true, Ready),
                 CoopSaves.RoomSlotLive, CoopSaves.Timeline, timeline);
             LastOfferVerdict = verdict.ToString();
@@ -364,8 +365,10 @@ namespace OriCoop
             {
                 OffersRejected++;
                 if (host) Revive.RejectLinkOffer(seat);
+                float waited;
+                int waiting = verdict == OfferVerdict.Restoring ? s_guests.LongestWait(Services.Clock.RealTime, out waited) : 0;
                 Services.Log.Info("net: save offer from seat " + seat + " not taken: " + verdict + " (base " + Short(timeline)
-                    + ", room " + Short(CoopSaves.Timeline) + ")");
+                    + ", room " + Short(CoopSaves.Timeline) + (waiting != 0 ? ", seat " + waiting + " still loads the room checkpoint" : "") + ")");
                 return;
             }
             try

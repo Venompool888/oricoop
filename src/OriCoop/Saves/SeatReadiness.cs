@@ -7,6 +7,20 @@ namespace OriCoop.Saves
         sealed class GuestState { public bool Sent, Ready; public float SentAt; }
         readonly Dictionary<int, GuestState> m_guests = new Dictionary<int, GuestState>();
 
+        // T-242: a checkpoint round (the host's team wipe restore, or the host adopting the partner's progress) runs
+        // from ResetGuests until every seat it covers has reported its load or left. One seat reloading first must
+        // not end it: that seat's game saves natively right after its reload, and the host took that save as the
+        // room's checkpoint while the other seats were still loading the old one (net-4p: their skill trees and
+        // points came back wrong). While the round runs, no seat's save offer becomes the room's save.
+        bool m_restoring;
+        public bool Restoring { get { return m_restoring; } }
+        void SettleRestore()
+        {
+            if (!m_restoring) return;
+            foreach (GuestState guest in m_guests.Values) if (!guest.Ready) return;
+            m_restoring = false;
+        }
+
         public IEnumerable<int> Seats { get { return m_guests.Keys; } }
         public void Rebind(int previous, int primary)
         {
@@ -19,8 +33,8 @@ namespace OriCoop.Saves
         public void Join(int seat) { m_guests[seat] = new GuestState(); }
         // T-126: a seat already playing the co-op world when this player became the host (no checkpoint to send).
         public void JoinReady(int seat) { GuestState g = new GuestState(); g.Sent = g.Ready = true; m_guests[seat] = g; }
-        public void Leave(int seat) { m_guests.Remove(seat); m_awaiting.Remove(seat); }
-        public void Clear() { m_guests.Clear(); m_awaiting.Clear(); }
+        public void Leave(int seat) { m_guests.Remove(seat); m_awaiting.Remove(seat); SettleRestore(); }
+        public void Clear() { m_guests.Clear(); m_awaiting.Clear(); m_restoring = false; }
 
         // T-213 (10): what a guest notes about the other guests, for the day the server makes it the host. A seat that
         // said hello after this guest finished its own join has no save until it announces its load (the announcement
@@ -73,12 +87,14 @@ namespace OriCoop.Saves
             GuestState guest;
             if (!m_guests.TryGetValue(seat, out guest) || !guest.Sent || guest.Ready) return false;
             guest.Ready = true;
+            SettleRestore();
             return true;
         }
 
         public void ResetGuests()
         {
             foreach (GuestState guest in m_guests.Values) guest.Sent = guest.Ready = false;
+            m_restoring = m_guests.Count > 0;
         }
 
         public bool ReadyForSeat(int seat, bool isHost, bool ready)
