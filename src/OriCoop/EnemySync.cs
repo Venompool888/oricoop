@@ -1084,15 +1084,22 @@ namespace OriCoop
         [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
         static bool InPartnerScreen(Vector3 position, Vector3 partner)
         { return Math.Abs(position.x - partner.x) <= 26f && Math.Abs(position.y - partner.y) <= 18f; }
+        // NearPartner and RemoteDistance run several times per enemy per frame (Tick, the frustum, boundary and
+        // on-screen patches). RemotePositions is an iterator: a new object (and a new Values view) per call. The
+        // remotes are keyed by their seat (1..MaxSeats), so asking each seat gives the same positions without it;
+        // both only take "any" or the minimum, so the order does not matter.
         static bool NearPartner(Vector3 position)
         {
-            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) if (InPartnerScreen(position, remote.Value)) return true;
+            Vector3 remote;
+            for (int seat = 1; seat <= Players.MaxSeats; seat++)
+                if (s_host.RemotePos(seat, out remote) && InPartnerScreen(position, remote)) return true;
             return false;
         }
         static float RemoteDistance(Vector3 position)
         {
-            float distance = float.PositiveInfinity;
-            foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) distance = Mathf.Min(distance, Vector3.Distance(position, remote.Value));
+            float distance = float.PositiveInfinity; Vector3 remote;
+            for (int seat = 1; seat <= Players.MaxSeats; seat++)
+                if (s_host.RemotePos(seat, out remote)) distance = Mathf.Min(distance, Vector3.Distance(position, remote));
             return distance;
         }
         static bool Protect(Actor a)
