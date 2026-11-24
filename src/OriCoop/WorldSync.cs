@@ -54,12 +54,14 @@ namespace OriCoop
         static readonly Dictionary<string, DigestObject> s_compareManifest = new Dictionary<string, DigestObject>();
         static readonly DigestRepair s_digestRepair = new DigestRepair();
         static readonly HashSet<string> s_loggedLocalTypes = new HashSet<string>();
-        static readonly HashSet<int> s_pendingSnapshots = new HashSet<int>();
+        // T-254: snapshots owed (seat 0 = all); a sent snapshot pays off what it covers (World/SnapshotRequests.cs).
+        static readonly World.SnapshotRequests s_snapshotRequests = new World.SnapshotRequests();
+        static int s_snapshotNumber;
         // T-172: changes inside a story this PC only mirrors stay local (World/MirrorHold.cs).
         static readonly World.MirrorHold s_mirrorHold = new World.MirrorHold();
         static readonly HashSet<string> s_mirrorKeys = new HashSet<string>();
         public static int MirrorHeldTotal { get { return s_mirrorHold.HeldTotal; } }
-        static bool s_init, s_awaitSnapshot, s_restorePending, s_fullPending, s_loggedHighlightedDoors, s_loggedSceneLoader;
+        static bool s_init, s_awaitSnapshot, s_restorePending, s_loggedHighlightedDoors, s_loggedSceneLoader;
         static float s_scanAt, s_digestAt, s_requestAt;
         static float s_bandwidthAt;
         static long s_deltaBytes, s_snapshotBytes, s_digestBytes;
@@ -89,8 +91,10 @@ namespace OriCoop
             NetPlay.On(MsgResync, delegate(BinaryReader r) {
                 string why = r.ReadString();
                 if (!NetPlay.IsHost || !SaveSync.Ready || VersionRefused()) return;
-                Plugin.Log.LogInfo("net: full resync requested: " + why);
-                s_fullPending = true;
+                // T-254: a guest's request is owed to that guest only (a broadcast also re-sent the world to everyone else).
+                int from = NetPlay.Sender;
+                Plugin.Log.LogInfo("net: full resync requested by P" + from + ": " + why);
+                s_snapshotRequests.Request(from);
             });
             NetPlay.On(MsgDigest, ReceiveDigest);
             NetPlay.On(MsgManifest, ReceiveManifest);
@@ -103,12 +107,12 @@ namespace OriCoop
             s_blobs.Clear(); s_known.Clear(); s_changed.Clear(); s_bad.Clear();
             s_excluded.Clear(); s_parts.Clear(); s_deferred.Clear();
             s_remoteManifest.Clear(); s_compareManifest.Clear(); s_loggedLocalTypes.Clear();
-            s_awaitSnapshot = !NetPlay.IsHost; s_restorePending = s_fullPending = false;
+            s_awaitSnapshot = !NetPlay.IsHost; s_restorePending = false;
             s_scanAt = 0; s_digestAt = Time.realtimeSinceStartup + 5f; s_requestAt = 0;
             Applying = false; LastDigestMatch = false; LastDigestAt = 0;
             s_loggedHighlightedDoors = false;
             s_loggedSceneLoader = false;
-            s_pendingSnapshots.Clear();
+            s_snapshotRequests.Clear(); s_snapshotNumber = 0;
             s_mirrorHold.Clear(); s_mirrorKeys.Clear(); s_storyProgress.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             s_digestSequence = s_receivedDigest = 0;
@@ -135,14 +139,11 @@ namespace OriCoop
                 s_restorePending = false;
                 RequestResync("guest RestoreCheckpoint");
             }
-            if (s_fullPending)
+            if (s_snapshotRequests.Any)
             {
-                s_fullPending = false; SendSnapshot(); ProgressSync.SendSnapshot();
-            }
-            if (s_pendingSnapshots.Count > 0)
-            {
-                int[] seats = new int[s_pendingSnapshots.Count]; s_pendingSnapshots.CopyTo(seats); s_pendingSnapshots.Clear();
-                foreach (int seat in seats) { SendSnapshot(seat); ProgressSync.SendSnapshot(seat); }
+                bool all; int[] seats = s_snapshotRequests.Take(NetPlay.RemoteSeats, SaveSync.GuestPlaysWorldCheck, out all);
+                if (all) { SendSnapshot(0, "queued"); ProgressSync.SendSnapshot(); }
+                foreach (int seat in seats) { SendSnapshot(seat, "queued"); ProgressSync.SendSnapshot(seat); }
             }
             if (!NetPlay.AnyRemoteInGameplay || s_awaitSnapshot) return;
             float now = Time.realtimeSinceStartup;
@@ -499,14 +500,15 @@ namespace OriCoop
             return changed;
         }
 
-        public static void SendSnapshot(int seat = 0)
+        public static void SendSnapshot(int seat = 0, string why = "")
         {
             if (!NetPlay.Connected || !SaveSync.Ready || !NetPlay.IsHost) return;
             if (!NetPlay.LocalInGameplay())
             {
-                if (seat == 0) s_fullPending = true; else s_pendingSnapshots.Add(seat);
+                s_snapshotRequests.Request(seat);
                 return;
             }
+            s_snapshotRequests.Sent(seat);   // T-254: this snapshot answers the seat's queued request too
             float start = Time.realtimeSinceStartup;
             Capture(true);
             SnapshotSent();
@@ -519,7 +521,8 @@ namespace OriCoop
             SendBlobsMessage(seat, delegate(BinaryWriter w) {
                 w.Write((byte)2); w.Write(watermark); StorySync.WriteWellActivations(w);
             });
-            Plugin.Log.LogInfo("net: full world snapshot " + blobs.Count + " objects in "
+            Plugin.Log.LogInfo("net: full world snapshot #" + (++s_snapshotNumber) + " to " + (seat == 0 ? "all" : "P" + seat)
+                + (why.Length != 0 ? " (" + why + ")" : "") + ": " + blobs.Count + " objects in "
                 + ((Time.realtimeSinceStartup - start) * 1000f).ToString("F1") + " ms");
         }
 
@@ -1199,7 +1202,7 @@ namespace OriCoop
                 if (!NetPlay.IsHost) s_restorePending = true;
                 else
                 {
-                    s_fullPending = true;
+                    s_snapshotRequests.Request(0);
                     // Known unloaded objects must follow the host's checkpoint rollback as well.
                     foreach (Blob blob in s_blobs.Values)
                     {

@@ -21,7 +21,7 @@ namespace OriCoop.Saves
         public string SteamPartnerName { get { return NetPlay.SteamPartnerName; } }
         public bool LocalizationProbeOn { get { return L10nProbe.On; } }
         public void End(string reason) { NetPlay.End(reason); }
-        public void SendWorldSnapshot(int seat) { WorldSync.SendSnapshot(seat); }
+        public void SendWorldSnapshot(int seat) { WorldSync.SendSnapshot(seat, "guest load"); }
         public void SendProgressSnapshot(int seat) { ProgressSync.SendSnapshot(seat); }
         public void HoldOwnSkillTree(bool joined) { ProgressSync.HoldOwnSkillTree(joined); }
         public string Translate(string key) { return L10n.SessionText(key); }
