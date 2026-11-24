@@ -175,7 +175,8 @@ namespace OriCoop
             {
                 // T-108: spectate only once every player on this PC is down (T-042); the primary seat comes first.
                 s_spectate.Tick(Players.LocalSeats, PresentSeats, DownedSeats());
-                if (SpectateActive)
+                // T-248: a downed player may have the pause menu or the co-op panel open: its left / right are the menu's.
+                if (SpectateActive && !SessionRules.ScreenInputLocked(Host.P1))
                 {
                     if (Input.GetKeyDown(KeyCode.A) || Core.Input.MenuLeft.OnPressed) SpectatePrevious();
                     if (Input.GetKeyDown(KeyCode.D) || Core.Input.MenuRight.OnPressed) SpectateNext();

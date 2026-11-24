@@ -97,12 +97,31 @@ namespace OriCoop
                 UI.Menu.HideMenuScreen(UI.Menu.CurrentScreen != MenuScreenManager.Screens.Options);
             }
         }
+        // T-248 (#336): only the screens that were open when an Ori went down are closed (retried until they are gone);
+        // a downed player may open the pause menu or the co-op panel again afterwards, to leave or change settings.
+        static readonly DownedScreens s_downedScreens = new DownedScreens(4);
+        static readonly bool[] s_downedScreenOpen = new bool[5];
         static void CloseInvalidScreens()
         {
-            if (!NoPause) return;
-            SeinCharacter own = Own, panel = PanelOri;
-            if (Revive.IsDowned(own)) CloseScreensOnDeath(own);
-            if (panel != own && Revive.IsDowned(panel)) CloseScreensOnDeath(panel);
+            if (!NoPause) { s_downedScreens.Reset(); Array.Clear(s_downedScreenOpen, 0, s_downedScreenOpen.Length); return; }
+            foreach (int seat in Players.LocalSeats)
+            {
+                if (seat < 1 || seat > 4) continue;
+                SeinCharacter ori = seat == Host.LocalSeat ? Own : Players.OriOf(seat);
+                bool downed = ori != null && Revive.IsDowned(ori), open = downed && ScreenInputLocked(ori);
+                bool wasClosing = s_downedScreens.Closing(seat);
+                bool close = s_downedScreens.Tick(seat, downed, open);
+                if (close)
+                {
+                    if (!wasClosing) Host.Trace("hud", "screen.close_downed", "who", "P" + seat, "reason", "open when it went down",
+                        "menu", NativeMenuOpen, "popup", PopupOpen, "panel", CoopMenu.OpeningSeat == seat);
+                    CloseScreensOnDeath(ori);
+                }
+                else if (open && !s_downedScreenOpen[seat])
+                    Host.Trace("hud", "screen.open_downed", "who", "P" + seat, "menu", NativeMenuOpen, "popup", PopupOpen,
+                        "panel", CoopMenu.OpeningSeat == seat, "msg", "kept open: a downed player may leave or change settings");
+                s_downedScreenOpen[seat] = open && !close;
+            }
             KeepTeleportPicker();
         }
         public static bool LocalLocked { get { return MenuPresence.HoldOri(Online, Host.StoryWatching, Respawning); } }
