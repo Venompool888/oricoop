@@ -92,7 +92,7 @@ $TS_FileSuites = [ordered]@{
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-cs', 'rooms'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
-    'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
+    'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'CoopMenuFlow' = @('local', 'titlejoin', 'titlejoin-cs'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
     'RoomLeaveFlow'    = @('titlejoin', 'titlejoin-cs', 'rooms')   # T-176: the leave flow's real-game checks run in titlejoin cserver
     'CServerRoomList'  = @('titlejoin', 'titlejoin-cs'); 'NativeCsRooms' = @('local', 'titlejoin', 'titlejoin-cs')   # T-201: a room list that cannot be read (the server list's room page): titlejoin cserver
     'MenuSoulFlameGuard' = @('net'); 'MenuSoulFlameTest' = @('net')   # T-179 skill tree B: net phase S4
