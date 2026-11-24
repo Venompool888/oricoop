@@ -126,7 +126,7 @@ namespace OriCoop
                 float after = SoulLinkRules.DeathSaveHealth(before);
                 s.Mortality.Health.SetAmount(after);
                 DeathSaves++; LastDeathSaveBefore = before; LastDeathSaveAfter = after;
-                NetHud.Toast(L10n.T("revive.death_save"));
+                NetHud.Toast(L10n.SessionText("revive.death_save"));
                 Services.Log.Info("death save by P" + PlayerOf(s) + ": health " + before.ToString("F1") + " -> " + after.ToString("F1"));
             }
 

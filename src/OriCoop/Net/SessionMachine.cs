@@ -58,6 +58,15 @@ namespace OriCoop.Net
             this.beforeLeave = beforeLeave; this.afterRemove = afterRemove; this.endError = endError;
         }
 
+        // The selected transport survives peer resets and SessionEnded while online play is still active.
+        internal string ActiveTransport { get; set; }
+        internal string TransportName(Func<string> configured) { return ActiveTransport ?? NormalizeTransport(configured()); }
+        internal static string NormalizeTransport(string transport)
+        {
+            string name = (transport ?? "direct").Trim().ToLowerInvariant();
+            return name == "relay" ? "direct" : name;
+        }
+
         public Dictionary<int, Remote> Remotes { get { return remotes; } }
         public bool Started { get { return started; } }
         public event Action SessionStarted, SessionEnded;

@@ -253,7 +253,7 @@ namespace OriCoop
             int seat = d.Player;
             bool primary = d.Sein == Host.P1;
             bool pad = !primary || GameSettings.Instance != null && GameSettings.Instance.CurrentControlScheme == ControlScheme.Controller;
-            string text = L10n.F("escape.mash", pad ? MashPadY : MashKeyQ);
+            string text = L10n.SessionFormat("escape.mash", pad ? MashPadY : MashKeyQ);
             LastMashHint = text;
             GameplayCamera cam = UI.Cameras.Current;
             if (cam == null || cam.Camera == null) { HideMash(seat); return; }
@@ -340,7 +340,7 @@ namespace OriCoop
             s_exitFiredHere[e.Id] = false;
             EscapeFinishesReceived++; LastFinisher = done.Seat;
             Services.Log.Info("escape " + e.Name + ": P" + done.Seat + " reached the end: bringing this PC's players");
-            NetHud.Toast(L10n.T("escape.through"));
+            NetHud.Toast(L10n.SessionFormat("escape.through", Roles.Tag(done.Seat)));
             BringTeam(e, done.Seat, new Vector3(done.X, done.Y, 0f), false, new Vector3(done.FX, done.FY, 0f));
         }
 

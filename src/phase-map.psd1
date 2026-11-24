@@ -36,7 +36,7 @@
         'EnemySync.Swarm' = 'E3,E5'; 'SwarmFamily' = 'E5'   # T-195: the splitting Swarm (E5s checks; ids: unit tests)
         'EnemySync.Leftovers' = 'E3,E5'; 'EnemySyncTest.Leftovers' = 'E5'; 'HitIds' = 'E3,E5'   # T-208: enemy-sync leftovers (E5k checks; rules: unit tests)
         'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'; 'CoopMenu' = 'S4'; 'MenuSoulFlameGuard' = 'S4'; 'MenuSoulFlameTest' = 'S4'   # F8 online holds the player and leaves LockInput alone (T-132)
-        'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = ''
+        'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = 'INTRO'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
         'SharedPrologue' = 'INTRO,MOVE,W'; 'PrologueCore' = ''; 'TitlePrologueTest' = ''; 'TitlePrologueProbe' = ''   # T-203 / T-205: its own checks run in the titlejoin-prologue suites; the input hook and the join wait touch INTRO / MOVE / W
@@ -78,6 +78,7 @@
         @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PENDING'; File = 'src\OriCoop\SteamTransport.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 a given-up lobby operation blocks every retry
         @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PROBLEM'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 the host's Problem stays after its lobby is up again
         @{ Switch = 'ORICOOP_MUTATE_NO_COMPANION_RETRY'; File = 'src\OriCoop\P2Extras.cs';   Suite = 'local';     Phase = '' }   # T-213 a companion return that threw is tried again (scenario companion)
+        @{ Switch = 'ORICOOP_MUTATE_COMPANION_RETURN_INACTIVE'; File = 'src\OriCoop\P2Extras.cs'; Suite = 'net'; Phase = 'INTRO' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_ORB_MENUS';      File = 'src\OriCoop\CsRoomPage.cs';     Suite = 'titlejoin-cs'; Phase = '' }   # T-173 room page orb copy keeps the difficulty picker
         @{ Switch = 'ORICOOP_MUTATE_HIDE_ICONS';     File = 'src\OriCoop\NativeGui.cs';      Suite = 'titlejoin-cs'; Phase = '' }   # T-173 game button icons in native labels stay hidden

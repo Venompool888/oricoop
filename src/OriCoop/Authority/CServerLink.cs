@@ -12,6 +12,7 @@ namespace OriCoop.Authority
     public static class CServerLink
     {
         static CServerClient s_client;
+        static RoomOwnerNotice s_ownerNotice;
         static bool s_installed;
         static string s_lastCode = ""; static byte[] s_lastToken;
         static bool s_lastCreated;   // T-173: s_lastCode's room was created by this PC (a token rejoin keeps CServerClient.Created)
@@ -147,11 +148,23 @@ namespace OriCoop.Authority
                 Unroute(); s_client = null; s_stale = c;
             };
             s_client = c;
+            s_ownerNotice = new RoomOwnerNotice();
             ConnectAttempts++;
             NetRoute.UseServer(c);
             AuthoritySource.UseServer(c.Authority, c.Receive);
             Plugin.Log.LogInfo("cserver: connecting (" + (rejoin ? "rejoin " + code : isHost ? "new room" : "join " + code) + ")");
             return c.Peer;
+        }
+
+        internal static void TickOwnerNotice()
+        {
+            CServerClient c = s_client;
+            if (c == null) return;
+            int owner = c.ArbiterSeat;
+            int previousOwner = s_ownerNotice.TakePreviousOwner(owner, c.SeatOnlineNow(c.PrimarySeat), c.Peer.NowMs);
+            if (previousOwner == 0) return;
+            string key = c.SeatOnlineNow(previousOwner) ? "hud.owner.changed" : "hud.owner.left";
+            NetHud.Toast(L10n.F(key, Roles.Tag(owner)));
         }
 
         // T-173 (review F10): this session plays a room-service room (我的房间 or a password room): RoomSession is active

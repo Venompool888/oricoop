@@ -42,6 +42,9 @@ namespace OriCoop
             }
         }
 
+        internal static string SessionText(string key) { return T(ModeKey(key, NetPlay.UsesCServer)); }
+        internal static string SessionFormat(string key, params object[] args) { return F(ModeKey(key, NetPlay.UsesCServer), args); }
+
         public static MessageProvider Provider(string key) { return Provider(delegate { return T(key); }); }
 
         public static MessageProvider Provider(Func<string> text)

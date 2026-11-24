@@ -30,6 +30,7 @@ namespace OriCoop
         static readonly Dictionary<int, Dictionary<int, ThreePacket>> s_threePackets = new Dictionary<int, Dictionary<int, ThreePacket>>();
         static double s_goAt, s_pickupAt, s_collectedAt, s_worldGoAt;
         static bool s_threeEnded, s_leaveReleased, s_done;
+        static readonly List<string> s_ownerNotices = new List<string>();
         internal static bool HostLeftInServerMode;   // T-111: the 3P server-mode check made P1 leave (CoopSaveTest skips phase L)
         static float s_threeRise, s_threeTravel, s_threeError;
         static long s_threeFrames;
@@ -893,6 +894,7 @@ namespace OriCoop
             // Saves unit tests). When seat 2 becomes the host below it must send seat 3 its checkpoint, not take it as loaded.
             int t213Loads = SaveSync.GuestLoads, t213Sent = SaveSync.CheckpointsSent;
             if (NetRoute.ServerMode && Players.LocalSeat == 2) SaveSync.TestAwaitSave(3);
+            s_ownerNotices.Clear();
             yield return ThreeRound(h, 6);
             // T-111: in server mode the room outlives P1, so P1 is the one who leaves. The arbiter moves to seat 2 and
             // seat 3 must obey its host-only messages (a gate count here; intro and wipe use the same sender check).
@@ -904,6 +906,8 @@ namespace OriCoop
                 by = Time.realtimeSinceStartup + 10f;
                 while ((Players.LocalSeat == 1 ? NetRoute.HostSeat != 2 : PuppetAt(1) != null) && Time.realtimeSinceStartup < by) yield return null;
                 yield return Wait(1f);
+                h.Check(Roles.Word(2) == L10n.T("roles.host.cs") && Roles.Word(3) == L10n.T("roles.client.cs"),
+                    "3P server: role labels follow the new owner");
                 h.Check(NetPlay.IsHost == (Players.LocalSeat == 2), "3P server: only the arbiter is host, not the creator without the role (T-158, local P"
                     + Players.LocalSeat + " IsHost " + NetPlay.IsHost + ", host seat " + NetRoute.HostSeat + ")");
                 if (Players.LocalSeat == 2) { yield return Wait(0.5f); ForcedSync.TestSendCount("t158-gate", 1, 2); }
@@ -913,6 +917,7 @@ namespace OriCoop
                     while (ForcedSync.TestCount("t158-gate") != 1 && Time.realtimeSinceStartup < by) yield return null;
                     h.Check(ForcedSync.TestCount("t158-gate") == 1, "3P server: the creator obeys the arbiter's gate count (T-158)");
                     ForcedSync.TestForget("t158-gate");
+                    yield return CheckOwnerNotice(h);
                     h.Note("3P server: P1 leaving; harness completion quits this client"); yield break;
                 }
                 yield return Wait(1f);
@@ -967,6 +972,7 @@ namespace OriCoop
                 }
                 ForcedSync.TestForget("t111-gate");
                 h.Check(Connected, "3P server: remaining players stay connected after the host left");
+                yield return CheckOwnerNotice(h);
                 // T-152: a session that drops and then leaves online play frees its socket (the parked stale client).
                 if (Players.LocalSeat == 3 && CServerLink.Client != null)
                 {
@@ -1011,6 +1017,22 @@ namespace OriCoop
                 if (!s_done) throw new InvalidOperationException("3P host completion signal missing");
             }
         }
+        static void RecordOwnerNotice(string text)
+        {
+            string suffix = L10n.Zh ? " 成为新房主" : " is the new room owner";
+            if (text.EndsWith(suffix, StringComparison.Ordinal)) s_ownerNotices.Add(text);
+        }
+
+        static IEnumerator CheckOwnerNotice(TestHarness h)
+        {
+            float by = Time.realtimeSinceStartup + 30f;
+            while (NetHud.ToastsPending && Time.realtimeSinceStartup < by) yield return null;
+            string want = L10n.Zh ? "房主已离开，P2 成为新房主" : "The room owner left; P2 is the new room owner";
+            h.Check(!NetHud.ToastsPending && s_ownerNotices.Count == 1 && s_ownerNotices[0] == want,
+                "3P server: exactly one new owner notice shown on this PC (shown " + s_ownerNotices.Count + ": "
+                + string.Join(" / ", s_ownerNotices.ToArray()) + ")");
+        }
+
         // T-141: guest P2 changes a world object; guest P3, which in P2P / relay talks only to the host, must see it within
         // 3 s. Before T-141 it came only with a digest resync (two mismatching rounds 5 s apart, at least ~5-10 s).
         // T-192: since T-168 a world EVENT (GameController, an aggregate) goes as an item batch through the arbiter, which
@@ -2234,7 +2256,9 @@ namespace OriCoop
                 h.Check(s_vitalsAt.Count == 2 && took.Count == 2, "bottom bars: host's P2 bar showed both guest changes (damage, energy use)");
                 h.Check(took.Count == 2 && took[0] <= 1f && took[1] <= 1f, "bottom bars: each within 1 s of the guest's change");
             }
-            h.Check(BottomHud.Count == 1 && BottomHud.Visible(partner) && BottomHud.LabelText(partner) == Roles.Tag(partner),
+            string barLabel = NetPlay.UsesCServer
+                ? L10n.F("hud.role", Roles.Tag(partner), L10n.T(host ? "roles.client.cs" : "roles.host.cs")) : Roles.Tag(partner);
+            h.Check(BottomHud.Count == 1 && BottomHud.Visible(partner) && BottomHud.LabelText(partner) == barLabel,
                 "bottom bars: one bar, for " + Roles.Tag(partner) + ", shown on the " + (host ? "host" : "guest") + " (" + BottomHud.Count + ")");
             h.Check(BottomHud.VitalsSent > 0 && BottomHud.VitalsReceived > 0, "bottom bars: vitals sent " + BottomHud.VitalsSent + " and received " + BottomHud.VitalsReceived);
             try
@@ -2253,8 +2277,8 @@ namespace OriCoop
         // screenshot of each side is kept next to the result file (net-roles-host.png / net-roles-guest.png).
         static IEnumerator RoleTag(TestHarness h, bool host)
         {
-            // In the game's language: "P2 · 伙伴" / "P2 - Partner" (host side), "P1 · 主机" / "P1 - Host" (guest side).
-            string want = L10n.F("roles.label", Roles.Tag(host ? 2 : 1), L10n.T(host ? "roles.partner" : "roles.host"));
+            string roleKey = NetPlay.UsesCServer ? (host ? "roles.client.cs" : "roles.host.cs") : (host ? "roles.client" : "roles.host");
+            string want = L10n.F("roles.label", Roles.Tag(host ? 2 : 1), L10n.T(roleKey));
             float by = Time.realtimeSinceStartup + 3f;
             while (!P2Hud.Visible && Time.realtimeSinceStartup < by) yield return null;
             h.Check(Roles.Mine == (host ? 1 : 2) && Roles.Partner == (host ? 2 : 1), "net roles: this PC is " + (host ? "P1 (host)" : "P2 (guest)"));
@@ -2376,12 +2400,14 @@ namespace OriCoop
             s_goAt = s_pickupAt = s_collectedAt = s_worldGoAt = 0; s_threeEnded = s_leaveReleased = s_done = false;
             NetPlay.TestSignalReceived += ReadTestSignal;
             NetPlay.SessionEnded += ThreeSessionEnded;
+            if (ClientCount == 3) NetHud.ToastShown += RecordOwnerNotice;
             if (ClientCount == 3 || ClientCount == 4 || Environment.GetEnvironmentVariable("ORICOOP_NET_LOCAL_PLAYERS") == "1") NetPlay.On(MsgThreeTest, ReadThree);
             try { yield return Safely(h, ClientCount == 4 ? "4P suite" : "net suite", RunCore(h)); }
             finally
             {
                 NetPlay.TestSignalReceived -= ReadTestSignal;
                 NetPlay.SessionEnded -= ThreeSessionEnded;
+                NetHud.ToastShown -= RecordOwnerNotice;
                 Stop();
             }
         }

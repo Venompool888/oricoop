@@ -33,7 +33,8 @@ namespace OriCoop
             public int Seat;
             public GameObject Root;
             public TransparencyAnimator Fade;
-            public GameObject Label;   // the game's hint text (letters and digits), placed beside the copy each frame
+            public GameObject Label;
+            public GameText Tag;
             public TextBox LabelBox;
             public Vector3 LabelScale = Vector3.one;
             public float LabelAlpha = -1f;
@@ -207,7 +208,7 @@ namespace OriCoop
         public static int Count { get { int n = 0; foreach (Copy c in s_copies.Values) if (c.Root != null) n++; return n; } }
         public static bool Visible(int seat) { Copy c; return s_copies.TryGetValue(seat, out c) && c.Root != null && c.Root.activeSelf && c.Opacity > 0.01f; }
         public static float Opacity(int seat) { Copy c; return s_copies.TryGetValue(seat, out c) && c.Root != null && c.Root.activeSelf ? c.Opacity : 0f; }
-        public static string LabelText(int seat) { Copy c; return s_copies.TryGetValue(seat, out c) && c.Label != null ? Roles.Tag(seat) : ""; }
+        public static string LabelText(int seat) { Copy c; return s_copies.TryGetValue(seat, out c) && c.Label != null ? c.Tag.Text : ""; }
 
         // Screen rectangle (pixels, origin bottom-left) the copy takes; false when it has none.
         public static bool ScreenRect(int seat, out Rect r)
@@ -305,21 +306,24 @@ namespace OriCoop
             return found != null ? found.gameObject : null;
         }
 
-        // "P2" in the game's own text font (its hint message, as the tags over the teammates' heads use; the orb's
-        // counter font has digits only), in the player's colour, above the orb. Driven like P2Hud's tag: its own
-        // object, colour and opacity set on the TextBox (under the copy's fade it lost its colour and was not drawn).
+        static string BarTag(int seat)
+        {
+            return NetPlay.UsesCServer ? L10n.F("hud.role", Roles.Tag(seat), Roles.Word(seat)) : Roles.Tag(seat);
+        }
+
+        // The status strip's own counter font has no letters, so use a hint text beside the strip.
         static void MakeLabel(Copy c, Transform parent)
         {
             GameText text = new GameText("OriCoop_P" + c.Seat + "Label") { NoBacking = true };
             if (!text.Ok) return;
-            text.SetText(Roles.Tag(c.Seat));
+            text.SetText(BarTag(c.Seat));
             MessageBox box = text.Go.GetComponentInChildren<MessageBox>(true);
             if (box == null || box.TextBox == null) { text.Destroy(); return; }
             text.Go.transform.SetParent(parent, true);
             box.TextBox.horizontalAnchor = HorizontalAnchorMode.Center;
             box.TextBox.verticalAnchor = VerticalAnchorMode.Middle;
             box.TextBox.alignment = AlignmentMode.Center;
-            c.Label = text.Go; c.LabelBox = box.TextBox; c.LabelScale = text.Go.transform.localScale;
+            c.Label = text.Go; c.Tag = text; c.LabelBox = box.TextBox; c.LabelScale = text.Go.transform.localScale;
         }
 
         static void ShowLabel(Copy c, float a)
@@ -327,7 +331,10 @@ namespace OriCoop
             if (c.Label == null || c.LabelBox == null) return;
             bool on = a > 0.01f;
             if (c.Label.activeSelf != on) { c.Label.SetActive(on); c.LabelAlpha = -1f; }
-            if (!on || Mathf.Abs(c.LabelAlpha - a) < 0.004f) return;
+            if (!on) return;
+            string tag = BarTag(c.Seat);
+            if (c.Tag.Text != tag) { c.Tag.SetText(tag); c.LabelAlpha = -1f; }
+            if (Mathf.Abs(c.LabelAlpha - a) < 0.004f) return;
             c.LabelAlpha = a;
             Color color = Roles.ColorOf(c.Seat);
             color.a = a;
@@ -430,6 +437,7 @@ namespace OriCoop
             if (gui != null) lt.rotation = gui.transform.rotation;
             float want = LabelScreenHeight * screenWorldH;
             float k = want / text.height;
+            if (NetPlay.UsesCServer) k = Mathf.Min(k, StatusBarLayout.LabelWidth * screenWorldH * gui.aspect / text.width);
             if (!Finite(k) || !Finite(want)) return;
             lt.localScale *= Mathf.Clamp(k, 0.25f, 4f);
             if (!LabelBounds(c, out text)) return;

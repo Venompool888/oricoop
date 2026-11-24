@@ -456,7 +456,11 @@ namespace OriCoop
             if (Players.Remotes.Count > 1) CoopCamera.ApplyGroup(P2Context.P1, LeashOverride <= 0f && !m_parked, GroupLeash);
             else CoopCamera.Apply(P2Context.P1, P2Context.P2, LeashOverride <= 0f && !Revive.AnyDowned);
         }
-        void CheckLocalVisual() { P2Extras.RetryReturn(Players.First); VisualInvariants.Check(P2Context.P1, P2Context.P2); }
+        void CheckLocalVisual()
+        {
+            foreach (Puppet puppet in Players.Remotes) P2Extras.RetryReturn(puppet);
+            VisualInvariants.Check(P2Context.P1, P2Context.P2);
+        }
         void UpdateLocalHud() { P2Hud.Update(P2Context.P2); }
         void UpdateLateCamera() { UpdateCamera(P2Context.P1, P2Context.P2); }
 
@@ -487,12 +491,16 @@ namespace OriCoop
         internal void DoGUI()
         {
             SubsystemGuard.Run("OnlineRoomScreen.Draw", s_roomDraw);
-            if (OnlineRoomScreen.Visible) return;
-            SubsystemGuard.Run("CoopMenu.Draw", s_menuDraw);
-            if (CoopMenu.IsOpen) return;
+            if (!OnlineRoomScreen.Visible) SubsystemGuard.Run("CoopMenu.Draw", s_menuDraw);
+            if (OnlineRoomScreen.Visible || CoopMenu.IsOpen)
+            {
+                if (NetPlay.UsesCServer) SubsystemGuard.Run("NetHud.Draw", s_netHudDraw);
+                return;
+            }
             SubsystemGuard.Run("NetPlay.DrawGUI", s_netDraw);
+            if (NetPlay.UsesCServer) SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
             SubsystemGuard.Run("NetHud.Draw", s_netHudDraw);
-            SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
+            if (!NetPlay.UsesCServer) SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
             if ((L10nProbe.On && TestJoinHint) || (P2Context.P2 == null && !TestHarness.Enabled && PlayMode.Current == PlayMode.Coop)) SubsystemGuard.Run("Plugin.DrawJoinHint", m_joinHint);
             SubsystemGuard.Run("ControlsGuideHud.Draw", s_controlsGuideDraw);
         }
