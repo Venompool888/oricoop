@@ -926,6 +926,12 @@ namespace OriCoop
             LockPlayerInputAction storyLock = go.AddComponent<LockPlayerInputAction>();
             storyLock.DurationPlayerCantMove = 1.2f; sequence.Actions.Add(storyLock);
             WaitAction ending = go.AddComponent<WaitAction>(); ending.Duration = 1.5f; sequence.Actions.Add(ending);
+            ActionSequence puzzle = go.AddComponent<ActionSequence>();
+            puzzle.MoonGuid = new MoonGuid(sequence.MoonGuid); puzzle.MoonGuid.D++;
+            LetterboxAction show = go.AddComponent<LetterboxAction>(); show.ShowLetterboxes = true;
+            LetterboxAction hide = go.AddComponent<LetterboxAction>(); hide.ShowLetterboxes = false;
+            WaitAction pause = go.AddComponent<WaitAction>(); pause.Duration = 0.3f;
+            puzzle.Actions.Add(show); puzzle.Actions.Add(pause); puzzle.Actions.Add(hide);
             try
             {
                 Revive.Enabled = true;
@@ -942,6 +948,15 @@ namespace OriCoop
                 h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 down before the performance");
                 yield return Wait(0.8f);   // each device's normal Vitals sender publishes the setup
                 yield return barrier(1);
+                int starts = seat == 1 ? StorySync.StartsSent : StorySync.StartsMirrored;
+                if (seat == 1) puzzle.Perform(null);
+                end = Now + 8f;
+                while (((seat == 1 ? StorySync.StartsSent : StorySync.StartsMirrored) == starts || StorySync.StoryActive)
+                    && Now < end) yield return null;
+                yield return barrier(3);
+                h.Check((seat == 1 ? StorySync.StartsSent : StorySync.StartsMirrored) == starts + 1 && !StorySync.StoryActive,
+                    "story revive: letterbox-only puzzle finished on each seat");
+                h.Check(Revive.DownedAtSeat(2) != null, "story revive: a letterbox-only puzzle leaves P2 down");
                 if (seat == 1) sequence.Perform(null);
                 yield return Wait(0.2f);
                 h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 stays down during the performance");
