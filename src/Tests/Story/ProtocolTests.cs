@@ -77,8 +77,6 @@ static partial class StoryTests
     {
         public readonly StoryLedger<Run> Ledger = new StoryLedger<Run>();
         public readonly Bus Bus;
-        public readonly SpiritWellActivations Wells = new SpiritWellActivations();
-        public bool LocallyPlayed;
         readonly Clock clock;
         public StoryPeer(Bus bus, Clock c)
         {
@@ -93,11 +91,8 @@ static partial class StoryTests
         void StartReceived(BinaryReader r)
         {
             byte[] bytes = Bytes(r); StoryStart data = StoryWire.ReadStart(r);
-            Run run = new Run { Sender = Bus.Sender, Token = data.Token, Key = data.Path, Classified = data.Classified,
-                WellActivation = data.WellActivation };
-            if (!StoryLedger<Run>.MirrorInsideWindow(LocallyPlayed, false, run.WellActivation)
-                || !Ledger.CanReceive(run, Bus.IsHost, clock.RealTime)) return;
-            if (run.WellActivation) Wells.TryActivate(run.Key);
+            Run run = new Run { Sender = Bus.Sender, Token = data.Token, Key = data.Path, Classified = data.Classified };
+            if (data.WellActivation || !Ledger.CanReceive(run, Bus.IsHost, clock.RealTime)) return;
             if (!Bus.IsHost)
             {
                 List<ulong> superseded = new List<ulong>();
@@ -121,7 +116,6 @@ static partial class StoryTests
             if (Bus.IsHost) Bus.Relay(Bus.Sender, 52, bytes);
             Run run; if (Ledger.Remote.TryGetValue(key, out run)) Ledger.Skip(run);
         }
-        public ulong StartWell(string key) { return Wells.TryActivate(key) ? Start(key, true) : 0; }
         public ulong Start(string key, bool wellActivation = false)
         {
             Run run = new Run { Key = key, Classified = true };
@@ -212,16 +206,11 @@ static partial class StoryTests
             Equal(true, p4.Ledger.Remote.ContainsKey(key)); Equal(3, p4.Ledger.Remote[key].Sender);
             p3.Skip(key); Equal(true, p4.Ledger.Remote[key].Skipped); p3.End(key); Equal(0, p4.Ledger.Remote.Count);
         });
-        Check("spirit well: a guest's first activation overrides the host's local-only state and reaches the other guest", delegate {
+        Check("spirit well: a legacy activation story from a guest is neither mirrored nor forwarded", delegate {
             Network n = new Network(); Clock c = new Clock(); StoryPeer host = Peer(n, c, 1), saver = Peer(n, c, 2), other = Peer(n, c, 3);
-            host.LocallyPlayed = other.LocallyPlayed = true;
-            host.Wells.TryActivate("well");
-            ulong key = saver.StartWell("well");
-            Equal(true, host.Ledger.Remote[key].WellActivation);
-            Equal(true, other.Ledger.Remote[key].WellActivation);
-            Equal(2, other.Ledger.Remote[key].Sender);
-            saver.End(key); c.RealTime = 4f;
-            Equal(0UL, other.StartWell("well"));
+            ulong key = saver.Start("well", true);
+            Equal(false, host.Ledger.Remote.ContainsKey(key));
+            Equal(false, other.Ledger.Remote.ContainsKey(key));
         });
         Check("spirit well: a late joiner learns opened wells without losing a newer activation", delegate {
             SpiritWellActivations host = new SpiritWellActivations(), guest = new SpiritWellActivations();
@@ -229,6 +218,31 @@ static partial class StoryTests
             guest.Merge(Reader(Wire(host.Write)));
             Equal(false, guest.TryActivate("first"));
             Equal(false, guest.TryActivate("second"));
+        });
+        Check("story revive: a legacy end has no grant; one snapshot restores multiple recipients", delegate {
+            Equal(null, StoryRecovery.Read(Reader(new byte[0])));
+            StoryRecovery data = new StoryRecovery();
+            data.Add(new StoryPoint(20f, 0f, 0f), 4f, 0f);
+            data.Add(new StoryPoint(-4f, 3f, 0f), 12f, 1f);
+            data.Add(new StoryPoint(3f, 5f, 0f), 20f, 3f);
+            byte[] tail = Wire(data.Write);
+            Equal(1 + 3 * 20, tail.Length);   // net13 count plus five floats per survivor
+            data = StoryRecovery.Read(Reader(tail));
+            float health, energy;
+            StoryPoint spot = data.For(new StoryPoint(-5f, 1f, 0f), 20, 2, out health, out energy);
+            Equal(-4f, spot.X); Equal(12f, health); Equal(1f, energy);
+            spot = data.For(new StoryPoint(0f, 5f, 0f), 8, 0, out health, out energy);
+            Equal(3f, spot.X); Equal(8f, health); Equal(0f, energy);
+        });
+        Check("story revive: round half cells up and grant one health cell even at low health", delegate {
+            StoryRecovery data = new StoryRecovery();
+            data.Add(new StoryPoint(), 6f, 0.5f);
+            float health, energy;
+            data.For(new StoryPoint(), 12, 2, out health, out energy);
+            Equal(8f, health); Equal(1f, energy);
+            data = new StoryRecovery(); data.Add(new StoryPoint(), 0.5f, 0.1f);
+            data.For(new StoryPoint(), 12, 2, out health, out energy);
+            Equal(4f, health); Equal(0f, energy);
         });
         // T-066: a story the other PC started that this PC cannot find is retried every 0.1 s for 2 s; each failed try
         // used to load the scenes around it again (20 loads). The scene load is the expensive part: few, spread out.

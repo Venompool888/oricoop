@@ -565,6 +565,13 @@ namespace OriCoop
             VitalsSent++;
         }
 
+        internal static bool RemoteVitals(int seat, out VitalsSample sample)
+        {
+            VitalsModel model;
+            if (s_net.TryGetValue(seat, out model) && model.Have) { sample = model.Now; return true; }
+            sample = new VitalsSample(); return false;
+        }
+
         internal static bool RemoteDownOrDead(int seat)
         {
             VitalsModel model;

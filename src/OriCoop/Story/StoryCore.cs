@@ -21,6 +21,58 @@ namespace OriCoop.Story
         }
     }
 
+    // T-246. One end-of-story sample serves every downed seat, even if they revive at different times.
+    internal sealed class StoryRecovery
+    {
+        struct Survivor { public StoryPoint Position; public float Health, Energy; }
+        readonly List<Survivor> survivors = new List<Survivor>(4);
+        public int Count { get { return survivors.Count; } }
+        public void Add(StoryPoint position, float health, float energy)
+        {
+            if (Count >= 4 || !Finite(position.X) || !Finite(position.Y) || !Finite(position.Z)
+                || !Finite(health) || health <= 0 || !Finite(energy) || energy < 0)
+                throw new InvalidDataException("invalid survivor in StoryEnd");
+            survivors.Add(new Survivor { Position = position, Health = health, Energy = energy });
+        }
+        static bool Finite(float value) { return !float.IsNaN(value) && !float.IsInfinity(value); }
+
+        public StoryPoint For(StoryPoint marker, float maxHealth, float maxEnergy, out float health, out float energy)
+        {
+            double totalHealth = 0, totalEnergy = 0, nearest = double.PositiveInfinity;
+            StoryPoint spot = marker;
+            foreach (Survivor s in survivors)
+            {
+                totalHealth += s.Health; totalEnergy += s.Energy;
+                double dx = s.Position.X - marker.X, dy = s.Position.Y - marker.Y;
+                double distance = dx * dx + dy * dy;
+                if (distance < nearest) { nearest = distance; spot = s.Position; }
+            }
+            health = Math.Min(maxHealth, Math.Max(4f, 4f * (float)Math.Floor(totalHealth / Count / 4 + 0.5)));
+            energy = Math.Min(maxEnergy, (float)Math.Floor(totalEnergy / Count + 0.5));
+            return spot;
+        }
+        public void Write(BinaryWriter w)
+        {
+            w.Write((byte)Count);
+            foreach (Survivor s in survivors)
+            {
+                w.Write(s.Position.X); w.Write(s.Position.Y); w.Write(s.Position.Z);
+                w.Write(s.Health); w.Write(s.Energy);
+            }
+        }
+        // A legacy end, a cancelled story, or a story with no rescue has only its original token.
+        public static StoryRecovery Read(BinaryReader r)
+        {
+            if (r.BaseStream.Position == r.BaseStream.Length) return null;
+            int count = r.ReadByte();
+            if (count < 1 || count > 4) throw new InvalidDataException("invalid survivor count in StoryEnd");
+            StoryRecovery result = new StoryRecovery();
+            for (int i = 0; i < count; i++)
+                result.Add(new StoryPoint(r.ReadSingle(), r.ReadSingle(), r.ReadSingle()), r.ReadSingle(), r.ReadSingle());
+            return result;
+        }
+    }
+
     internal struct StoryPoint
     {
         public float X, Y, Z;
@@ -253,7 +305,7 @@ namespace OriCoop.Story
         public int Sender;
         public float Began, NextResolve, EndAt = -1f, NextSceneLoad;
         public int SceneLoads;
-        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true, WellActivation;
+        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
         public bool TripWait;   // T-185: its mirror start waits for this PC's own scene trip (SceneTripRule)
         public bool StartSent;   // T-212 (4): its start went out to the partners, so its end is owed to them
         public bool EndedEarly;  // T-212 (5): the sender's end arrived before the mirror could start here
@@ -432,8 +484,8 @@ namespace OriCoop.Story
         // It is mirrored unless this PC plays that very story itself: playedByOwnReplay (its sequence / controller was
         // started by this PC's own lever or pedestal replay) or startedHereInWindow (natively here, inside the window,
         // moments ago). Before, the window dropped every start.
-        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow, bool wellActivation = false)
-        { return wellActivation || !playedByOwnReplay && !startedHereInWindow; }
+        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow)
+        { return !playedByOwnReplay && !startedHereInWindow; }
         // remaining: mirrored stories still tracked after the ended one was removed.
         public static StoryCleanup Cleanup(int remaining) { return remaining <= 0 ? StoryCleanup.All : StoryCleanup.StoryOnly; }
         public static bool RemoteFinished(T item, bool running, float now)

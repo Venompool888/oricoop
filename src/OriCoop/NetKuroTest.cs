@@ -275,8 +275,6 @@ namespace OriCoop
                 // T-177: the bot keeps answering like a player while the stories run (04 waits for the world-map
                 // objective to be pressed through before it stops the character animation and unlocks input).
                 float over = Now + 60f;
-                // T-183: real stories only (StorySync.RealStories); the tree's plants keep putting shootProjectile
-                // candidates into Pending, which StoryActive also counts.
                 while (StorySync.RealStories > 0 && Now < over) { Answer(); yield return null; }
                 NetTestHarness.BotButtons = 0;
                 // T-177: when StorySync says every story is over, the spirit-tree sequences really are over here. The

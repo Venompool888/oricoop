@@ -785,13 +785,88 @@ namespace OriCoop
                 if (__instance.MoonGuid == WellId) s_wellCalls++;
             }
         }
+        static IEnumerator LocalPresentations(TestHarness h, ActionSequence projectile)
+        {
+            bool host = NetPlay.IsHost;
+            GameObject objectiveRoot = new GameObject("*objectiveSetup");
+            GameObject menuButton = new GameObject("*actionSequence");
+            menuButton.transform.parent = UI.Menu.transform;
+            GameObject hint = new GameObject("objectiveSetupAction");
+            hint.transform.parent = objectiveRoot.transform;
+            ActionSequence objective = hint.AddComponent<ActionSequence>();
+            objective.MoonGuid = new MoonGuid(OrdinaryId); objective.MoonGuid.D++;
+            ActionSequence menu = menuButton.AddComponent<ActionSequence>();
+            menu.MoonGuid = new MoonGuid(OrdinaryId); menu.MoonGuid.D += 2;
+            foreach (ActionSequence sequence in new ActionSequence[] { objective, menu })
+            {
+                LockPlayerInputAction action = sequence.gameObject.AddComponent<LockPlayerInputAction>();
+                action.DurationPlayerCantMove = 0.15f; sequence.Actions.Add(action);
+            }
+            // Keep the native return action behind a wait so the test can observe its start, then
+            // stop the sequence before it actually tears down the shared test session.
+            WaitAction confirm = menuButton.AddComponent<WaitAction>(); confirm.Duration = 60f;
+            menu.Actions.Add(confirm); menu.Actions.Add(menuButton.AddComponent<ReturnToTitleScreenAction>());
+            PlatformMovement movement = Own.PlatformBehaviour.PlatformMovement;
+            bool suspended = movement.IsSuspended;
+            Vector3 start = Own.Position;
+            GameObject cameraObject = new GameObject("S4 camera pan");
+            ActionSequence pan = cameraObject.AddComponent<ActionSequence>();
+            pan.MoonGuid = new MoonGuid(OrdinaryId); pan.MoonGuid.D += 3;
+            MoveCameraAction camera = cameraObject.AddComponent<MoveCameraAction>();
+            camera.Target = Own.gameObject; pan.Actions.Add(camera);
+            try
+            {
+                h.Check(!StorySync.IsStorySequence(objective) && !StorySync.IsTakeoverAction(objective),
+                    "S4 local objective setup cannot start a story or an all-player gate");
+                h.Check(!StorySync.IsStorySequence(menu), "S4 pause menu action stays local even with an input lock");
+                if (!host)
+                {
+                    movement.IsSuspended = true;
+                    Vector3 away = NetPlay.LatestRemotePos + Vector3.right * 20f;
+                    if (!Core.Scenes.Manager.IsInsideASceneBoundary(away + Vector3.up * 0.5f))
+                        away = NetPlay.LatestRemotePos - Vector3.right * 20f;
+                    Plugin.Teleport(Own, away);
+                }
+                int ordinaryCalls = s_ordinaryCalls, sent = StorySync.StartsSent, mirrored = StorySync.StartsMirrored;
+                Vector3 before = Own.Position;
+                yield return Barrier(h, 42);
+                if (host)
+                {
+                    projectile.Perform(null);
+                    // A separate local script locks the player just as the plant starts firing (playtest 6).
+                    objective.Perform(null);
+                    menu.Perform(null);
+                }
+                yield return Wait(0.8f);
+                h.Check(s_ordinaryCalls - ordinaryCalls == (host ? 1 : 0), "S4 projectile sequence runs only on the triggering PC");
+                h.Check(StorySync.StartsSent == sent && StorySync.StartsMirrored == mirrored && !StorySync.Watching,
+                    "S4 firing, objective setup and pause menu actions send and mirror no story");
+                if (!host) h.Check(Vector3.Distance(Own.Position, before) < 0.5f,
+                    "S4 teammate stays in place while the other player fires a projectile and uses the menu");
+
+                yield return Barrier(h, 43);
+                mirrored = StorySync.StartsMirrored;
+                if (host) pan.Perform(null);
+                float end = Now + 3f;
+                while (!host && StorySync.StartsMirrored == mirrored && Now < end) yield return null;
+                if (!host) h.Check(StorySync.StartsMirrored == mirrored + 1 && Vector3.Distance(Own.Position, before) < 0.5f,
+                    "S4 camera-only sequence mirrors without moving the teammate");
+                yield return Barrier(h, 44);
+            }
+            finally
+            {
+                if (!host) { movement.IsSuspended = suspended; Plugin.Teleport(Own, start); }
+                if (menu.IsRunning) menu.Stop();
+                UnityEngine.Object.Destroy(menuButton); UnityEngine.Object.Destroy(objectiveRoot); UnityEngine.Object.Destroy(cameraObject);
+            }
+        }
         static IEnumerator Story(TestHarness h)
         {
             GameObject go = new GameObject("OriCoop S4 harmless sequence");
             s_fixture = go.AddComponent<ActionSequence>(); s_fixture.MoonGuid = new MoonGuid(FixtureId);
             GameObject ordinaryObject = new GameObject("OriCoop S4 ordinary level sequence");
             ActionSequence ordinary = ordinaryObject.AddComponent<ActionSequence>(); ordinary.MoonGuid = new MoonGuid(OrdinaryId);
-            ordinary.Actions.Add(ordinaryObject.AddComponent<NoStoryAction>());
+            ordinary.Actions.Add(ordinaryObject.AddComponent<SpawnProjectileAction>());
             GameObject child = new GameObject("S4 nested sequence"); child.transform.parent = go.transform;
             ActionSequence nested = child.AddComponent<ActionSequence>();
             nested.MoonGuid = new MoonGuid(FixtureId); nested.MoonGuid.D++;
@@ -819,13 +894,8 @@ namespace OriCoop
                 UberShaderAPI.SetColorCustom(missingMaterial, Color.white, "_Color", false);
                 h.Check(SessionRules.GuardedShaderWrites == guarded + 2, "S4 null renderer and null material writes guarded");
                 h.Note("S4 story uses runtime nested sequence with 0.4s input lock guid=" + FixtureId + "; ordinary=" + OrdinaryId);
-                int ordinaryCalls = s_ordinaryCalls;
-                yield return Wait(0.6f); yield return Barrier(h, 42);
-                if (NetPlay.IsHost) ordinary.Perform(null);
-                yield return Wait(0.8f);
-                h.Note("S4 ordinary performDelta=" + (s_ordinaryCalls - ordinaryCalls) + " watching=" + StorySync.Watching);
-                h.Check(s_ordinaryCalls - ordinaryCalls == (NetPlay.IsHost ? 1 : 0), "S4 ordinary sequence is not mirrored");
-                h.Check(!StorySync.Watching, "S4 ordinary sequence cannot enter watch state");
+                yield return Wait(0.6f);
+                yield return LocalPresentations(h, ordinary);
                 if (!NetPlay.IsHost) Plugin.Teleport(Own, NetPlay.LatestRemotePos + Vector3.right * 20f);
                 yield return Wait(0.2f);
                 int calls = s_performs, leaves = s_leafCalls, immediate = s_immediateCalls, laterCalls = s_delayedCalls;
@@ -845,6 +915,73 @@ namespace OriCoop
             }
             finally { UnityEngine.Object.Destroy(go); UnityEngine.Object.Destroy(ordinaryObject); s_fixture = null; }
         }
+        internal static IEnumerator StoryRevive(TestHarness h, int seats, Func<int, IEnumerator> barrier)
+        {
+            bool revive = Revive.Enabled, immortal = Own.Mortality.DamageReciever.IsImmortal;
+            float previousHealth = Own.Mortality.Health.Amount, previousEnergy = Own.Energy.Current;
+            int seat = Players.LocalSeat;
+            GameObject go = new GameObject("T-246 cutscene");
+            ActionSequence sequence = go.AddComponent<ActionSequence>();
+            sequence.MoonGuid = new MoonGuid(FixtureId); sequence.MoonGuid.D += 246;
+            LockPlayerInputAction storyLock = go.AddComponent<LockPlayerInputAction>();
+            storyLock.DurationPlayerCantMove = 1.2f; sequence.Actions.Add(storyLock);
+            WaitAction ending = go.AddComponent<WaitAction>(); ending.Duration = 1.5f; sequence.Actions.Add(ending);
+            try
+            {
+                Revive.Enabled = true;
+                Own.Mortality.DamageReciever.IsImmortal = true;
+                if (seat != 2)
+                {
+                    Own.Mortality.Health.SetAmount(seat == 1 ? 4f : seat == 3 ? 8f : 12f);
+                    Own.Energy.Current = seats == 2 || seat != 1 ? 1f : 0f;
+                }
+                yield return barrier(0);
+                if (seat == 2) { Own.Energy.Current = 0f; Kill(); }
+                float end = Now + 6f;
+                while (Revive.DownedAtSeat(2) == null && Now < end) yield return null;
+                h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 down before the performance");
+                yield return Wait(0.8f);   // each device's normal Vitals sender publishes the setup
+                yield return barrier(1);
+                if (seat == 1) sequence.Perform(null);
+                yield return Wait(0.2f);
+                h.Check(Revive.DownedAtSeat(2) != null, "story revive: P2 stays down during the performance");
+                if (seat == 1)
+                {
+                    end = Now + 4f;
+                    while (!ending.IsPerforming && Now < end) yield return null;
+                    yield return Wait(0.4f);
+                    h.Check(ending.IsPerforming && StorySync.StoryActive && Revive.DownedAtSeat(2) != null,
+                        "story revive: the unlocked native ending finishes before recovery");
+                }
+                end = Now + 8f;
+                while (Revive.DownedAtSeat(2) != null && Now < end) yield return null;
+                h.Check(Revive.DownedAtSeat(2) == null, "story revive: P2 up after the performance on every seat");
+                if (seat == 2)
+                {
+                    float nearest = float.PositiveInfinity;
+                    for (int survivor = 1; survivor <= seats; survivor++)
+                    {
+                        Vector3 at;
+                        if (survivor != 2 && NetPlay.RemotePos(survivor, out at))
+                            nearest = Mathf.Min(nearest, Vector3.Distance(Own.Position, at));
+                    }
+                    h.Check(nearest < 3f, "story revive: P2 arrives beside a survivor (distance " + F(nearest) + ")");
+                    float expectedHealth = seats == 2 ? 4f : 8f;
+                    h.Check(Own.Mortality.Health.Amount == expectedHealth && Own.Energy.Current == 1f,
+                        "story revive: P2 receives the living players' average health and energy (got "
+                        + F(Own.Mortality.Health.Amount) + "/" + F(Own.Energy.Current) + ")");
+                }
+                yield return barrier(2);
+            }
+            finally
+            {
+                Revive.Enabled = revive;
+                Own.Mortality.DamageReciever.IsImmortal = immortal;
+                Own.Mortality.Health.SetAmount(previousHealth);
+                Own.Energy.Current = previousEnergy;
+                UnityEngine.Object.Destroy(go);
+            }
+        }
         static IEnumerator SpiritWell(TestHarness h)
         {
             Vector3 start = Own.Position;
@@ -862,12 +999,15 @@ namespace OriCoop
             bool host = NetPlay.IsHost;
             PlatformMovement guestMovement = host ? null : Own.PlatformBehaviour.PlatformMovement;
             bool wasSuspended = guestMovement != null && guestMovement.IsSuspended;
+            List<GameMapTeleporter> teleporters = TeleporterController.Instance.Teleporters;
+            GameMapTeleporter mapWell = teleporters[teleporters.Count - 1];
+            bool wasActivated = mapWell.Activated;
             try
             {
                 AccessTools.Field(playType, "Animation").SetValue(play, Own.Abilities.Idle.IdleAnimation);
-                // Opening the teleport menu marks the well used without performing OnOpenedAction.
-                used.SetValue(well, true);
-                if (!host) { StorySync.EnterLocalOnly(opened); StorySync.ExitLocalOnly(); }
+                // The game registers native pedestals in the scene save registry. Exercise its real world replication.
+                SaveSceneManager.Master.AddSaveObject(well, new MoonGuid(WellId));
+                mapWell.Activated = false;
                 go.transform.position = host ? start : NetPlay.LatestRemotePos;
                 Vector3 away = go.transform.position + Vector3.right * 20f;
                 if (!host)
@@ -878,39 +1018,43 @@ namespace OriCoop
                     guestMovement.IsSuspended = true;
                     Plugin.Teleport(Own, away);
                 }
-                int plays = s_wellCalls;
+                yield return Wait(1.5f);   // let both world scans establish the unopened baseline
                 yield return Barrier(h, 71);
-                if (!host) h.Check(Vector3.Distance(Own.Position, go.transform.position) > 12f, "S4 well: guest starts outside gather range");
-                if (host) save.Invoke(well, null);
-                float end = Now + 4f;
-                while (s_wellCalls == plays && Now < end) yield return null;
-                h.Check(s_wellCalls == plays + 1, "S4 well: first activation plays once on each PC despite the used flag");
-                if (!host) h.Check(Vector3.Distance(Own.Position, go.transform.position) < 4f, "S4 well: first activation gathers the guest");
-                // The generic story dedupe lasts three seconds; a re-save must stay local even after it expires.
-                yield return Wait(3.3f);
-                if (!host) Plugin.Teleport(Own, away);
-                yield return Barrier(h, 72);
-                Vector3 before = Own.Position;
-                int restores = TestHarness.RestoreCheckpointCalls;
-                plays = s_wellCalls;
-                int sent = StorySync.StartsSent, anims = CutsceneAnimSync.Sent, ownPlays = CutsceneAnimSync.OwnPlays;
-                if (!host) h.Check(Mathf.Abs(before.x - go.transform.position.x) > 12f, "S4 well: guest is away again before re-save");
-                if (host) save.Invoke(well, null);
-                yield return TestClock.WaitGame(0.8f);
-                yield return Barrier(h, 73);
-                h.Check(s_wellCalls == plays + (host ? 1 : 0), "S4 well: re-save plays only on the saver");
-                h.Check(StorySync.StartsSent == sent && CutsceneAnimSync.Sent == anims, "S4 well: re-save broadcasts no story or animation");
-                if (!host)
+                h.Check(!(bool)used.GetValue(well) && !mapWell.Activated, "S4 well: starts unopened");
+                for (int visit = 0; visit < 2; visit++)
                 {
-                    float moved = Own != null ? Vector3.Distance(Own.Position, before) : float.PositiveInfinity;
-                    int restored = TestHarness.RestoreCheckpointCalls - restores, played = CutsceneAnimSync.OwnPlays - ownPlays;
-                    h.Note("S4 well: guest re-save movement=" + F(moved) + " checkpoint restores=" + restored + " animations=" + played);
-                    h.Check(Alive && restored == 0 && moved < 0.5f && played == 0,
-                        "S4 well: re-save does not teleport or animate the guest");
+                    string label = visit == 0 ? "S4 well: first activation " : "S4 well: re-save ";
+                    Vector3 before = Own.Position;
+                    int restores = TestHarness.RestoreCheckpointCalls, plays = s_wellCalls;
+                    int sent = StorySync.StartsSent, anims = CutsceneAnimSync.Sent, ownPlays = CutsceneAnimSync.OwnPlays;
+                    if (!host) h.Check(Vector3.Distance(before, go.transform.position) > 12f, label + "starts outside gather range");
+                    yield return Barrier(h, 72 + 2 * visit);
+                    if (host)
+                    {
+                        TeleporterController.Activate(mapWell.Identifier);   // native SavePedestal.Highlight on approach
+                        save.Invoke(well, null);
+                    }
+                    float end = Now + 4f;
+                    while ((!(bool)used.GetValue(well) || !mapWell.Activated) && Now < end) yield return null;
+                    yield return TestClock.WaitGame(0.8f);  // include the opening's delayed animation
+                    yield return Barrier(h, 73 + 2 * visit);
+                    h.Check((bool)used.GetValue(well) && mapWell.Activated, label + "activates the native pedestal and map destination on both PCs");
+                    h.Check(s_wellCalls == plays + (host ? 1 : 0), label + "plays only on the saver");
+                    h.Check(StorySync.StartsSent == sent && CutsceneAnimSync.Sent == anims, label + "broadcasts no story or animation");
+                    if (!host)
+                    {
+                        float moved = Own != null ? Vector3.Distance(Own.Position, before) : float.PositiveInfinity;
+                        int restored = TestHarness.RestoreCheckpointCalls - restores, played = CutsceneAnimSync.OwnPlays - ownPlays;
+                        h.Note(label + "guest movement=" + F(moved) + " checkpoint restores=" + restored + " animations=" + played);
+                        h.Check(Alive && restored == 0 && moved < 0.5f && played == 0, label + "does not teleport or animate the guest");
+                    }
+                    if (visit == 0) yield return Wait(3.3f);   // beyond the generic story dedupe
                 }
             }
             finally
             {
+                mapWell.Activated = wasActivated;
+                if (SaveSceneManager.Master != null) SaveSceneManager.Master.UnregisterGameObject(go);
                 UnityEngine.Object.Destroy(go);
                 if (guestMovement != null) guestMovement.IsSuspended = wasSuspended;
                 if (Own != null) Plugin.Teleport(Own, start);
@@ -1011,6 +1155,7 @@ namespace OriCoop
                 yield return Step(h, 30, HostDeath(h));
                 yield return Step(h, 40, Story(h));
                 yield return Step(h, 70, SpiritWell(h));
+                yield return Step(h, 80, StoryRevive(h, 2, n => Barrier(h, 81 + n)));
                 yield return Step(h, 50, Reconnect(h));
             }
             finally
