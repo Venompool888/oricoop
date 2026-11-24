@@ -149,6 +149,29 @@ namespace OriCoop.World
             return visible;
         }
 
+        // One of my batches came back inside a full snapshot (ordered at or before its watermark) after Reset had shown it
+        // on top of that snapshot. A partner may have changed the same item after it, also inside the snapshot: my older
+        // value must not stay on top. Items still showing that batch's value show the agreed value again (Confirmed + my
+        // later batches); an item changed here since is left alone, and so is one that only grows. Call it after
+        // Acknowledge(batch). Returns the items to show (null = nothing changes).
+        public SortedDictionary<string, byte[]> Superseded(List<ItemOp> ops, IDictionary<string, byte[]> current)
+        {
+            SortedDictionary<string, byte[]> expected = Expected();
+            SortedDictionary<string, byte[]> visible = new SortedDictionary<string, byte[]>(current, StringComparer.Ordinal);
+            bool changed = false;
+            foreach (ItemOp op in ops)
+            {
+                if (WorldItems.OnlyGrows(op.Key)) continue;
+                byte[] now, want;
+                bool have = visible.TryGetValue(op.Key, out now), wanted = expected.TryGetValue(op.Key, out want);
+                if (have ? !Same(now, op.Value) : op.Value != null) continue;
+                if (have == wanted && (!have || Same(now, want))) continue;
+                if (wanted) visible[op.Key] = want; else visible.Remove(op.Key);
+                changed = true;
+            }
+            return changed ? visible : null;
+        }
+
         // Drops pending batches older than `keep` newest (a batch that never came back, e.g. the arbiter changed).
         public void Trim(int keep) { while (m_pending.Count > keep) m_pending.RemoveAt(0); }
     }
