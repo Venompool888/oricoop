@@ -501,6 +501,7 @@ static class UiTests
         RoomRenameTests.Register(Run);   // T-173 room page layout room-v2-a: [E] 改名
         RoomLeaveTests.Register(Run);   // T-176
         InGameRoomTests.Register(Run);   // T-189
+        CoopMenuFlowTests.Register(Run); // menu redesign: 多人游玩 -> 创建房间 / 加入房间 -> method
 
         return s_failed == 0 ? 0 : 1;
     }

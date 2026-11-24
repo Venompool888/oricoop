@@ -235,7 +235,7 @@ namespace OriCoop
                 string mode = PrologueMode;
                 Note("--- shared prologue: " + mode + " (host)");
                 KeyboardOnlyP1.SetMenuDeviceForTest(HostMenuPad);
-                yield return StartCoroutine(Row(0, 0.2f));                          // 开房 -> save slots
+                yield return StartCoroutine(Row(TitleStartRow(m_tr, true), 0.2f));  // 开房 / the method row -> save slots
                 yield return StartCoroutine(WaitFor(() => SlotsReady, 8f));
                 yield return StartCoroutine(TWait(0.8f));
                 SaveSlotsUI ui = SaveSlotsUI.Instance;
@@ -449,7 +449,7 @@ namespace OriCoop
                     Check(code.Length == 6, who + ": got the host's room code");
                     if (code.Length != 6) yield break;
                 }
-                yield return StartCoroutine(Row(1, 1.2f));                          // 加入 -> entry page
+                yield return StartCoroutine(Row(TitleStartRow(m_tr, false), 1.2f)); // 加入 / the method row -> entry page
                 Check(TitleOrbOpen && LastPage == "entry", who + ": join page on the title (" + Labels + ")");
                 if (LastPage != "entry") yield break;
                 if (!server) LoadAddress("", NetPlay.ConfigPort);
@@ -859,7 +859,7 @@ namespace OriCoop
                 int titleReturns = TitleReturn.SessionsEnded, aborts = GuestJoin.Aborts, applied = SharedPrologue.EventsApplied;
                 catchUps = SharedPrologue.CatchUps;
                 yield return StartCoroutine(PressCoop());
-                yield return StartCoroutine(Row(Array.IndexOf(TitleTransports, m_tr), 1f));
+                yield return StartCoroutine(Row(TitleEntryRow(m_tr, false), 1f));
                 yield return StartCoroutine(PrologueConnect("rejoining guest", true));
                 if (!m_pGuestParked) yield break;
                 waitingAt = Utc();

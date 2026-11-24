@@ -173,8 +173,7 @@ namespace OriCoop
                 if (m_fails != 0) { Finish(); yield break; }
                 yield return StartCoroutine(TWait(1.5f));
                 yield return StartCoroutine(PressCoop());
-                int row = Array.IndexOf(TitleTransports, m_tr);
-                yield return StartCoroutine(Row(row, 1f));
+                yield return StartCoroutine(Row(TitleEntryRow(m_tr, m_role == "host"), 1f));   // 创建房间 / 加入房间, or 自建服务器
                 if (m_tr == "cserver")
                 {
                     Check(TitleOrbOpen && ServerModeLabelsMatch() && s_mgr.Index == 0,
@@ -184,10 +183,11 @@ namespace OriCoop
                     yield return StartCoroutine(Row(2, 0.5f));
                 }
                 if (m_tr == "cserver") yield return StartCoroutine(CheckCServerEditor());
-                // T-171: on a C-server the page is the room list (创建房间 / 加入房间 / the rooms on the server).
-                bool roleReady = TitleOrbOpen && LastPage == "role" && (m_tr == "cserver"
-                    ? HasKey(LastLabels, "csroom.list.create") && HasKey(LastLabels, "csroom.list.join")
-                    : HasKey(LastLabels, "lobby.host") && HasKey(LastLabels, "lobby.join"));
+                // T-171: on a C-server the page is the room list (创建房间 / 加入房间 / the rooms on the server). LAN / Steam: the
+                // redesigned 创建房间 / 加入房间 page lists the connection methods (Ui/CoopMenuFlow.cs).
+                bool roleReady = TitleOrbOpen && (m_tr == "cserver"
+                    ? LastPage == "role" && HasKey(LastLabels, "csroom.list.create") && HasKey(LastLabels, "csroom.list.join")
+                    : LastPage == (m_role == "host" ? "hostmethod" : "joinmethod") && LastLabels.Count == Ui.CoopMenuFlow.Methods.Length);
                 Check(roleReady, m_tr + ": host / join page on the title (" + Labels + ")");
                 if (!roleReady || m_fails != 0) { Finish(); yield break; }
                 if (PrologueMode.Length > 0)   // T-203: the shared new-game prologue (TitlePrologueTest.cs)
@@ -361,7 +361,7 @@ namespace OriCoop
                 try { if (File.Exists(RenameFile)) File.Delete(RenameFile); } catch (Exception e) { Note("rename file: " + e.Message); }   // T-173: no stale marker
                 try { if (File.Exists(GuestDoneFile)) File.Delete(GuestDoneFile); } catch (Exception e) { Note("guest done file: " + e.Message); }   // T-189
                 KeyboardOnlyP1.SetMenuDeviceForTest(HostMenuPad);                   // T-188: the host used pad 0 on the menus
-                yield return StartCoroutine(Row(0, 0.2f));                          // 开房 -> save slots
+                yield return StartCoroutine(Row(TitleStartRow(m_tr, true), 0.2f));  // 开房 / the method row -> save slots
                 yield return StartCoroutine(WaitFor(() => SlotsReady, 8f));
                 yield return StartCoroutine(TWait(0.8f));
                 Check(SlotsReady && SlotPickPlan == "host:" + m_tr, "host: 开房 -> save slots (" + SlotPickPlan + ")");
@@ -499,7 +499,7 @@ namespace OriCoop
 
             IEnumerator SteamGuestRoom()
             {
-                yield return StartCoroutine(Row(1, 0.3f));                         // 加入 -> wait for a Steam invite
+                yield return StartCoroutine(Row(TitleStartRow("steam", false), 0.3f));   // Steam 邀请 -> wait for a Steam invite
                 // T-218: no SetCurrentItem here. The page opens with the cursor on Cancel and shows only the focused
                 // row's text, so the explanation must be there without the player moving the cursor.
                 RefreshTexts(true);
@@ -664,7 +664,7 @@ namespace OriCoop
 
             IEnumerator JoinAddress()
             {
-                yield return StartCoroutine(Row(1, 1.2f));                          // 加入 -> entry page
+                yield return StartCoroutine(Row(TitleStartRow(m_tr, false), 1.2f)); // 加入 / the method row -> entry page
                 Check(TitleOrbOpen && LastPage == "entry" && !SlotsReady, "guest: join page on the title, no save slot (" + Labels + ")");
                 if (m_tr == "direct")
                 {

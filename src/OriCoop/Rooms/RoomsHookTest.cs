@@ -16,7 +16,7 @@ namespace OriCoop
         {
             s_tHost = host;
             yield return host.StartCoroutine(PressCoop());
-            yield return host.StartCoroutine(Row(Array.IndexOf(TitleTransports, "cserver"), 0.5f));
+            yield return host.StartCoroutine(Row(Ui.CoopMenuFlow.RowServer, 0.5f));
         }
     }
 }
