@@ -51,7 +51,17 @@ function Get-RemoteTestServer([ValidateSet('cserver', 'rooms')][string]$kind) {
 function Get-TestServerSources([ValidateSet('CServer', 'RoomServer')][string]$name, [string]$src = $script:TS_SourceRoot) {
     # T-088's source list, including the project files and CServerTest.cs compiled by CServer.csproj.
     $files = switch ($name) {
-        'CServer' { @('CServer\CServer.cs', 'OriCoop\Authority\CsWire.cs', 'OriCoop\Authority\Arbiter.cs', 'OriCoop\Net\NetPeer.cs', 'OriCoop\Net\Transport.cs', 'CServer\CServerTest.cs', 'CServer\CServer.csproj') }
+        'CServer' {
+            # Keep the historical hash order for refs that predate join diagnostics.
+            $baseline = @('CServer\CServer.cs', 'OriCoop\Authority\CsWire.cs', 'OriCoop\Authority\Arbiter.cs', 'OriCoop\Net\NetPeer.cs', 'OriCoop\Net\Transport.cs', 'CServer\CServerTest.cs', 'CServer\CServer.csproj')
+            $baseline
+            $project = Join-Path $src 'CServer\CServer.csproj'
+            $known = @($baseline | ForEach-Object { [IO.Path]::GetFullPath((Join-Path $src $_)) })
+            foreach ($entry in ([xml](Get-Content -Raw -LiteralPath $project)).Project.ItemGroup.Compile) {
+                $relative = Join-Path 'CServer' $entry.Include
+                if ($known -notcontains [IO.Path]::GetFullPath((Join-Path $src $relative))) { $relative }
+            }
+        }
         'RoomServer' { @('RoomServer\RoomServer.cs', 'OriCoop\Rooms\RoomWire.cs', 'RoomServer\RoomServer.csproj') }
     }
     $files | ForEach-Object { Join-Path $src $_ }
