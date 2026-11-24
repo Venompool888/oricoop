@@ -1293,15 +1293,26 @@ namespace OriCoop
         static readonly MoonGuid WKeyScene = new MoonGuid(0x54323439, 1, 0, 0);
         static readonly MoonGuid WKey = new MoonGuid(0x54323439, 2, 0, 0);
         static readonly MoonGuid WKeyDoor = new MoonGuid(0x54323439, 3, 0, 0);
+        static readonly MoonGuid WOpenDoor = new MoonGuid(0x54323439, 4, 0, 0);
 
         static void PrepareKeyCheckpoint()
         {
             SaveScene scene = Game.Checkpoint.SaveGameData.InsertScene(WKeyScene);
-            SaveObject key = new SaveObject(WKey), door = new SaveObject(WKeyDoor);
+            SaveObject key = new SaveObject(WKey);
             key.Data.MemoryStream.Write(new byte[5], 0, 5);       // PickupBase: timer, collected
-            door.Data.MemoryStream.Write(new byte[16], 0, 16);   // DoorWithSlots: counts, normal
             scene.SaveObjects.Add(key);
-            scene.SaveObjects.Add(door);
+            GameObject obj = new GameObject("W keystone doors"); obj.SetActive(false);
+            try
+            {
+                DoorWithSlots door = obj.AddComponent<DoorWithSlots>();
+                door.NumberOfOrbsRequired = 4;
+                SaveObject partial = new SaveObject(WKeyDoor), opened = new SaveObject(WOpenDoor);
+                door.NumberOfOrbsUsed = 2; door.CurrentState = DoorWithSlots.State.Highlighted;
+                partial.Data.WriteMode(); door.Serialize(partial.Data); scene.SaveObjects.Add(partial);
+                door.NumberOfOrbsUsed = 4; door.CurrentState = DoorWithSlots.State.Opened;
+                opened.Data.WriteMode(); door.Serialize(opened.Data); scene.SaveObjects.Add(opened);
+            }
+            finally { UnityEngine.Object.Destroy(obj); }
             GameController.Instance.CreateCheckpoint();
         }
 
@@ -1318,10 +1329,24 @@ namespace OriCoop
             int keys = BitConverter.ToInt32(data.Master.SaveObjects.Find(o => o.Id == inventory).Data.MemoryStream.ToArray(), 0);
             SaveScene scene = data.GetScene(WKeyScene);
             bool taken = scene.SaveObjects.Find(o => o.Id == WKey).Data.MemoryStream.ToArray()[4] != 0;
-            byte[] door = scene.SaveObjects.Find(o => o.Id == WKeyDoor).Data.MemoryStream.ToArray();
-            h.Check(keys == expectedKeys && taken == collected && BitConverter.ToInt32(door, 4) == 0,
-                "W T-249 " + source + ": archive has " + keys + " keys (expected "
-                + expectedKeys + "), collected=" + taken + " (expected " + collected + "), door used=" + BitConverter.ToInt32(door, 4));
+            h.Check(keys == expectedKeys && taken == collected,
+                "W T-249 " + source + ": archive has " + keys + " keys (expected " + expectedKeys + "), collected=" + taken + " (expected " + collected + ")");
+            // Native load refunds the two provisional stones in a highlighted door. A finished door
+            // keeps all four. Read both actual records with the game's serializer and the recorded wallet.
+            int liveKeys = Own.Inventory.Keystones;
+            GameObject obj = new GameObject("W load keystone doors"); obj.SetActive(false);
+            try
+            {
+                DoorWithSlots door = obj.AddComponent<DoorWithSlots>();
+                door.NumberOfOrbsRequired = 4; Own.Inventory.Keystones = keys;
+                Archive partial = scene.SaveObjects.Find(o => o.Id == WKeyDoor).Data; partial.ReadMode(); door.Serialize(partial);
+                h.Check(door.CurrentState == DoorWithSlots.State.Normal && door.NumberOfOrbsUsed == 0 && Own.Inventory.Keystones == expectedKeys + 2,
+                    "W T-249 " + source + ": partial door refunds two on load (used " + door.NumberOfOrbsUsed + ", wallet " + Own.Inventory.Keystones + ")");
+                Archive opened = scene.SaveObjects.Find(o => o.Id == WOpenDoor).Data; opened.ReadMode(); door.Serialize(opened);
+                h.Check(door.CurrentState == DoorWithSlots.State.Opened && door.NumberOfOrbsUsed == 4 && Own.Inventory.Keystones == expectedKeys + 2,
+                    "W T-249 " + source + ": opened door retains four (used " + door.NumberOfOrbsUsed + ", wallet " + Own.Inventory.Keystones + ")");
+            }
+            finally { Own.Inventory.Keystones = liveKeys; UnityEngine.Object.Destroy(obj); }
         }
 
         // The usual lineage checks inspect the last checkpoint that was shared. Run the offline host save
