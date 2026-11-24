@@ -1,6 +1,7 @@
 using System;
 using System.Collections.Generic;
 using System.IO;
+using OriCoop.Authority;
 using OriCoop.Net;
 
 static class NetCoreTests
@@ -150,6 +151,47 @@ static class NetCoreTests
 
     static int Main()
     {
+        Run("owner notice: a token rejoin's first online roster is silent even after waiting with our seat offline", delegate {
+            RoomOwnerNotice notice = new RoomOwnerNotice();
+            Equal(0, notice.TakePreviousOwner(2, false, 0));
+            Equal(0, notice.TakePreviousOwner(2, false, 1000));
+            Equal(0, notice.TakePreviousOwner(1, true, 1200));
+            Equal(0, notice.TakePreviousOwner(1, true, 1800));
+        });
+        Run("owner notice: a remote owner's brief offline/online roster pair does not announce either flip", delegate {
+            RoomOwnerNotice notice = new RoomOwnerNotice();
+            Equal(0, notice.TakePreviousOwner(1, true, 0));
+            Equal(0, notice.TakePreviousOwner(1, true, 600));
+            Equal(0, notice.TakePreviousOwner(2, true, 700));
+            Equal(0, notice.TakePreviousOwner(1, true, 900));
+            Equal(0, notice.TakePreviousOwner(1, true, 1500));
+        });
+        Run("owner notice: one settled handover is announced, including when the new owner is local", delegate {
+            RoomOwnerNotice notice = new RoomOwnerNotice();
+            Equal(0, notice.TakePreviousOwner(1, true, 0));
+            Equal(0, notice.TakePreviousOwner(1, true, 600));
+            Equal(0, notice.TakePreviousOwner(2, true, 700));
+            Equal(1, notice.TakePreviousOwner(2, true, 1300));
+            Equal(0, notice.TakePreviousOwner(2, true, 1900));
+        });
+        Run("menu Steam and LAN transports still override the C-server default in session-end callbacks", delegate {
+            foreach (string transport in new[] { "steam", "direct" })
+            {
+                Rig r = new Rig(true, false, false);
+                Func<string> configured = delegate { return "cserver"; };
+                r.Session.ActiveTransport = transport;
+                SessionMachine.Remote remote = r.Add(2, r.Single);
+                r.Session.AnnounceHello(remote, r.Session.MarkHello(remote));
+                string seen = null;
+                r.Session.SessionEnded += delegate { seen = r.Session.TransportName(configured); };
+                r.Session.Leave(remote);
+                Equal(transport, seen);
+                r.Session.Reset();
+                Equal(transport, r.Session.TransportName(configured));
+                r.Session.ActiveTransport = null;
+                Equal("cserver", r.Session.TransportName(configured));
+            }
+        });
         Run("handler receives body and sender", delegate {
             Rig r = new Rig(false, false, false); int got = 0, sender = 0;
             r.Bus.On(70, delegate(BinaryReader b) { got = b.ReadInt32(); sender = r.Bus.Sender; });
@@ -323,6 +365,18 @@ static class NetCoreTests
         });
         Run("leave without hello still fires player left but no end", delegate {
             Rig r = new Rig(true, false, true); r.Add(2, new FakePeer()); r.Session.RemoteLeft(2); Equal("cleanup:2,left:2", Events(r));
+        });
+        Run("a remote in the session still counts while loading", delegate {
+            Rig r = new Rig(true, true, false); r.Seat = 1;
+            r.Add(2, null);
+            Equal(false, r.Session.RemoteInSession(2));
+            r.Receive(1, 2, true, 0, Hello); r.Receive(2, 2, true, 0, Gameplay);
+            Equal(true, r.Session.RemoteInSession(2));
+            r.Receive(2, 2, true, 0, delegate(BinaryWriter w) { w.Write(false); w.Write(""); });
+            Equal(false, r.Session.Remotes[2].InGameplay);
+            Equal(true, r.Session.RemoteInSession(2));
+            r.Session.RemoteLeft(2);
+            Equal(false, r.Session.RemoteInSession(2));
         });
         Run("unknown leave does nothing", delegate { Rig r = new Rig(false, true, false); r.Session.RemoteLeft(3); Equal("", Events(r)); });
         Run("left frame is accepted from host only", delegate {

@@ -119,6 +119,7 @@ static class RulesTests
 
     static int Main()
     {
+        PopupDebtTests.RunAll(Run, Check);
         // T-104: the host opened its pause menu before anyone joined (offline: a real pause). A guest connects; the
         // host's per-frame menu refresh runs while connected but before its session starts, and its session start turns
         // the offline pause into a skipped one. The guest must not end up believing the host is paused.
@@ -349,45 +350,59 @@ static class RulesTests
             Check(InviteRules.BannerKey(true, false) == "steam.invite_menu", "online alone: " + InviteRules.BannerKey(true, false));
             Check(InviteRules.BannerKey(false, false) == "steam.invite_menu", "offline in gameplay: " + InviteRules.BannerKey(false, false));
         });
-        // T-044: no pause online.
-        Run("popup ledger: offline suspends and resumes natively", delegate {
-            PopupLedger<string> l = new PopupLedger<string>();
-            Check(l.Open("help", false), "offline open skipped the native suspend");
-            Check(l.Close("help"), "offline close skipped the native resume");
-            Check(!l.AnyOpen, "offline open left a skip");
+        Run("online menus (including the map and picker), popups and F8 all keep Ori live", delegate {
+            Check(MenuPresence.ScreenRunsLive(true, true, false, false), "menu isn't live");
+            Check(MenuPresence.ScreenRunsLive(true, false, true, false), "popup isn't live");
+            Check(MenuPresence.ScreenRunsLive(true, false, false, true), "F8 isn't live");
+            Check(!MenuPresence.HoldOri(true, false, false), "an open screen holds Ori");
         });
-        Run("popup ledger: online skips the suspend and its matching resume", delegate {
-            PopupLedger<string> l = new PopupLedger<string>();
-            Check(!l.Open("help", true), "online open suspended the game");
-            Check(l.AnyOpen && l.OpenCount == 1, "open popup not counted");
-            Check(!l.Close("help"), "online close resumed a suspension it never took");
-            Check(!l.AnyOpen && l.OpenCount == 0, "closed popup still counted");
+        Run("online story and respawn still hold Ori", delegate {
+            Check(MenuPresence.HoldOri(true, true, false), "story no longer holds Ori");
+            Check(MenuPresence.HoldOri(true, false, true), "respawn no longer holds Ori");
         });
-        Run("popup ledger: resume without suspend stays native", delegate {
-            PopupLedger<string> l = new PopupLedger<string>();
-            Check(l.Close("pages"), "a resume with no skipped suspend was swallowed");
+        Run("closed screens don't block online; offline screens keep native behaviour", delegate {
+            Check(!MenuPresence.ScreenRunsLive(true, false, false, false), "no open screen");
+            Check(!MenuPresence.ScreenRunsLive(false, true, true, true), "offline screen went live");
+            Check(!MenuPresence.HoldOri(false, true, true), "offline state overrides native hold");
         });
-        Run("popup ledger: opened offline then closed online stays native", delegate {
-            PopupLedger<string> l = new PopupLedger<string>();
-            Check(l.Open("help", false) && l.Close("help"), "offline-opened popup lost its native resume");
+        Run("F8 and popup restore independent input locks on disconnect", delegate {
+            ScreenInputLocks locks = new ScreenInputLocks();
+            object panel = new object(), popup = new object();
+            foreach (bool popupFirst in new bool[] { false, true })
+            {
+                locks.Set(popupFirst ? popup : panel, true);
+                locks.Set(popupFirst ? panel : popup, true);
+                locks.Set(popup, false);
+                Check(locks.IsLocked(false), "closing the popup unlocked the open F8 panel");
+                locks.Set(panel, false);
+                Check(!locks.IsLocked(false), "closing F8 left the popup lock behind");
+                Check(locks.IsLocked(true), "closing the screens cleared the game's own lock");
+            }
         });
-        Run("popup ledger: nested opens need as many closes, per owner", delegate {
-            PopupLedger<string> l = new PopupLedger<string>();
-            l.Open("a", true); l.Open("a", true); l.Open("b", true);
-            Check(l.OpenCount == 3, "count " + l.OpenCount);
-            Check(!l.Close("a") && l.AnyOpen, "first close of a");
-            Check(!l.Close("b") && l.AnyOpen, "close of b");
-            Check(!l.Close("a") && !l.AnyOpen, "second close of a");
-            Check(l.Close("a"), "extra close of a was swallowed");
+        Run("the F8 panel locks its opening seat; native screens still lock the primary", delegate {
+            Check(MenuPresence.ScreenLocksSeat(4, 2, false, 4), "F8 did not lock the extra seat");
+            Check(!MenuPresence.ScreenLocksSeat(2, 2, false, 4), "F8 locked the primary instead of the opening seat");
+            Check(MenuPresence.ScreenLocksSeat(2, 2, true, 4), "native menu lost the primary lock under F8");
+            Check(!MenuPresence.ScreenLocksSeat(2, 2, false, 0), "unassigned pad locked the primary");
         });
-        Run("popup ledger: prune forgets owners that are gone", delegate {
-            PopupLedger<string> l = new PopupLedger<string>();
-            l.Open("gone", true); l.Open("alive", true);
-            Check(l.Prune(delegate(string o) { return o == "gone"; }) == 1 && l.OpenCount == 1, "prune");
-            Check(l.Close("gone"), "pruned owner still swallowed its resume");
+        Run("disconnect restores skipped menu and popup suspends exactly once", delegate {
+            int skipped = 1, vanilla = 0, popupSkipped = 1, popupVanilla = 0;
+            Check(MenuPresence.RestoreScreenSuspends(ref skipped, ref vanilla) == 1, "native menu suspend was not restored");
+            Check(MenuPresence.RestoreScreenSuspends(ref popupSkipped, ref popupVanilla) == 1, "native popup suspend was not restored");
+            Check(MenuPresence.RestoreScreenSuspends(ref skipped, ref vanilla) == 0, "native suspend was restored twice");
+            Check(MenuPresence.ConsumeMenuResume(ref popupSkipped, ref popupVanilla), "popup close skipped the restored resume");
+            Check(popupSkipped == 0 && popupVanilla == 0 && !MenuPresence.ConsumeMenuResume(ref popupSkipped, ref popupVanilla), "popup close left another resume owed");
+            Check(MenuPresence.ConsumeMenuResume(ref skipped, ref vanilla), "menu close skipped the restored resume");
+            Check(skipped == 0 && vanilla == 0 && !MenuPresence.ConsumeMenuResume(ref skipped, ref vanilla), "menu close left another resume owed");
+        });
+        Run("closing an online screen leaves no suspend to restore on disconnect", delegate {
+            int skipped = 1, vanilla = 0;
+            Check(!MenuPresence.ConsumeMenuResume(ref skipped, ref vanilla), "close resumed a suspension it never took");
+            Check(MenuPresence.RestoreScreenSuspends(ref skipped, ref vanilla) == 0, "closed screen was suspended on disconnect");
         });
         SpectateTests.Run(Run);
         SoulLinkTests.Run(Run);
+        ReviveLeftoverTests.Run(Run);
         Console.WriteLine("RULES" + (cases - failed) + "/" + cases + (failed == 0 ? " PASS" : " FAIL"));
         return failed == 0 ? 0 : 1;
     }

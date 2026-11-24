@@ -43,12 +43,13 @@ namespace OriCoop
             // T-195 (EnemySync.Swarm.cs): a piece a Swarm split into. Root = the family's placeholder actor, Node = its
             // place in the family tree (SwarmFamily). Pieces have no placeholder; they follow Root's owner.
             public Actor Root; public int Node; public GameObject Prefab; public float PieceLoot; public bool PiecesIndexed;
+            public float HoldDistance;   // T-208 (3): a family held without its scene: how near its nearest live piece is to this PC's Ori
         }
         sealed class Body { public Rigidbody Rigidbody; public bool Kinematic, Gravity; }
         sealed class DamageStamp { public ulong Id; public bool Puppet; }
         sealed class PendingHit { public Actor Actor; public uint Generation; public ulong Id; public Damage Damage; public bool BindGeneration; }
         sealed class PendingShot { public Actor Actor; public Projectile Projectile; public GameObject Prefab; }
-        public sealed class ProjectileIdentity : MonoBehaviour { public ulong Id; public bool Cosmetic; public float Expires; }
+        public sealed class ProjectileIdentity : MonoBehaviour { public ulong Id; public bool Cosmetic; public float Expires; public string FxName; }
         public sealed class PuppetAttack : MonoBehaviour { public bool IsPuppet; }
         sealed class Call { public Actor Previous; public bool Attack, PuppetAttack, Entered; }
         sealed class HitObservation { public Actor Actor; public float Before, Amount; public DamageType Type; public ulong Id; }
@@ -75,7 +76,7 @@ namespace OriCoop
         static IEnemyHost s_host;
         static Actor s_active; static int s_attackDepth; static bool s_applying, s_spawning, s_session, s_restoringController, s_puppetDeath;
         static float s_fxWindow; static int s_fxCount; static DifficultyMode s_difficulty;
-        static uint s_sequence; static float s_scanAt, s_streamAt, s_logAt, s_tokenTime, s_tokens;
+        static HitIds s_ids; static float s_scanAt, s_streamAt, s_logAt, s_tokenTime, s_tokens;
         static readonly List<Vector3> s_pinPositions = new List<Vector3>();
         public static long BytesSent, BytesReceived, EstimatedWireBytesSent;
         public static int Unmirrored, KeptScenes, UnresolvedProjectiles;
@@ -84,7 +85,7 @@ namespace OriCoop
         static bool Active { get { return Services.Net.Enabled && Services.Net.Connected && s_host.RemoteHello && s_session; } }
         static bool Mine(Actor a) { RefreshOwnership(a); return a.Mine(s_host.LocalSeat); }
         static string Key(MoonGuid scene, MoonGuid id) { return scene.ToString() + ":" + id.ToString(); }
-        static ulong NextId() { return ((ulong)s_host.LocalSeat << 32) | ++s_sequence; }
+        static ulong NextId() { if (s_ids == null) s_ids = NewIds(); return s_ids.Next(s_host.LocalSeat); }   // T-208 (6): Enemies/HitIds.cs
         static float Now { get { return Services.Clock.RealTime; } }
         static SeinCharacter Local { get { return s_host.Local; } }
 
@@ -94,7 +95,7 @@ namespace OriCoop
             Services.Net.On(Presence, ReadPresence); Services.Net.On(Authority, ReadAuthority); Services.Net.On(Handoff, ReadHandoff);
             Services.Net.On(Snapshots, ReadSnapshots); Services.Net.On(Life, ReadLife); Services.Net.On(Symbols, ReadSymbol);
             Services.Net.On(Hit, ReadHit); Services.Net.On(OriHit, ReadOriHit); Services.Net.On(Shot, ReadShot); Services.Net.On(EnemyFx, ReadEnemyFx);
-            Services.Net.Forward(Snapshots, Life, Symbols, Shot);
+            Services.Net.Forward(Snapshots, Life, Symbols, Shot, EnemyFx);
             Services.Net.SessionStarted += Begin; Services.Net.SessionEnded += Reset;
             Services.Net.PlayerLeft += RemoveSeat;
             Players.SeatsRenamed += RenameSeats;
@@ -126,6 +127,7 @@ namespace OriCoop
                     }
                     bool callback = m.Name == "FixedUpdate" || m.Name == "Update" || m.Name == "LateUpdate"
                         || (t == typeof(KamikazeSootEnemy) && m.Name == "SelfDestruct")
+                        || (t == typeof(ArmouredRammingEnemy) && m.Name == "OnModifyDamage")
                         || (actor && (m.Name == "OnRecieveDamage" || m.Name == "OnAnimationEnd" || m.Name == "OnDamageDealt" || m.Name == "OnCollisionEnter" || m.Name == "OnCollisionStay" || m.Name == "OnCollisionExit"))
                         || (attack && (m.Name == "Start" || m.Name == "DealDamage" || m.Name == "Detonate"
                             || m.Name == "Explode" || m.Name == "OnDamageDealt" || m.Name == "OnRecieveDamage"));
@@ -139,13 +141,14 @@ namespace OriCoop
         {
             Reset();
             EnemyAuthority.StartSession(NetRoute.ServerMode);
-            s_session = true; s_tokens = Budget / 4f; s_tokenTime = Now;
+            s_session = true; s_tokens = Budget / 4f; s_tokenTime = Now; s_ids = NewIds();
             if (DifficultyController.Instance != null)
             { s_difficulty = DifficultyController.Instance.Difficulty; Services.Log.Info("E3T difficulty=" + s_difficulty); }
         }
         static void Reset()
         {
             foreach (Actor a in s_actors.Values) { EnemyAuthority.Policy.Release(a.Key); RestoreBodies(a); }
+            DropCopies();   // T-208 (2): before the index of the pieces is cleared
             EnemyAuthority.Policy = null;
             foreach (ProjectileIdentity p in s_copies) if (p != null) InstantiateUtility.Destroy(p.gameObject);
             ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
@@ -188,7 +191,7 @@ namespace OriCoop
         static uint SymbolKey(int seat, ushort id) { return ((uint)seat << 16) | id; }
         static void ReadSymbol(BinaryReader r) { ushort id = r.ReadUInt16(); string value = r.ReadString(); if (value.Length > 1024) throw new InvalidDataException("E3 symbol too long"); s_remoteSymbols[SymbolKey(Services.Net.Sender, id)] = value; }
         static string RemoteSymbol(ushort id) { string s; return s_remoteSymbols.TryGetValue(SymbolKey(Services.Net.Sender, id), out s) ? s : ""; }
-        static void Warn(string s) { if (s_warned.Add(s)) Services.Log.Warn("E3 " + s); }
+        static void Warn(string s, string key = null) { if (s_warned.Add(key ?? s)) Services.Log.Warn("E3 " + s); }
         static void Trace(string evt, Actor a, string extra)
         {
             Probe p = Inspect(a.Key); string state = p.StateName ?? "";
@@ -204,20 +207,17 @@ namespace OriCoop
                     "owner", "P" + a.OwnerSeat, "mine", Mine(a), "epoch", a.Epoch, "gen", a.Generation, "state", state, "info", extra);
         }
 
-        static readonly Type[] MirroredTypes = { typeof(JumperEnemy), typeof(RammingEnemy), typeof(SpitterEnemy),
-            typeof(AcidSlugEnemy), typeof(StarSlugEnemy), typeof(DropSlugEnemy), typeof(DashOwlEnemy),
-            typeof(FishEnemy), typeof(KamikazeSootEnemy), typeof(SwarmEnemy) };
         // Owner-only classes run a local copy on each peer, with nearest-player targeting and death bursts:
         // ShootingSpider has rope joints; FloatingRockLaserEnemy/TurretEnemy have three animators and a laser;
-        // MortarWormEnemy/JumpShootShark have hidden groups and private shot flags; ArmouredRammingEnemy
-        // replaces itself with RammingEnemy. Other classes remain opt-in. Jumper stomp state is included in full handoffs.
+        // MortarWormEnemy/JumpShootShark have hidden groups and private shot flags.
         // SwarmEnemy (T-195): the pieces it splits into have no baked identity; EnemySync.Swarm.cs names them after
         // their place in the family tree. A Swarm has left/right run animations instead of a sprite mirror.
         static bool Supported(Enemy e)
         {
             if (e.Animation == null || e.Controller == null) return false;
+            if (s_testUnsupported != null) { Actor tested; if (s_entities.TryGetValue(e.GetInstanceID(), out tested) && tested.Key == s_testUnsupported) return false; }
             if (e is SwarmEnemy) return !s_mutateSwarmLocal;
-            return e.Animation.SpriteMirror != null && Array.IndexOf(MirroredTypes, e.GetType()) >= 0;
+            return e.Animation.SpriteMirror != null && EnemyVisuals.MirroredClass(e.GetType().Name);
         }
         static bool EnemyPlaceholder(RespawningPlaceholder p)
         {
@@ -225,11 +225,12 @@ namespace OriCoop
             return (n.IndexOf("EnemyPlaceholder", StringComparison.Ordinal) >= 0 || p is JumpShootSharkPlaceholder || p is ShootingSpiderPlaceholder)
                 && !(s_mutateSwarmLocal && p is SwarmEnemyPlaceholder);
         }
-        static Actor Track(RespawningPlaceholder p)
+        static Actor Track(RespawningPlaceholder p, bool sameLife = false)
         {
             if (p == null || p.MoonGuid == null || !EnemyPlaceholder(p)) return null;
             SceneRoot root = SceneRoot.FindFromTransform(p.transform); if (root == null || root.MetaData == null) return null;
             string key = Key(root.MetaData.SceneMoonGuid, p.MoonGuid); Actor a;
+            if (s_testHidden.Count > 0 && s_testHidden.Contains(key)) return null;   // tests: as if its scene were not loaded here
             if (!s_actors.TryGetValue(key, out a))
             {
                 a = new Actor(); a.Key = key; a.Id = new MoonGuid(p.MoonGuid); a.Scene = new MoonGuid(root.MetaData.SceneMoonGuid);
@@ -246,7 +247,7 @@ namespace OriCoop
             if (!EnemyAuthority.Policy.UsesLeases && Services.Net.IsHost && !a.Known) { a.Known = true; a.OwnerSeat = 1; }
             RefreshOwnership(a);
             IndexPieces(a, p as SwarmEnemyPlaceholder);
-            Bind(a); return a;
+            Bind(a, sameLife); return a;
         }
         static Actor For(Component component)
         {
@@ -260,13 +261,13 @@ namespace OriCoop
             foreach (RespawningPlaceholder p in RespawningPlaceholder.All) if (p != null && p.CurrentEntity == e) return Track(p);
             return null;
         }
-        static void Bind(Actor a)
+        static void Bind(Actor a, bool sameLife = false)
         {
             // A split piece (T-195) has no placeholder: it keeps the entity it was given until that is destroyed.
             Enemy e = a.Root != null ? (PieceGone(a.Entity) ? null : a.Entity) : a.Placeholder == null ? null : a.Placeholder.CurrentEntity as Enemy;
-            Attach(a, e);
+            Attach(a, e, sameLife);
         }
-        static void Attach(Actor a, Enemy e)
+        static void Attach(Actor a, Enemy e, bool sameLife = false)
         {
             if (object.ReferenceEquals(a.Entity, e)) return;
             RestoreBodies(a);
@@ -284,12 +285,11 @@ namespace OriCoop
             if (!Supported(e)) Warn("owner-only class=" + e.GetType().Name + " (outside mirrored class/variant allowlist or missing animation/controller)");
             if (Mine(a) && !s_spawning)
             {
-                a.Generation++;
-                // T-195: a PC that was away for a family's earlier lives never counted this piece; the placeholder's
-                // own generation (one per life, known to every PC) keeps the piece's generation ahead of theirs.
-                if (a.Root != null && a.Generation < a.Root.Generation) a.Generation = a.Root.Generation;
-                a.Hits.Clear(); a.Applied.Clear(); a.Latest = Capture(a, true);
-                SendLife(a, a.Generation == 1 ? (byte)1 : (byte)3);
+                // A split piece's generation cannot trail its placeholder's life count.
+                bool newLife = a.BeginEntityLife(sameLife, a.Root == null ? 0u : a.Root.Generation);
+                if (newLife) { a.Hits.Clear(); a.Applied.Clear(); }
+                a.Latest = Capture(a, true);
+                SendLife(a, !newLife || a.Generation == 1 ? (byte)1 : (byte)3);
             }
             else if (Supported(e)) FreezeBodies(a);
             Trace("spawn", a, "mirrored=" + Supported(e) + (a.Root != null ? " node=" + a.Node : ""));
@@ -297,6 +297,9 @@ namespace OriCoop
         static void FreezeBodies(Actor a)
         {
             if (a.Entity == null || a.Bodies.Count > 0) return;
+            // T-208 (7): a class that is not mirrored runs on every PC (a ShootingSpider swings on its rope joints);
+            // the ownership messages froze its rigidbodies on the PCs that do not own it while its AI went on.
+            if (!Supported(a.Entity) && !s_mutateFreezeAll) return;
             foreach (Rigidbody rb in a.Entity.GetComponentsInChildren<Rigidbody>(true))
             {
                 Body b = new Body(); b.Rigidbody = rb; b.Kinematic = rb.isKinematic; b.Gravity = rb.useGravity; a.Bodies.Add(b);
@@ -357,7 +360,7 @@ namespace OriCoop
         {
             State s = new State(); s.Tick = s_host.LocalTick; s.Generation = a.Generation;
             if (controller) { s.Applied = new ulong[a.Applied.Count]; a.Applied.CopyTo(s.Applied); }
-            s.Position = a.Latest.Position; s.Health = a.Latest.Health;
+            s.Position = a.Latest.Position; s.Health = a.Latest.Health; s.ArmourBroken = a.Latest.ArmourBroken;
             RespawningPlaceholder p = a.Placeholder;
             if (p != null)
             {
@@ -373,10 +376,13 @@ namespace OriCoop
             {
                 if (controller && e is JumperEnemy) s.ShouldStomp = (bool)s_shouldStomp.GetValue(e);
                 FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy; SwarmEnemy swarm = e as SwarmEnemy;
+                RammingEnemy ram = e as RammingEnemy;
+                if (ram != null && p != null) s.ArmourBroken = !(ram is ArmouredRammingEnemy) && StartsArmoured(p as RammingEnemyPlaceholder);
                 // T-027: surface crawlers (star slugs; TraceGroundMovement) turn the whole body to the wall/ceiling they walk on.
                 // T-195: a Swarm tilts its feet to the slope or its jump (SwarmEnemy.UpdateRotation, not run on a mirror).
                 Transform visual = fish != null ? fish.Rotation : owl != null && owl.SpriteRotation != null ? owl.SpriteRotation.transform
-                    : swarm != null ? swarm.FeetTransform : e.GetComponent<TraceGroundMovement>() != null ? e.transform : null;
+                    : swarm != null ? swarm.FeetTransform : ram != null ? ram.FeetTransform
+                    : e.GetComponent<TraceGroundMovement>() != null ? e.transform : null;
                 if (visual != null) { s.HasVisualAngle = true; s.VisualAngle = visual.eulerAngles.z; }
                 s.Position = e.Position; s.Left = e.Animation != null && e.Animation.SpriteMirror != null && e.FaceLeft; s.Health = e.DamageReciever == null ? 0 : e.DamageReciever.Health;
                 s.DealerActive = e.DamageDealer != null && e.DamageDealer.Activated; s.TargetActive = e.Targetting != null && e.Targetting.Activated;
@@ -440,14 +446,67 @@ namespace OriCoop
             SetPlaceholder(a, s);
             if (s.Killed)
             {
-                if (a.Entity != null && a.Entity.gameObject.activeInHierarchy) PlayPuppetDeath(a);
+                ApplyRammingVariant(a, s);
+                if (a.Entity != null && a.Entity.gameObject.activeInHierarchy)
+                {
+                    if (a.Entity is RammingEnemy) a.Entity.Position = s.Position;
+                    PlayPuppetDeath(a);
+                }
                 a.Placeholder.DestroyCurrentInstance(); Bind(a);
             }
-            else if (s.Alive && a.Placeholder.CurrentEntity == null)
+            else if (s.Alive)
             {
-                s_spawning = true; try { a.Placeholder.Spawn(); } finally { s_spawning = false; }
+                if (a.Placeholder.CurrentEntity == null)
+                {
+                    s_spawning = true; try { a.Placeholder.Spawn(); } finally { s_spawning = false; }
+                    Bind(a);
+                }
+                ApplyRammingVariant(a, s);
+            }
+        }
+        static bool StartsArmoured(RammingEnemyPlaceholder placeholder)
+        {
+            return placeholder != null && placeholder.RammingEnemy != null
+                && placeholder.RammingEnemy.GetComponent<ArmouredRammingEnemy>() != null;
+        }
+        [HarmonyPatch(typeof(RammingEnemyPlaceholder), "OnRammingEnemyReplaced")]
+        static class RammingArmourBreak
+        {
+            static void Postfix(RammingEnemyPlaceholder __instance)
+            {
+                if (Active && !s_spawning) Track(__instance, sameLife: true);
+            }
+        }
+        static void ApplyRammingVariant(Actor a, State s)
+        {
+            RammingEnemy ram = a.Entity as RammingEnemy;
+            RammingEnemyPlaceholder placeholder = a.Placeholder as RammingEnemyPlaceholder;
+            if (ram == null || placeholder == null) return;
+            ArmouredRammingEnemy shell = ram as ArmouredRammingEnemy;
+            if (s.ArmourBroken == (shell == null) || (shell == null && !StartsArmoured(placeholder))) return;
+
+            // Use the native replacement without running the armour's damage handler on a mirror.
+            s_spawning = true;
+            try
+            {
+                if (shell != null)
+                {
+                    GameObject go = (GameObject)UnityEngine.Object.Instantiate(shell.RammingEnemy, s.Position, Quaternion.identity);
+                    RammingEnemy bare = go.GetComponent<RammingEnemy>();
+                    go.transform.parent = shell.transform.parent;
+                    bare.SetSceneRoot(a.Scene); bare.Zones = shell.Zones; bare.FaceLeft = s.Left;
+                    bare.DamageReciever.SetHealth(s.Health); bare.DamageReciever.SetMaxHealth(shell.DamageReciever.MaxHealth);
+                    bare.DamageDealer.Damage = shell.DamageDealer.Damage;
+                    bare.GetComponentInChildren<OrbSpawner>().CopySettings(shell.GetComponentInChildren<OrbSpawner>());
+                    bare.DamageReciever.OnDeathEvent = shell.DamageReciever.OnDeathEvent;
+                    shell.gameObject.SetActive(false); placeholder.DestroyCurrentInstance();
+                    go.AddComponent<DestroyOnRestoreCheckpoint>();
+                    placeholder.OnRammingEnemyReplaced(bare);
+                }
+                else { placeholder.Spawn(); SetPlaceholder(a, s); }
                 Bind(a);
             }
+            finally { s_spawning = false; }
         }
         static void PlayPuppetDeath(Actor a)
         {
@@ -482,7 +541,7 @@ namespace OriCoop
             // Only the host reads presence reports (every other receiver dropped them after creating an entry, which made
             // every guest track, and report, every enemy the host ever saw). (T-147)
             if (Services.Net.IsHost) return;
-            Send(Presence, true, delegate(BinaryWriter w) { WriteId(w, a); WriteVector(w, a.Origin); w.Write(a.Loaded); });
+            Send(Presence, true, delegate(BinaryWriter w) { WriteId(w, a); WriteVector(w, a.Origin); w.Write(a.Present); });
             a.PresenceSent(delegate { return Now; });
         }
         static void ReadPresence(BinaryReader r)
@@ -501,7 +560,7 @@ namespace OriCoop
             if (EnemyAuthority.Policy.UsesLeases) { RefreshOwnership(a); return; }
             if (!Services.Net.IsHost || a.PendingTakeover) return;
             int desired = PolicyDesiredOwner(a);
-            int decision = a.BeginDecision(desired, s_host.LocalSeat);
+            int decision = a.BeginDecision(desired, s_host.LocalSeat, Now);
             if (decision == 0) { Grant(a, false); return; }
             if (decision == 1)
             {
@@ -534,21 +593,22 @@ namespace OriCoop
         }
         static float OwnerDistance(Actor a, int seat, Vector3 position)
         {
-            if (seat == s_host.LocalSeat) return a.Loaded && Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity;
+            if (seat == s_host.LocalSeat) return a.Present && Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity;
             Vector3 remote;
             return a.LoadedSeats.Contains(seat) && s_host.RemotePos(seat, out remote) ? Vector3.Distance(position, remote) : float.PositiveInfinity;
         }
         static int DesiredOwner(Actor a)
         {
+            if (TestOwnerSeat != 0 && a.Key == TestOwnerKey) return TestOwnerSeat;   // tests (E5k): the owner asked for
             int remoteCount = s_host.RemoteCount;
             if (remoteCount <= 1)
-                return EnemyOwnership.DesiredOwner(remoteCount, a.Loaded, a.LoadedSeats, a.OwnerSeat, 1, null, a.OwnerChangedAt, null, null, null);
+                return EnemyOwnership.DesiredOwner(remoteCount, a.Present, a.LoadedSeats, a.OwnerSeat, 1, null, a.OwnerChangedAt, null, null, null);
             return DesiredMultiOwner(a, remoteCount);
         }
         static int DesiredMultiOwner(Actor a, int remoteCount)
         {
             Vector3 position = Mine(a) && a.Entity != null ? a.Entity.Position : a.Latest.Position;
-            return EnemyOwnership.DesiredOwner(remoteCount, a.Loaded, a.LoadedSeats, a.OwnerSeat, s_host.LocalSeat,
+            return EnemyOwnership.DesiredOwner(remoteCount, a.Present, a.LoadedSeats, a.OwnerSeat, s_host.LocalSeat,
                 delegate { return Now; }, a.OwnerChangedAt, delegate(int seat) { return OwnerDistance(a, seat, position); },
                 delegate { return Local != null ? Vector3.Distance(position, Local.Position) : float.PositiveInfinity; }, RemoteDistances(a, position));
         }
@@ -572,19 +632,35 @@ namespace OriCoop
             if (operation == 0)
             {
                 if (!a.CanFreeze(Services.Net.Sender, s_host.LocalSeat, epoch)) return;
+                if (TestKillAtFreeze == a.Key && a.Entity != null && a.Entity.DamageReciever != null && Local != null)
+                {   // tests (E5k): this PC's enemy dies just before the freeze reached it
+                    TestKillAtFreeze = "";
+                    ApplyHit(a, new Damage(a.Entity.DamageReciever.Health + 1000f, Vector2.zero, a.Entity.Position, DamageType.SpiritFlame, Local.gameObject), NextId());
+                }
                 State s = a.Placeholder != null ? Capture(a, true) : a.Latest;
                 a.Frozen = true; FreezeBodies(a);
+                if (TestSwallowHandoff == a.Key) { TestSwallowHandoff = ""; return; }   // tests (E5k): this handoff is lost
                 Send(Handoff, true, delegate(BinaryWriter w) { WriteId(w, a); EnemyWire.WriteHandoff(w, epoch, owner); WriteState(w, a, s, true); }); return;
             }
             a.Origin = ReadVector(r); State state = ReadState(r, a, true);
             if (!a.CanAcceptGrant(Services.Net.IsHost, Services.Net.Sender, epoch)) return;
             bool changed = a.GrantChanged(owner, epoch);
             if (!changed && owner == s_host.LocalSeat) return; // A presence refresh cannot rewind the owner's simulation.
+            // T-208 review 2: the owner stays, only the epoch moves (a handoff given up, or its target left). The state
+            // in this grant is the host's copy of that owner's own, possibly older than what the owner did last (a
+            // death the frozen host dropped). The owner goes on with its own state and tells everyone; the others take
+            // the host's copy only if it is newer than theirs.
+            bool sameOwner = a.Known && a.OwnerSeat == owner && !s_mutateCancelResets;
+            bool kept = changed && sameOwner && owner == s_host.LocalSeat;
             a.ApplyGrant(owner, epoch);
-            ReceiveState(a, state, changed);
+            // T-208 (5): the host grants an enemy it never saw with a state nobody captured. Nobody applies that state;
+            // the new owner goes on from its own enemy (Resume -> Seed) and tells the others.
+            if (!kept && (s_mutateBlankGrant || !EnemyOwnership.BlankState(state.Generation, state.Tick, state.Alive, state.Killed))) ReceiveState(a, state, changed && !sameOwner);
             if (changed && !Mine(a)) a.ExpectFirstSnapshot = true;
             if (Mine(a)) Resume(a); else FreezeBodies(a);
-            if (changed) Trace("owner change", a, "ReadAuthority");
+            if (kept && !EnemyOwnership.BlankState(a.Latest.Generation, a.Latest.Tick, a.Latest.Alive, a.Latest.Killed))
+                SendLife(a, a.Latest.Killed ? (byte)2 : (byte)3);
+            if (changed) Trace("owner change", a, "ReadAuthority" + (kept ? " (kept its own state)" : ""));
         }
         static void ReadHandoff(BinaryReader r)
         {
@@ -631,6 +707,7 @@ namespace OriCoop
         }
         static void Resume(Actor a)
         {
+            if (Unseeded(a)) { Seed(a); return; }   // T-208 (5)
             SetPlaceholder(a, a.Latest);
             if (a.Placeholder != null && a.Latest.Killed) { a.Placeholder.DestroyCurrentInstance(); Bind(a); }
             else if (a.Placeholder != null && a.Latest.Alive && a.Placeholder.CurrentEntity == null)
@@ -638,6 +715,7 @@ namespace OriCoop
                 s_spawning = true; try { a.Placeholder.Spawn(); } finally { s_spawning = false; }
                 Bind(a);
             }
+            if (a.Latest.Alive) ApplyRammingVariant(a, a.Latest);
             Enemy e = a.Entity; if (e == null) return;
             if (a.RestoreController != null && a.RestoreController.Length > 0)
             {
@@ -679,7 +757,13 @@ namespace OriCoop
         static void ReadLife(BinaryReader r)
         {
             Actor a = ReadId(r); uint epoch = r.ReadUInt32(); byte kind = r.ReadByte(); ulong hit = r.ReadUInt64(); a.Origin = ReadVector(r); State s = ReadState(r, a, true);
-            if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, true)) return;
+            if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, true))
+            {
+                // T-208 (1): a split piece's life message from the PC that simulated it until a moment ago
+                // (review 1: by its family's history, which a piece this PC never heard of shares)
+                if (a.Root != null && !s_mutateNoLateLife && a.Root.AcceptLateLife(s_host.LocalSeat, epoch, Services.Net.Sender)) LateLife(a, s, hit);
+                return;
+            }
             if (!EnemyOwnership.AcceptLife(a.Generation, a.Latest.Tick, a.Latest.Killed, a.ExpectFirstSnapshot, s.Generation, s.Tick, s.Killed)) return;
             a.LastHit = hit; ReceiveState(a, s, true);
             if (kind == 2) a.DeathTime = Now;
@@ -708,8 +792,9 @@ namespace OriCoop
             e.Position = position; if (e.Animation != null && e.Animation.SpriteMirror != null) e.FaceLeft = s.Left;
             if (s.HasVisualAngle)
             {
-                FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy; SwarmEnemy swarm = e as SwarmEnemy;
-                if (swarm != null && swarm.FeetTransform != null) swarm.FeetTransform.eulerAngles = new Vector3(0f, 0f, s.VisualAngle);
+                FishEnemy fish = e as FishEnemy; DashOwlEnemy owl = e as DashOwlEnemy; SwarmEnemy swarm = e as SwarmEnemy; RammingEnemy ram = e as RammingEnemy;
+                Transform feet = swarm != null ? swarm.FeetTransform : ram != null ? ram.FeetTransform : null;
+                if (feet != null) feet.eulerAngles = new Vector3(0f, 0f, s.VisualAngle);
                 if (fish != null && fish.Rotation != null)
                 { Vector3 angles = fish.Rotation.eulerAngles; angles.z = s.VisualAngle; fish.Rotation.eulerAngles = angles; }
                 if (owl != null && owl.SpriteRotation != null)
@@ -804,12 +889,15 @@ namespace OriCoop
         static class EnemySeesPartnerHorizontally
         {
             [HarmonyPriority(Priority.First)]
-            static bool Prefix(SeeSeinHorizontalyTrigger __instance, out bool __state)
+            internal static bool Prefix(SeeSeinHorizontalyTrigger __instance, out bool __state)
             {
                 __state = false; if (!Active) return true; Actor a = For(__instance); if (a == null) return true;
                 if (a.Entity != null && Supported(a.Entity) && !Mine(a)) return false;
                 object nearest = s_host.NearestPuppet(__instance.transform.position);
                 SeinCharacter player = nearest != null ? s_host.PuppetSein(nearest) : Local;
+                // T-208 (8): a cutscene can take the local Ori away while the session goes on. With no player to look
+                // for, this look is skipped; before, the line below threw on every fixed step.
+                if ((player == null || player.Controller == null) && !s_mutateSightNoPlayer) return false;
                 s_horizontalPlayer.SetValue(__instance, player.Controller.Transform);
                 if (nearest != null && !s_host.Inside) { s_host.Enter(nearest); __state = true; }
                 return true;
@@ -1079,6 +1167,11 @@ namespace OriCoop
         static void Spawned(GameObject prefab, GameObject instance)
         {
             if (!Active || s_spawning || instance == null) return;
+            ProjectileIdentity recycled = instance.GetComponent<ProjectileIdentity>();
+            if (recycled != null && recycled.FxName != null)
+            {
+                s_copies.Remove(recycled); recycled.FxName = null; recycled.Id = 0; recycled.Cosmetic = false;
+            }
             bool playerAttack = instance.GetComponent<SpiritFlameProjectile>() != null || instance.GetComponent<ChargeFlameBurst>() != null
                 || instance.GetComponent<GrenadeBurst>() != null || instance.GetComponent<SpiritGrenade>() != null;
             if (playerAttack)
@@ -1124,23 +1217,29 @@ namespace OriCoop
             Vector3 position = ReadVector(r); Quaternion rotation = new Quaternion(r.ReadSingle(), r.ReadSingle(), r.ReadSingle(), r.ReadSingle());
             float damage = r.ReadSingle();
             if (!a.AcceptOwnerMessage(s_host.LocalSeat, epoch, Services.Net.Sender, false)) return;
-            GameObject prefab;
-            if (!s_fxPrefabs.TryGetValue(name, out prefab) || prefab == null)
+            bool useNativeBreak;
+            GameObject prefab = FindEffect(a, name, position, out useNativeBreak);
+            if (prefab == null)
             {
-                foreach (UnityEngine.Object obj in Resources.FindObjectsOfTypeAll(typeof(GameObject)))
-                {
-                    GameObject go = obj as GameObject;
-                    if (go != null && go.name == name && (string.IsNullOrEmpty(go.scene.name) || !go.scene.IsValid()))
-                    { prefab = go; s_fxPrefabs[name] = prefab; break; }
-                }
+                string key = "fx prefab unresolved " + name, scene = a.SceneName;
+                if (scene == "" && Scenes.Manager != null)
+                    foreach (RuntimeSceneMetaData meta in Scenes.Manager.AllScenes)
+                        if (meta.SceneMoonGuid == a.Scene) { scene = meta.Scene; break; }
+                Warn(key + " scene=" + (string.IsNullOrEmpty(scene) ? a.Scene.ToString() : scene), key);
+                return;
             }
-            if (prefab == null) { Warn("fx prefab unresolved " + name); return; }
+            if (useNativeBreak)
+            {
+                FxReceived++; Trace("fx-recv", a, "id=" + id + " prefab=" + name + " handled by floor damage");
+                return;
+            }
             s_spawning = true;
             try
             {
                 GameObject go = InstantiateUtility.Instantiate(prefab, position, rotation) as GameObject;
-                ProjectileIdentity tag = go.GetComponent<ProjectileIdentity>(); if (tag == null) tag = go.AddComponent<ProjectileIdentity>();
-                tag.Id = id; tag.Cosmetic = true; tag.Expires = Now + 4f; s_copies.Add(tag);
+                ProjectileIdentity tag = go.GetComponent<ProjectileIdentity>();
+                if (tag == null) tag = go.AddComponent<ProjectileIdentity>(); else s_copies.Remove(tag);
+                tag.Id = id; tag.Cosmetic = true; tag.Expires = Now + 4f; tag.FxName = name; s_copies.Add(tag);
                 DamageDealer dealer = go.GetComponentInChildren<DamageDealer>(); if (dealer != null && damage >= 0) dealer.Damage = damage;
                 FxReceived++; Trace("fx-recv", a, "id=" + id + " prefab=" + name + " damage=" + damage);
             }
@@ -1369,10 +1468,18 @@ namespace OriCoop
                     if (EnemyAuthority.Policy.UsesLeases)
                     {
                         Vector3 position = a.Entity != null ? a.Entity.Position : a.Origin;
-                        a.UpdateInterest(a.Key, Vector3.Distance(position, Local.Position), a.SceneRadius);
+                        float interest = Vector3.Distance(position, Local.Position);
+                        if (a.Holding) interest = Mathf.Min(interest, a.HoldDistance);   // T-208 (3): the pieces it still simulates
+                        a.UpdateInterest(a.Key, interest, a.SceneRadius);
                         RefreshOwnership(a);
                     }
-                    else if (Services.Net.IsHost && a.OwnerSeat != PolicyDesiredOwner(a)) Decide(a);
+                    else if (Services.Net.IsHost)
+                    {
+                        // T-208 (9): the handoff the host waits for was refused or lost (EnemyAuthority.TakeoverOverdue)
+                        if (a.TakeoverOverdue(Now) && !s_mutateNoTakeoverLimit)
+                        { a.CancelTakeover(); a.Buffer.Clear(); Grant(a, true); Trace("owner change", a, "handoff overdue: back to P" + a.OwnerSeat); }
+                        if (a.OwnerSeat != PolicyDesiredOwner(a)) Decide(a);
+                    }
                 }
             }
             float dt = Mathf.Max(0, Now - s_tokenTime); s_tokenTime = Now; s_tokens = Mathf.Min(Budget / 4f, s_tokens + dt * Budget);
@@ -1430,8 +1537,8 @@ namespace OriCoop
             foreach (Actor a in s_actors.Values)
             {
                 if (!a.Loaded || a.Placeholder == null) continue;
-                string cls = a.ClassName != "" ? a.ClassName : a.Placeholder.GetType().Name.Replace("Placeholder", "");
-                bool mirrored = a.Entity != null ? Supported(a.Entity) : Array.IndexOf(MirroredTypes, AccessTools.TypeByName(cls)) >= 0;
+                string cls = a.ClassName != "" ? a.ClassName : PlaceholderClass(a.Placeholder);
+                bool mirrored = a.Entity != null ? Supported(a.Entity) : EnemyVisuals.MirroredClass(cls);
                 loaded.Add(a.Key + "|" + cls + "|" + mirrored);
             }
             return loaded.ToArray();
@@ -1442,12 +1549,15 @@ namespace OriCoop
             List<string> known = new List<string>();
             foreach (Actor a in s_actors.Values)
             {
-                string cls = a.ClassName != "" ? a.ClassName : a.Placeholder != null ? a.Placeholder.GetType().Name.Replace("Placeholder", "") : "";
+                string cls = a.ClassName != "" ? a.ClassName : PlaceholderClass(a.Placeholder);
                 if (cls == "" || a.Root != null) continue;
-                Type t = AccessTools.TypeByName(cls);
-                known.Add(a.Key + "|" + cls + "|" + (t != null && Array.IndexOf(MirroredTypes, t) >= 0));
+                known.Add(a.Key + "|" + cls + "|" + EnemyVisuals.MirroredClass(cls));
             }
             return known.ToArray();
+        }
+        static string PlaceholderClass(RespawningPlaceholder p)
+        {
+            return p == null ? "" : StartsArmoured(p as RammingEnemyPlaceholder) ? "ArmouredRammingEnemy" : p.GetType().Name.Replace("Placeholder", "");
         }
         // Test sweep: enable the (already loading) scenes around `origin`, list their enemies, then restore the camera
         // target in the same frame. LoadTestArea alone re-disables far scenes in its UpdatePosition before a caller can scan.
@@ -1548,7 +1658,7 @@ namespace OriCoop
                 if (!a.Loaded || a.Placeholder == null || !EnemyPlaceholder(a.Placeholder)) continue;
                 if (rejected != null && rejected.Contains(a.Key)) continue;
                 if (a.Entity != null ? a.Entity.GetType().Name != className || !Supported(a.Entity)
-                    : a.Placeholder.GetType().Name != className + "Placeholder") continue;
+                    : PlaceholderClass(a.Placeholder) != className) continue;
                 candidates.Add(a);
             }
             candidates.Sort(delegate(Actor a, Actor b) { return Vector3.Distance(a.Origin, near).CompareTo(Vector3.Distance(b.Origin, near)); });
@@ -1566,7 +1676,9 @@ namespace OriCoop
             {
                 if (!a.Loaded || a.Placeholder == null || !EnemyPlaceholder(a.Placeholder)) continue;
                 if (rejected != null && rejected.Contains(a.Key)) continue;
-                if (a.Entity != null && !Supported(a.Entity)) continue;
+                // The generic damage fixture uses a Spirit Flame hit, which armour deflects.
+                if (a.Entity != null ? a.Entity is ArmouredRammingEnemy || !Supported(a.Entity)
+                    : StartsArmoured(a.Placeholder as RammingEnemyPlaceholder)) continue;
                 candidates.Add(a);
             }
             candidates.Sort(delegate(Actor a, Actor b) {
@@ -1662,10 +1774,10 @@ namespace OriCoop
             }
             catch (Exception e) { ProtocolSelfTestFailure = e.GetType().Name + ": " + e.Message; return false; }
         }
-        public static void TestAttack(string key, float amount, bool duplicate)
+        public static void TestAttack(string key, float amount, bool duplicate, DamageType? overrideType = null)
         {
             Actor a; if (!s_actors.TryGetValue(key, out a) || a.Entity == null || Local == null) throw new InvalidOperationException("E3 test enemy unavailable: " + Describe(key));
-            DamageType type = a.Entity is KamikazeSootEnemy ? DamageType.LevelUp : DamageType.SpiritFlame;
+            DamageType type = overrideType ?? (a.Entity is KamikazeSootEnemy ? DamageType.LevelUp : DamageType.SpiritFlame);
             Damage d = new Damage(amount, Vector2.zero, a.Entity.Position, type, Local.gameObject);
             d.DealToComponents(a.Entity.DamageReciever.gameObject); if (duplicate) d.DealToComponents(a.Entity.DamageReciever.gameObject);
         }

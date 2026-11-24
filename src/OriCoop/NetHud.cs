@@ -24,6 +24,7 @@ namespace OriCoop
             public string Text;
             public float StartTime;
             public float Duration;
+            public bool Shown;
         }
 
         static readonly Queue<ToastItem> s_toastQueue = new Queue<ToastItem>();
@@ -148,6 +149,8 @@ namespace OriCoop
         }
         // Test-only mutation switch (T-135): the old pick-by-language without fallback.
         static readonly bool s_noFallbackMutation = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_TOAST_NO_FALLBACK") == "1";
+        internal static event Action<string> ToastShown;
+        internal static bool ToastsPending { get { return s_hasCurrentToast || s_toastQueue.Count > 0; } }
         internal static int QueuedToasts { get { return s_toastQueue.Count; } }
         internal static string LastQueuedToast { get { string last = null; foreach (ToastItem t in s_toastQueue) last = t.Text; return last; } }
         // Test helper: drop toasts queued after the first `keep` (a check's own toasts must not show for seconds).
@@ -165,6 +168,7 @@ namespace OriCoop
             item.Text = text ?? "";
             item.StartTime = 0f;
             item.Duration = 3.5f;
+            item.Shown = false;
             s_toastQueue.Enqueue(item);
         }
 
@@ -185,10 +189,7 @@ namespace OriCoop
             }
             else
             {
-                if (NetPlay.IsHost) Toast(
-                    L10n.T("hud.joined.host"));
-                else Toast(
-                    L10n.T("hud.joined.partner"));
+                Toast(L10n.SessionText(NetPlay.IsHost ? "hud.joined.host" : "hud.joined.partner"));
                 s_hadSession = true;
             }
 
@@ -196,7 +197,7 @@ namespace OriCoop
             if (!string.IsNullOrEmpty(NetPlay.RemoteVersion) && NetPlay.RemoteVersion != NetPlay.ModVersion)
             {
                 Toast(
-                    L10n.F("hud.version.mismatch", NetPlay.ModVersion, NetPlay.RemoteVersion));
+                    L10n.SessionFormat("hud.version.mismatch", NetPlay.ModVersion, NetPlay.RemoteVersion));
             }
         }
 
@@ -204,20 +205,17 @@ namespace OriCoop
         {
             if (NetPlay.IsHost)
             {
-                Toast(
-                    L10n.T("hud.partner.left"));
+                if (!NetPlay.UsesCServer || !NetPlay.EndingByChoice) Toast(L10n.SessionText("hud.partner.left"));
             }
-            else
+            // A server room stays open when the last remote leaves.
+            else if (!s_localInitiatedEnd && !NetPlay.EndingByChoice && (!NetPlay.UsesCServer || !NetPlay.Connected))
             {
-                if (!s_localInitiatedEnd && !NetPlay.EndingByChoice)
-                {
-                    s_hadPreviousDrop = true;
-                    s_disconnectModalOpen = true;
-                    s_disconnectWaitSec = 0f;
-                    s_modalFocus = 0;
-                    s_collapsedChip = false;
-                    s_ignoreModalNavUntil = Time.unscaledTime + 0.3f;
-                }
+                s_hadPreviousDrop = true;
+                s_disconnectModalOpen = true;
+                s_disconnectWaitSec = 0f;
+                s_modalFocus = 0;
+                s_collapsedChip = false;
+                s_ignoreModalNavUntil = Time.unscaledTime + 0.3f;
             }
             s_localInitiatedEnd = false;
         }
@@ -263,6 +261,12 @@ namespace OriCoop
                 if ((s_padButtons[i] & mask) != 0 && (s_padPrevButtons[i] & mask) == 0)
                     return true;
             return false;
+        }
+
+        static bool HudCovered
+        {
+            get { return !NetPlay.Enabled || OnlineRoomScreen.Visible || CoopMenu.IsOpen
+                || (NetPlay.UsesCServer && (CsRoomPage.InGame || SessionScreens.Blocking)); }
         }
 
         public static void Tick()
@@ -316,7 +320,7 @@ namespace OriCoop
             if (s_disconnectModalOpen)
             {
                 PollPads();
-                if (Time.unscaledTime < s_ignoreModalNavUntil) return;
+                if (HudCovered || Time.unscaledTime < s_ignoreModalNavUntil) return;
 
                 bool navLeft = Input.GetKeyDown(KeyCode.LeftArrow) || Input.GetKeyDown(KeyCode.UpArrow) ||
                     AnyPadPressed(DLEFT) || AnyPadPressed(DUP);
@@ -439,7 +443,7 @@ namespace OriCoop
                     return;
                 }
 
-                if (!NetPlay.Enabled) { DrawToast(scale); return; }
+                if (HudCovered) { DrawToast(scale); return; }
                 float hudOpacity = P2Hud.GameHudOpacity();
 
                 // Draw gameplay HUD elements only when HUD is visible
@@ -521,13 +525,11 @@ namespace OriCoop
                 Color textC = new Color(0.867f, 0.918f, 0.898f, hudAlpha);
                 DrawText("hud.signal.rtt", textR, rttText, s_signalText, textC);
 
-                // Who I am in this session: "P1 主机" (host) or "P2 伙伴" (guest), in the role's colour.
                 int me = sample ? 1 : Roles.Mine;
                 float rttW = s_signalText.CalcSize(new GUIContent(rttText)).x;
                 float roleRight = barsX - 10f * scale - rttW - 14f * scale;
                 Color mc = Roles.ColorOf(me);
-                string roleText = sample ? L10n.F("hud.role.host", "P1")
-                    : L10n.F(me == 1 ? "hud.role.host" : "hud.role.partner", Roles.Tag(me));
+                string roleText = L10n.F("hud.role", Roles.Tag(me), sample ? L10n.T("roles.host") : Roles.Word(me));
                 DrawText("hud.signal.role", new Rect(roleRight - 160f * scale, topY, 160f * scale, 26f * scale), roleText,
                     s_signalText, new Color(mc.r, mc.g, mc.b, hudAlpha));
             }
@@ -541,7 +543,7 @@ namespace OriCoop
             {
                 string lost = sample ? "" : SignalLostText();
                 string statusLine = sample ? L10n.T("hud.watching") : lost.Length > 0 ? lost
-                    : StorySync.Watching ? L10n.T("hud.watching")
+                    : StorySync.Watching ? L10n.SessionText("hud.watching")
                     : SessionRules.PauseText;
 
                 if (string.IsNullOrEmpty(statusLine)) return;
@@ -739,6 +741,11 @@ namespace OriCoop
                 Color textC = new Color(0.867f, 0.918f, 0.898f, alpha);
 
                 DrawText("hud.toast.text", new Rect(0, topY, Screen.width, 48f * scale), sample ? L10n.T("hud.reconnected") : s_currentToast.Text, s_toastZh, textC);
+                if (!sample && !s_currentToast.Shown && alpha > 0f && Event.current.type == EventType.Repaint)
+                {
+                    s_currentToast.Shown = true;
+                    if (ToastShown != null) ToastShown(s_currentToast.Text);
+                }
             }
             finally { NativeGui.EndPage(); }
         }
@@ -755,7 +762,7 @@ namespace OriCoop
                 float topY = 180f * scale;
 
                 // Title
-                DrawText("hud.disconnect.title", new Rect(0, topY, Screen.width, 64f * scale), L10n.T("hud.disconnect.title"), s_modalTitleZh, new Color(0.95f, 0.65f, 0.55f));
+                DrawText("hud.disconnect.title", new Rect(0, topY, Screen.width, 64f * scale), L10n.SessionText("hud.disconnect.title"), s_modalTitleZh, new Color(0.95f, 0.65f, 0.55f));
 
                 // Spinner & Reconnecting counter
                 float spinY = topY + 90f * scale;

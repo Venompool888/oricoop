@@ -44,6 +44,14 @@ static partial class StoryTests
         });
         IntroCases();
         StoryCases();
+        Check("spirit well: only the first opening of each sequence in the room is a team story", delegate {
+            SpiritWellActivations wells = new SpiritWellActivations();
+            Equal(true, wells.TryActivate("scene A:opening"));
+            Equal(false, wells.TryActivate("scene A:opening"));
+            Equal(true, wells.TryActivate("scene B:opening"));
+            wells.Clear();
+            Equal(true, wells.TryActivate("scene A:opening"));
+        });
         ProgressCases();
         ObjectCases();
         GateCases();

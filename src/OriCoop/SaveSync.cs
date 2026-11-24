@@ -21,8 +21,10 @@ namespace OriCoop
         static readonly SeatReadiness s_guests = new SeatReadiness();
         static readonly HostPromotion s_promotion = new HostPromotion();
         static byte[] s_pending;
+        static byte[] s_hostCheckpointBytes;
         static byte[] s_loadingBytes;
         static byte[] s_titleLoadBytes;   // guest joining from an empty slot: PerformLoad reads these (GuestJoin.cs)
+        static SeinCharacter s_pendingSkillSave;
         static Stopwatch s_loadWatch;
         static float s_loadFinishedAt, s_joinStartedAt, s_adoptedAt, s_diagAt;
         static uint s_joinFrame;
@@ -78,8 +80,10 @@ namespace OriCoop
             s_guests.Clear();
             s_promotion.Reset();
             s_pending = null;
+            s_hostCheckpointBytes = null;
             s_loadingBytes = null;
             s_titleLoadBytes = null;
+            s_pendingSkillSave = null;
             s_loadWatch = null;
             HaveCheckpointPosition = false;
             s_restartFinished = s_restoreFinished = JoinedHost = false;
@@ -134,6 +138,7 @@ namespace OriCoop
             SubsystemGuard.Run("GuestJoin.Tick", s_guestJoinTick);
             if (!Services.Net.Connected || !s_started || s_disabled) return;
             CheckPromotion();
+            if (s_pending == null && !s_loading) TickSkillSave();
             if (Services.Net.IsHost && !s_hostAdopt)
             {
                 // Co-op save lineage first (CoopSaves): the host may adopt the partner's progress before the
@@ -330,6 +335,7 @@ namespace OriCoop
                 if (bytes.Length > SaveWire.MaximumSaveBytes) throw new InvalidDataException("save exceeds NetPeer's 4 MB limit");
                 string timeline = CoopSaves.Timeline;
                 SeatSkillSync.Report();
+                Revive.SendLinkOffer();
                 Services.Net.Send(SaveWire.SaveOffer, true, delegate(BinaryWriter w) { SaveWire.WriteSaveOffer(w, timeline, bytes); });
                 GuestSavesOffered++;
                 Services.Log.Info("net: guest save offered to the room (" + bytes.Length + " bytes, base " + Short(timeline) + ")");
@@ -342,9 +348,14 @@ namespace OriCoop
             int seat = Services.Net.Sender;
             string timeline;
             byte[] bytes;
-            try { bytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveOffer(r, out timeline), "save offer"); }
-            catch (Exception e) { Services.Log.Warn("net: bad save offer from seat " + seat + ": " + e.Message); return; }
             bool host = Services.Net.IsHost;
+            try { bytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveOffer(r, out timeline), "save offer"); }
+            catch (Exception e)
+            {
+                if (host) Revive.RejectLinkOffer(seat);
+                Services.Log.Warn("net: bad save offer from seat " + seat + ": " + e.Message);
+                return;
+            }
             OfferVerdict verdict = SaverPick.Judge(host, !Ready || s_loading || s_hostAdopt || s_disabled || s_adoptingOffer,
                 host && s_guests.ReadyForSeat(seat, true, Ready),
                 CoopSaves.RoomSlotLive, CoopSaves.Timeline, timeline);
@@ -352,6 +363,7 @@ namespace OriCoop
             if (verdict != OfferVerdict.Accept)
             {
                 OffersRejected++;
+                if (host) Revive.RejectLinkOffer(seat);
                 Services.Log.Info("net: save offer from seat " + seat + " not taken: " + verdict + " (base " + Short(timeline)
                     + ", room " + Short(CoopSaves.Timeline) + ")");
                 return;
@@ -377,13 +389,20 @@ namespace OriCoop
 
         static string Short(string hash) { return string.IsNullOrEmpty(hash) ? "-" : hash.Length > 8 ? hash.Substring(0, 8) : hash; }
 
+        internal static bool RestoreAcceptedCheckpoint()
+        {
+            byte[] bytes = CoopSaves.CommitBytes ?? s_hostCheckpointBytes;
+            // Load only the in-memory checkpoint; the live game keeps running.
+            return bytes != null && GameController.Instance.SaveGameController.LoadFromBytes(bytes);
+        }
+
         static void Receive(BinaryReader r)
         {
             if (Services.Net.IsHost || s_loading || s_pending != null || s_disabled) return;
             HaveCheckpointPosition = SaveWire.ReadHasPosition(r);
             SavePosition p = SaveWire.ReadCoordinates(r);
             HostCheckpointPosition = new Vector3(p.X, p.Y, p.Z);
-            s_pending = SeatSkillSync.ForLoad(SaveWire.ReadSaveBytes(r), "checkpoint transfer");
+            s_pending = s_hostCheckpointBytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveBytes(r), "checkpoint transfer");
             if (CoopSaves.CommitsReceived == 0) CheckpointsBeforeCommit++;
             if (CopySlotAtCheckpoint == -2) CopySlotAtCheckpoint = CoopSaves.SessionSlot;
             Ready = false; JoinedHost = false;
@@ -482,6 +501,7 @@ namespace OriCoop
         {
             static void Postfix()
             {
+                s_pendingSkillSave = null;
                 if (!Services.Net.Connected || (Services.Net.IsHost && !s_hostAdopt) || !s_loading || s_disabled) return;
                 if (Services.Net.IsHost)
                 {
@@ -560,24 +580,45 @@ namespace OriCoop
             }
         }
 
-        // Buying a skill calls CreateCheckpoint + PerformSave natively, online too (coordinator, 2026-11-21: a purchase
-        // is a save point; a guest's becomes a SaveOffer). Test-only: TestSkipPurchaseSave buys without that save, the
-        // stand-in for a purchase whose offer was not taken (the per-seat record must roll it back).
+        static bool SkillSaveReady(SeinCharacter ori)
+        { return !Revive.IsDowned(ori) && ori.PlatformBehaviour.PlatformMovement.IsOnGround; }
+
+        static void SaveSkillCheckpoint(SaveGameController save)
+        {
+            s_pendingSkillSave = null;
+            GameController.Instance.CreateCheckpoint();
+            save.PerformSave();
+        }
+
+        static void TickSkillSave()
+        {
+            SeinCharacter ori = s_pendingSkillSave;
+            if (ori != null && ori == Characters.Sein && NetPlay.LocalInGameplay() && SkillSaveReady(ori))
+                SaveSkillCheckpoint(GameController.Instance.SaveGameController);
+        }
+
+        // Test-only: buy without a save to exercise rolling back an unaccepted purchase.
         public static bool TestSkipPurchaseSave;
         [HarmonyPatch(typeof(SkillTreeManager), "OnMenuItemPressed")]
         static class SkillPurchaseSavePatch
         {
-            static void Checkpoint(GameController game) { if (!TestSkipPurchaseSave) game.CreateCheckpoint(); }
-            static void Save(SaveGameController save) { if (!TestSkipPurchaseSave) save.PerformSave(); }
+            static void Save(SaveGameController save)
+            {
+                if (TestSkipPurchaseSave) return;
+                SeinCharacter ori = Characters.Sein;
+                if (SessionRules.NoPause && !SkillSaveReady(ori)) s_pendingSkillSave = ori;
+                else SaveSkillCheckpoint(save);
+            }
 
             static IEnumerable<CodeInstruction> Transpiler(IEnumerable<CodeInstruction> instructions)
             {
                 MethodInfo checkpoint = AccessTools.Method(typeof(GameController), "CreateCheckpoint");
                 MethodInfo save = AccessTools.Method(typeof(SaveGameController), "PerformSave");
+                // Run the snapshot and save together, at the same position as any guest offer.
                 foreach (CodeInstruction code in instructions)
                 {
-                    string method = code.Calls(checkpoint) ? "Checkpoint" : code.Calls(save) ? "Save" : null;
-                    if (method != null) { code.opcode = OpCodes.Call; code.operand = AccessTools.Method(typeof(SkillPurchaseSavePatch), method); }
+                    if (code.Calls(checkpoint)) { code.opcode = OpCodes.Pop; code.operand = null; }
+                    else if (code.Calls(save)) { code.opcode = OpCodes.Call; code.operand = AccessTools.Method(typeof(SkillPurchaseSavePatch), "Save"); }
                     yield return code;
                 }
             }

@@ -171,7 +171,7 @@ namespace OriCoop
             Seams.GameServices.Install();
             NativeGui.PageChanged = L10nProbe.Where;   // test-side hooks wired here so production code never reads test flags
             NativeModeMenu.SuppressAutomaticMenu = delegate { return TestHarness.Enabled; };
-            SaveSync.Init(); Revive.Init(); WorldSync.Init(); ProgressSync.Init(); Saves.SeatSkillSync.Init(); EnemySync.Init();
+            SaveSync.Init(); Revive.Init(); WorldSync.Init(); ProgressSync.Init(); Saves.SeatSkillSync.Init(); EnemySync.Init(); PartnerSkillFx.Init();
             NetPlay.DevicePrimaryChanged += SaveSync.RebindDevice;
             SessionRules.Init(); NetHud.Init(); OriCoop.Authority.CServerLink.Install();
             P2Context.PatchProximityTypes(H);
@@ -246,6 +246,7 @@ namespace OriCoop
         void SampleInput()
         {
             P2Input.Sample(m_samplePad, P2Context.P2Input);
+            ForcedSync.FilterInput(2, P2Context.P2, P2Context.P2Input);
             if (Players.Remotes.Count > 1) OnlineLocalPlayers.SampleExtras();
         }
         void TickSharedProgress() { SharedProgress.Sync(m_tickP1, m_tickP2); }
@@ -323,7 +324,8 @@ namespace OriCoop
                     }
                 }
                 m_parked = !p1Available;
-                P2Input.HoldStill = !Revive.IsDowned(p1) && (!p1Available || p1.Controller == null || !p1.Controller.CanMove || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
+                P2Input.HoldStill = !Revive.IsDowned(p1) && (!p1Available || p1.Controller == null
+                    || !SessionRules.CanMoveIgnoringScreen(p1.Controller) || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput);
                 if (m_parked) return;
                 m_mirrorTimer -= Time.unscaledDeltaTime;
                 if (m_mirrorTimer <= 0f)
@@ -456,7 +458,11 @@ namespace OriCoop
             if (Players.Remotes.Count > 1) CoopCamera.ApplyGroup(P2Context.P1, LeashOverride <= 0f && !m_parked, GroupLeash);
             else CoopCamera.Apply(P2Context.P1, P2Context.P2, LeashOverride <= 0f && !Revive.AnyDowned);
         }
-        void CheckLocalVisual() { P2Extras.RetryReturn(Players.First); VisualInvariants.Check(P2Context.P1, P2Context.P2); }
+        void CheckLocalVisual()
+        {
+            foreach (Puppet puppet in Players.Remotes) P2Extras.RetryReturn(puppet);
+            VisualInvariants.Check(P2Context.P1, P2Context.P2);
+        }
         void UpdateLocalHud() { P2Hud.Update(P2Context.P2); }
         void UpdateLateCamera() { UpdateCamera(P2Context.P1, P2Context.P2); }
 
@@ -487,12 +493,16 @@ namespace OriCoop
         internal void DoGUI()
         {
             SubsystemGuard.Run("OnlineRoomScreen.Draw", s_roomDraw);
-            if (OnlineRoomScreen.Visible) return;
-            SubsystemGuard.Run("CoopMenu.Draw", s_menuDraw);
-            if (CoopMenu.IsOpen) return;
+            if (!OnlineRoomScreen.Visible) SubsystemGuard.Run("CoopMenu.Draw", s_menuDraw);
+            if (OnlineRoomScreen.Visible || CoopMenu.IsOpen)
+            {
+                if (NetPlay.UsesCServer) SubsystemGuard.Run("NetHud.Draw", s_netHudDraw);
+                return;
+            }
             SubsystemGuard.Run("NetPlay.DrawGUI", s_netDraw);
+            if (NetPlay.UsesCServer) SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
             SubsystemGuard.Run("NetHud.Draw", s_netHudDraw);
-            SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
+            if (!NetPlay.UsesCServer) SubsystemGuard.Run("SessionScreens.Draw", s_sessionDraw);
             if ((L10nProbe.On && TestJoinHint) || (P2Context.P2 == null && !TestHarness.Enabled && PlayMode.Current == PlayMode.Coop)) SubsystemGuard.Run("Plugin.DrawJoinHint", m_joinHint);
             SubsystemGuard.Run("ControlsGuideHud.Draw", s_controlsGuideDraw);
         }
@@ -628,6 +638,7 @@ namespace OriCoop
 
         public static void DespawnPuppet(Puppet puppet)
         {
+            PartnerSkillFx.StopGlow(puppet);
             SeinCharacter p2 = puppet.Sein;
             if (p2 != null)
             {
@@ -683,10 +694,11 @@ namespace OriCoop
 
         public static void Teleport(SeinCharacter who, Vector3 pos)
         {
+            ForcedSync.BeforeTeleport(who);
             who.Position = pos + new Vector3(0f, 0.5f, 0f);
             VisualInvariants.Grace(1.5f);
             who.Speed = Vector3.zero;
-            // T-112: the own Ori was moved on purpose; an online menu hold (SessionRules.HoldLocal) must not pull it back.
+            // Re-anchor any story hold at the new position.
             if (Players.OfSein(who) == null) SessionRules.PositionChanged();
             // The game brings "the" companion along on its own teleports via the global Characters.Ori, which is
             // P1's. When P2 jumps, bring P2's companion along the same way, as P2.
@@ -730,6 +742,7 @@ namespace OriCoop
         {
             static bool Prefix(SeinDamageReciever __instance)
             {
+                SessionRules.CloseScreensOnDeath(__instance.Sein);
                 if (P2Context.P2 == null) return true;
                 Puppet puppet = Players.OfInstance(__instance.GetInstanceID());
                 bool isP2 = puppet != null;

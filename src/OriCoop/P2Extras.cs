@@ -29,6 +29,7 @@ namespace OriCoop
                 puppet.Companion = go.GetComponent<Ori>();
                 Characters.Ori = puppet.Companion;
                 P2Context.AddOwned(go);
+                ForgetReturn(puppet);
                 ReturnCompanion(puppet, "spawned");
             }
             finally
@@ -49,6 +50,11 @@ namespace OriCoop
             if (puppet == null || puppet.Sein == null) return;
             Ori c = puppet.Companion;
             if (c == null) return;
+            if (!CanReturn(c))
+            {
+                if (!s_returnRetry.ContainsKey(puppet)) s_returnRetry.Add(puppet, new ReturnRetry { Why = why });
+                return;
+            }
             GameplayCamera cam = UI.Cameras.Current;
             Transform camTarget = cam != null ? cam.Target : null;
             bool returned = false;
@@ -66,15 +72,15 @@ namespace OriCoop
             NoteReturn(puppet, returned, why);
         }
 
-        // T-213 (8): the game's BackToPlayerController threw once on a companion created in the same call (playtest 4, a
-        // null reference). Nothing tried again: the companion stayed in the state it was in instead of following its Ori,
-        // until the visual check happened to see a symptom (8 units away, or 4 s on a scripted move). A return that
-        // threw is now tried again a quarter of a second later, up to 8 times.
+        // Ori.Awake caches m_transform on a clone's first activation.
+        static bool CanReturn(Ori c) { return s_mutateReturnInactive || c.gameObject.activeInHierarchy; }
+
         sealed class ReturnRetry { public float At; public int Tries; public string Why; }
         static readonly Dictionary<Puppet, ReturnRetry> s_returnRetry = new Dictionary<Puppet, ReturnRetry>();
         static readonly bool s_mutateNoReturnRetry = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_COMPANION_RETRY") == "1";
+        static readonly bool s_mutateReturnInactive = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_COMPANION_RETURN_INACTIVE") == "1";
         public static int CompanionReturnFailures, CompanionReturnRetries;
-        internal static int TestFailReturns;   // test only: the next N returns throw, as the game's call did
+        internal static int TestFailReturns;   // test only: the next N returns throw
 
         static void NoteReturn(Puppet puppet, bool returned, string why)
         {
@@ -91,18 +97,17 @@ namespace OriCoop
             }
         }
 
-        // The puppet is being removed (Plugin.DespawnPuppet): a return that was to be tried again goes with it. Before,
-        // the entry kept the removed puppet until the next return failed.
         public static void ForgetReturn(Puppet puppet) { if (puppet != null) s_returnRetry.Remove(puppet); }
         public static int ReturnRetriesKept { get { return s_returnRetry.Count; } }
 
-        // Every frame for each puppet (Plugin, before the visual check): tries a return that threw again.
         public static void RetryReturn(Puppet puppet)
         {
             ReturnRetry retry;
-            if (s_mutateNoReturnRetry || puppet == null || s_returnRetry.Count == 0 || !s_returnRetry.TryGetValue(puppet, out retry)) return;
+            if (puppet == null || !s_returnRetry.TryGetValue(puppet, out retry)) return;
             if (puppet.Sein == null || puppet.Companion == null) { s_returnRetry.Remove(puppet); return; }
-            if (Time.unscaledTime < retry.At) return;
+            if (!CanReturn(puppet.Companion) || Time.unscaledTime < retry.At) return;
+            if (retry.Tries == 0) { ReturnCompanion(puppet, retry.Why); return; }
+            if (s_mutateNoReturnRetry) return;
             CompanionReturnRetries++;
             ReturnCompanion(puppet, retry.Why + ", try " + (retry.Tries + 1));
         }

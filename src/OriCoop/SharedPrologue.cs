@@ -860,7 +860,7 @@ namespace OriCoop
                 if (!GuestHolds) return true;
                 SkipsRefused++;
                 Services.Log.Info("prologue: skip refused on this PC (only P1 skips the prologue)");
-                if (UI.MainMenuVisible) NetHud.Toast(L10n.T("prologue.skip_p1_only"));
+                if (UI.MainMenuVisible) NetHud.Toast(L10n.SessionText("prologue.skip_p1_only"));
                 return false;
             }
         }

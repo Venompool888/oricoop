@@ -103,7 +103,7 @@ namespace OriCoop
             DUP = 1, DDOWN = 2, DLEFT = 4, DRIGHT = 8;
         // T-199: FlagFaceKnown says FlagFaceLeft is meaningful (a frame from an older build has neither: facing is then
         // left to the puppet's own replay, as before). Two spare bits of the same byte: the frame's size is unchanged.
-        const int FlagLT = 1, FlagRT = 2, FlagNeutral = 4, FlagFaceKnown = 8, FlagFaceLeft = 16;
+        const int FlagLT = 1, FlagRT = 2, FlagNeutral = 4, FlagFaceKnown = 8, FlagFaceLeft = 16, FlagScreen = 32;
 
         public struct Frame
         {
@@ -341,6 +341,7 @@ namespace OriCoop
             string env = Environment.GetEnvironmentVariable("ORICOOP_NET");
             s_modeNow = (string.IsNullOrEmpty(env) ? s_mode.Value : env).Trim().ToLowerInvariant();
             if (!Enabled) return;
+            s_session.ActiveTransport = SessionMachine.NormalizeTransport(s_configuredTransport());
             long connectAt;
             if (TestHarness.Enabled && !IsHost && long.TryParse(Environment.GetEnvironmentVariable("ORICOOP_NET_CONNECT_AT"), out connectAt) && connectAt > 0)
             {
@@ -352,16 +353,13 @@ namespace OriCoop
         }
 
         // ---------------------------------------------------------------- runtime start (in-game online menu)
-        // The menu starts and stops online play while the game runs. Its choices live in runtime fields (s_rt*)
-        // that win over env/config only for that session, so a menu session never changes how a config- or
-        // env-driven launch behaves (tests, the [Net] file). The last address / room code are remembered in
-        // [OnlineMenu] for prefilling.
-        static string s_rtTransport, s_rtAddress;
+        // The selected transport and the menu's address/port override env/config for this session only.
+        // The last address / room code are remembered in [OnlineMenu] for prefilling.
+        static string s_rtAddress;
         static int s_rtPort;
         static ConfigEntry<string> s_menuAddress, s_menuRoom;
-        static string TransportRaw { get { return s_rtTransport ?? Env("ORICOOP_NET_TRANSPORT", s_transportKind.Value); } }
-        // T-159: "relay" (an old setting, env or caller) means direct now.
-        public static string TransportName { get { string t = TransportRaw.Trim().ToLowerInvariant(); return t == "relay" ? "direct" : t; } }
+        static readonly Func<string> s_configuredTransport = delegate { return Env("ORICOOP_NET_TRANSPORT", s_transportKind.Value); };
+        public static string TransportName { get { return s_session.TransportName(s_configuredTransport); } }
         public static string ConfigAddress { get { return s_menuAddress.Value.Length > 0 ? s_menuAddress.Value : s_address.Value; } }
         public static string ConfigRoomCode { get { return s_menuRoom.Value; } }
         public static int ConfigPort { get { return s_port.Value; } }
@@ -375,8 +373,7 @@ namespace OriCoop
         // target: direct join = "ip[:port]"; factory transports get it as is; ignored otherwise.
         public static void Begin(bool host, string transport, string target)
         {
-            transport = (transport ?? "direct").Trim().ToLowerInvariant();
-            if (transport == "relay") transport = "direct";   // T-159: the relay is gone
+            transport = SessionMachine.NormalizeTransport(transport);
             // Steam guest: a join started by an accepted invite (SteamInviteHook) may already be running when the
             // player opens Online -> Steam -> Join. Restarting it would leave the lobby and lose the invite.
             if (!host && transport == "steam" && SteamJoinHealthy)
@@ -389,7 +386,7 @@ namespace OriCoop
             End("restarting online play");
             s_steamLobby = rejoin;
             if (rejoin != 0) Plugin.Log.LogInfo("online co-op: retrying the Steam lobby " + rejoin);
-            s_rtTransport = transport;
+            s_session.ActiveTransport = transport;
             s_factorySession = TransportFactory != null && transport != "direct" && transport != "steam";
             target = (target ?? "").Trim();
             s_factoryTarget = target;
@@ -420,7 +417,7 @@ namespace OriCoop
                 finally { EndingByChoice = byChoice; }
             }
             OnlineRoomScreen.Reset();
-            s_rtTransport = s_rtAddress = null; s_rtPort = 0; RoomCodeOverride = null;
+            s_rtAddress = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;
             s_holdRetry = false;
             if (!Enabled) return;
@@ -439,6 +436,7 @@ namespace OriCoop
             }
             Close();
             s_reListen = false; s_modeNow = "off"; Problem = "";
+            s_session.ActiveTransport = null;
             if (Stopped != null) { try { Stopped(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: stop hook: " + e.Message); } }
             HostOverride = false;      // a role from the ended session (server-mode arbiter) never carries into the next one
             Plugin.Log.LogInfo("online co-op: stopped (" + why + ")");
@@ -486,6 +484,7 @@ namespace OriCoop
         static SteamTransport s_steam;
         static ConfigEntry<KeyCode> s_inviteKey;
         public static bool UsesSteam { get { return TransportName == "steam"; } }
+        internal static bool UsesCServer { get { return Enabled && TransportName == "cserver"; } }
 
         static void OpenSteam()
         {
@@ -874,6 +873,7 @@ namespace OriCoop
                 s_hub.Flush();
             }
             else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
+            if (s_factorySession) Authority.CServerLink.TickOwnerNotice();
             if (!Connected || WaitingForSeat) return;
 
             bool inGame = LocalInGameplay() && !TestLoading;   // TestLoading: as while loading, also drop the puppets here
@@ -902,9 +902,9 @@ namespace OriCoop
                 else if (remote.Puppet != null && (!remote.InGameplay || !inGame))
                 { Plugin.DespawnPuppet(remote.Puppet); remote.Puppet = null; }
             }
-            SubsystemGuard.Run("PartnerFx.Tick", s_fxTick);   // T-213: soul links kept until their owner's Ori is here
+            SubsystemGuard.Run("Revive.TickRoomFlame", s_roomFlameTick);
         }
-        static readonly Action s_fxTick = PartnerFx.Tick;
+        static readonly Action s_roomFlameTick = Revive.TickRoomFlame;
 
         static string LocalScene(bool inGame)
         {
@@ -932,7 +932,9 @@ namespace OriCoop
         internal static bool TestLoading;
 
         // T-131: a teammate in this session (it said hello), also while its Ori is away (loading, rejoining).
-        internal static bool RemoteInSession(int seat) { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello; }
+        internal static bool RemoteInSession(int seat) { return s_session.RemoteInSession(seat); }
+        internal static bool RemoteLoading(int seat)
+        { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello && !remote.InGameplay; }
 
         public static bool LocalInGameplay()
         {
@@ -1055,11 +1057,13 @@ namespace OriCoop
         static void SendSeatFrame(int seat, SeinCharacter p1, uint tick)
         {
             GameController gc = GameController.Instance;
-            bool neutral = gc == null || gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.InputLocked
+            bool screen = SessionRules.ScreenInputLocked(p1);
+            bool neutral = screen || gc == null || gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.InputLocked || ForcedSync.IsLocked(p1)
                 || p1.Controller == null || !p1.Controller.CanMove || p1.Controller.LockMovementInput || p1.Controller.IgnoreControllerInput;
 
             Frame f = new Frame();
             f.Tick = tick;
+            if (screen) f.Flags |= FlagScreen;
             if (!neutral)
             {
                 // Core.Input holds P1's input (keyboard or pad) for this step; encode it pad-style.
@@ -1187,6 +1191,8 @@ namespace OriCoop
             }
             if ((f.Flags & FlagFaceKnown) != 0) { remote.HaveFace = true; remote.FaceLeft = (f.Flags & FlagFaceLeft) != 0; }
             ApplyFacing(remote);
+            // Replay the screen lock as well as neutral buttons to cancel casts.
+            remote.Puppet.ScreenInputLocked = (f.Flags & FlagScreen) != 0;
             if ((f.Flags & FlagNeutral) != 0) { HoldNeutral(remote); return; }
             P2Input.Fill(remote.Puppet.Input, f.Buttons, DQ(f.LX), DQ(f.LY), DQ(f.RX), DQ(f.RY), (f.Flags & FlagLT) != 0, (f.Flags & FlagRT) != 0, false);
         }
@@ -1269,7 +1275,9 @@ namespace OriCoop
         {
             if (!Enabled) return "";
             string st = Peer == null ? (HasHub ? "listening" : "starting") : Peer.State.ToString().ToLowerInvariant();
-            string s = "NET " + (IsHost ? "host P1" : "guest P" + Players.LocalSeat) + " " + st;
+            string role = UsesCServer ? L10n.F("hud.role", Roles.Tag(Roles.Mine), Roles.Word(Roles.Mine))
+                : IsHost ? "host P1" : "guest P" + Players.LocalSeat;
+            string s = "NET " + role + " " + st;
             if (UsesSteam)
                 s += s_steam == null ? (IsHost ? " (Steam: starting)" : " (Steam: waiting for an invite: accept it in Steam, or Join Game from your friends list)")
                     : !s_steam.Ready ? " (Steam: lobby starting)"
@@ -1279,7 +1287,7 @@ namespace OriCoop
                 NetStats n = Peer.Stats;
                 s += string.Format("  RTT {0:F0} ms  jitter {1:F0}  spread {11:F0}  loss {2:F1}%  {3:F1}/{4:F1} KB/s  buf {5}/{6}  err {7:F2} (avg {8:F2})  snaps {9}  lost {10}",
                     n.RttMs, n.JitterMs, n.LossPercent, n.SendKBps, n.RecvKBps, (Primary == null ? 0 : Primary.Buffer.Count), TargetDelay, LastError, AvgError, Snaps, FramesMissing, LatenessSpreadMs);
-                if (!RemoteInGameplay) s += "  (partner not in gameplay)";
+                if (!RemoteInGameplay) s += UsesCServer ? "  (" + L10n.T("hud.remote_not_in_game.cs") + ")" : "  (partner not in gameplay)";
                 if (RemoteHello && RemoteVersion != ModVersion) s += "  VERSION MISMATCH " + RemoteVersion;
             }
             else if (Peer != null && Peer.State == PeerState.Disconnected) s += " (" + OwnDisconnectReason(Peer, Peer.DisconnectReason) + ")";
@@ -1300,7 +1308,14 @@ namespace OriCoop
             float a = ok ? P2Hud.GameHudOpacity() : 1f;
             if (a <= 0.01f) return;
             s_style.normal.textColor = ok ? new Color(0.6f, 1f, 0.7f, a) : new Color(1f, 0.6f, 0.4f, a);
-            GUI.Label(new Rect(10f, 6f, Screen.width - 20f, 30f), StatusLine(), s_style);
+            Rect rect = new Rect(10f, 6f, Screen.width - 20f, 30f);
+            if (UsesCServer && NativeGui.Available)
+            {
+                NativeGui.BeginPage("hud.stats");
+                try { NativeGui.Label("hud.stats.line", rect, StatusLine(), s_style.fontSize, TextAnchor.MiddleLeft, s_style.normal.textColor); }
+                finally { NativeGui.EndPage(); }
+            }
+            else GUI.Label(rect, StatusLine(), s_style);
         }
 
         // The partner's Ori is simulated here only to look right; its owner decides what happens to it.

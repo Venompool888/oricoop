@@ -21,10 +21,35 @@ namespace OriCoop.Rules
             get { int first = 0; foreach (int seat in seats) if (first == 0 || seat < first) first = seat; return first; }
         }
         public static bool LocalPaused(bool online, bool paused) { return online && paused; }
+        public static bool ScreenRunsLive(bool onlineNoPause, bool menuOpen, bool popupOpen, bool coopPanelOpen)
+        { return onlineNoPause && (menuOpen || popupOpen || coopPanelOpen); }
+        public static bool ScreenLocksSeat(int seat, int primarySeat, bool nativeScreenOpen, int panelSeat)
+        { return seat == panelSeat || (seat == primarySeat && nativeScreenOpen); }
+        public static bool HoldOri(bool online, bool storyWatching, bool respawning)
+        { return online && (storyWatching || respawning); }
+        public static int RestoreScreenSuspends(ref int skipped, ref int vanilla)
+        {
+            int restored = skipped;
+            vanilla += restored; skipped = 0;
+            return restored;
+        }
+        public static bool ConsumeMenuResume(ref int skipped, ref int vanilla)
+        {
+            if (skipped > 0) { skipped--; return false; }
+            if (vanilla == 0) return false;
+            vanilla--; return true;
+        }
         public static bool WantRemotePause(bool online, bool partner, bool ready, bool hasPlayer, bool respawning, bool gameplay)
         {
             return online && partner && ready && hasPlayer && !respawning && gameplay;
         }
+    }
+
+    public sealed class ScreenInputLocks
+    {
+        readonly HashSet<object> owners = new HashSet<object>();
+        public void Set(object owner, bool locked) { if (locked) owners.Add(owner); else owners.Remove(owner); }
+        public bool IsLocked(bool nativeLocked) { return nativeLocked || owners.Count != 0; }
     }
 
     // What this PC last told the others about its own pause (msg 53) in the current session.
@@ -43,39 +68,5 @@ namespace OriCoop.Rules
             if (!online || !started || paused == reported) return false;
             reported = paused; return true;
         }
-    }
-
-    // T-044: online nothing pauses. Native screens that suspend the game (help popups, page popups, skill-tree item
-    // help) call Suspend/Resume in pairs, sometimes Resume without Suspend. Online the suspend is skipped and remembered
-    // per owner, so its matching resume is skipped too and no other suspension's reference count moves. Offline, and a
-    // popup opened before going online, stay vanilla.
-    public sealed class PopupLedger<T> where T : class
-    {
-        readonly Dictionary<T, int> skipped = new Dictionary<T, int>();
-        // true = do the native suspend (offline)
-        public bool Open(T owner, bool online)
-        {
-            if (!online) return true;
-            int n; skipped.TryGetValue(owner, out n); skipped[owner] = n + 1; return false;
-        }
-        // true = do the native resume (it was not skipped)
-        public bool Close(T owner)
-        {
-            int n;
-            if (!skipped.TryGetValue(owner, out n)) return true;
-            if (n <= 1) skipped.Remove(owner); else skipped[owner] = n - 1;
-            return false;
-        }
-        public int OpenCount { get { int total = 0; foreach (int n in skipped.Values) total += n; return total; } }
-        public bool AnyOpen { get { return skipped.Count > 0; } }
-        // Owners that are gone (destroyed screen) without closing: forget them so nothing stays locked.
-        public int Prune(Predicate<T> gone)
-        {
-            List<T> dead = new List<T>();
-            foreach (T owner in skipped.Keys) if (gone(owner)) dead.Add(owner);
-            foreach (T owner in dead) skipped.Remove(owner);
-            return dead.Count;
-        }
-        public void Clear() { skipped.Clear(); }
     }
 }

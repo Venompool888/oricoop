@@ -788,6 +788,20 @@ namespace OriCoop
             }
             yield return StartCoroutine(Wait(1f));
             P1.Mortality.Health.RestoreAllHealth(); P2.Mortality.Health.RestoreAllHealth(); // later scenarios start healthy
+            P2.Energy.RestoreAllEnergy();
+            Vector3 castAt = P2.Position, back = P1.Position;
+            P2Context.Enter();
+            try { NetReviveTest.CastSoulLink(P2); }
+            finally { P2Context.Exit(); }
+            Check(NetReviveTest.NativeLinkAt(P1, castAt) && P2.SoulFlame.InsideCheckpointMarker,
+                "revive: local P2 places and uses P1's native soul link at P2's position");
+            yield return StartCoroutine(NetReviveTest.StandAtNativeLink(P1, castAt));
+            string flameState;
+            bool onlyOne = NetReviveTest.OnlyNativeFlame(P1, out flameState);
+            bool inside = P1.SoulFlame.InsideCheckpointMarker;
+            Check(inside && NetReviveTest.NativeLinkAt(P1, castAt) && onlyOne,
+                "revive: local P1 uses the same flame and only one exists (inside=" + inside + ", " + flameState + ")");
+            Plugin.Teleport(P1, back);
             Plugin.LeashOverride = saveLeash;
             Check(m_errors == err0, "revive: no errors");
         }

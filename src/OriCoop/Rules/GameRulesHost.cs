@@ -72,7 +72,7 @@ namespace OriCoop.Rules
             return NetPlay.Peer != null && NetPlay.Peer.IncomingProgress(out have, out total);
         }
         public bool L10nProbeOn { get { return L10nProbe.On; } }
-        public string Text(string key) { return L10n.T(key); }
+        public string Text(string key) { return L10n.SessionText(key); }
         public string Format(string key, params object[] args) { return L10n.F(key, args); }
         public bool NativeGuiAvailable { get { return NativeGui.Available; } }
         public void BeginPage(string page) { NativeGui.BeginPage(page); }

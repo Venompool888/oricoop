@@ -749,9 +749,10 @@ namespace OriCoop
                 bool covered = false, menuUnderCover = false;
                 int refused = SharedPrologue.MenusRefused, frame = 0;
                 float end = Time.realtimeSinceStartup + joinLimit + 30f;
+                string coverText = L10n.T(m_tr == "cserver" ? "session.catching_up.cs" : "session.catching_up");
                 while (Time.realtimeSinceStartup < end && (SharedPrologue.CatchUps == catchUps || SharedPrologue.CatchingUp))
                 {
-                    if (SharedPrologue.CatchingUp && SessionScreens.Phase == SessionScreens.SavePhase.Waiting && SessionScreens.WaitingText == L10n.T("session.catching_up"))
+                    if (SharedPrologue.CatchingUp && SessionScreens.Phase == SessionScreens.SavePhase.Waiting && SessionScreens.WaitingText == coverText)
                     {
                         covered = true;
                         if (UI.Menu != null)

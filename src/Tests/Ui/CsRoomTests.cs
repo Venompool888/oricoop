@@ -4,9 +4,7 @@ using System.IO;
 using OriCoop;
 using OriCoop.Ui;
 
-// T-171: the C-server room page model and its wire messages. Expected values come from the ticket (docs/tickets/T-171.md):
-// no "房主" anywhere, local players marked "(你)", the manager is the lowest online seat and only it sees 开始/换存档/踢出,
-// 开始 only once every online player is ready, each player's own server RTT, empty seats "等待玩家加入…".
+// C-server room page rows, actions, and lobby messages.
 static class CsRoomTests
 {
     static void Check(bool condition, string message) { if (!condition) throw new Exception(message); }
@@ -39,7 +37,7 @@ static class CsRoomTests
 
     public static void Register(Action<string, Action> run)
     {
-        run("cs room: two local players both marked (你), no 房主 on any row", delegate {
+        run("cs room: two local players both marked (你)", delegate {
             CsRoomModel m = Model();
             Seat(m, 1, "Ori-3847", true, true, 23);
             Seat(m, 2, "Ori-3847·2", true, true, 23);
@@ -47,8 +45,25 @@ static class CsRoomTests
             Equal("Ori-3847 (你)", m.Row(1).Name);
             Equal("Ori-3847·2 (你)", m.Row(2).Name);
             Equal("Ori-7712", m.Row(3).Name);
-            for (int s = 1; s <= 4; s++) Check(m.Row(s).Name.IndexOf("房主") < 0, "row " + s + " names a host: " + m.Row(s).Name);
             Equal("P3", m.Row(3).Label);
+        });
+
+        run("cs room: the owner badge follows the arbiter across departure and re-entry", delegate {
+            CsRoomModel m = Model();
+            Seat(m, 1, "creator", false, true, 30);
+            Seat(m, 2, "me", true, true, 23);
+            m.OwnerSeat = 1;
+            Equal("房主", m.Row(1).Role);
+            Equal("成员", m.Row(2).Role);
+            Equal("", m.Row(3).Role);
+            m.InGame = true;
+            m.Seats[1].Online = false;
+            m.OwnerSeat = 2;
+            Equal("成员", m.Row(1).Role);
+            Equal("房主", m.Row(2).Role);
+            Seat(m, 4, "creator", false, true, 30);
+            Equal("成员", m.Row(4).Role);
+            Equal("房主", m.Row(2).Role);
         });
 
         run("cs room: ping is each player's own rtt; unknown or offline shows - (the game font has no em dash)", delegate {

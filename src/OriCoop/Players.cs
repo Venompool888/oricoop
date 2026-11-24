@@ -8,6 +8,7 @@ namespace OriCoop
     {
         public int Seat;
         public bool IsLocal;
+        internal bool ScreenInputLocked, SelfReviveHeld;
         public SeinCharacter Sein;
         public readonly InputState Input = new InputState();
         public readonly HashSet<int> Ids = new HashSet<int>();

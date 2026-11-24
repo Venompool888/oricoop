@@ -142,17 +142,28 @@ namespace OriCoop
             foreach (Actor a in s_actors.Values)
                 if (a.Root != null) { if (pieces == null) pieces = new List<Actor>(); pieces.Add(a); }
             if (pieces == null) return;
+            foreach (Actor a in pieces) { a.Root.Holding = false; a.Root.HoldDistance = float.PositiveInfinity; }
             foreach (Actor a in pieces)
             {
-                a.Loaded = a.Root.Loaded && a.Root.Placeholder != null;
+                bool family = a.Root.Loaded && a.Root.Placeholder != null;
                 bool had = a.EntityInstanceId != 0; Bind(a);
+                // T-208 (3): a live piece this PC simulates is loaded here whatever became of its family's scene (it
+                // followed a player into the next area). Before, the simulator stopped sending it when that scene
+                // unloaded, and the copies on the other PCs stood still. The family counts as present here meanwhile.
+                bool held = !s_mutateFollowScene && a.Entity != null && Mine(a);
+                a.Loaded = family || held;
+                if (held)
+                {
+                    a.Root.Holding = true;
+                    if (Local != null) a.Root.HoldDistance = Mathf.Min(a.Root.HoldDistance, Vector3.Distance(a.Entity.Position, Local.Position));
+                }
                 if (!Mine(a) || a.Entity != null || !a.Latest.Alive || a.Latest.Killed) continue;
                 if (had)
                 {
                     a.Latest.Alive = false; a.Latest.Tick = s_host.LocalTick; a.LastRemoval = "gone";
                     Trace("despawn", a, "gone"); SendLife(a, 4);
                 }
-                else if (a.Loaded) SpawnPiece(a, a.Latest, true);
+                else if (family) SpawnPiece(a, a.Latest, true);
             }
         }
         // The owner's piece died: tell the others (the placeholder's own enemy is reported by PlaceholderDeath).

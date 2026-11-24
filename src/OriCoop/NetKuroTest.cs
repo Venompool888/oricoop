@@ -71,7 +71,7 @@ namespace OriCoop
             return null;
         }
         // T-177: 04's "11. Show World Map Objective Action" opens the world map and waits (12.) until the player presses
-        // through it; online it is a skipped menu suspend (SessionRules.LocalLocked), not a popup. A mirror shows it too.
+        // through it; online it is a live menu (SessionRules.LiveScreen), not a popup. A mirror shows it too.
         static bool ObjectiveShowing()
         {
             GameMapUI map = GameMapUI.Instance;

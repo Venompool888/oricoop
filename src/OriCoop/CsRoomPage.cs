@@ -115,6 +115,7 @@ namespace OriCoop
             BindKeys();
             s_open = true; s_inGame = true;
             s_fromPause = PauseMenuEntry.Suspend();
+            SessionRules.ScreenOpened();
             s_ignoreUntil = Time.unscaledTime + 0.3f;
             s_gate.Block(Time.unscaledTime, 0.3f);   // the press that picked 房间管理 is still down
             s_model.ResetFocus();
@@ -515,6 +516,7 @@ namespace OriCoop
             CodeLine(out shownCode);
             s_model.HasCode = shownCode.Length > 0;
             CServerClient c = CServerLink.Client;
+            s_model.OwnerSeat = CsLobby.ManagerSeat;
             int rtt = NetPlay.RttMs > 0f ? (int)(NetPlay.RttMs + 0.5f) : -1;
             for (int seat = 1; seat <= CsRoomModel.SeatCount; seat++)
             {
@@ -679,7 +681,8 @@ namespace OriCoop
                 float font = h * 0.032f;
                 Color name = row.Empty ? Dim : Text;
                 NativeGui.Label("csroom.row." + seat + ".p", new Rect(r.x + width * 0.04f, r.y, width * 0.1f, rowH), row.Label, font, TextAnchor.MiddleLeft, Text);
-                NativeGui.Label("csroom.row." + seat + ".name", new Rect(r.x + width * 0.14f, r.y, width * 0.46f, rowH), row.Name, font, TextAnchor.MiddleLeft, name);
+                string nameText = row.Empty ? row.Name : L10n.F("roles.label", row.Role, row.Name);
+                NativeGui.Label("csroom.row." + seat + ".name", new Rect(r.x + width * 0.14f, r.y, width * 0.46f, rowH), nameText, font, TextAnchor.MiddleLeft, name);
                 NativeGui.Label("csroom.row." + seat + ".ping", new Rect(r.x + width * 0.6f, r.y, width * 0.16f, rowH), row.Ping, font, TextAnchor.MiddleCenter, Text);
                 // Gold = ready on the title page; in the game (T-189) there is no ready: this PC's own row in gold.
                 bool gold = s_inGame ? !row.Empty && s_model.Seats[seat].Local : !row.Empty && row.Ready;

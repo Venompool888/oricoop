@@ -12,3 +12,4 @@ OriCoop\Authority\AuthorityClient.cs
 OriCoop\Authority\HostArbiter.cs
 OriCoop\World\MirrorHold.cs
 OriCoop\World\StoryProgressKeys.cs
+OriCoop\World\DigestRepair.cs

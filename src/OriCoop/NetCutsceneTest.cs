@@ -434,6 +434,17 @@ namespace OriCoop
             if (activator)
             {
                 h.Check(Own.Inventory.MapStones >= 1, "T-204 " + label + ": a map fragment to use (" + StoneState() + ")");
+                int fragments = Own.Inventory.MapStones;
+                UI.Menu.ShowAreaMap();
+                try
+                {
+                    NetTestHarness.BotButtons = P2Input.BTN_X;
+                    yield return TestClock.WaitGame(0.25f);
+                    h.Check(GameMapUI.Instance.IsVisible && !s_stone.Activated && Own.Inventory.MapStones == fragments,
+                        "map: X does not activate the highlighted stone or spend its fragment");
+                }
+                finally { Bot(); UI.Menu.HideMenuScreen(true); }
+                yield return TestClock.WaitGame(0.15f);
                 end = Now + 6f;
                 while (Now < end && s_stone.CurrentState != MapStone.State.Activated)
                 {
@@ -810,8 +821,8 @@ namespace OriCoop
             return "key=" + ForcedSync.LocalGateKey + " count=" + ForcedSync.LastCount + "/" + ForcedSync.LastTotal
                 + " hold=" + ForcedSync.HoldProgress + " fires=" + ForcedSync.Fires + " forces=" + ForcedSync.Forces
                 + " blocked=" + ForcedSync.Blocked + " pillars=" + ForcedSync.PillarsShown
-                + " top=" + ForcedSync.TopText + " bottom=" + ForcedSync.BottomText
-                + " own=" + (Own == null ? "null" : Own.Position.ToString())
+                + " top=" + ForcedSync.TopText + " bottom=" + ForcedSync.BottomText + " leave=" + ForcedSync.LeaveText
+                + " locked=" + ForcedSync.IsLocked(Own) + " own=" + (Own == null ? "null" : Own.Position.ToString())
                 + " trigger=" + (s_gateTrigger == null ? "null" : s_gateTrigger.transform.position.ToString())
                 + positions + " starts=" + StorySync.StartsSent + "/" + StorySync.StartsMirrored + " " + Diag();
         }
@@ -858,11 +869,20 @@ namespace OriCoop
             yield return Barrier(h, 401);
             yield return Settle();
         }
+        static IEnumerator GateLeaveInput()
+        {
+            NetTestHarness.BotButtons = P2Input.BTN_B;
+            float end = Now + 1f;
+            while (ForcedSync.IsLocked(Own) && Now < end) yield return null;
+            Bot();
+        }
         static IEnumerator GateHolds(TestHarness h)
         {
             int sent = StorySync.StartsSent, mirrored = StorySync.StartsMirrored, blocked = ForcedSync.Blocked;
+            string key = StorySync.ComponentKey(s_gateTrigger);
             yield return Barrier(h, 411);
-            if (!NetPlay.IsHost) GateMove(true);
+            if (NetPlay.IsHost) GateMove(true);
+            else Plugin.Teleport(Own, GatePos(false, 8.5f));
             bool sawStory = false; float end = Now + 3f;
             while (Now < end)
             {
@@ -870,19 +890,45 @@ namespace OriCoop
                 yield return null;
             }
             GateCheck(h, !sawStory && StorySync.StartsSent == sent && StorySync.StartsMirrored == mirrored, "G1 no story before all here");
-            if (!NetPlay.IsHost)
+            if (!NetPlay.IsHost) GateCheck(h, Own.Position.x < s_gateRect.xMin - 0.5f && Own.Position.x >= s_gateRect.xMin - 3f,
+                "G1 guest is near but not inside the presence bounds");
+            GateCheck(h, ForcedSync.LocalGateKey == key, "G1 nearby gate selected");
+            GateCheck(h, ForcedSync.LastCount == 1 && ForcedSync.LastTotal == 2, "G1 count 1/2");
+            int waitingFor = NetPlay.IsHost ? Roles.Partner : Players.LocalSeat;
+            GateCheck(h, ForcedSync.WaitPromptOnScreen() && ForcedSync.BottomText.Contains("P" + waitingFor)
+                && ForcedSync.BottomText.Contains("1/2"), "G1 waiting seat and count render");
+            GateCheck(h, ForcedSync.IsLocked(Own) == NetPlay.IsHost && ForcedSync.ForcePromptOnScreen() == NetPlay.IsHost
+                && ForcedSync.LeavePromptOnScreen() == NetPlay.IsHost, "G1 only the locked host sees the force and leave glyphs");
+            h.Note("GATE visuals " + ForcedSync.VisualDebug());
+            try { Application.CaptureScreenshot(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(h.ResultPath)), "gate-" + (NetPlay.IsHost ? "host" : "guest") + ".png")); }
+            catch (Exception e) { h.Note("gate screenshot failed: " + e.Message); }
+            if (NetPlay.IsHost)
             {
-                GateCheck(h, ForcedSync.LocalGateKey != null, "G1 local gate remembered");
-                GateCheck(h, ForcedSync.LastCount == 1 && ForcedSync.LastTotal == 2, "G1 count 1/2");
-                GateCheck(h, ForcedSync.PillarsShown, "G1 pillars shown");
-                h.Note("GATE visuals " + ForcedSync.VisualDebug());
-                // For review of the look (ward pillars, hint lines, Y ring): kept next to the result file.
-                try { Application.CaptureScreenshot(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(h.ResultPath)), "gate-" + (NetPlay.IsHost ? "host" : "guest") + ".png")); }
-                catch (Exception e) { h.Note("gate screenshot failed: " + e.Message); }
-                GateCheck(h, !string.IsNullOrEmpty(ForcedSync.TopText) && !string.IsNullOrEmpty(ForcedSync.BottomText)
-                    && ForcedSync.BottomText.Contains("1/2"), "G1 two hint lines with 1/2");
-                GateCheck(h, ForcedSync.Blocked > blocked, "G1 native trigger blocked");
+                GateCheck(h, ForcedSync.PillarsShown && ForcedSync.Blocked > blocked, "G1 pillars shown and native trigger blocked");
+                Vector3 anchor = Own.Position;
+                Own.Mortality.DamageReciever.MakeInvincible(0.25f);
+                NetTestHarness.BotLX = 1f; NetTestHarness.BotButtons = P2Input.BTN_A | P2Input.BTN_X;
+                yield return TestClock.WaitGame(0.5f);
+                Bot();
+                GateCheck(h, ForcedSync.IsLocked(Own) && Vector3.Distance(Own.Position, anchor) < 0.05f, "G1 P1 cannot move or jump while waiting");
+                GateCheck(h, !Own.Mortality.DamageReciever.IsInvinsible, "G1 native invulnerability expires while P1 waits");
+                float health = Own.Mortality.Health.Amount;
+                Own.Mortality.DamageReciever.OnRecieveDamage(new Damage(1000f, Vector2.zero, Own.Position, DamageType.Enemy, null));
+                GateCheck(h, Own.Mortality.Health.Amount == health && !Revive.IsDowned(Own), "G1 an enemy hit neither damages nor downs P1");
             }
+            yield return Barrier(h, 412);
+            if (NetPlay.IsHost)
+            {
+                float x = Own.Position.x;
+                yield return GateLeaveInput();
+                yield return TestClock.WaitGame(0.7f);
+                GateCheck(h, !ForcedSync.IsLocked(Own) && Mathf.Abs(Own.Position.x - x) < 0.1f,
+                    "G1 B unlocks P1 without moving it or relocking after a teleport into the gate");
+            }
+            end = Now + 2f;
+            while (Now < end && ForcedSync.TestCount(key) != 0) yield return null;
+            GateCheck(h, ForcedSync.TestCount(key) == 0 && !ForcedSync.LeavePromptOnScreen(), "G1 count drops to zero and the leave prompt hides");
+            if (NetPlay.IsHost) GateMove(false);
         }
         static IEnumerator GateStarted(TestHarness h, string label, int starts, int fires, bool hostPulled)
         {
@@ -898,6 +944,8 @@ namespace OriCoop
             GateCheck(h, NetPlay.IsHost ? StorySync.StartsSent == starts + 1 : StorySync.StartsMirrored == starts + 1 || sawLetterbox,
                 label + " story started here");
             GateCheck(h, ForcedSync.Fires == fires + 1, label + " fired exactly once");
+            GateCheck(h, !ForcedSync.WaitPromptOnScreen() && ForcedSync.TopText.Length == 0 && ForcedSync.BottomText.Length == 0
+                && !ForcedSync.LeavePromptOnScreen() && !ForcedSync.IsLocked(Own), label + " the gate releases the local lock and hints when the story starts");
             if (hostPulled && NetPlay.IsHost) GateCheck(h, pulled, label + " host pulled within 4 units");
             s_gateFiredAt = Now;
         }
@@ -905,7 +953,7 @@ namespace OriCoop
         {
             int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored, fires = ForcedSync.Fires;
             yield return Barrier(h, 421);
-            if (NetPlay.IsHost) GateMove(true);
+            GateMove(true);
             yield return GateStarted(h, "G2", starts, fires, false);
             GateCheck(h, ForcedSync.Fires == 1, "G2 first fire on this end");
             yield return Settle();
@@ -926,7 +974,17 @@ namespace OriCoop
             yield return GateReset(h, step);
             int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored;
             int fires = ForcedSync.Fires, forces = ForcedSync.Forces;
-            if (!NetPlay.IsHost) GateMove(true);
+            if (step == 431)
+            {
+                if (NetPlay.IsHost) GateMove(true);
+                yield return Wait(0.6f);
+                if (NetPlay.IsHost) yield return GateLeaveInput();
+                yield return Barrier(h, 432);
+                yield return Wait(0.3f);
+                GateCheck(h, ForcedSync.Fires == fires, label + " no release on the first passage alone");
+                if (!NetPlay.IsHost) GateMove(true);
+            }
+            else if (!NetPlay.IsHost) GateMove(true);
             float end = Now + 4f, peak = 0f;
             try
             {
@@ -941,7 +999,26 @@ namespace OriCoop
             finally { Bot(); }
             if (!NetPlay.IsHost) GateCheck(h, peak >= 1f && ForcedSync.Forces >= forces + 1, label + " hold filled and force sent");
             yield return GateStarted(h, label, starts, fires, true);
+            if (step == 431) yield return ForcedStoryUnlock(h);
             yield return Settle();
+        }
+        static IEnumerator ForcedStoryUnlock(TestHarness h)
+        {
+            ActionSequence sequence = s_gateTrigger.ActionToRun as ActionSequence;
+            bool sawLock = false;
+            float end = Now + 35f;
+            while (sequence != null && sequence.IsRunning && Now < end)
+            {
+                sawLock |= GameController.Instance.LockInputByAction;
+                // Only the host closes the story text. The guest can still be in its mirror when the host ends.
+                NetTestHarness.BotButtons = NetPlay.IsHost && OpenBoxes() > 0 && ((int)(Now * 4f)) % 2 == 0 ? P2Input.BTN_A : 0;
+                yield return null;
+            }
+            Bot();
+            GateCheck(h, sawLock && sequence != null && !sequence.IsRunning, "G3 the forced story held input and then ended");
+            float unlockBy = Now + 1f;
+            while (GameController.Instance.LockInputByAction && Now < unlockBy) yield return null;
+            GateCheck(h, !GameController.Instance.LockInputByAction, "G3 input unlocked within one second of the local sequence ending");
         }
         // T-110: an extra local player on one PC. The gate waits for every player, and each PC reports each of its seats.
         static int s_extraSeat;
@@ -983,13 +1060,16 @@ namespace OriCoop
             int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored, fires = ForcedSync.Fires, forces = ForcedSync.Forces;
             yield return Barrier(h, 454);
             GateMove(true);
+            float end = Now + 5f;
+            while (Now < end && (ForcedSync.LastCount != 2 || ForcedSync.LastTotal != 3)) yield return null;
+            GateCheck(h, ForcedSync.LastCount == 2 && ForcedSync.LastTotal == 3, "G5 the gate waits for the guest's other local seat");
+            if (mine) GateCheck(h, ForcedSync.IsLocked(Own) && !ForcedSync.IsLocked(Players.OriOf(s_extraSeat)),
+                "G5 the guest's second local player is not locked outside the gate");
+            yield return Barrier(h, 455);
             if (mine) Plugin.Teleport(Players.OriOf(s_extraSeat), GatePos(true, GateDx));
-            int total = 0; float end = Now + 8f;
-            while (ForcedSync.Fires == fires && Now < end) { total = Mathf.Max(total, ForcedSync.LastTotal); yield return null; }
-            h.Note("GATE5 total=" + total + " fires=" + (ForcedSync.Fires - fires) + " forces=" + (ForcedSync.Forces - forces) + " " + GateDiag());
-            GateCheck(h, total == 3 || ForcedSync.Fires > fires && total == 0, "G5 the gate counts three players (host, guest, guest's extra)");
             yield return GateStarted(h, "G5", starts, fires, false);
-            GateCheck(h, ForcedSync.Forces == forces, "G5 fired without anyone forcing it");
+            GateCheck(h, ForcedSync.Forces == forces && (!mine || !ForcedSync.IsLocked(Players.OriOf(s_extraSeat))),
+                "G5 fired without a force and released the guest's extra seat");
             yield return Settle();
             yield return GateDropExtra(h, !NetPlay.IsHost, 456);
         }
@@ -1032,6 +1112,77 @@ namespace OriCoop
             yield return Settle();
             yield return GateDropExtra(h, NetPlay.IsHost, 466);
         }
+        static IEnumerator GateInactive(TestHarness h)
+        {
+            yield return GateReset(h, 471);
+            int fires = ForcedSync.Fires, releases = ForcedSync.Releases;
+            string key = StorySync.ComponentKey(s_gateTrigger);
+            ActionSequence sequence = s_gateTrigger.ActionToRun as ActionSequence;
+            int starts = NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored;
+            try
+            {
+                GateMove(true);
+                float end = Now + 4f;
+                while (ForcedSync.Fires == fires && Now < end) yield return null;
+                GateCheck(h, ForcedSync.Fires == fires + 1, "G7 the gate gathered both players before native execution");
+                if (NetPlay.IsHost) s_gateTrigger.gameObject.SetActive(false);
+                end = Now + 2f;
+                while (ForcedSync.Releases == releases && Now < end) yield return null;
+                GateCheck(h, ForcedSync.Releases > releases && !ForcedSync.TestRecentlyFired(key) && ForcedSync.TestCount(key) == -1,
+                    "G7 deactivating the trigger drops the gate and clears its count and pending fire");
+                GateCheck(h, sequence != null && !sequence.IsRunning && starts == (NetPlay.IsHost ? StorySync.StartsSent : StorySync.StartsMirrored),
+                    "G7 the deactivated trigger started no story");
+                if (!NetPlay.IsHost) ForcedSync.TestRemember(s_gateTrigger);
+                yield return null;
+                GateCheck(h, ForcedSync.Fires == fires + 1 && ForcedSync.TestCount(key) == -1
+                    && ForcedSync.LocalGateKey == null && ForcedSync.LastTotal == 0 && ForcedSync.HoldProgress == 0f
+                    && !ForcedSync.WaitPromptOnScreen() && ForcedSync.TopText.Length == 0 && ForcedSync.BottomText.Length == 0
+                    && !ForcedSync.IsLocked(Own),
+                    "G7 no lock, count, prompts or hold target even when the guest's local trigger still tries to open the gate");
+                GateMove(false);
+                yield return Barrier(h, 472);
+            }
+            finally { if (s_gateTrigger != null) s_gateTrigger.gameObject.SetActive(true); }
+            yield return GateOverlap(h, key);
+        }
+        static IEnumerator GateOverlap(TestHarness h, string key)
+        {
+            GameObject overlap = new GameObject("OriCoop overlapping gate");
+            Transform trigger = s_gateTrigger.transform;
+            overlap.transform.SetParent(trigger.parent, false);
+            overlap.transform.localPosition = trigger.localPosition;
+            overlap.transform.localRotation = trigger.localRotation;
+            overlap.transform.localScale = trigger.localScale;
+            Trigger other = overlap.AddComponent<Trigger>();
+            string otherKey = StorySync.ComponentKey(other);
+            try
+            {
+                yield return Barrier(h, 473);
+                if (NetPlay.IsHost)
+                {
+                    GateMove(true);
+                    ForcedSync.TestRemember(s_gateTrigger);
+                    ForcedSync.TestRemember(other);
+                }
+                float end = Now + 4f;
+                while (Now < end && (ForcedSync.TestCount(key) != 1 || ForcedSync.TestCount(otherKey) != 1)) yield return null;
+                GateCheck(h, ForcedSync.TestCount(key) == 1 && ForcedSync.TestCount(otherKey) == 1, "G7 overlapping gates both waiting at 1/2");
+                yield return Barrier(h, 474);
+                if (NetPlay.IsHost) s_gateTrigger.gameObject.SetActive(false);
+                end = Now + 2f;
+                while (Now < end && ForcedSync.TestCount(key) != -1) yield return null;
+                GateCheck(h, ForcedSync.TestCount(key) == -1 && ForcedSync.TestCount(otherKey) == 1,
+                    "G7 dropping a waiting trigger leaves the overlapping gate intact");
+                yield return Barrier(h, 475);
+            }
+            finally
+            {
+                if (NetPlay.IsHost) GateMove(false);
+                if (s_gateTrigger != null) s_gateTrigger.gameObject.SetActive(true);
+                ForcedSync.TestForget(otherKey);
+                UnityEngine.Object.Destroy(overlap);
+            }
+        }
         static IEnumerator GateRun(TestHarness h)
         {
             Local.Clear(); Bot(); NetPlay.SetSim(0, 0, 0, 0);
@@ -1047,6 +1198,7 @@ namespace OriCoop
                 NetPlay.SetSim(0, 0, 0, 0);
                 yield return Step(h, 450, GateGuestExtra(h));
                 yield return Step(h, 460, GateHostExtra(h));
+                yield return Step(h, 470, GateInactive(h));
             }
             finally { Bot(); NetPlay.SetSim(0, 0, 0, 0); }
         }

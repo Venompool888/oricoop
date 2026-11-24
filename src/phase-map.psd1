@@ -29,13 +29,14 @@
     # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
-        'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
+        'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
         'WorldObjSync' = 'WO,R'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
         'OnlineCamera' = 'CAM'; 'CoopCamera' = 'MOVE,CAM'; 'CutsceneGuard' = 'INTRO,S4,CAM,CUT'
         'EnemySync.Swarm' = 'E3,E5'; 'SwarmFamily' = 'E5'   # T-195: the splitting Swarm (E5s checks; ids: unit tests)
-        'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'; 'CoopMenu' = 'S4'; 'MenuSoulFlameGuard' = 'S4'; 'MenuSoulFlameTest' = 'S4'   # F8 online holds the player and leaves LockInput alone (T-132)
-        'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = ''
+        'EnemySync.Leftovers' = 'E3,E5'; 'EnemySyncTest.Leftovers' = 'E5'; 'HitIds' = 'E3,E5'   # T-208: enemy-sync leftovers (E5k checks; rules: unit tests)
+        'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'; 'CoopMenu' = 'S4'; 'MenuSoulFlameGuard' = 'S4'; 'MenuSoulFlameTest' = 'S4'   # Online screens leave LockInput alone
+        'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = 'INTRO'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
         'SharedPrologue' = 'INTRO,MOVE,W'; 'PrologueCore' = ''; 'TitlePrologueTest' = ''; 'TitlePrologueProbe' = ''   # T-203 / T-205: its own checks run in the titlejoin-prologue suites; the input hook and the join wait touch INTRO / MOVE / W
@@ -56,7 +57,7 @@
         @{ Switch = 'ORICOOP_MUTATE_HOST_SEAT_ONE';  File = 'src\OriCoop\Authority\NetRoute.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_FX_FORWARD';  File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-3p';    Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_LATE_COMMIT'; File = 'src\OriCoop\Saves\CoopSaves.Lineage.cs'; Suite = 'net-3p'; Phase = '' }
-        @{ Switch = 'ORICOOP_MUTATE_DROP_PENDING_LINK'; File = 'src\OriCoop\PartnerFx.cs'; Suite = 'net-3p';    Phase = '' }   # T-213 a soul link that arrived while this PC was loading shows its flame afterwards
+        @{ Switch = 'ORICOOP_MUTATE_DROP_PENDING_LINK'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net-3p';    Phase = '' }   # A room link received while loading updates the native flame afterwards
         @{ Switch = 'ORICOOP_MUTATE_KEEP_STALE';     File = 'src\OriCoop\Authority\CServerLink.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_CREATOR_HOST';   File = 'src\OriCoop\NetPlay.cs';      Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_PROMOTION';   File = 'src\OriCoop\Saves\CoopSaves.Lineage.cs'; Suite = 'net-3p-cs'; Phase = '' }
@@ -77,6 +78,7 @@
         @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PENDING'; File = 'src\OriCoop\SteamTransport.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 a given-up lobby operation blocks every retry
         @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PROBLEM'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 the host's Problem stays after its lobby is up again
         @{ Switch = 'ORICOOP_MUTATE_NO_COMPANION_RETRY'; File = 'src\OriCoop\P2Extras.cs';   Suite = 'local';     Phase = '' }   # T-213 a companion return that threw is tried again (scenario companion)
+        @{ Switch = 'ORICOOP_MUTATE_COMPANION_RETURN_INACTIVE'; File = 'src\OriCoop\P2Extras.cs'; Suite = 'net'; Phase = 'INTRO' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_ORB_MENUS';      File = 'src\OriCoop\CsRoomPage.cs';     Suite = 'titlejoin-cs'; Phase = '' }   # T-173 room page orb copy keeps the difficulty picker
         @{ Switch = 'ORICOOP_MUTATE_HIDE_ICONS';     File = 'src\OriCoop\NativeGui.cs';      Suite = 'titlejoin-cs'; Phase = '' }   # T-173 game button icons in native labels stay hidden
@@ -123,6 +125,12 @@
         @{ Switch = 'ORICOOP_MUTATE_LINK_HOST_ONLY'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net'; Phase = 'R' }   # T-041 a guest's adopted save offer is the latest soul link
         @{ Switch = 'ORICOOP_MUTATE_LINK_HOST_ONLY'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net-4p'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_CHECKPOINT_POINT'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net'; Phase = 'R' }   # T-202 no room save yet: hold Y comes back at the host's latest checkpoint
+        @{ Switch = 'ORICOOP_MUTATE_REVIVE_NEEDS_RESCUER'; File = 'src\OriCoop\Revive.cs'; Suite = 'net'; Phase = 'R' }   # T-215 #1 a revive whose rescuer's Ori is gone still completes (R7b)
+        @{ Switch = 'ORICOOP_MUTATE_WIPE_NO_GRACE'; File = 'src\OriCoop\ReviveNet.cs'; Suite = 'net'; Phase = 'R' }   # T-215 #2 the host waits before declaring everyone down (R7e)
+        @{ Switch = 'ORICOOP_MUTATE_ESCAPE_KEEP_PENDING'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net'; Phase = 'R' }   # T-215 #3 the session's end drops the work owed after an escape finish (R7f)
+        @{ Switch = 'ORICOOP_MUTATE_STALE_SKULL'; File = 'src\OriCoop\Revive.cs'; Suite = 'net'; Phase = 'R' }   # T-215 #4 the skull is where the Ori died once it left its last ground (R7a)
+        @{ Switch = 'ORICOOP_MUTATE_STALE_OFFER_SPOT'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net'; Phase = 'R' }   # T-215 #6 every save offer carries its own spot (R7d)
+        @{ Switch = 'ORICOOP_MUTATE_RESEND_AS_NEW'; File = 'src\OriCoop\Revive.SoulLink.cs'; Suite = 'net'; Phase = 'R' }   # T-215 #7 the save point told again is not a new soul link (R7c)
         @{ Switch = 'ORICOOP_MUTATE_CAM_NO_MATES';   File = 'src\OriCoop\OnlineCamera.cs';   Suite = 'net';       Phase = 'CAM' }
         @{ Switch = 'ORICOOP_MUTATE_CAM_NO_UNPARK';  File = 'src\OriCoop\CutsceneGuard.cs';  Suite = 'net';       Phase = 'CAM' }
         @{ Switch = 'ORICOOP_MUTATE_NO_POST_SESSION_FADE'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'local'; Phase = '' }   # T-212 (1) a screen left black when the session ended is faded back in (local scenario afterblack)
@@ -135,6 +143,17 @@
         @{ Switch = 'ORICOOP_MUTATE_KEEP_DROPPED_MIRROR'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-212 (3) a dropped teammate's mirrored story stops while another mirror runs (CUT, LEFT 3)
         @{ Switch = 'ORICOOP_MUTATE_WINDOW_DROPS_STARTS'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-207 (2) a partner's unrelated story is mirrored inside a lever / pedestal window (CUT, LEFT 2)
         @{ Switch = 'ORICOOP_MUTATE_SWARM_LOCAL';    File = 'src\OriCoop\EnemySync.Swarm.cs'; Suite = 'net';      Phase = 'E5' }   # T-195 a Swarm and the pieces it splits into are the same on every PC (E5s)
+        @{ Switch = 'ORICOOP_MUTATE_E3_NO_LATE_LIFE'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (1) a split piece's death from its former simulator is taken after the family changed hands (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_SWARM_KEEP_COPIES'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (2) the end of a session removes the pieces a PC only showed (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_SWARM_FOLLOW_SCENE'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (3) live pieces are still sent when their family's scene unloads (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_E3_BLANK_GRANT'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (5) a grant without a captured state leaves the enemy where it is (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_E3_IDS_FROM_ONE'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (6) hit ids start anew per session (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_E3_FREEZE_ALL'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (7) ownership freezes skip classes that are not mirrored (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_E3_SIGHT_NO_PLAYER'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (8) no sideways look-out without a player (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_E3_TAKEOVER_NO_LIMIT'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 (9) an overdue handoff is given up and asked for again (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_E3_CANCEL_RESETS'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 review 2 a death just before an abandoned handoff stands (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_E3_LATE_DEATH_NEEDS_ORI'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 review 3 a late piece death without a local Ori still kills and splits it (E5k)
+        @{ Switch = 'ORICOOP_MUTATE_SWARM_DROP_FROZEN_OWN'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 review 4 the end of a session keeps a frozen simulator's pieces (E5k)
         @{ Switch = 'ORICOOP_NET_NO_FORWARD';        File = 'src\OriCoop\NetPlay.cs';        Suite = 'net-4p';    Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_WORLD_NO_REBROADCAST'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net-3p'; Phase = '' }   # T-141 3P guest world change
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_NO_TEAM'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net';   Phase = 'ESC' }   # T-169 one finisher brings the team

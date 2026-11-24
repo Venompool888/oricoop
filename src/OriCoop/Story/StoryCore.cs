@@ -4,6 +4,23 @@ using System.IO;
 
 namespace OriCoop.Story
 {
+    internal sealed class SpiritWellActivations
+    {
+        readonly HashSet<string> opened = new HashSet<string>();
+        public bool TryActivate(string key) { return opened.Add(key); }
+        public void Clear() { opened.Clear(); }
+        public void Write(BinaryWriter w)
+        {
+            w.Write(opened.Count);
+            foreach (string key in opened) w.Write(key);
+        }
+        public void Merge(BinaryReader r)
+        {
+            int count = r.ReadInt32();
+            for (int i = 0; i < count; i++) opened.Add(r.ReadString());
+        }
+    }
+
     internal struct StoryPoint
     {
         public float X, Y, Z;
@@ -193,11 +210,12 @@ namespace OriCoop.Story
         public byte[] Scene, Id;
         public string Path = "", State = "";
         public float X, Y, Z;
-        public bool Classified = true;
+        public bool Classified = true, WellActivation;
     }
 
     internal static class StoryWire
     {
+        const byte Classified = 1, WellActivation = 2;
         public static byte[] ReadId(BinaryReader r)
         {
             byte[] id = new byte[16];
@@ -207,7 +225,8 @@ namespace OriCoop.Story
         public static void WriteStart(BinaryWriter w, StoryStart s)
         {
             w.Write(s.Token); w.Write(s.Kind); w.Write(s.Scene); w.Write(s.Id);
-            w.Write(s.Path); w.Write(s.State); w.Write(s.X); w.Write(s.Y); w.Write(s.Z); w.Write(s.Classified);
+            w.Write(s.Path); w.Write(s.State); w.Write(s.X); w.Write(s.Y); w.Write(s.Z);
+            w.Write((byte)((s.Classified ? Classified : 0) | (s.WellActivation ? WellActivation : 0)));
         }
         public static StoryStart ReadStart(BinaryReader r)
         {
@@ -215,7 +234,9 @@ namespace OriCoop.Story
             s.Token = r.ReadUInt32(); s.Kind = r.ReadByte(); s.Scene = ReadId(r); s.Id = ReadId(r);
             s.Path = r.ReadString(); s.State = r.ReadString();
             s.X = r.ReadSingle(); s.Y = r.ReadSingle(); s.Z = r.ReadSingle();
-            s.Classified = r.BaseStream.Position >= r.BaseStream.Length || r.ReadBoolean();
+            byte flags = r.BaseStream.Position < r.BaseStream.Length ? r.ReadByte() : Classified;
+            s.Classified = (flags & Classified) != 0;
+            s.WellActivation = (flags & WellActivation) != 0;
             if (s.Kind > 1 || s.Path.Length > 4096 || s.State.Length > 4096
                 || float.IsNaN(s.X) || float.IsInfinity(s.X) || float.IsNaN(s.Y) || float.IsInfinity(s.Y)
                 || float.IsNaN(s.Z) || float.IsInfinity(s.Z)) throw new InvalidDataException("invalid StoryStart");
@@ -232,21 +253,72 @@ namespace OriCoop.Story
         public int Sender;
         public float Began, NextResolve, EndAt = -1f, NextSceneLoad;
         public int SceneLoads;
-        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true;
+        public bool SawLock, Resolved, Watch, Skipped, SkipApplied, Classified = true, WellActivation;
         public bool TripWait;   // T-185: its mirror start waits for this PC's own scene trip (SceneTripRule)
         public bool StartSent;   // T-212 (4): its start went out to the partners, so its end is owed to them
         public bool EndedEarly;  // T-212 (5): the sender's end arrived before the mirror could start here
         public bool Started;     // its mirror really started on this PC (or failed half-way): never started late again
     }
-    // Review of T-212 (3), finding 6: the game has one LockInputByAction flag. When one mirrored story's lock action is
-    // stopped while other mirrors run, the flag stays only if another mirrored lock action is still inside its own
-    // duration; a lock action that has run out no longer holds it (it used to count, and the flag then stayed until
-    // the remaining mirror's cleanup).
-    public static class MirrorLocks
+    // The engine has one LockInputByAction flag, but several scripts can hold it independently.
+    internal sealed class SequenceInputLocks<TSequence, TAction> where TSequence : class where TAction : class
     {
-        // endsAt: game time at which the lock action's own duration runs out.
-        public static bool Held(float now, float endsAt) { return now < endsAt; }
-        public static bool KeepFlag(int othersStillHeld) { return othersStillHeld > 0; }
+        readonly HashSet<TSequence> manual = new HashSet<TSequence>();
+        readonly Dictionary<TAction, TSequence> timed = new Dictionary<TAction, TSequence>();
+        bool nativeLock;
+        public bool Any { get { return manual.Count != 0 || timed.Count != 0; } }
+        bool Locked { get { return Any || nativeLock; } }
+
+        public void LockManual(TSequence sequence, bool wasLocked)
+        {
+            if (!Any) nativeLock = wasLocked;
+            manual.Add(sequence);
+        }
+        public void LockTimed(TSequence sequence, TAction action, bool wasLocked)
+        {
+            if (!Any) nativeLock = wasLocked;
+            timed[action] = sequence;
+        }
+        public bool UnlockManual(TSequence sequence)
+        {
+            // An unlock without a matching owner also ends a native lock handed across a scene trip.
+            if (!manual.Remove(sequence)) nativeLock = false;
+            return Locked;
+        }
+        public bool EndTimed(TAction action)
+        {
+            timed.Remove(action);
+            return Locked;
+        }
+        public bool TimerRunning(Predicate<TAction> running)
+        {
+            foreach (TAction action in timed.Keys) if (running(action)) return true;
+            return false;
+        }
+        public bool HandOffManual(TSequence sequence, TSequence next)
+        {
+            if (!manual.Remove(sequence)) return false;
+            manual.Add(next);
+            return true;
+        }
+        public bool? End(TSequence sequence, TSequence next, bool sceneTrip, Action<TAction> stopTimer)
+        {
+            bool released = next != null ? HandOffManual(sequence, next) : manual.Remove(sequence);
+            if (released && next == null && sceneTrip) nativeLock = true;
+            List<TAction> stop = null;
+            foreach (KeyValuePair<TAction, TSequence> item in timed)
+            {
+                if (!EqualityComparer<TSequence>.Default.Equals(item.Value, sequence)) continue;
+                if (stop == null) stop = new List<TAction>();
+                stop.Add(item.Key);
+            }
+            if (stop != null)
+            {
+                foreach (TAction action in stop) { timed.Remove(action); stopTimer(action); }
+                released = true;
+            }
+            return released ? (bool?)Locked : null;
+        }
+        public void Clear() { manual.Clear(); timed.Clear(); nativeLock = false; }
     }
 
     internal enum StoryResolution { Retry, Drop, Watch }
@@ -360,7 +432,8 @@ namespace OriCoop.Story
         // It is mirrored unless this PC plays that very story itself: playedByOwnReplay (its sequence / controller was
         // started by this PC's own lever or pedestal replay) or startedHereInWindow (natively here, inside the window,
         // moments ago). Before, the window dropped every start.
-        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow) { return !playedByOwnReplay && !startedHereInWindow; }
+        public static bool MirrorInsideWindow(bool playedByOwnReplay, bool startedHereInWindow, bool wellActivation = false)
+        { return wellActivation || !playedByOwnReplay && !startedHereInWindow; }
         // remaining: mirrored stories still tracked after the ended one was removed.
         public static StoryCleanup Cleanup(int remaining) { return remaining <= 0 ? StoryCleanup.All : StoryCleanup.StoryOnly; }
         public static bool RemoteFinished(T item, bool running, float now)

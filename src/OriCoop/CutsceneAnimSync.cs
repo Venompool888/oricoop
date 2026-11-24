@@ -66,7 +66,7 @@ namespace OriCoop
         public static int Errors;
         static void PlayLocal(object instance)
         {
-            if (!Online || s_applying || Characters.Sein == null || !Characters.Sein.Controller.IsPlayingAnimation) return;
+            if (!Online || s_applying || StorySync.LocalWellSave || Characters.Sein == null || !Characters.Sein.Controller.IsPlayingAnimation) return;
             TextureAnimationWithTransitions anim = (TextureAnimationWithTransitions)AnimationField.GetValue(instance);
             s_localAnim = AnimationKey(anim); Animations[s_localAnim] = anim;
             Send(0, (byte)(StorySync.StoryActive ? 0 : 1), s_localAnim);
@@ -74,7 +74,7 @@ namespace OriCoop
         }
         static void StopLocal()
         {
-            if (!Online || s_applying || Characters.Sein == null) return;
+            if (!Online || s_applying || StorySync.LocalWellSave || Characters.Sein == null) return;
             if (s_localAnim != null) Send(1, 0, s_localAnim);
             foreach (Puppet puppet in Players.Remotes) ApplyPuppet(puppet, 1, null);
         }

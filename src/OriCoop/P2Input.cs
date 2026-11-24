@@ -36,7 +36,7 @@ namespace OriCoop
         public static bool BotRT;
         public static int BotButtons;
         public static float BotLX, BotLY;
-        public const int BTN_A = A, BTN_B = B, BTN_X = X, BTN_Y = Y, BTN_START = START;
+        public const int BTN_A = A, BTN_B = B, BTN_X = X, BTN_Y = Y, BTN_START = START, BTN_BACK = BACK, BTN_LB = LB;
         internal struct PadBot
         {
             public bool Active;
