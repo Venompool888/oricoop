@@ -44,6 +44,8 @@ namespace OriCoop.Rules
         bool GuestNeedsSlot { get; }
         bool PrologueWatching { get; }   // T-203: the host's new-game prologue plays on this PC too (no transfer screen)
         bool HostInPrologue { get; }     // T-203: the host is in its new-game prologue right now
+        bool PrologueCatchingUp { get; } // T-205: this PC's copy fast-forwards to the host's place (covered meanwhile)
+        float PrologueCatchUpProgress { get; }   // 0..1, -1 unknown
         bool IncomingProgress(out int have, out int total);
         bool L10nProbeOn { get; }
         string Text(string key);

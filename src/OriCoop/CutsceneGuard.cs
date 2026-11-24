@@ -16,6 +16,7 @@ namespace OriCoop
         static readonly RecentObjects<MoonGuid> Played = new RecentObjects<MoonGuid>();
         static readonly Dictionary<string, string> Traces = new Dictionary<string, string>();
         static float s_freeSince = -1f;
+        static readonly Func<bool> s_findRunningSequence = FindRunningSequence;
         static Transform s_traceTarget;
         static bool s_traceTargetKnown;
         static float s_spiritAt = -2f, s_uiAt = -2f, s_letterboxAt = -2f, s_puppetAt = -2f, s_targetAt = -2f, s_fadeAt = -2f, s_actionLockSince = -1f, s_blackSince = -1f, s_storyRanAt = -1f;
@@ -204,6 +205,11 @@ namespace OriCoop
             Services.Net.Send(PedestalMessage, true, delegate(BinaryWriter w) { ObjectWire.WritePedestal(w, id.ToByteArray()); });
             PedestalPlaysSent++; Log("pedestal play sent " + id);
         }
+        // Test-only mutation (before T-212 item 7): a loaded save keeps the "played in the last 30 s" record.
+        static readonly bool s_mutateKeepPlayed = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_KEEP_PLAYED_ON_LOAD") == "1";
+        public static int PlayedClears;
+        internal static void TestMarkPlayed(MoonGuid id) { Played.Mark(id, Time.realtimeSinceStartup); }
+        internal static bool TestPlayedRecently(MoonGuid id) { return Played.Recent(id, Time.realtimeSinceStartup, 30f); }
         static void ReceivePedestal(BinaryReader r)
         {
             MoonGuid id = GameStoryHost.ReadGuid(ObjectWire.ReadPedestal(r)); PedestalPlaysReceived++; Log("pedestal play received " + id);
@@ -228,9 +234,16 @@ namespace OriCoop
             string old;
             if (!Traces.TryGetValue(key, out old) || old != value) { Traces[key] = value; Log(key + "=" + value); }
         }
+        static bool FindRunningSequence()
+        {
+            foreach (ActionSequence sequence in Resources.FindObjectsOfTypeAll<ActionSequence>())
+                if (sequence != null && sequence.IsRunning) { s_storyRanAt = Time.realtimeSinceStartup; return true; }
+            return false;
+        }
         public static void Tick()
         {
-            if (!Online) { s_freeSince = -1f; Traces.Clear(); s_traceTargetKnown = false; return; }
+            if (!Online) { s_freeSince = s_actionLockSince = s_storyRanAt = -1f; Traces.Clear(); s_traceTargetKnown = false; TickAfterSession(); return; }
+            s_onlineAt = Time.realtimeSinceStartup; s_wasOnline = true;
             GameController gc = GameController.Instance; SeinCharacter own = Own;
             if (Game.UI.SeinUI != null) Trace("ShowUI", Game.UI.SeinUI.ShowUI.ToString());
             Trace("letterbox", Letterbox.ShowLetterboxes.ToString());
@@ -252,11 +265,6 @@ namespace OriCoop
             float now = Time.realtimeSinceStartup;
             int puppetId = puppet != null && puppet.CinematicPuppet != null && puppet.Tween > 0.01f ? puppet.CinematicPuppet.GetInstanceID() : 0;
             if (PuppetGate.Observe(puppetId, now)) Log("camera puppet came straight back: the scene drives it, not clearing it for 30 s (T-137)");
-            // LockPlayerInputAction's coroutine clears LockInputByAction after a few seconds; a coroutine killed with its
-            // GameObject (story stopped / deactivated mid-way) never does and the player can't move at all (it also keeps
-            // the originator's story alive). Held 20 s with no story sequence running: release it. T-177: "Lock player
-            // input" (LockPlayerInputManualAction) has no timer and the story clears it itself (spirit tree 03 -> 04,
-            // over 20 s with the world map and its objective): while a story sequence runs, wait up to 60 s.
             // Fully black (FadeStay) while nothing is loading: start the "stuck black" clock.
             bool black = UI.Fader != null && UI.Fader.CurrentState == FaderB.State.FadeStay
                 && gc != null && !gc.IsLoadingGame && Services.Session.Ready && !StorySync.StoryActive;
@@ -265,14 +273,18 @@ namespace OriCoop
             else s_actionLockSince = -1f;
             bool parked = ParkedInMove(UI.Cameras.Current);
             if (!parked) s_moveSince = -1f; else if (s_moveSince < 0) s_moveSince = now;
+            bool paused = gc != null && (gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.IsSuspended);
             bool storyRunning = StorySync.StorySequenceRunning();
             if (storyRunning) s_storyRanAt = now;
-            if (!Off && s_actionLockSince >= 0 && StoryLockRepair.Due(now - s_actionLockSince, storyRunning, s_storyRanAt < 0f ? float.MaxValue : now - s_storyRanAt))
+            if (!Off && s_actionLockSince >= 0 && !StorySync.TimedInputRunning()
+                && StoryLockRepair.Due(now - s_actionLockSince, storyRunning, s_storyRanAt < 0f ? float.MaxValue : now - s_storyRanAt,
+                    paused, s_findRunningSequence))
             {
-                Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + StorySync.StorySequenceRunning() + ")");
+                Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + storyRunning + ")");
+                StorySync.ForgetInputLocks();
                 gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++;
             }
-            if (StoryHost.Current.Inside || own == null || gc == null || gc.IsLoadingGame || gc.GameplaySuspended
+            if (StoryHost.Current.Inside || own == null || gc == null || gc.IsLoadingGame || paused
                 || Game.UI.MainMenuVisible || StorySync.StoryActive
                 || PedestalWindow) { s_freeSince = -1f; return; }   // a pedestal/lever cutscene runs natively: hands off
             bool free = (StorySync.TakeoverMaskPublic() & 191) == 0;
@@ -281,11 +293,37 @@ namespace OriCoop
             float since = StorySync.LastStoryActivity >= 0 ? now - StorySync.LastStoryActivity : float.PositiveInfinity;
             if (Characters.Ori != null && Characters.Ori.CurrentState == Ori.State.Hovering && now - s_spiritAt >= 2f
                 && Vector3.Distance(Characters.Ori.Position, own.Position) > 30f) { s_spiritAt = now; SnapSpirit("far away"); }
-            // LockPlayerInputAction's coroutine clears LockInputByAction; a story stopped or deactivated mid-way never
-            // does, and the player can't move at all. No story for 15 s: release it.
             // Free for 3 s: repair. Still locked 30-120 s after the last story ended: a half-run story left it so.
             if (s_freeSince >= 0 && now - s_freeSince >= 3f || since >= 30f && since <= 120f)
                 Repair(now, false, since <= 120f);
+        }
+        // T-212 (1): the session ended while a mirrored story had faded to black (StorySync.Reset stops the mirror, its
+        // FadeFromBlack never runs). Offline nothing looked at the screen any more and it stayed black. For
+        // SessionEndRepair.Window seconds after the last online frame the stuck-black repair keeps running.
+        // Test-only mutation ORICOOP_MUTATE_NO_POST_SESSION_FADE: offline the screen is left alone again.
+        static readonly bool s_mutateNoPostSessionFade = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_POST_SESSION_FADE") == "1";
+        static float s_onlineAt = -1f, s_offlineBlackSince = -1f;
+        // Review finding 9: was the screen fading to black or black in the frame the session ended? Only that black can
+        // be the stopped mirror's; once it is gone, a later black is the game's own and is not touched.
+        static bool s_wasOnline, s_blackAtSessionEnd;
+        public static int PostSessionFades;
+        static bool FadingOrBlack()
+        { return UI.Fader != null && (UI.Fader.CurrentState == FaderB.State.FadeStay || UI.Fader.CurrentState == FaderB.State.FadeToBlack); }
+        // Test only (run-test "afterblack"): as if a session had just ended on this PC.
+        internal static void TestSessionEnded() { s_onlineAt = Time.realtimeSinceStartup; s_offlineBlackSince = -1f; s_wasOnline = false; s_blackAtSessionEnd = FadingOrBlack(); }
+        static void TickAfterSession()
+        {
+            if (s_wasOnline) { s_wasOnline = false; s_blackAtSessionEnd = FadingOrBlack(); }   // the first offline frame
+            if (s_blackAtSessionEnd && !FadingOrBlack()) s_blackAtSessionEnd = false;         // that black is over
+            float now = Time.realtimeSinceStartup, since = s_onlineAt < 0f ? -1f : now - s_onlineAt;
+            GameController gc = GameController.Instance;
+            bool black = !s_mutateNoPostSessionFade && SessionEndRepair.Watching(since) && UI.Fader != null
+                && UI.Fader.CurrentState == FaderB.State.FadeStay && gc != null && !gc.IsLoadingGame;
+            if (!black) { s_offlineBlackSince = -1f; return; }
+            if (s_offlineBlackSince < 0f) s_offlineBlackSince = now;
+            if (!SessionEndRepair.Due(since, now - s_offlineBlackSince, s_blackAtSessionEnd)) return;
+            UI.Fader.FadeOut(0.5f); s_offlineBlackSince = -1f; Repairs++; PostSessionFades++;
+            Log("repair black fade after the session ended (black for " + SessionEndRepair.Stuck.ToString("0") + " s, " + since.ToString("0.0") + " s after the session)");
         }
         static string MoveBlockers(SeinCharacter own)
         {
@@ -402,7 +440,14 @@ namespace OriCoop
                 yield return AccessTools.Method(typeof(SaveGameController), "OnFinishedLoading");
                 yield return AccessTools.Method(typeof(RestoreCheckpointController), "FinishLoading");
             }
-            static void Postfix() { if (Online && !StoryHost.Current.Inside) Repair(Time.realtimeSinceStartup, true, false); }
+            static void Postfix()
+            {
+                ForcedSync.CheckpointRestored();   // T-212 (6)
+                // T-212 (7): the pedestal cutscene was played, then a save from before it was loaded; a partner's next
+                // activation within 30 s was taken for the same play and not shown here.
+                if (!s_mutateKeepPlayed) { Played.Clear(); PlayedClears++; }
+                if (Online && !StoryHost.Current.Inside) Repair(Time.realtimeSinceStartup, true, false);
+            }
         }
         [HarmonyPatch(typeof(GameController), "CreateCheckpoint")]
         static class SaveRepair

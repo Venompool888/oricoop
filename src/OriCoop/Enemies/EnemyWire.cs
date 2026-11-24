@@ -13,7 +13,7 @@ namespace OriCoop.Enemies
         internal uint Tick, Generation;
         internal EnemyVector Position;
         internal float VelocityX, VelocityY;
-        internal bool Alive, Killed, NeedsRespawn, Left, DealerActive, TargetActive;
+        internal bool Alive, Killed, NeedsRespawn, Left, DealerActive, TargetActive, ArmourBroken;
         internal float Health, Respawn;
         internal string StateName = "", Animation = "";
         internal float StateTime, AnimationTime;
@@ -63,9 +63,9 @@ namespace OriCoop.Enemies
         internal static EnemyTransfer ReadHandoff(BinaryReader r)
         { EnemyTransfer t = new EnemyTransfer(); t.Epoch = r.ReadUInt32(); t.Owner = r.ReadByte(); return t; }
         internal static byte Flags(EnemyState s)
-        { return (byte)((s.Alive ? 1 : 0) | (s.Killed ? 2 : 0) | (s.Left ? 4 : 0) | (s.NeedsRespawn ? 8 : 0) | (s.DealerActive ? 16 : 0) | (s.TargetActive ? 32 : 0)); }
+        { return (byte)((s.Alive ? 1 : 0) | (s.Killed ? 2 : 0) | (s.Left ? 4 : 0) | (s.NeedsRespawn ? 8 : 0) | (s.DealerActive ? 16 : 0) | (s.TargetActive ? 32 : 0) | (s.ArmourBroken ? 64 : 0)); }
         static void ReadFlags(EnemyState s, byte f)
-        { s.Alive = (f & 1) != 0; s.Killed = (f & 2) != 0; s.Left = (f & 4) != 0; s.NeedsRespawn = (f & 8) != 0; s.DealerActive = (f & 16) != 0; s.TargetActive = (f & 32) != 0; }
+        { s.Alive = (f & 1) != 0; s.Killed = (f & 2) != 0; s.Left = (f & 4) != 0; s.NeedsRespawn = (f & 8) != 0; s.DealerActive = (f & 16) != 0; s.TargetActive = (f & 32) != 0; s.ArmourBroken = (f & 64) != 0; }
         internal static void WriteState(BinaryWriter w, EnemyVector origin, EnemyState s, bool full, Func<string, ushort> symbol)
         {
             w.Write(s.Tick); w.Write(s.Generation);

@@ -16,61 +16,78 @@ namespace OriCoop
         string m_text;
         float m_baseH, m_baseW;   // text size in world units at scale 1 (measured after each text change)
         Vector3 m_scale0;
+        readonly string m_name;
+        bool m_warnedCreate, m_warnedPlace, m_warnedText;
+        int m_layer = -1;
         public bool Ok { get { return Go != null && m_box != null; } }
         public bool NoBacking;    // hide the hint's dark backing strip (for small labels drawn over pictures)
 
-        public GameText(string name)
+        public GameText(string name) { m_name = name; Create(); }
+
+        void WarnOnce(ref bool warned, string reason)
+        {
+            if (warned) return;
+            warned = true;
+            Plugin.Log.LogWarning("game text '" + m_name + "': " + reason);
+        }
+
+        bool Create()
         {
             try
             {
                 MessageControllerB mc = UI.MessageController;
-                if (mc == null || mc.HintMessage == null) return;
+                if (mc == null || mc.HintMessage == null)
+                { WarnOnce(ref m_warnedCreate, "hint prefab unavailable"); return false; }
                 Go = (GameObject)UnityEngine.Object.Instantiate(mc.HintMessage);
-                Go.name = name;
+                Go.name = m_name;
                 UnityEngine.Object.DontDestroyOnLoad(Go);
-                m_box = Go.GetComponentInChildren<MessageBox>();
-                if (m_box == null) { Destroy(); return; }
+                m_box = Go.GetComponentInChildren<MessageBox>(true);
+                if (m_box == null || m_box.TextBox == null)
+                { WarnOnce(ref m_warnedCreate, "hint prefab has no text box"); Destroy(); return false; }
                 foreach (MessageBoxVisibility v in Go.GetComponentsInChildren<MessageBoxVisibility>(true)) UnityEngine.Object.DestroyImmediate(v);
                 m_box.Visibility = null;
                 if (m_box.WriteOutTextBox != null) { UnityEngine.Object.DestroyImmediate(m_box.WriteOutTextBox); m_box.WriteOutTextBox = null; }
-                int layer = P2Hud.HudLayer();
-                foreach (Transform t in Go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = layer;
                 m_scale0 = Go.transform.localScale;
                 if (m_scale0.x <= 0f) m_scale0 = Vector3.one;
+                m_text = null; SetHudLayer();
                 Go.SetActive(false);
+                return true;
             }
             catch (Exception e)
             {
-                Plugin.Log.LogWarning("game text '" + name + "': " + e.Message + " - using the plain font");
+                WarnOnce(ref m_warnedCreate, "cannot create hint: " + e.Message);
                 Destroy();
+                return false;
             }
         }
 
         public string Text { get { return m_text ?? ""; } }
 
-        public void SetText(string text)
+        public bool SetText(string text)
         {
-            if (!Ok || text == m_text) return;
-            m_text = text;
+            // The game's prefab is destroyed on checkpoint restore, even though it stays alive across scene changes.
+            if (!Ok && !Create()) return false;
+            if (text == m_text && m_baseH > 0f) return true;
+            m_text = null;
             bool was = Go.activeSelf;
             if (!was) Go.SetActive(true);
             Go.transform.localScale = m_scale0;
             try { m_box.SetMessage(new MessageDescriptor(text)); m_box.RemoveMessageFade(); }
-            catch (Exception e) { Plugin.Log.LogWarning("game text: " + e.Message); }
-            // Measure the letters only: the hint prefab also has a dark backing strip that is much taller.
+            catch (Exception e) { WarnOnce(ref m_warnedText, "cannot render hint: " + e.Message); Hide(); return false; }
+            // RenderText creates the glyph and icon objects lazily; assign their layer after they exist.
+            SetHudLayer();
             System.Collections.Generic.List<Renderer> rs = new System.Collections.Generic.List<Renderer>();
-            try
-            {
-                if (m_box.TextBox != null && m_box.TextBox.textRenderers != null)
-                    foreach (var tr in m_box.TextBox.textRenderers) { Renderer r = tr != null ? tr.GetComponent<Renderer>() : null; if (r != null) rs.Add(r); }
-            }
-            catch (Exception) { }
-            m_renderers = rs.Count > 0 ? rs.ToArray() : Go.GetComponentsInChildren<Renderer>(true);
+            foreach (var tr in m_box.TextBox.textRenderers)
+                if (tr != null) rs.AddRange(tr.GetComponentsInChildren<Renderer>());
+            m_renderers = rs.ToArray();
             if (NoBacking && rs.Count > 0)
                 foreach (Renderer r in Go.GetComponentsInChildren<Renderer>(true)) if (!rs.Contains(r)) r.enabled = false;
-            Bounds b; m_baseH = m_baseW = 0f;
-            if (Measure(out b)) { m_baseH = b.size.y / m_scale0.y; m_baseW = b.size.x / m_scale0.x; }
-            if (!was) Go.SetActive(false);
+            Bounds b;
+            if (!Measure(out b)) return CannotPlace("no glyph geometry");
+            m_baseH = b.size.y / m_scale0.y; m_baseW = b.size.x / m_scale0.x;
+            if (!was) Hide();
+            m_text = text;
+            return true;
         }
 
         bool Measure(out Bounds b)
@@ -90,12 +107,29 @@ namespace OriCoop
         public bool Place(Vector3 world, float screenFraction, float maxWidthFraction, float alpha)
         {
             if (!Ok) return false;
-            Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null, gui = P2Hud.GuiCamera();
-            if (game == null || gui == null || alpha < 0.5f) { Hide(); return false; }
+            if (alpha < 0.5f) { Hide(); return false; }
+            Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null;
+            if (game == null) return CannotPlace("gameplay camera unavailable");
             Vector3 vp = game.WorldToViewportPoint(world);
             if (vp.z < 0f || vp.x < -0.1f || vp.x > 1.1f || vp.y < -0.1f || vp.y > 1.1f) { Hide(); return false; }
+            return PlaceViewport(vp.x, vp.y, screenFraction, maxWidthFraction);
+        }
+
+        bool CannotPlace(string reason)
+        {
+            WarnOnce(ref m_warnedPlace, "cannot place hint: " + reason);
+            Hide(); return false;
+        }
+
+        internal bool PlaceViewport(float x, float y, float screenFraction, float maxWidthFraction)
+        {
+            if (!Ok) return false;
+            Camera gui = P2Hud.GuiCamera();
+            if (gui == null || gui.cullingMask == 0) return CannotPlace("HUD camera unavailable");
+            if (m_baseH <= 0f) return CannotPlace("no glyph geometry");
+            if ((gui.cullingMask & (1 << m_layer)) == 0) SetHudLayer();
             if (!Go.activeSelf) Go.SetActive(true);
-            Go.transform.position = gui.ViewportToWorldPoint(new Vector3(vp.x, vp.y, 8f));
+            Go.transform.position = gui.ViewportToWorldPoint(new Vector3(x, y, 8f));
             Go.transform.rotation = gui.transform.rotation;
             if (m_baseH > 0f && gui.orthographic)
             {
@@ -105,6 +139,32 @@ namespace OriCoop
                 Go.transform.localScale = new Vector3(s, s, m_scale0.z);
             }
             return true;
+        }
+
+        void SetHudLayer()
+        {
+            m_layer = P2Hud.HudLayer();
+            foreach (Transform t in Go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = m_layer;
+        }
+
+        internal bool OnScreen(bool icon)
+        {
+            if (!Ok || !Go.activeInHierarchy || string.IsNullOrEmpty(Text)) return false;
+            Camera gui = P2Hud.GuiCamera();
+            if (gui == null || m_box.TextBox.textRenderers == null) return false;
+            foreach (var tr in m_box.TextBox.textRenderers)
+            {
+                if (tr == null || tr.renderedCharCount == 0 || (tr is CatlikeCoding.TextBox.MoonIconRenderer) != icon) continue;
+                foreach (Renderer r in tr.GetComponentsInChildren<Renderer>())
+                {
+                    if (!r.enabled || !r.isVisible || r.bounds.size.y <= 0f || (gui.cullingMask & (1 << r.gameObject.layer)) == 0) continue;
+                    Material material = r.sharedMaterial;
+                    if (material == null || material.HasProperty("_Color") && material.GetColor("_Color").a <= 0f) continue;
+                    Vector3 vp = gui.WorldToViewportPoint(r.bounds.center);
+                    if (vp.z >= gui.nearClipPlane && vp.z <= gui.farClipPlane && vp.x >= 0f && vp.x <= 1f && vp.y >= 0f && vp.y <= 1f) return true;
+                }
+            }
+            return false;
         }
 
         public void Hide() { if (Go != null && Go.activeSelf) Go.SetActive(false); }

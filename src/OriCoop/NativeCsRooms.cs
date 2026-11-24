@@ -69,7 +69,8 @@ namespace OriCoop
         static string CsRoomRowDesc(CsRoomListEntry room, bool zh)
         {
             string save = CsRoomSaveLine(CsRoomSummary.Parse(room.Text), zh);
-            return string.Format(L10n.T("csroom.list.code", zh), room.Code) + "\n" + (save.Length > 0 ? save + "\n" : "") + CsRoomListCache.PlayersLine(room);
+            return string.Format(L10n.T("csroom.list.code", zh), room.Code) + "\n" + (save.Length > 0 ? save + "\n" : "")
+                + CsRoomListCache.PlayersLine(room, L10n.T("roles.host.cs", zh));
         }
 
         // The description text ApplyRows draws for a room row (the same language pick as ApplyRows).
