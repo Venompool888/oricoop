@@ -125,10 +125,17 @@ namespace OriCoop
             unchecked { int h = (int)2166136261; foreach (char ch in key) { h ^= ch; h *= 16777619; } return h == 0 ? 1 : h; }
         }
 
-        static T Find<T>(int id) where T : Component
+        static T Find<T>(int id) where T : Component { bool scanned = false; return Find<T>(id, ref scanned); }
+
+        // scanned: a scan for T already ran for this message. The host's 76 lists every object of its loaded scenes; each
+        // one this PC has not loaded missed the cache and ran a whole FindObjectsOfType + IdOf pass again (4 Hz, once per
+        // missing platform). One scan per message finds everything there is to find.
+        static T Find<T>(int id, ref bool scanned) where T : Component
         {
             Component c;
             if (s_byId.TryGetValue(id, out c) && c != null && c is T) return (T)c;
+            if (scanned) return null;
+            scanned = true;
             foreach (T t in UnityEngine.Object.FindObjectsOfType<T>())
             {
                 int i = IdOf(t);
@@ -317,12 +324,13 @@ namespace OriCoop
             byte kind = r.ReadByte(); int n = r.ReadUInt16();
             if (!Enabled || NetPlay.IsHost) return;
             float halfRtt = NetPlay.RttMs * 0.0005f;
+            bool scanned = false;
             for (int i = 0; i < n; i++)
             {
                 if (kind == SSin)
                 {
                     int id = r.ReadInt32(); float time = r.ReadSingle();
-                    SinMovingPlatform p = Find<SinMovingPlatform>(id);
+                    SinMovingPlatform p = Find<SinMovingPlatform>(id, ref scanned);
                     if (p == null || p.IsSuspended) continue;
                     float mine = (float)F_sinTime.GetValue(p), target = time + halfRtt, err = target - mine;
                     if (Mathf.Abs(err) < 0.02f) continue;
@@ -340,7 +348,7 @@ namespace OriCoop
                 {
                     int id = r.ReadInt32(); bool active = r.ReadBoolean();
                     if (Time.time - s_lastFlipActivity < 1.5f) continue;
-                    JumpFlipPlatform f = Find<JumpFlipPlatform>(id);
+                    JumpFlipPlatform f = Find<JumpFlipPlatform>(id, ref scanned);
                     if (f == null || (bool)F_flipActive.GetValue(f) == active) continue;
                     F_flipActive.SetValue(f, active); f.UpdateState();
                     FlipHeartbeatFixes++;
