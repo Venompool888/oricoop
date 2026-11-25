@@ -34,6 +34,11 @@ namespace OriCoop
             Plugin.Log.LogInfo("online lobby opened (" + Transport + ")");
         }
 
+        internal static void ReturnFromRoom()
+        {
+            if (s_open && s_overlayObject != null) s_overlayObject.GetComponent<OnlineLobbyOverlay>().ReturnFromRoom();
+        }
+
         public static void Close()
         {
             s_open = false;
@@ -49,6 +54,7 @@ namespace OriCoop
     internal class OnlineLobbyOverlay : MonoBehaviour
     {
         const int PageRole = 0;
+        static readonly bool MutateDoubleBackspace = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_DOUBLE_BACKSPACE") == "1";
         const int PageJoinInput = 1;
         const int PageHosting = 2;
         const int PageJoining = 3;
@@ -366,7 +372,8 @@ namespace OriCoop
                     else m_gridCol = (m_gridCol + 1) % 6;
                 }
 
-                if (AnyPadPressed(X) || Input.GetKeyDown(KeyCode.Backspace))
+                // Keyboard backspace is consumed by HandleTypingEvents, including OS key repeat.
+                if (AnyPadPressed(X) || (MutateDoubleBackspace && Input.GetKeyDown(KeyCode.Backspace)))
                 {
                     if (m_directAddressInput.Length > 0)
                         m_directAddressInput = m_directAddressInput.Substring(0, m_directAddressInput.Length - 1);
@@ -409,6 +416,12 @@ namespace OriCoop
             m_lastJoinTarget = addr;
             GoTo(PageJoining);
             NetPlay.Begin(false, "direct", addr);
+        }
+
+        internal void ReturnFromRoom()
+        {
+            if (m_page == PageHosting) GoTo(PageRole);
+            else if (m_page == PageJoining) GoTo(OnlineLobby.Transport == "steam" ? PageRole : PageJoinInput);
         }
 
         void UpdateHostingInput()
@@ -598,7 +611,7 @@ namespace OriCoop
                 GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), s_vignetteTex, ScaleMode.StretchToFill);
 
                 // Handle keyboard typing when appropriate
-                HandleTypingEvents();
+                HandleTypingEvents(Event.current);
 
                 // Draw active page
                 if (m_page == PageRole)
@@ -627,9 +640,8 @@ namespace OriCoop
             }
         }
 
-        void HandleTypingEvents()
+        internal void HandleTypingEvents(Event e)
         {
-            Event e = Event.current;
             if (e == null || e.type != EventType.KeyDown) return;
 
             if (m_page == PageJoinInput)

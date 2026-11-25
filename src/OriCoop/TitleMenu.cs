@@ -297,7 +297,7 @@ namespace OriCoop
             if (!Open(ui)) { LastSlotPick = "orb failed"; return 0; }
             s_fromTitle = true;
             s_transport = transport;
-            s_roomEntry = transport == "cserver" ? RoomEntryKind.TitleHost : RoomEntryKind.None;
+            s_roomEntry = RoomEntryKind.TitleHost;
             LastSlotPick = "title-host-" + transport;
             Plugin.Log.LogInfo("title menu: slot picked, hosting via " + transport);
             GoPage(PageHost, 1);
@@ -505,6 +505,16 @@ namespace OriCoop
             if (TitleOrbOpen) Destroy();
             if (TitleScreenManager.CurrentScreen != TitleScreenManager.Screen.SaveSlots) TitleScreenManager.SetScreen(TitleScreenManager.Screen.SaveSlots);
             Plugin.Log.LogInfo("title menu: guest connected (" + why + "); loading the host's save without a save slot");
+        }
+
+        internal static void CancelGuestSaveWait()
+        {
+            if (!GuestJoin.CancelWaiting()) return;
+            s_guestStarted = s_guestPickSlot = false;
+            GuestStatus = "cancelled";
+            if (TitleOrbOpen) Destroy();
+            TitleScreenManager.SetScreen(TitleScreenManager.Screen.MainMenu);
+            RestoreTitleMain();
         }
 
         // Per frame (NativeModeMenu.Driver).

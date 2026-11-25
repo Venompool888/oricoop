@@ -1,0 +1,6 @@
+OriCoop\Net\Transport.cs
+OriCoop\Net\NetPeer.cs
+OriCoop\Authority\CsWire.cs
+OriCoop\Authority\CServerRoomList.cs
+OriCoop\Authority\Arbiter.cs
+OriCoop\Authority\IAuthority.cs

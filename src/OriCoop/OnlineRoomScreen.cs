@@ -200,10 +200,17 @@ namespace OriCoop
                 GUI.enabled = enabled;
                 if (model.ServerNote) Label("room.server_note", L10n.T("room.server_pending"));
                 GUILayout.EndVertical(); GUILayout.EndHorizontal();
-                Button("room.leave", L10n.T("common.cancel"), delegate { Reset(); NetPlay.End("left room"); });
+                Button("room.leave", L10n.T("common.cancel"), LeaveRoom);
                 GUILayout.EndArea();
             }
             finally { NativeGui.EndPage(); }
+        }
+
+        static readonly bool MutateRoomCancel = System.Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ROOM_CANCEL_NAV") == "1";
+        static void LeaveRoom()
+        {
+            if (MutateRoomCancel) { Reset(); NetPlay.End("left room"); return; }
+            NativeModeMenu.LeaveRoomPage();
         }
     }
 }

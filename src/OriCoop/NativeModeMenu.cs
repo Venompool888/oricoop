@@ -413,7 +413,8 @@ namespace OriCoop
             RoomLeaveDestination destination = TakeRoomLeaveDestination();
             OnlineRoomScreen.Reset();
             NetPlay.End("left room");
-            GoAfterRoom(destination);
+            if (OnlineLobby.IsOpen) OnlineLobby.ReturnFromRoom();
+            else GoAfterRoom(destination);
         }
 
         // T-176: the session ended by itself while the room page was up (kicked: CServerLink.EndForGood -> NetPlay.End ->
@@ -427,8 +428,11 @@ namespace OriCoop
 
         static RoomLeaveDestination TakeRoomLeaveDestination()
         {
-            RoomLeaveDestination destination = RoomLeaveFlow.Destination(IsOpen && UsesRoomCode && (s_page == PageHost || s_page == PageJoin)
-                ? s_roomEntry : RoomEntryKind.None);
+            RoomLeaveDestination destination = RoomLeaveDestination.None;
+            if (IsOpen && (s_page == PageHost || s_page == PageJoin))
+                destination = UsesRoomCode ? RoomLeaveFlow.Destination(s_roomEntry) :
+                    RoomLeaveFlow.DirectOrSteam(s_page == PageHost, s_transport == "steam",
+                        s_page == PageHost ? s_roomEntry == RoomEntryKind.TitleHost : s_onTitle);
             s_roomEntry = RoomEntryKind.None;
             return destination;
         }
@@ -451,7 +455,11 @@ namespace OriCoop
                     s_fromNewGame = false;
                     BackToSlots();
                     return;
+                case RoomLeaveDestination.HostRole:
                 case RoomLeaveDestination.RoomList: GoPage(PageRole, 0); break;
+                case RoomLeaveDestination.JoinRole: GoPage(PageRole, 1); break;
+                case RoomLeaveDestination.DirectAddress: GoPage(PageEntry, 1); break;
+                case RoomLeaveDestination.JoinMethods: GoPage(PageJoinMethod, Ui.CoopMenuFlow.BackToMethods("steam").Focus); break;
                 case RoomLeaveDestination.CodeEntry: GoPage(PageEntry, 1); break;
                 case RoomLeaveDestination.MyRooms:
                     if (Rooms.RoomsPanel.Instance.Screen != "list") Rooms.RoomsPanel.Instance.Back();

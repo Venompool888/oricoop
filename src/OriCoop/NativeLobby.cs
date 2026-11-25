@@ -178,7 +178,8 @@ namespace OriCoop
                 if (roomCode)
                 {
                     string code = NetPlay.RoomCode ?? "";
-                    if (code.Length == 0) r.Add(new[] { L10n.T("lobby.creating", zh), L10n.T("lobby.creating.desc", zh) });
+                    if (CreateRefused) r.Add(new[] { L10n.T("lobby.error.failed", zh), L10n.T(FriendlyError(NetPlay.Problem, false), zh) });
+                    else if (code.Length == 0) r.Add(new[] { L10n.T("lobby.creating", zh), L10n.T("lobby.creating.desc", zh) });
                     else
                     {
                         string spaced = code.Length >= 6 ? code.Substring(0, 3) + " " + code.Substring(3) : code;
@@ -204,7 +205,7 @@ namespace OriCoop
                 }
                 else if (!string.IsNullOrEmpty(NetPlay.Problem)) status = L10n.T(FriendlyError(NetPlay.Problem, false), zh);
                 else status = L10n.T(canStart ? L10n.ModeKey("lobby.start.ready", roomCode) : "lobby.start.preparing", zh);
-                r.Add(new[] { L10n.T("lobby.start", zh), status });
+                r.Add(new[] { L10n.T(CreateRefused ? "common.retry" : "lobby.start", zh), status });
                 r.Add(new[] { L10n.T("common.cancel", zh), L10n.T("lobby.host.cancel.desc", zh) });
             }
             else if (s_page == PageJoin)
@@ -212,7 +213,8 @@ namespace OriCoop
                 string dots = new string('.', 1 + (int)(Time.realtimeSinceStartup * 2f) % 3);
                 if (JoinFailed)
                 {
-                    string errorKey = FriendlyError(NetPlay.Problem, Time.realtimeSinceStartup - NetPlay.StartedAt > 15f);
+                    string errorKey = s_transport == "steam" && SteamInviteHook.CanRetry ? "lobby.error.timeout"
+                        : FriendlyError(NetPlay.Problem, Time.realtimeSinceStartup - NetPlay.StartedAt > 15f);
                     string error = L10n.T(errorKey, zh);
                     if (!zh && errorKey == "lobby.error.failed" && !string.IsNullOrEmpty(NetPlay.Problem)) error += " (" + NetPlay.Problem + ")";
                     r.Add(new[] { L10n.T("common.retry", zh), error });
@@ -244,11 +246,13 @@ namespace OriCoop
             return s_onTitle ? L10n.T("lobby.save.note", zh) : "";
         }
 
+        static readonly string MutateLobbyRecovery = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_LOBBY_RECOVERY");
+        static bool CreateRefused { get { return UsesRoomCode && NetPlay.RetryHeld && MutateLobbyRecovery != "host"; } }
         static bool JoinFailed
         {
             get
             {
-                return NetPlay.CurrentPhase == NetPlay.Phase.Retrying ||
+                return s_transport == "steam" && SteamInviteHook.CanRetry && MutateLobbyRecovery != "invite" || NetPlay.CurrentPhase == NetPlay.Phase.Retrying ||
                     (NetPlay.CurrentPhase == NetPlay.Phase.Connecting && Time.realtimeSinceStartup - NetPlay.StartedAt > 15f);
             }
         }
@@ -513,7 +517,8 @@ namespace OriCoop
                 }
                 else if (index == 1)
                 {
-                    if (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected) Proceed();
+                    if (CreateRefused) { BeginCServer(true, s_cserverBeginTarget); RefreshTexts(true); }
+                    else if (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected) Proceed();
                 }
                 else LobbyBack();
             }
@@ -523,7 +528,8 @@ namespace OriCoop
                 {
                     s_connectedAt = 0f;
                     Plugin.Log.LogInfo("mode menu: retry join " + s_transport + " " + s_joinTarget);
-                    if (s_transport == "cserver") BeginCServer(false, s_joinTarget);
+                    if (s_transport == "steam" && SteamInviteHook.CanRetry) SteamInviteHook.Retry();
+                    else if (s_transport == "cserver") BeginCServer(false, s_joinTarget);
                     else NetPlay.Begin(false, s_transport, s_joinTarget);
                     RefreshTexts(true);
                 }
@@ -557,7 +563,7 @@ namespace OriCoop
         // with what was typed last. Used by the 加入 row of the host / join page and by 加入房间 on the title (TitleMenu.cs).
         static void OpenJoinEntry()
         {
-            if (s_transport == "steam") { s_joinTarget = ""; GoPage(PageJoin, 1); NetPlay.Begin(false, "steam", ""); return; }
+            if (s_transport == "steam") { SteamInviteHook.ForgetRetry(); s_joinTarget = ""; GoPage(PageJoin, 1); NetPlay.Begin(false, "steam", ""); return; }
             bool roomCode = UsesRoomCode;
             s_entryKind = roomCode ? 0 : 1;
             if (roomCode)
@@ -576,6 +582,14 @@ namespace OriCoop
 
         static void LobbyBack()
         {
+            if (s_page == PageJoin && s_transport == "steam") SteamInviteHook.ForgetRetry();
+            if (s_page == PageJoin && UsesRoomCode && s_roomEntry == RoomEntryKind.ListJoin && MutateLobbyRecovery != "list")
+            {
+                s_roomEntry = RoomEntryKind.None;
+                NetPlay.End("listed room join cancelled");
+                GoPage(PageRole, 0);
+                return;
+            }
             if (TitleFlowBack()) return;                    // a join opened from 加入房间 on the title goes back there (TitleMenu.cs)
             if (IsRoomsPage) { RoomBack(); return; }
             if (s_page == PageDiagnosticsConsent) { GoPage(PageDiagnosticsList, Math.Max(0, Authority.CServerConfig.Servers.IndexOf(s_diagnosticsAddress))); return; }

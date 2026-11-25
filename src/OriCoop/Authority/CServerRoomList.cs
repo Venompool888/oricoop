@@ -58,9 +58,10 @@ namespace OriCoop.Authority
         // Drawn finds the room by the text actually drawn on the row among these lists instead.
         readonly List<List<CsRoomListEntry>> recent = new List<List<CsRoomListEntry>>();
         const int RecentLists = 4;
+        static readonly bool s_mutateKeepRooms = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STALE_CS_ROOMS") == "1";
         string server = "";
         int generation, state, shownFrame;
-        bool shownTaken;
+        bool shownTaken, shownInvalid;
         double next;
         // T-201: a fetch is running. Kept apart from `state` (what the page shows): the refresh every few seconds no longer
         // turns "read failed" or "no rooms yet" back into "loading" each time it starts.
@@ -81,7 +82,7 @@ namespace OriCoop.Authority
                 address = address ?? "";
                 if (address != server)
                 {
-                    server = address; generation++; rooms = null; shown = new List<CsRoomListEntry>(); shownTaken = false;
+                    server = address; generation++; rooms = null; shown = new List<CsRoomListEntry>(); shownTaken = shownInvalid = false;
                     recent.Clear();
                     state = Idle; next = 0; fetching = false; reloadAsked = false; error = "";
                 }
@@ -98,7 +99,7 @@ namespace OriCoop.Authority
         public bool Complete(int fetchGeneration, List<CsRoomListEntry> result) { return Complete(fetchGeneration, result, null); }
 
         // Worker: the result (null = failed, with why) of the fetch BeginFetch returned `fetchGeneration` for. Dropped
-        // (false) when the page switched server since; a failure keeps the server's last good list.
+        // (false) when the page switched server since; a failure invalidates the last good rows and any pending press on one of them.
         public bool Complete(int fetchGeneration, List<CsRoomListEntry> result, string failure)
         {
             lock (gate)
@@ -110,6 +111,10 @@ namespace OriCoop.Authority
                     rooms = result;
                     recent.Insert(0, new List<CsRoomListEntry>(result));
                     if (recent.Count > RecentLists) recent.RemoveAt(recent.Count - 1);
+                }
+                else if (!s_mutateKeepRooms)
+                {
+                    rooms = null; shownInvalid = true; recent.Clear();
                 }
                 state = result != null ? Loaded : Failed;
                 error = result != null ? "" : failure ?? "";
@@ -134,7 +139,10 @@ namespace OriCoop.Authority
             lock (gate)
             {
                 if (frame != shownFrame || !shownTaken)
+                {
                     shown = rooms == null ? new List<CsRoomListEntry>() : new List<CsRoomListEntry>(rooms);
+                    shownInvalid = false;
+                }
                 shownFrame = frame; shownTaken = true;
                 return new List<CsRoomListEntry>(shown);
             }
@@ -143,7 +151,7 @@ namespace OriCoop.Authority
         // The room drawn on room row `index` (0 = first room row), or null for the status row / anything else.
         public CsRoomListEntry Shown(int index)
         {
-            lock (gate) return index >= 0 && index < shown.Count ? shown[index] : null;
+            lock (gate) return !shownInvalid && index >= 0 && index < shown.Count ? shown[index] : null;
         }
 
         // T-173 (review F15): the room whose row text `drawnText` is on screen at room row `index` (0 = first room row), or
@@ -156,8 +164,11 @@ namespace OriCoop.Authority
             List<CsRoomListEntry> candidates = new List<CsRoomListEntry>();
             lock (gate)
             {
-                if (index >= 0 && index < shown.Count) candidates.Add(shown[index]);
-                candidates.AddRange(shown);
+                if (!shownInvalid)
+                {
+                    if (index >= 0 && index < shown.Count) candidates.Add(shown[index]);
+                    candidates.AddRange(shown);
+                }
                 foreach (List<CsRoomListEntry> list in recent) candidates.AddRange(list);
             }
             foreach (CsRoomListEntry room in candidates)

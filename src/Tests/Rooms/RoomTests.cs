@@ -911,6 +911,8 @@ static class RoomTests
     {
         using (Fixture x = new Fixture())
         {
+            // A room entry is still a foreground operation until Host/Join actually starts.
+            x.Game.InGameplay = true;
             byte[] salt = new byte[] { 1, 2, 3, 4, 5, 6, 7, 8 };
             x.Http.Reply("enter", "ok", "0", "error", "bad_token");
             x.Http.Reply("challenge", "ok", "1", "salt", salt, "nonce", new byte[] { 9 });
@@ -1060,6 +1062,21 @@ static class RoomTests
         }
     }
 
+    static void BackgroundBadTokenDoesNotOpenPasswordPage()
+    {
+        using (Fixture x = new Fixture())
+        {
+            x.Host(); x.Game.InGameplay = true;
+            bool prompted = false;
+            x.Session.Password = delegate { prompted = true; };
+            x.Http.Reply("upload", "ok", "0", "error", "bad_token");
+            x.Session.Saved(new byte[] { 4 }, "checkpoint");
+            x.Drain();
+            Check(!prompted && x.Error == "bad_token" && x.Session.Active,
+                "in-game backup should report its authentication failure and keep playing");
+        }
+    }
+
     static int failures;
     static void Run(string name, Action test)
     {
@@ -1113,6 +1130,7 @@ static class RoomTests
         Run("session rebind", SessionRebind);
         Run("abandoned info does not ask for a password", SessionExpiredPasswordReply);
         Run("abandoned rebind preserves the newer token", ExpiredRebindDoesNotReplaceCurrentToken);
+        Run("in-game upload reports authentication failure", BackgroundBadTokenDoesNotOpenPasswordPage);
         Run("failed initial download releases its lease before retry", FailedHostDownloadReleasesBeforeRetry);
         Run("session offline copy", SessionCopyOffline);
         return failures == 0 ? 0 : 1;

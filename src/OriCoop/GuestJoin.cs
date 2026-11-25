@@ -180,6 +180,17 @@ namespace OriCoop
             if (Services.Net.Enabled && !s_mutateStayOnline) SavesHost.Current.End("the host left during its prologue");
         }
 
+        internal static bool CancelWaiting()
+        {
+            if (!s_waiting || NeedSlotChoice || Loading || SaveSync.HavePendingCheckpoint || SharedPrologue.Busy) return false;
+            const string reason = "cancelled while waiting for the host save";
+            s_sessionEnds = true;
+            try { Abort("guest.cancel_wait", reason); }
+            finally { s_sessionEnds = false; }
+            SavesHost.Current.End(reason);
+            return true;
+        }
+
         static bool s_sessionEnds;   // the failure being reported also ends online play: not "still connected"
 
         static void Abort(string key, string why) { Fail(s_ui, key, why); }

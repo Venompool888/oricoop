@@ -75,7 +75,7 @@ namespace OriCoop.Rooms
         public double BeatSeconds = 30, BackupSeconds = 60, WaitSeconds = 2;
         volatile int generation;
         int slot = -1;
-        bool liveSent, waiting, polling, uploading, leaving, leaveQueued;
+        bool started, liveSent, waiting, polling, uploading, leaving, leaveQueued;
         double now, nextBeat, nextBackup, waitUntil, nextLive;
         long lastPlayed;
         byte[] queued;
@@ -105,7 +105,7 @@ namespace OriCoop.Rooms
             jobs.Add(work, delegate(RoomReply reply)
             {
                 if (!MutateRoomFailures && wanted != null && !wanted()) return;
-                if (reply.Error == "bad_token" && Password != null && !(Active && game.InGameplay))
+                if (reply.Error == "bad_token" && Password != null && !(started && game.InGameplay))
                 {
                     Password(delegate(string password)
                     {
@@ -218,6 +218,7 @@ namespace OriCoop.Rooms
                     nextLive = 0;
                     nextBeat = now + BeatSeconds;
                     game.Host(slot, server);
+                    started = true;
                     lastPlayed = game.PlayedSeconds;
                 }, true);
             }
@@ -226,6 +227,7 @@ namespace OriCoop.Rooms
                 waiting = false;
                 nextBackup = now + BackupSeconds;
                 game.Join(server + "|" + r.Fields.GetString("live"));
+                started = true;
             }
             else
             {
@@ -428,6 +430,7 @@ namespace OriCoop.Rooms
             {
                 Active = false;
                 Holder = false;
+                started = false;
                 waiting = false;
                 slot = -1;
                 bool report = entryError != null && entered == generation;
