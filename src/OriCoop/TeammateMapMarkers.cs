@@ -99,10 +99,10 @@ namespace OriCoop
             marker.localRotation = template.localRotation;
             marker.localScale = template.localScale;
             Color color = Roles.ColorOf(seat);
-            int sortingOrder = 0;
+            Renderer top = null;
             foreach (Renderer renderer in marker.GetComponentsInChildren<Renderer>(true))
             {
-                sortingOrder = Mathf.Max(sortingOrder, renderer.sortingOrder);
+                if (top == null || renderer.sortingOrder > top.sortingOrder) top = renderer;
                 foreach (Material material in renderer.materials)
                 {
                     if (material == null) continue;
@@ -132,7 +132,11 @@ namespace OriCoop
             MeshRenderer textRenderer = caption.GetComponent<MeshRenderer>();
             Material captionMaterial = new Material(font.material);
             textRenderer.sharedMaterial = captionMaterial;
-            textRenderer.sortingOrder = sortingOrder + 1;
+            if (top != null)
+            {
+                textRenderer.sortingLayerID = top.sortingLayerID;
+                textRenderer.sortingOrder = top.sortingOrder + 1;
+            }
             m_materials.Add(captionMaterial);
             TransparencyAnimator.Register(marker);
             return label;

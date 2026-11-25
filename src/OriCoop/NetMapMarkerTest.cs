@@ -51,18 +51,20 @@ namespace OriCoop
             bool tinted = rendered.r == expected.r && rendered.g == expected.g && rendered.b == expected.b;
             bool captionVisible = label != null && label.GetComponent<Renderer>().enabled && rendered.a > 40;
             bool iconVisible = false;
+            bool sameLayer = false;
             if (label != null)
                 foreach (Renderer part in label.transform.parent.GetComponentsInChildren<Renderer>())
                 {
                     if (!part.enabled || part.gameObject == label.gameObject || part.sharedMaterial == null || !part.sharedMaterial.HasProperty("_Color")) continue;
                     Color32 icon = part.sharedMaterial.color;
                     if (icon.r == expected.r && icon.g == expected.g && icon.b == expected.b && icon.a > 8) iconVisible = true;
+                    if (part.sortingLayerID == label.GetComponent<Renderer>().sortingLayerID) sameLayer = true;
                 }
             string view = world ? "world" : "area";
             h.Check(received && label != null && error < 0.06f,
                 "S4 map: P2 has a marker at its native " + view + " map projection (received=" + received + ", label=" + (label != null) + ", error=" + error + ")");
-            h.Check(tinted && captionVisible && iconVisible, "S4 map: P2's " + view + " map icon and caption show its seat colour (rgba="
-                + rendered + ", caption visible=" + captionVisible + ", icon visible=" + iconVisible + ")");
+            h.Check(tinted && captionVisible && iconVisible && sameLayer, "S4 map: P2's " + view + " map icon and caption show its seat colour on the native sorting layer (rgba="
+                + rendered + ", caption visible=" + captionVisible + ", icon visible=" + iconVisible + ", matching layer=" + sameLayer + ")");
             h.Check(captionVisible && label.text == Roles.Tag(2) + " " + GuestName,
                 "S4 map: the rendered " + (world ? "world" : "area") + " map shows P2's transmitted custom name");
         }
