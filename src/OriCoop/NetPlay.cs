@@ -874,12 +874,21 @@ namespace OriCoop
             SubsystemGuard.Run("OnlineLocalPlayers.Tick", s_extraTick);
             if (HasHub)
             {
-                s_hub.Poll();
-                foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
-                    if (remote.Peer != null) ReadPeer(remote.Peer, remote, true);
-                s_hub.Flush();
+                // One packet per guest: the acks wait for the forwards queued while reading (was ack, then forwards).
+                s_hub.Poll(false);
+                try
+                {
+                    foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
+                        if (remote.Peer != null) ReadPeer(remote.Peer, remote, true);
+                }
+                finally { s_hub.Flush(); }
             }
-            else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
+            else
+            {
+                Peer.Poll(false);
+                try { if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
+                finally { if (Peer != null) Peer.Flush(); }
+            }
             if (s_factorySession) Authority.CServerLink.TickOwnerNotice();
             if (!Connected || WaitingForSeat) return;
 
@@ -1051,14 +1060,19 @@ namespace OriCoop
                 return;
             }
             uint tick = ++s_localTick;
-            SendSeatFrame(Players.LocalSeat, Characters.Sein, tick);
-            foreach (Puppet puppet in Players.Remotes)
+            try
             {
-                if (!puppet.IsLocal || puppet.Sein == null) continue;
-                puppet.Input.Swap();
-                try { SendSeatFrame(puppet.Seat, puppet.Sein, tick); }
-                finally { puppet.Input.Swap(); }
+                SendSeatFrame(Players.LocalSeat, Characters.Sein, tick);
+                foreach (Puppet puppet in Players.Remotes)
+                {
+                    if (!puppet.IsLocal || puppet.Sein == null) continue;
+                    puppet.Input.Swap();
+                    try { SendSeatFrame(puppet.Seat, puppet.Sein, tick); }
+                    finally { puppet.Input.Swap(); }
+                }
             }
+            // One flush for every local seat's frame, so split-screen sends one packet per step, not one per seat.
+            finally { if (s_hub != null) s_hub.Flush(); else if (Peer != null) Peer.Flush(); }
         }
 
         static void SendSeatFrame(int seat, SeinCharacter p1, uint tick)
@@ -1127,7 +1141,6 @@ namespace OriCoop
                 byte[] packet = Seats.FrameStreams.Encode(Players.LocalSeat, new int[] { seat }, new byte[][] { body });
                 Broadcast(packet, packet.Length, false);
             }
-            if (s_hub != null) s_hub.Flush(); else Peer.Flush();
         }
 
         static void PlayRemote()
