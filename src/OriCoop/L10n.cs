@@ -352,6 +352,8 @@ namespace OriCoop
             "coop.two_players", "双人", "2 players",
             "coop.close", "关闭 (F8 / Esc / B)", "Close (F8 / Esc / B)",
             "coop.open_logs", "打开日志文件夹", "Open log folder",
+            "coop.recover_keystone", "卡关补发：1 块钥匙石", "Recover one missing Keystone",
+            "coop.recovered_keystone", "已补发 1 块钥匙石，现有 {0} 块。", "Recovered one Keystone. Shared total: {0}.",
             "coop.logs_opened", "已打开日志文件夹（反馈问题时请附上里面的日志）", "Log folder opened (attach its logs when you report a problem)",
             "coop.logs_failed", "无法打开日志文件夹：{0}", "Couldn't open the log folder: {0}",
             "build.version", "OriCoop 版本 {0}", "OriCoop version {0}",
