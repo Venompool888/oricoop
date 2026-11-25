@@ -2810,9 +2810,11 @@ namespace OriCoop
                     {
                         menu.ShowMenuScreen();
                         help = NetStoryTest.TryOpenHelp();
+                        h.Note("G screens before F8: " + ScreenDetails(menu, ori));
                         CoopMenu.Open();
+                        h.Note("G screens immediately after F8: " + ScreenDetails(menu, ori));
                         yield return null;
-                        h.Check(CoopMenu.IsOpen && SessionRules.LiveScreen && !ori.IsSuspended, "G screens: the guest is live with its screens open");
+                        h.Check(CoopMenu.IsOpen && SessionRules.LiveScreen && !ori.IsSuspended, "G screens: the guest is live with its screens open (" + ScreenDetails(menu, ori) + ")");
                     }
                     NetPlay.TestTransportFailure("test: the transport failed");
                     if (checkMenu)
@@ -2824,7 +2826,7 @@ namespace OriCoop
                             SessionRules.HidePopups();
                             h.Check(!SessionRules.PopupOpen && ori.IsSuspended, "G screens: hiding the help popup leaves the menu pause in place");
                         }
-                        h.Check(CoopMenu.IsOpen && GameController.Instance.InputLocked, "G screens: F8 still locks input without the popup");
+                        h.Check(CoopMenu.IsOpen && GameController.Instance.InputLocked, "G screens: F8 still locks input without the popup (" + ScreenDetails(menu, ori) + ")");
                         CoopMenu.Close();
                         PauseMenuEntry.Release();
                         menu.HideMenuScreen(true);
@@ -2859,6 +2861,14 @@ namespace OriCoop
                 h.Check(h.ErrorCount == 0, "net no Unity errors/exceptions (" + h.ErrorCount + ")");
             }
             finally { Stop(); }
+        }
+
+        static string ScreenDetails(MenuScreenManager menu, SeinCharacter ori)
+        {
+            return "pause=" + menu.MainMenuVisible + " help=" + SessionRules.PopupOpen + " F8=" + CoopMenu.IsOpen
+                + " live=" + SessionRules.LiveScreen + " suspended=" + ori.IsSuspended + " locked=" + GameController.Instance.InputLocked
+                + " gameplay=" + NetPlay.LocalInGameplay() + " roomPage=" + CsRoomPage.InGame + " noPause=" + SessionRules.NoPause
+                + " state=" + (GameStateMachine.Instance == null ? "unknown" : GameStateMachine.Instance.CurrentState.ToString());
         }
 
         // T-129 late join (net-3p / net-4p / net-lp3): the last guest (ORICOOP_NET_CONNECT_AT > 0) must join AFTER the host
