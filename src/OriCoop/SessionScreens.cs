@@ -23,12 +23,6 @@ namespace OriCoop
         public static int FocusEvents, SuppressedResumeScreens, BackgroundFixes, SaveScreensShown;
         public static bool Blocking { get { return Phase != SavePhase.None; } }
         public static string WaitingText = "";                  // the transfer screen's headline as last drawn (tests)
-        static readonly bool s_mutateNoWaitCancel = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_SAVE_WAIT_CANCEL") == "1";
-        static bool CanCancelWait
-        {
-            get { return !s_mutateNoWaitCancel && Phase == SavePhase.Waiting && GuestJoin.Waiting && !GuestJoin.NeedSlotChoice
-                && !GuestJoin.Loading && !SaveSync.HavePendingCheckpoint && !SharedPrologue.Busy; }
-        }
         static bool s_failureShown, s_reflectionWarned;
         static float s_failedAt, s_phaseSince;
 
@@ -248,6 +242,13 @@ namespace OriCoop
         static void DrawBothPausedHint(float scale)
         {
             Text(new Rect(0, 24f * scale, Screen.width, 28f * scale), Host.Text("session.both_paused"), s_small, new Color(Ink.r, Ink.g, Ink.b, 0.85f));
+        }
+
+        static readonly bool s_mutateNoWaitCancel = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_SAVE_WAIT_CANCEL") == "1";
+        static bool CanCancelWait
+        {
+            get { return !s_mutateNoWaitCancel && Phase == SavePhase.Waiting && GuestJoin.Waiting && !GuestJoin.NeedSlotChoice
+                && !GuestJoin.Loading && !SaveSync.HavePendingCheckpoint && !SharedPrologue.Busy; }
         }
 
         static void DrawSaveScreen(float scale)
