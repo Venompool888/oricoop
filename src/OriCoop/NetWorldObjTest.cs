@@ -378,6 +378,7 @@ namespace OriCoop
         static IEnumerator Collapse(TestHarness h, string tag, int step, bool host)
         {
             yield return Load<CollapsingSolid>(h, tag, "ginsoTreePuzzles", null, c => !WorldObjSync.CollapseActivated(c));
+            float timersFrom = Time.realtimeSinceStartup; int timersBefore = WorldSync.TimerPhasesSent;   // T-250, checked below
             yield return Agree<CollapsingSolid>(h, tag, step);
             CollapsingSolid floor = s_pick as CollapsingSolid; if (floor == null) yield break;
             yield return Barrier(h, step + 1, 0, 0f, 0f);
@@ -402,6 +403,16 @@ namespace OriCoop
                     + WorldObjSync.CollapseActivated(floor) + " playing=" + (floor.Animator != null && floor.Animator.AnimatorDriver.IsPlaying) + ")");
             }
             yield return Barrier(h, step + 2, 0, 0f, 0f);
+            if (host)
+            {
+                // T-250: with the Ginso puzzle scene loaded, the host resends its level timers' phase (gap <= 1.3 s).
+                while (Time.realtimeSinceStartup < timersFrom + 2.5f) yield return null;
+                if (WorldSync.LastSendableTimers == 0 && WorldSync.TimerPhasesSent == timersBefore)
+                    h.Note(tag + " T-250: no sendable level timer in the host's loaded scenes (see the 'net: world timers scene=' lines)");
+                else
+                    h.Check(WorldSync.TimerPhasesSent > timersBefore, tag + " T-250 host resent its level timers' phase in ginsoTreePuzzles (sent "
+                        + (WorldSync.TimerPhasesSent - timersBefore) + ", last resend " + WorldSync.LastSendableTimers + " timers)");
+            }
         }
 
         // W3 jump-flip platforms: at the same moment the host's Ori jumps once and the guest's Ori jumps twice. Every

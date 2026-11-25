@@ -163,6 +163,7 @@
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_NO_TEAM'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net';   Phase = 'ESC' }   # T-169 one finisher brings the team
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_MASH_NEAREST'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net-3p'; Phase = '' }   # T-169 mash revive: a random teammate in the escape
         @{ Switch = 'ORICOOP_MUTATE_WORLD_WHOLE_BLOB'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net-3p'; Phase = '' }   # T-168 same-RTT world events (net W5, net-4p and net-3p-cs check it too)
+        @{ Switch = 'ORICOOP_MUTATE_TIMER_PHASE_ONCE'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = '' }   # T-250 the host resends its level timers' phase (no game check yet: World TimerPhaseTests)
         @{ Switch = 'ORICOOP_MUTATE_SHARE_TRIGGERS'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 string triggers stay per PC (KURO post-story checks; World unit tests)
         @{ Switch = 'ORICOOP_MUTATE_MIRROR_TRIGGER_RUNS'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 a mirror's start consumes the string trigger (KURO: 03 and 04 ran once)
         @{ Switch = 'ORICOOP_MUTATE_START_IN_SCENE_TRIP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-185 a mirrored start waits for this PC's scene trip (KURO=1 over 90 ms: stories ended only once 04 finished, own Ori back at the tree)

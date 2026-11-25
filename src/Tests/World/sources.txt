@@ -13,4 +13,5 @@ OriCoop\Authority\HostArbiter.cs
 OriCoop\World\MirrorHold.cs
 OriCoop\World\StoryProgressKeys.cs
 OriCoop\World\DigestRepair.cs
+OriCoop\World\TimerPhase.cs
 OriCoop\World\SnapshotRequests.cs
