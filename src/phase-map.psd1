@@ -59,6 +59,7 @@
         @{ Switch = 'ORICOOP_MUTATE_PICKUP_CLONE_FORGOTTEN'; File = 'src\OriCoop\SavedPickupCopies.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_PICKUP_GUID_ONLY'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a pickup is its GUID plus scene and spot (W pickups: two copies of one prefab; the host cannot take the guest's pickup again)
         @{ Switch = 'ORICOOP_MUTATE_CELL_REFILLS_HOST'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a health / energy cell refills the player who took it (W cells)
+        @{ Switch = 'ORICOOP_MUTATE_CELL_REWARD_LOSER'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_HOST_SEAT_ONE';  File = 'src\OriCoop\Authority\NetRoute.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_FX_FORWARD';  File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-3p';    Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_LATE_COMMIT'; File = 'src\OriCoop\Saves\CoopSaves.Lineage.cs'; Suite = 'net-3p'; Phase = '' }

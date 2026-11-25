@@ -50,6 +50,7 @@ namespace OriCoop.Story
     }
     internal sealed class ProgressAction
     {
+        public int SenderSeat;  // supplied by the transport when queued
         public uint Sequence;
         public ActionKind Kind;
         public byte[] Guid;
@@ -131,6 +132,24 @@ namespace OriCoop.Story
 
         public void Clear() { entries.Clear(); }
     }
+    internal sealed class CellResult
+    {
+        public const byte Message = 24;
+        public uint Sequence;
+        public ActionKind Kind;
+        public bool Accepted;
+        public float Maximum;
+        public static bool IsCell(ActionKind kind) { return kind == ActionKind.MaxHealth || kind == ActionKind.MaxEnergy; }
+        public void Write(BinaryWriter w) { w.Write(Sequence); w.Write((byte)Kind); w.Write(Accepted); w.Write(Maximum); }
+        public static CellResult Read(BinaryReader r)
+        {
+            CellResult cell = new CellResult { Sequence = r.ReadUInt32(), Kind = (ActionKind)r.ReadByte(), Accepted = r.ReadBoolean(), Maximum = r.ReadSingle() };
+            if (!IsCell(cell.Kind) || float.IsNaN(cell.Maximum) || float.IsInfinity(cell.Maximum) || (cell.Accepted && cell.Maximum <= 0f))
+                throw new InvalidDataException("invalid cell result");
+            return cell;
+        }
+    }
+
     internal sealed class ProgressQueue<TGuid>
     {
         readonly HashSet<ulong> actions = new HashSet<ulong>();
@@ -140,6 +159,7 @@ namespace OriCoop.Story
         public bool Enqueue(int sender, ProgressAction action)
         {
             if (!actions.Add(((ulong)sender << 32) | action.Sequence)) return false;
+            action.SenderSeat = sender;
             pending.Enqueue(action); return true;
         }
         public ProgressAction Peek() { return pending.Peek(); }
@@ -154,7 +174,12 @@ namespace OriCoop.Story
         // ReconcileSeats) keeps its Hello, so no PlayerJoined would ever reopen such a block.
         public void SeatLeft(int seat) { Forget(seat); }
         public void SeatJoined(int seat) { Forget(seat); }
-        void Forget(int seat) { actions.RemoveWhere(delegate(ulong key) { return (int)(key >> 32) == seat; }); }
+        void Forget(int seat)
+        {
+            actions.RemoveWhere(delegate(ulong key) { return (int)(key >> 32) == seat; });
+            // Shared progress may still settle. A new connection in this seat must not receive its predecessor's reward.
+            foreach (ProgressAction action in pending) if (action.SenderSeat == seat) action.SenderSeat = 0;
+        }
         public void Reset() { actions.Clear(); collected.Clear(); pending.Clear(); }
     }
     // T-214: when the host's unsent progress is a stall worth a warning. Playtest 4 logged "progress sync stalled" eight

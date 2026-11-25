@@ -8,9 +8,36 @@ namespace OriCoop
 {
     public static partial class NetTestHarness
     {
+        static void CheckPickupRegistration(TestHarness h)
+        {
+            SaveSceneManager manager = null;
+            foreach (SaveSceneManager loaded in UnityEngine.Object.FindObjectsOfType<SaveSceneManager>())
+                if (WorldSync.SceneOf(loaded) != MoonGuid.Empty) { manager = loaded; break; }
+            if (manager == null) { h.Check(false, "W clone: loaded native save registry available"); return; }
+            MoonGuid id = new MoonGuid(223, 18, 0, 2);
+            GameObject registered = new GameObject("W registered pickup"), clone = new GameObject("W pickup copy");
+            registered.SetActive(false); clone.SetActive(false);
+            try
+            {
+                registered.transform.SetParent(manager.transform, false); clone.transform.SetParent(manager.transform, false);
+                KeystonePickup first = registered.AddComponent<KeystonePickup>(), second = clone.AddComponent<KeystonePickup>();
+                first.MoonGuid = second.MoonGuid = id;
+                manager.AddSaveObject(first, id);
+                ProgressAction saved = ProgressSync.Located(first), copy = ProgressSync.Located(second);
+                h.Check(saved.Registered && !copy.Registered && new MoonGuid(saved.Scene) == WorldSync.SceneOf(manager)
+                    && new MoonGuid(copy.Scene) == new MoonGuid(saved.Scene), "W clone: native registry distinguishes the two copies of one prefab");
+            }
+            finally
+            {
+                manager.SaveData.RemoveAll(entry => entry.Id == id);
+                UnityEngine.Object.Destroy(registered); UnityEngine.Object.Destroy(clone);
+            }
+        }
+
         // A collected prefab copy and the registered sibling share a GUID in a scene absent on the host.
         static IEnumerator CloneCheckpoint(TestHarness h)
         {
+            CheckPickupRegistration(h);
             bool host = NetPlay.IsHost;
             MoonGuid scene = new MoonGuid(223, 17, 0, 1), id = new MoonGuid(223, 17, 0, 2);
             if (host)

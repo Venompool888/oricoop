@@ -399,13 +399,13 @@ static partial class StoryTests
         });
         Check("progress action wire round trip", delegate {
             ProgressAction a = new ProgressAction { Sequence = 42, Kind = ActionKind.MaxEnergy, Guid = Id(4), Amount = -8, Extra = 17,
-                Scene = Id(9), HasSpot = true, X = 1.5f, Y = -2.25f };
+                Scene = Id(9), HasSpot = true, Registered = true, X = 1.5f, Y = -2.25f };
             byte[] bytes = Wire(a.Write);
             BytesEqual(Wire(delegate(BinaryWriter w) { w.Write(42U); w.Write((byte)ActionKind.MaxEnergy); w.Write(Id(4)); w.Write(-8); w.Write(17);
-                w.Write(Id(9)); w.Write(true); w.Write(1.5f); w.Write(-2.25f); }), bytes);
+                w.Write(Id(9)); w.Write(true); w.Write(1.5f); w.Write(-2.25f); w.Write(true); }), bytes);
             ProgressAction b = ProgressAction.Read(Reader(bytes)); Equal(a.Sequence, b.Sequence); Equal(a.Kind, b.Kind);
             BytesEqual(a.Guid, b.Guid); Equal(a.Amount, b.Amount); Equal(a.Extra, b.Extra);
-            BytesEqual(a.Scene, b.Scene); Equal(true, b.HasSpot); Equal(1.5f, b.X); Equal(-2.25f, b.Y);
+            BytesEqual(a.Scene, b.Scene); Equal(true, b.HasSpot); Equal(true, b.Registered); Equal(1.5f, b.X); Equal(-2.25f, b.Y);
         });
         Check("T-214 progress action place: zero scene bytes mean 'scene not known'", delegate {
             ProgressAction a = new ProgressAction { Guid = Id(1) };
@@ -416,6 +416,21 @@ static partial class StoryTests
         Check("progress action fifo", delegate {
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); ProgressAction a = new ProgressAction { Sequence = 2 }, b = new ProgressAction { Sequence = 1 };
             q.Enqueue(2, a); q.Enqueue(3, b); Equal(a, q.Peek()); Equal(a, q.Dequeue()); Equal(b, q.Dequeue());
+        });
+        Check("T-223 a cell result identifies the request and its authoritative maximum", delegate {
+            Equal((byte)24, CellResult.Message);
+            CellResult result = new CellResult { Sequence = 73, Kind = ActionKind.MaxEnergy, Accepted = true, Maximum = 6f };
+            byte[] bytes = Wire(result.Write);
+            BytesEqual(Wire(delegate(BinaryWriter w) { w.Write(73u); w.Write((byte)ActionKind.MaxEnergy); w.Write(true); w.Write(6f); }), bytes);
+            CellResult read = CellResult.Read(Reader(bytes)); Equal(result.Sequence, read.Sequence); Equal(result.Kind, read.Kind);
+            Equal(true, read.Accepted); Equal(6f, read.Maximum);
+        });
+        Check("T-223 queued actions keep their originating connection until that seat leaves", delegate {
+            ProgressQueue<Guid> q = new ProgressQueue<Guid>();
+            ProgressAction old = new ProgressAction { Sequence = 1 }, other = new ProgressAction { Sequence = 1 }, next = new ProgressAction { Sequence = 1 };
+            q.Enqueue(2, old); q.Enqueue(3, other); Equal(2, old.SenderSeat); Equal(3, other.SenderSeat);
+            q.SeatLeft(2); q.SeatJoined(2); q.Enqueue(2, next);
+            Equal(0, q.Dequeue().SenderSeat); Equal(3, q.Dequeue().SenderSeat); Equal(2, q.Dequeue().SenderSeat);
         });
         Check("progress duplicate sequence per seat", delegate {
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); ProgressAction a = new ProgressAction { Sequence = 1 };

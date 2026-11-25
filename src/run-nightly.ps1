@@ -93,6 +93,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_PICKUP_CLONE_FORGOTTEN (W clone)'; Env = @{ ORICOOP_MUTATE_PICKUP_CLONE_FORGOTTEN = '1'; ORICOOP_PHASES = 'W' }; Script = @('run-nettest.ps1'); Expect = '^W clone: saved unregistered copy cannot pay again after a native reload' }
     @{ Name = 'MUTATE_PICKUP_GUID_ONLY (W pickups)'; Env = @{ ORICOOP_MUTATE_PICKUP_GUID_ONLY = '1'; ORICOOP_PHASES = 'W' }; Script = @('run-nettest.ps1'); Expect = '^W pickups: two copies of one prefab \(same GUID, two spots\) both count' }   # T-214
     @{ Name = 'MUTATE_CELL_REFILLS_HOST (W cells)'; Env = @{ ORICOOP_MUTATE_CELL_REFILLS_HOST = '1'; ORICOOP_PHASES = 'W' }; Script = @('run-nettest.ps1'); Expect = '^W cells: the guest is refilled by the cells it took' }   # T-214
+    @{ Name = 'MUTATE_CELL_REWARD_LOSER (W cells)'; Env = @{ ORICOOP_MUTATE_CELL_REWARD_LOSER = '1'; ORICOOP_PHASES = 'W' }; Script = @('run-nettest.ps1'); Expect = '^W cell contest: only the host who won refilled' }
     @{ Name = 'S4_NO_HOLD (S4 skew)';   Env = @{ ORICOOP_S4_NO_HOLD = '1'; ORICOOP_S4_SKEW = '0.3' }; Script = @('run-nettest.ps1');          Expect = '^S4 ' }
     @{ Name = 'PHYS_OFF (P)';           Env = @{ ORICOOP_PHYS_OFF = '1' };               Script = @('run-nettest.ps1');                        Expect = '^P\w* ' }
     @{ Name = 'MUTATE_NO_FACING (FACE)'; Env = @{ ORICOOP_MUTATE_NO_FACING = '1'; ORICOOP_PHASES = 'MOVE' }; Script = @('run-nettest.ps1'); Expect = '^FACE after each wall jump' }   # T-199
