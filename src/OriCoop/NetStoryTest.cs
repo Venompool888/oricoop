@@ -1033,8 +1033,29 @@ namespace OriCoop
                     guestMovement.IsSuspended = true;
                     Plugin.Teleport(Own, away);
                 }
-                yield return Wait(1.5f);   // let both world scans establish the unopened baseline
+                // Let both world scans establish the unopened baseline. The guest watches its own position meanwhile:
+                // "starts outside gather range" failed on most first runs and passed on the rerun (2026-11-25), and the
+                // check did not say where the guest was. Record any jump back toward the well and what happened with it.
+                Vector3 placed = Own.Position; float pulledAt = -1f, pulledBy = 0f; int restores0 = TestHarness.RestoreCheckpointCalls, loads0 = SaveSync.GuestLoads;
+                float watchStart = Now;
+                while (Now - watchStart < 1.5f)
+                {
+                    yield return null;
+                    if (!host && pulledAt < 0f && Own != null && Vector3.Distance(Own.Position, placed) > 5f) { pulledAt = Now - watchStart; pulledBy = Vector3.Distance(Own.Position, placed); }
+                }
                 yield return Barrier(h, 71);
+                if (!host && Own != null && Vector3.Distance(Own.Position, go.transform.position) <= 12f)
+                {
+                    // Something moved the guest back before any activation. Say what, then place it again once: the
+                    // checks below are about the well's activation, which has not happened yet.
+                    h.Note("S4 well: guest was back near the well before the first activation: distance=" + F(Vector3.Distance(Own.Position, go.transform.position))
+                        + " placedAt=" + placed + " now=" + Own.Position + " well=" + go.transform.position + " jump=" + F(pulledBy)
+                        + (pulledAt >= 0f ? " at " + F(pulledAt) + " s" : " after the watch") + " restoreDelta=" + (TestHarness.RestoreCheckpointCalls - restores0)
+                        + " loadDelta=" + (SaveSync.GuestLoads - loads0) + " respawning=" + SessionRules.Respawning + " alive=" + Alive + "; placing it again");
+                    guestMovement.IsSuspended = true;
+                    Plugin.Teleport(Own, away);
+                    yield return Wait(1.0f);
+                }
                 h.Check(!(bool)used.GetValue(well) && !mapWell.Activated, "S4 well: starts unopened");
                 for (int visit = 0; visit < 2; visit++)
                 {
@@ -1042,7 +1063,7 @@ namespace OriCoop
                     Vector3 before = Own.Position;
                     int restores = TestHarness.RestoreCheckpointCalls, plays = s_wellCalls;
                     int sent = StorySync.StartsSent, anims = CutsceneAnimSync.Sent, ownPlays = CutsceneAnimSync.OwnPlays;
-                    if (!host) h.Check(Vector3.Distance(before, go.transform.position) > 12f, label + "starts outside gather range");
+                    if (!host) h.Check(Vector3.Distance(before, go.transform.position) > 12f, label + "starts outside gather range (distance=" + F(Vector3.Distance(before, go.transform.position)) + ")");
                     yield return Barrier(h, 72 + 2 * visit);
                     if (host)
                     {

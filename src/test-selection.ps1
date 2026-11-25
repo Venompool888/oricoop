@@ -231,14 +231,33 @@ function Get-CheckPhase([string]$check) {
     if ($w -match '^[A-E]$') { return 'MOVE' }
     return $null
 }
+# A fail-fast summary line ("  host.log: FAIL <check>") carries no phase marker. When the result files printed later in the
+# same output place that check (it follows a "=== phase X" line), the summary line takes that phase; a harness timeout
+# ("timed out (...)") that no result file places belongs to the furthest phase any client started. Before, such a summary
+# line made the whole check list unplaced and the rerun repeated every phase, which timed out again on a busy PC.
 function Get-FailedPhases([string]$text) {
+    $lines = @($text -split "`r?`n")
+    $placed = @{}; $furthest = $null; $phase = $null
+    foreach ($line in $lines) {
+        if ($line -match '^\[[\s\d.]+\] net role=') { $phase = $null; continue }
+        if ($line -match '^\[[\s\d.]+\] === phase (\w+)') {
+            $phase = $(if ($Matches[1] -eq 'END') { $null } else { $Matches[1] })
+            if ($phase -and ($null -eq $furthest -or [array]::IndexOf($TS_AllPhases, $phase) -gt [array]::IndexOf($TS_AllPhases, $furthest))) { $furthest = $phase }
+            continue
+        }
+        if ($phase -and $line -match '^\[[\s\d.]+\] (TEST )?FAIL (.*)$') { $placed[$Matches[2].Trim()] = $phase }
+    }
     $phase = $null; $checks = New-Object 'System.Collections.Generic.List[string]'; $phases = [ordered]@{}; $unplaced = $false
-    foreach ($line in ($text -split "`r?`n")) {
+    foreach ($line in $lines) {
         if ($line -match '^\[[\s\d.]+\] net role=') { $phase = $null; continue }
         if ($line -match '^\[[\s\d.]+\] === phase (\w+)') { $phase = $(if ($Matches[1] -eq 'END') { $null } else { $Matches[1] }); continue }
         $c = $null; $p = $null
         if ($line -match '^\[[\s\d.]+\] (TEST )?FAIL (.*)$') { $c = $Matches[2].Trim(); $p = $phase }
-        elseif ($line -match '^\s+\S+\.log: (TEST )?FAIL (.*)$') { $c = $Matches[2].Trim() }
+        elseif ($line -match '^\s+\S+\.log: (TEST )?FAIL (.*)$') {
+            $c = $Matches[2].Trim()
+            if ($placed.ContainsKey($c)) { $p = $placed[$c] }
+            elseif ($furthest -and $c -match '^timed out\b') { $p = $furthest }
+        }
         if (-not $c) { continue }
         if ($checks -notcontains $c) { $checks.Add($c) }
         if (-not $p) { $p = Get-CheckPhase $c }

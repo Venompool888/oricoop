@@ -2,15 +2,18 @@
 # -Clients 3|4: processes start together; only the LAST guest connects after LateJoinSec (default 20) and after the host settled the save lineage (T-129 marker file).
 # -CServer: all games share one room on the remote test C-server instead of direct UDP (LAN host mode).
 #   Works with -Clients 2..4. See src\test-servers\README.md for configuration.
-# -TimeoutSec: whole run (default 1020). -HarnessSec: the in-game suite limit (ORICOOP_HARNESS_SEC, default 900; the
+# -TimeoutSec: whole run (default HarnessSec + 120). -HarnessSec: the in-game suite limit (ORICOOP_HARNESS_SEC, default 1500; the
 #   harness needed ~360 s at HEAD 2026-11-16 and phase WO adds ~120 s, more under load; main reached ~655 s on 2026-11-18 and T-059's local-player checks need more; TestHarness defaults to 420).
+#   2026-11-25: a full run on a busy test PC passed 900 s in CUT, so ESC never ran (and packet-loss runs timed out too). A passing
+#   run ends when it is done, so the higher limit only costs time on a run that hangs.
 # -Width/-Height: window size of both games (default 640x360; larger for readable screenshots).
 # -GuestNewGame: the guest has NO saves (appdata2 emptied) and picks an empty slot -> Normal -> new game; it must skip
 #   the prologue, load the host's save from the title and join the host (GuestJoin.cs; "W empty slot" checks).
 # -GuestNoSlot: same empty guest, but it never picks a slot (title 加入 path): GuestJoin.BeginNoSlot once connected.
-param([int]$TimeoutSec = 1020, [int]$HarnessSec = 900, [string]$Sim = '', [switch]$Force, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
+param([int]$TimeoutSec = 0, [int]$HarnessSec = 1500, [string]$Sim = '', [switch]$Force, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
     [switch]$LocalPlayers, [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0, [switch]$SaveHandover)
 $script:ExtraEnv = @{}
+if ($TimeoutSec -le 0) { $TimeoutSec = $HarnessSec + 120 }   # the watchdog stays behind the in-game limit, which writes the result file
 if ($LocalPlayers) {
     if ($Clients -eq 4) { throw 'LocalPlayers requires 2 or 3 devices (four seats maximum).' }
     $script:ExtraEnv['ORICOOP_NET_LOCAL_PLAYERS'] = '1'
