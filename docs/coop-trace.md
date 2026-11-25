@@ -49,7 +49,7 @@ if (CoopTrace.On("phys", CoopTrace.Samples)) { /* build expensive fields only th
 ```
 Fields are name/value pairs; `Vector3`, `float`, `bool`, Unity objects (`name#instanceId`) are formatted for you.
 Thread-safe (stamps come from a clock cached on the main thread). Subsystems in use:
-`player phys enemy story cam hud save scene net log`.
+`player phys enemy story cam hud save scene net audio log`.
 **When you fix a bug, emit the events that would have explained it** (e.g. enemy-sync: `enemy owner.change`,
 `enemy snapshot.apply`; world-physics: `phys owner.change`, `phys push.start who=`; story-cutscene: `story skip
 reason=`). Use the object's net id in `id=` on both ends, so the merge tool can pair them.
@@ -86,6 +86,22 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `accept (hello answer) received ... after N ms` or `no answer after 10 s: N connect request(s) sent, M packet(s)
   received`; the Steam side logs `P2P session request from`, `held` / `accepted` / `refused`, and the first packet sent /
   received with its channel.
+
+- audio, T-252 (`src\OriCoop\CoopTraceAudio.cs`, rules in `Diagnostics\AudioWatch.cs`), observe only, checked once a
+  second. Level 1: `watch.init` (which game volume settings were found), `listener` (which AudioListener, enabled,
+  how many, its distance `to_view` from the camera's target), `pause` / `volume` (AudioListener), `settings` (the
+  game's own volume settings), `focus`, `device.changed` (Windows changed the output device or format), and
+  `snapshot why=` at spectate start / end / another teammate, own player down / up, a new scene and a device change.
+  **`audio lost.suspect reasons=`** when the sound looks lost, with the full state (listener and its position, pause,
+  volumes, focus, time scale, scene, camera target, playing / quiet / out-of-range sources, the 4 playing sounds
+  nearest to the view as `name@dist/volume/maxDistance/rolloff/blend`, blend 0 = 2D, every player's position and downed state); the same
+  moment as a warning `audio: sound may be lost (...)` in `LogOutput.log`. Then `lost.change`, `lost.still` (every
+  30 s) and `lost.clear for_s=`. Reasons: `no_listener`, `many_listeners` (both only in a level: while the game starts there is no camera yet), `listener_paused`, `listener_volume`,
+  `settings_zero`, `listener_off_view` (listener more than 15 units from what the camera shows),
+  `listener_far_from_watched` (while down, from the teammate you watch), `view_sounds_quiet` (2+ sounds next to the
+  view play but none can be heard), `silent` (nothing plays for 5 s in a running level), `dsp_stalled` (the audio
+  clock stopped). Also `heartbeat` every 120 s. Level 2: `sample` (the full state) every 5 s. At most 40 audio lines a
+  minute (`budget.dropped lines=`), 100 suspect episodes per process.
 
 ## Merge tool: `tools\merge-coop-logs.py`
 ```

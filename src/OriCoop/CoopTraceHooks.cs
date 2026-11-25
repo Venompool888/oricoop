@@ -154,6 +154,7 @@ namespace OriCoop
                 ObserveNet();
             }
             catch { }
+            try { CoopTraceAudio.Tick(); } catch { }   // T-252: what the sound depends on (trace only)
         }
 
         static string Id(UnityEngine.Object o)
