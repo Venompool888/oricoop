@@ -76,7 +76,11 @@ namespace OriCoop
         public static void SendTestSignal(string s) { SendReliable(MsgTest, w => w.Write(s)); }
 
         // Say goodbye when the game closes, so the partner sees it at once instead of after the timeout.
-        public static void Shutdown() { Shutdown("closed the game"); }
+        public static void Shutdown()
+        {
+            if (Environment.GetEnvironmentVariable("ORICOOP_MUTATE_QUIT_HOLDS_SEAT") != "1") NotifyLeaving();
+            Shutdown("closed the game");
+        }
 
         // T-201: the partner is told "partner quit the game"; this side's own trace and status say that the local player
         // left and why (OwnDisconnectReason), instead of repeating the text meant for the partner. The connection code
@@ -177,6 +181,9 @@ namespace OriCoop
             }
             public string Version = "", Scene = "";
             public byte[] LastHello, LastStatus;
+            public MovementEpochs AdvertisedFrames;
+            public ulong FrameId;
+            public bool LegacyFrames;
             public readonly SortedDictionary<uint, Frame> Buffer = new SortedDictionary<uint, Frame>();
             public uint PlayTick, NewestTick;
             public bool HavePlay;
@@ -207,6 +214,7 @@ namespace OriCoop
         // first host saw "the host has not said hello": it stopped syncing enemies, and a guest that joined later was not
         // placed beside the new host (no host position).
         static readonly bool s_mutatePrimarySeatOne = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PRIMARY_SEAT_ONE") == "1";
+        static readonly bool s_mutatePreviousMovement = TestHarness.Enabled && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_PREVIOUS_MOVEMENT") == "1";
         static RemoteState Primary
         {
             get
@@ -405,8 +413,7 @@ namespace OriCoop
             Plugin.Log.LogInfo("online co-op: started from the menu: " + s_modeNow + " via " + transport);
         }
 
-        // Back to offline. Tells the partner, ends the session for every sync system, frees the socket.
-        public static void End(string why)
+        static void NotifyLeaving()
         {
             // T-113: a deliberate end, before the goodbye below: transports that hold seats (C-server) release them.
             // T-213: the hook may poll the connection for a moment (the C-server release waits for its acknowledgement). A
@@ -417,6 +424,12 @@ namespace OriCoop
                 try { Leaving(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: leaving hook: " + e.Message); }
                 finally { EndingByChoice = byChoice; }
             }
+        }
+
+        // Back to offline. Tells the partner, ends the session for every sync system, frees the socket.
+        public static void End(string why)
+        {
+            NotifyLeaving();
             OnlineRoomScreen.Reset();
             s_rtAddress = null; s_rtPort = 0; RoomCodeOverride = null;
             s_steamLobby = 0; s_steamWaitLogged = false; s_steamReconnects = 0;
@@ -684,6 +697,7 @@ namespace OriCoop
         static void ResetSession(bool keepHostLocals = false)
         {
             s_session.Reset();
+            s_localFrameEpochs = new MovementEpochs();
             if (keepHostLocals) RetainHostLocalSeats(); else ResetLocalSeats();
             s_statusDirty = true; s_sentCount = 0;
             s_bus.ClearEarly(); s_bus.ClearRenumbered();
@@ -734,7 +748,7 @@ namespace OriCoop
             }
             s_remotes.Add(seat, new RemoteState { Seat = seat, Peer = s_peer });
             if (IsHost) PublishSeats();
-            if (!WaitingForSeat) SendReliable(MsgHello, w => w.Write(ModVersion));
+            if (!WaitingForSeat) SendReliable(MsgHello, WriteHello);
         }
 
         static void OnHubConnected(NetPeer peer)
@@ -747,7 +761,7 @@ namespace OriCoop
             s_remotes.Add(seat, new RemoteState { Seat = seat, Peer = peer });
             Problem = "";
             SendTo(seat, MsgSeat, true, w => w.Write((byte)seat));
-            SendTo(seat, MsgHello, true, w => w.Write(ModVersion));
+            SendTo(seat, MsgHello, true, WriteHello);
             bool inGame = LocalInGameplay();
             string scene = LocalScene(inGame);
             SendTo(seat, MsgStatus, true, w => { w.Write(inGame); w.Write(scene); });
@@ -790,14 +804,14 @@ namespace OriCoop
         {
             s_session.AssignSeat(seat);
             Plugin.Log.LogInfo("net: assigned P" + seat);
-            SendReliable(MsgHello, w => w.Write(ModVersion));
+            SendReliable(MsgHello, WriteHello);
         }
 
         // Factory (C-server) sessions: nobody relays earlier Hello/Status to a seat that joins later (the hub's
         // OnHubConnected does that for direct), so each client introduces itself to every newly online seat.
         public static void IntroduceTo(int seat)
         {
-            SendTo(seat, MsgHello, true, w => w.Write(ModVersion));
+            SendTo(seat, MsgHello, true, WriteHello);
             bool inGame = LocalInGameplay();
             string scene = LocalScene(inGame);
             SendTo(seat, MsgStatus, true, w => { w.Write(inGame); w.Write(scene); });
@@ -965,6 +979,8 @@ namespace OriCoop
             if (type == MsgHello)
             {
                 remote.Version = r.ReadString(); remote.LastHello = m;
+                remote.AdvertisedFrames = MovementEpochs.ReadHello(r, remote.Version);
+                BindMovement(remote, remote.AdvertisedFrames);
                 bool joined = s_session.MarkHello(remote);
                 Plugin.Log.LogInfo("net: P" + Sender + " runs " + remote.Version + (remote.Version == ModVersion ? "" : " (different from ours: " + ModVersion + ")"));
                 s_session.AnnounceHello(remote, joined);
@@ -984,8 +1000,15 @@ namespace OriCoop
             }
             else if (type == MsgFrames)
             {
-                NoteLateness(remote, QpcMs() - r.ReadDouble());
+                double sentAt = r.ReadDouble();
                 int n = r.ReadByte();
+                if (!MovementEpochs.Accepts(r, n, remote.FrameId, remote.LegacyFrames, s_mutatePreviousMovement)) return;
+                if (s_testCaptureMovementSeat == remote.Seat)
+                {
+                    TestCapturedMovement = m;
+                    s_testCaptureMovementSeat = 0;
+                }
+                NoteLateness(remote, QpcMs() - sentAt);
                 for (int i = 0; i < n; i++)
                 {
                     Frame f = new Frame();
@@ -1005,6 +1028,33 @@ namespace OriCoop
             remote.Buffer.Clear(); remote.HavePlay = false; remote.HaveRemotePos = false; remote.HaveFace = false;
         }
 
+        static void BindMovement(RemoteState remote, MovementEpochs advertised)
+        {
+            ulong id = advertised == null ? 0 : advertised.Id[remote.Seat];
+            bool legacy = advertised != null && advertised.Legacy;
+            if (remote.FrameId == id && remote.LegacyFrames == legacy) return;
+            ClearStream(remote);
+            remote.FrameId = id; remote.LegacyFrames = legacy;
+        }
+
+        static MovementEpochs s_localFrameEpochs = new MovementEpochs();
+
+        static bool RefreshLocalFrameEpochs()
+        {
+            int primary = Players.LocalSeat;
+            bool changed = false;
+            for (int seat = 1; seat <= MovementEpochs.Seats; seat++)
+                changed |= s_localFrameEpochs.SetLocal(seat, seat == primary || s_seats.Owner(seat) == primary);
+            return changed;
+        }
+
+        static void WriteHello(BinaryWriter writer)
+        {
+            RefreshLocalFrameEpochs();
+            writer.Write(ModVersion);
+            s_localFrameEpochs.Write(writer);
+        }
+
         // Test only (T-213): a straggler of the seat's previous player: one frame far ahead of the stream, somewhere else.
         internal static void TestStaleFrame(int seat, uint ahead, Vector3 at)
         {
@@ -1014,6 +1064,31 @@ namespace OriCoop
             Receive(remote, f);
         }
         internal static long TestSnaps(int seat) { RemoteState remote; return TryGetRemote(seat, out remote) ? remote.Snaps : -1; }
+
+        static int s_testCaptureMovementSeat;
+        internal static byte[] TestCapturedMovement;
+        internal static void TestCaptureNextMovement()
+        {
+            RemoteState remote = Primary;
+            TestCapturedMovement = null; s_testCaptureMovementSeat = remote != null ? remote.Seat : 0;
+        }
+
+        // Replay an actual movement packet retained across the fixture's outage using the same decoder.
+        // Sampling the jitter cursor also detects admission when a duplicate tick cannot change position.
+        internal static bool TestMovementAdmission(byte[] packet, bool expectAccepted)
+        {
+            RemoteState remote;
+            if (packet == null || packet.Length < 2 || packet[0] != MsgFrames || !TryGetRemote(packet[1], out remote)
+                || !remote.Hello || !remote.InGameplay || !remote.HaveRemotePos) return false;
+            int jitter = remote.LateI, pending = remote.Buffer.Count;
+            uint newest = remote.NewestTick, play = remote.PlayTick;
+            Vector3 at = remote.LatestRemotePos;
+            BinaryReader reader = new BinaryReader(new MemoryStream(packet));
+            reader.ReadByte(); reader.ReadByte();
+            HandleCore(MsgFrames, reader, packet, remote);
+            return expectAccepted ? jitter != remote.LateI : jitter == remote.LateI && pending == remote.Buffer.Count
+                && newest == remote.NewestTick && play == remote.PlayTick && at == remote.LatestRemotePos;
+        }
 
         static void Receive(RemoteState remote, Frame f)
         {
@@ -1063,6 +1138,7 @@ namespace OriCoop
 
         static void SendSeatFrame(int seat, SeinCharacter p1, uint tick)
         {
+            if (s_localFrameEpochs.Id[seat] == 0) return;
             GameController gc = GameController.Instance;
             bool screen = SessionRules.ScreenInputLocked(p1);
             bool neutral = screen || gc == null || gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.InputLocked || ForcedSync.IsLocked(p1)
@@ -1119,6 +1195,7 @@ namespace OriCoop
                 w.Write(s.Tick); w.Write(s.Buttons); w.Write(s.LX); w.Write(s.LY); w.Write(s.RX); w.Write(s.RY); w.Write(s.Flags);
                 w.Write(s.Pos.x); w.Write(s.Pos.y); w.Write(s.Pos.z); w.Write(s.Vel.x); w.Write(s.Vel.y);
             }
+            w.Write(s_localFrameEpochs.Id[seat]);
             w.Flush();
             if (seat == Players.LocalSeat) Broadcast(s_buf, (int)ms.Position, false);
             else

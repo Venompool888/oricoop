@@ -124,6 +124,7 @@ namespace OriCoop
                 if (other != primary && DeviceSeat(other.Seat) == primary.Seat)
                 {
                     other.Hello = primary.Hello; other.InGameplay = primary.InGameplay; other.Scene = primary.Scene; other.Version = primary.Version;
+                    BindMovement(other, primary.AdvertisedFrames);
                     // T-213 (6): a PC that is not in gameplay (loading) takes all its seats along. The extra local players
                     // kept their buffered frames and last position: after the load their Oris appeared at the old place and
                     // replayed the old frames before jumping to the new one.
@@ -137,6 +138,16 @@ namespace OriCoop
             if (primary != 0 && primary != previous)
             { OnlineLocalPlayers.ChangePrimary(previous, primary); Players.AssignedSeat = primary; }
             OnlineLocalPlayers.Reconcile();
+            // A new table may arrive before the owner's next Hello. Retire the old occupant's advertised
+            // ID at release, even if that same device subsequently fills the same secondary seat.
+            for (int seat = 1; seat <= MovementEpochs.Seats; seat++)
+            {
+                int before = s_lastOwners[seat], now = s_seats.Owner(seat);
+                if (before == 0 || before == now || now != 0 && s_seats.Owner(before) == now) continue;
+                RemoteState oldDevice;
+                if (TryGetRemote(before, out oldDevice) && oldDevice.AdvertisedFrames != null)
+                    oldDevice.AdvertisedFrames.Id[seat] = 0;
+            }
             for (int seat = 1; seat <= 4; seat++)
                 if (!Players.IsLocal(seat)) { s_extraCount[seat] = 0; s_extraSent.Remove(seat); }
             // Only primary remotes carry a peer. The others share device status, never their own world/save handshake.
@@ -170,6 +181,8 @@ namespace OriCoop
                     if (devices.TryGetValue(seat, out old))
                     {
                         remote.Hello = old.Hello; remote.InGameplay = old.InGameplay; remote.Scene = old.Scene; remote.Version = old.Version;
+                        remote.AdvertisedFrames = old.AdvertisedFrames;
+                        BindMovement(remote, remote.AdvertisedFrames);
                         if (IsHost && old.Seat != seat)
                         {
                             s_bus.SeatRenumbered(old.Seat, seat); // T-149: accept its old Sender until it uses the new seat
@@ -184,8 +197,8 @@ namespace OriCoop
             int[] renamed = s_seats.Renames(s_lastOwners);
             s_seats.CopyOwners(s_lastOwners);
             if (Array.Exists(renamed, s => s != 0)) Players.RaiseSeatsRenamed(renamed);
-            if (primary != 0 && primary != previous)
-            { s_statusDirty = true; SendReliable(MsgHello, w => w.Write(ModVersion)); }
+            if (primary != 0 && primary != previous) { s_statusDirty = true; s_sentCount = 0; }
+            if (RefreshLocalFrameEpochs() && !WaitingForSeat) SendReliable(MsgHello, WriteHello);
         }
     }
 }

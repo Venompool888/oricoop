@@ -171,6 +171,12 @@ namespace OriCoop
 
         IEnumerator Run()
         {
+            if (m_scenarios == "quitseat")
+            {
+                yield return StartCoroutine(GameQuitSeat());
+                Finish();
+                yield break;
+            }
             if (NetPlay.Enabled)
             {
                 yield return StartCoroutine(NetTestHarness.Run(this));
@@ -266,6 +272,19 @@ namespace OriCoop
             Check(m_errors == 0, "no Unity errors/exceptions in whole run (" + m_errors + ")");
             Note("ignored vanilla Steam leaderboard exceptions: " + m_steamLeaderboardErrors + ", Unity HID read errors: " + m_hidErrors);
             Finish();
+        }
+
+        IEnumerator GameQuitSeat()
+        {
+            string file = Environment.GetEnvironmentVariable("ORICOOP_QUIT_ROOM_FILE");
+            string target = !string.IsNullOrEmpty(file) && File.Exists(file) ? File.ReadAllText(file).Trim() : "";
+            if (!target.StartsWith("127.0.0.1:", StringComparison.Ordinal)) { Check(false, "quitseat needs the loopback room observer"); yield break; }
+            NetPlay.Begin(false, "cserver", target);
+            float end = Time.realtimeSinceStartup + 20f;
+            while (Time.realtimeSinceStartup < end && !File.Exists(file + ".full")) yield return null;
+            Check(File.Exists(file + ".full") && Authority.CServerLink.Client != null && Authority.CServerLink.Client.PrimarySeat == 4,
+                "quitseat game occupies the fourth seat before Unity quits");
+            // Finish calls Application.Quit; the surviving observer checks the freed seat on the server.
         }
 
         IEnumerator Move()
