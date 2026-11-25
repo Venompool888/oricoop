@@ -2811,8 +2811,14 @@ namespace OriCoop
                         menu.ShowMenuScreen();
                         help = NetStoryTest.TryOpenHelp();
                         CoopMenu.Open();
+                        bool openedAtOnce = CoopMenu.IsOpen;
                         yield return null;
-                        h.Check(CoopMenu.IsOpen && SessionRules.LiveScreen && !ori.IsSuspended, "G screens: the guest is live with its screens open");
+                        bool liveOpen = CoopMenu.IsOpen && SessionRules.LiveScreen && !ori.IsSuspended;
+                        h.Check(liveOpen, "G screens: the guest is live with its screens open");
+                        if (!liveOpen)   // #431: after the ESC phase this failed on the guest; say why
+                            h.Note("G screens: open at once=" + openedAtOnce + ", after a frame=" + CoopMenu.IsOpen + ", live=" + SessionRules.LiveScreen
+                                + ", suspended=" + ori.IsSuspended + ", gameplay=" + (NetPlay.NotInGameplayReason() ?? "yes") + ", room page=" + CsRoomPage.InGame
+                                + ", menu said: " + (CoopMenu.LastRefusal.Length > 0 ? CoopMenu.LastRefusal : "nothing") + "; " + CoopMenu.GameplayDetail());
                     }
                     NetPlay.TestTransportFailure("test: the transport failed");
                     if (checkMenu)

@@ -140,11 +140,23 @@ namespace OriCoop
             return pad < 0 ? s_seats.PrimarySeat : 0;
         }
 
+        // The last reason the panel would not open or closed by itself, logged once per change (F8 after the escape, #431).
+        static string s_refused = "";
+        internal static string LastRefusal { get { return s_refused; } }
+        static void Refused(string why)
+        {
+            if (why == s_refused) return;
+            s_refused = why;
+            Plugin.Log.LogInfo("co-op menu: " + why);
+        }
+
         static void OpenPage(int page, int seat = -1)
         {
-            if (s_testPage == "" && !NetPlay.LocalInGameplay()) return;
-            if (CsRoomPage.InGame) return;   // T-189: never over the in-game room page (one pause hold, see Tick)
+            string notPlaying = s_testPage == "" ? NetPlay.NotInGameplayReason() : null;
+            if (notPlaying != null) { Refused("not opened, not in gameplay: " + notPlaying + " (" + GameplayDetail() + ")"); return; }
+            if (CsRoomPage.InGame) { Refused("not opened over the in-game room page"); return; }   // T-189: one pause hold, see Tick
             if (IsOpen) { GoTo(page); return; }
+            s_refused = "";
             IsOpen = true;
             OpeningSeat = seat < 0 ? s_seats.PrimarySeat : seat;
             Page = page;
@@ -181,6 +193,16 @@ namespace OriCoop
                 GameController.Instance.LockInput = mutateLock || s_mutationSavedLock;
             }
             s_mutatedLock = mutateLock;
+        }
+
+        // What the gameplay test saw, for the log line when the panel won't open.
+        internal static string GameplayDetail()
+        {
+            SeinCharacter s = Characters.Sein;
+            string state = GameStateMachine.Instance != null ? GameStateMachine.Instance.CurrentState.ToString() : "no state machine";
+            return "Sein=" + (s == null ? "null" : s.name + (s.gameObject.activeInHierarchy ? " active" : " inactive"))
+                + (P2Context.P1 != null && P2Context.P1 != s ? ", P1 is another Ori (" + P2Context.P1.name + ")" : "")
+                + ", state=" + state + ", loading=" + (GameController.Instance != null && GameController.Instance.IsLoadingGame);
         }
 
         public static void Close()
@@ -225,7 +247,11 @@ namespace OriCoop
                 }
                 return;
             }
-            if (!inGame && s_testPage == "") { Close(); return; }
+            if (!inGame && s_testPage == "")
+            {
+                Refused("closed, not in gameplay: " + NetPlay.NotInGameplayReason() + " (" + GameplayDetail() + ")");
+                Close(); return;
+            }
             s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
             PollPads();
 
