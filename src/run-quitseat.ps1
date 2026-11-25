@@ -12,6 +12,7 @@ $previousRoom = $env:ORICOOP_QUIT_ROOM_FILE
 $process = $null
 try {
     $process = Start-Process -FilePath $observerExe -ArgumentList @('--game-quit', ('"' + $room + '"')) -WindowStyle Hidden -PassThru -RedirectStandardOutput $stdout -RedirectStandardError $stderr
+    $null = $process.Handle # Windows PowerShell otherwise discards the exit code of an already-finished observer.
     $limit = [DateTime]::UtcNow.AddSeconds(10)
     while (-not (Test-Path -LiteralPath $room) -and -not $process.HasExited -and [DateTime]::UtcNow -lt $limit) { Start-Sleep -Milliseconds 50 }
     if (-not (Test-Path -LiteralPath $room)) { throw "The local observer did not open a room. See $dir" }
@@ -22,6 +23,7 @@ try {
     if ($gameExit -ne 0) { Write-Output "[quitseat] RESULT FAIL game launcher exited $gameExit"; exit $gameExit }
     if (-not (Select-String -LiteralPath $gameLog -Pattern '^\[[^\]]+\] RESULT PASS' -Quiet)) { throw "The game did not pass. See $gameLog" }
     if (-not $process.WaitForExit(25000)) { throw "The observer did not finish. See $dir" }
+    $process.WaitForExit() # Drain the redirected stdout/stderr after the bounded wait.
     Get-Content -LiteralPath $stdout, $stderr | ForEach-Object { Write-Output "[quitseat] $_" }
     if ($process.ExitCode -ne 0 -or -not (Select-String -LiteralPath $stdout -Pattern '^RESULT PASS' -Quiet)) { throw "The quit-seat check failed. See $dir" }
 }
