@@ -11,16 +11,9 @@ namespace OriCoop
 
         public static Action NameGuest()
         {
-            var config = Plugin.Instance.Config;
-            var primary = config.Bind("TeammateNames", "Primary", "", "");
-            var useEnvironment = config.Bind("TeammateNames", "UseEnvironmentName", true, "");
-            string previous = primary.Value;
-            bool fallback = useEnvironment.Value;
+            Action restore = TestHarness.PreservePrimaryName();
             TeammateIdentity.SetLocalName(Players.LocalSeat, GuestName);
-            return delegate {
-                TeammateIdentity.SetLocalName(Players.LocalSeat, previous);
-                useEnvironment.Value = fallback;
-            };
+            return restore;
         }
 
         static TextMesh Label(Transform group, int seat = 2)

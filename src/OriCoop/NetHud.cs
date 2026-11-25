@@ -75,6 +75,7 @@ namespace OriCoop
         static GUIStyle s_signalText;
         static GUIStyle s_chipStyle;
         static GUIStyle s_arrowStyle;
+        static GUIStyle s_namedArrowStyle;
         static GUIStyle s_modalTitleZh;
         static GUIStyle s_modalItemZh;
         static GUIStyle s_modalHelperZh;
@@ -657,19 +658,18 @@ namespace OriCoop
                     return;
                 }
                 if (!NetPlay.PartnerHere) return;
-                foreach (Puppet puppet in Players.Remotes) DrawPartnerIndicator(puppet, scale, hudAlpha);
+                foreach (Puppet puppet in Players.Remotes)
+                    if (puppet.Sein != null && puppet.Sein.gameObject.activeInHierarchy)
+                        DrawPartnerIndicator(puppet.Seat, puppet.Sein.Position, scale, hudAlpha);
             }
             finally { NativeGui.EndPage(); }
         }
 
-        static void DrawPartnerIndicator(Puppet puppet, float scale, float hudAlpha)
+        internal static void DrawPartnerIndicator(int seat, Vector3 partnerPos, float scale, float hudAlpha)
         {
-            if (puppet.Sein == null || !puppet.Sein.gameObject.activeInHierarchy) return;
-
             Camera cam = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null;
             if (cam == null) return;
-
-            Vector3 partnerPos = puppet.Sein.Position;
+            EnsureStyles(scale);
             Vector3 headPos = new Vector3(partnerPos.x, partnerPos.y + 1.4f, partnerPos.z);
             Vector3 sp = cam.WorldToScreenPoint(headPos);
             float guiY = Screen.height - sp.y;
@@ -713,15 +713,25 @@ namespace OriCoop
                 else if (angle >= -157.5f && angle < -112.5f) arrow = "↙";
                 else arrow = "←";
 
-                string who = TeammateIdentity.Label(puppet.Seat);
+                string who = TeammateIdentity.Label(seat);
                 string label = (edge.x > Screen.width * 0.5f) ? (who + " " + distStr + " " + arrow) : (arrow + " " + distStr + " " + who);
                 GUIContent content = new GUIContent(label);
-                Vector2 sz = s_arrowStyle.CalcSize(content);
+                GUIStyle style = s_arrowStyle;
+                Font nameFont = null;
+                if (TeammateIdentity.Name(seat).Length != 0)
+                {
+                    nameFont = NativeGui.NameFont;
+                    if (s_namedArrowStyle == null) s_namedArrowStyle = new GUIStyle(s_arrowStyle) { font = nameFont };
+                    style = s_namedArrowStyle;
+                }
+                Vector2 sz = style.CalcSize(content);
+                sz.x = Mathf.Min(sz.x, Screen.width);
 
                 Rect r = new Rect(edge.x - sz.x * 0.5f, edge.y - sz.y * 0.5f, sz.x, sz.y);
                 r.x = Mathf.Clamp(r.x, 0f, Mathf.Max(0f, Screen.width - r.width));
-                Color rc = Roles.ColorOf(puppet.Seat);
-                DrawText("hud.signal.partner." + puppet.Seat, r, label, s_arrowStyle, new Color(rc.r, rc.g, rc.b, hudAlpha));
+                Color rc = Roles.ColorOf(seat);
+                NativeGui.Label("hud.signal.partner." + seat, r, label, style.fontSize, style.alignment,
+                    new Color(rc.r, rc.g, rc.b, hudAlpha), nameFont);
             }
         }
 

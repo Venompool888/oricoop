@@ -401,7 +401,7 @@ namespace OriCoop
             s_rowFocus = new GUIStyle(s_row); s_rowFocus.normal.textColor = new Color(1f, 0.9f, 0.5f);
         }
 
-        static bool RowButton(string id, string text, bool focused, float height, float width = 0f)
+        static bool RowButton(string id, string text, bool focused, float height, float width = 0f, Font font = null)
         {
             GUIStyle style = focused ? s_rowFocus : s_row;
             Rect r = width > 0f ? GUILayoutUtility.GetRect(new GUIContent(text), style, GUILayout.Height(height), GUILayout.Width(width))
@@ -414,7 +414,7 @@ namespace OriCoop
             if (!GUI.enabled) color.a *= 0.5f;
             if (GUI.enabled && r.Contains(Event.current.mousePosition))
                 NativeGui.Panel(id + ".hover", screen, new Color(color.r, color.g, color.b, 0.14f * color.a));
-            NativeGui.Label(id, style.padding.Remove(screen), text, style.fontSize, style.alignment, color);
+            NativeGui.Label(id, style.padding.Remove(screen), text, style.fontSize, style.alignment, color, font);
             return GUI.Button(r, GUIContent.none, GUIStyle.none);
         }
 
@@ -586,7 +586,8 @@ namespace OriCoop
                 string id = "coop.settings.seat." + seats[i];
                 float height = Mathf.Max(lineH * 1.15f, LineH(s_row, seatRows[i], inner - editWidth));
                 GUILayout.BeginHorizontal();
-                if (RowButton(id, seatRows[i], s_focus == i, height))
+                Font nameFont = s_waitFor != seats[i] && TeammateIdentity.Name(seats[i]).Length != 0 ? NativeGui.NameFont : null;
+                if (RowButton(id, seatRows[i], s_focus == i, height, 0f, nameFont))
                 { s_focus = i; if (s_waitFor == 0) Activate(i); }
                 if (RowButton(id + ".name", L10n.T("coop.rename_player"), false, height, editWidth) && s_waitFor == 0)
                 { s_focus = i; BeginNameEdit(seats[i]); }

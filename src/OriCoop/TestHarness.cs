@@ -1115,12 +1115,32 @@ namespace OriCoop
                 "menu names: cancel keeps the saved name and restores gameplay input");
             yield return StartCoroutine(Wait(0.3f));
             yield return StartCoroutine(NameButton(0x4000));
-            draft.SetValue(null, "星叶");
-            yield return StartCoroutine(NameButton(0x1000));
-            Check(!CoopMenu.EditingName && TeammateIdentity.Label(1) == Roles.Tag(1) + " 星叶" && TeammateIdentity.GetLocalName(2) == other,
-                "menu names: save updates only the selected seat and preserves Chinese text");
-            TeammateIdentity.SetLocalName(1, own);
+            Action restore = PreservePrimaryName();
+            try
+            {
+                draft.SetValue(null, "星叶");
+                yield return StartCoroutine(NameButton(0x1000));
+                Check(!CoopMenu.EditingName && TeammateIdentity.Label(1) == Roles.Tag(1) + " 星叶" && TeammateIdentity.GetLocalName(2) == other,
+                    "menu names: save updates only the selected seat and preserves Chinese text");
+                yield return StartCoroutine(NameLabelProbe.CheckLabels(this));
+            }
+            finally { restore(); }
             yield return StartCoroutine(Wait(0.3f));
+        }
+
+        internal static Action PreservePrimaryName()
+        {
+            var config = Plugin.Instance.Config;
+            var primary = config.Bind("TeammateNames", "Primary", "", "");
+            var environment = config.Bind("TeammateNames", "UseEnvironmentName", true, "");
+            string original = primary.Value;
+            bool fallback = environment.Value;
+            return delegate {
+                primary.Value = original;
+                environment.Value = fallback;
+                TeammateIdentity.LocalSeatsChanged();
+                TeammateIdentity.Tick();
+            };
         }
 
         static string DescribeRenderers(GameObject root)
