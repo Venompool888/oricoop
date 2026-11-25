@@ -652,7 +652,12 @@ namespace OriCoop.Net
             stats.LossPercent = eligible == 0 ? 0 : 100f * lost / eligible;
         }
 
-        public void Poll()
+        public void Poll() { Poll(true); }
+
+        // flush=false receives and runs timers but sends nothing; the caller must Flush() later this frame. That lets
+        // the ack for what was just received ride in the same packet as the replies and forwards queued while reading
+        // it, instead of an ack-only packet first (the host sent one per guest per frame before its forwards).
+        public void Poll(bool flush)
         {
             if (polling) throw new InvalidOperationException("Poll is not reentrant");
             polling = true;
@@ -679,7 +684,8 @@ namespace OriCoop.Net
                     else if (NowMs - lastRequest >= 250) SendRequest();
                 }
                 if (state == PeerState.Connected && NowMs - lastReceive >= TimeoutMs) BecomeDisconnected("timed out");
-                Flush(); UpdateStats();
+                if (flush) Flush();
+                UpdateStats();
                 while (events.Count != 0)
                 {
                     PeerEvent item = events.Dequeue();
