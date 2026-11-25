@@ -159,7 +159,7 @@ namespace OriCoop
                     + " snapshot=" + (s_snapshotBytes / elapsed).ToString("F1")
                     + " digest=" + (s_digestBytes / elapsed).ToString("F1")
                     + " timers sent=" + TimerPhasesSent + " taken=" + TimerPhasesTaken + " in_step=" + TimerPhasesInStep
-                    + " near_restart=" + TimerPhasesNearRestart);
+                    + " near_restart=" + TimerPhasesNearRestart + " paused=" + TimerPhasesPaused);
                 s_bandwidthAt = now; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             }
         }
@@ -719,12 +719,20 @@ namespace OriCoop
             if (s_excluded.Contains(key) || (live != null && Excluded(live))) return;
             if (live != null && Describe(live) != schema) throw new InvalidDataException("world schema differs for " + key);
             // T-250: the host's timer phase (SendTimerPhases) is only taken when this PC's own is out of step. A timer
-            // this PC does not know yet still goes the ordinary way (#436: TimerPhase.GuestRoute).
-            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.IsTimer(type))
+            // this PC does not know yet still goes the ordinary way (#436: TimerPhase.GuestRoute). A live TimedTrigger
+            // is a level timer only with Repeat on (the shooters); a one-shot one goes the ordinary way as before, and a
+            // repeating one that is Paused here (its spawner waits for its last projectile) is left alone.
+            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.MayBeTimer(type))
             {
-                TimerPhase.Route route = TimerPhase.GuestRoute(live != null, s_bad.Contains(key), s_blobs.ContainsKey(key));
-                if (route == TimerPhase.Route.Skip) return;
-                if (route == TimerPhase.Route.Judge && !TakeTimerPhase(key, live, bytes)) return;
+                bool oneShot = false, paused = false; float period = 0f;
+                if (live != null && TimerPhase.IsTimedTrigger(type)) oneShot = !RepeatingTrigger(live, out paused, out period);
+                if (!oneShot)
+                {
+                    TimerPhase.Route route = TimerPhase.GuestRoute(live != null, s_bad.Contains(key), s_blobs.ContainsKey(key));
+                    if (route == TimerPhase.Route.Skip) return;
+                    if (route == TimerPhase.Route.Judge && paused) { TimerPhasesPaused++; return; }
+                    if (route == TimerPhase.Route.Judge && !TakeTimerPhase(key, live, bytes, period)) return;
+                }
             }
             int[] forwardTo = null;
             if (NetPlay.IsHost)
@@ -792,13 +800,14 @@ namespace OriCoop
         static readonly bool s_mutateNoRebroadcast = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_NO_REBROADCAST") == "1";
 
         // T-250 (#338, choice B): the host's level timers set the pace (World/TimerPhase.cs). Every ResendMin..ResendMax
-        // seconds the host sends the phase of every OnTimerPerformAction in its loaded scenes, as ordinary
+        // seconds the host sends the phase of every OnTimerPerformAction and every running repeating TimedTrigger (the
+        // Ginso Tree shooter, #443) in its loaded scenes, as ordinary
         // world blobs (message 12): no new message, no protocol change. A guest takes one only when it is out of step.
         // Test-only mutation ORICOOP_MUTATE_TIMER_PHASE_ONCE: the host does not resend (the phase crosses only in the
         // first snapshot again, as before T-250).
         static readonly bool s_mutateTimerPhaseOnce = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_TIMER_PHASE_ONCE") == "1";
         static readonly TimerPhaseSchedule s_timerPhase = new TimerPhaseSchedule(250u);
-        public static int TimerPhasesSent, TimerPhasesTaken, TimerPhasesInStep, TimerPhasesNearRestart;
+        public static int TimerPhasesSent, TimerPhasesTaken, TimerPhasesInStep, TimerPhasesNearRestart, TimerPhasesPaused;
         public static int LastSendableTimers;   // timers the host's latest resend found (0: none in its loaded scenes)
         static int s_timerTraces;
         const int MaxTimerTraces = 200;
@@ -809,20 +818,51 @@ namespace OriCoop
         static string SceneOfKey(string key) { int i = key.IndexOf(':'); return i < 0 ? key : key.Substring(0, i); }
         const int MaxTimerCensus = 400;
 
+        // TimedTrigger's own fields (#443 probe: Duration, Repeat, Paused, m_time). Missing on a game build: no
+        // TimedTrigger is treated as a level timer (the #436 rule).
+        static readonly System.Reflection.FieldInfo s_ttRepeat = AccessTools.Field(typeof(TimedTrigger), "Repeat");
+        static readonly System.Reflection.FieldInfo s_ttPaused = AccessTools.Field(typeof(TimedTrigger), "Paused");
+        static readonly System.Reflection.FieldInfo s_ttDuration = AccessTools.Field(typeof(TimedTrigger), "Duration");
+        internal static readonly System.Reflection.FieldInfo TimedTriggerTime = AccessTools.Field(typeof(TimedTrigger), "m_time");
+
+        // True: a TimedTrigger with Repeat on (a level timer). paused: it is Paused right now. period: its Duration (0
+        // when unreadable).
+        internal static bool RepeatingTrigger(object value, out bool paused, out float period)
+        {
+            paused = false; period = 0f;
+            TimedTrigger trigger = value as TimedTrigger;
+            if (trigger == null || s_ttRepeat == null || s_ttPaused == null) return false;
+            try
+            {
+                if (!(bool)s_ttRepeat.GetValue(trigger)) return false;
+                paused = (bool)s_ttPaused.GetValue(trigger);
+                if (s_ttDuration != null) period = Convert.ToSingle(s_ttDuration.GetValue(trigger));
+                return true;
+            }
+            catch { return false; }
+        }
+
         static void SendTimerPhases()
         {
             List<Blob> timers = new List<Blob>();
             Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
                 if (scene == MoonGuid.Empty) return;
                 bool census = s_timerCensus.Add(scene.ToString()) && s_timerCensus.Count <= MaxTimerCensus;
-                int found = 0, sent = 0, excluded = 0, layout = 0, bad = 0;
+                int found = 0, sent = 0, excluded = 0, layout = 0, bad = 0, repeating = 0, paused = 0;
                 HashSet<string> others = census ? new HashSet<string>() : null;
                 SaveSceneManager.SaveId[] entries = manager.SaveData.ToArray();
                 foreach (SaveSceneManager.SaveId entry in entries)
                 {
                     if (entry == null || entry.Id == null || entry.SaveObject == null) continue;
                     ISerializable save = entry.Save;
-                    if (!(save is OnTimerPerformAction))
+                    bool triggerPaused, levelTimer = save is OnTimerPerformAction; float period;
+                    if (!levelTimer && RepeatingTrigger(save, out triggerPaused, out period))
+                    {
+                        repeating++;
+                        if (!TimerPhase.Keeps(true, triggerPaused)) { paused++; continue; }   // not moving: nothing to pace
+                        levelTimer = true;
+                    }
+                    if (!levelTimer)
                     {
                         // Census only: a timer-like save type this rule does not know (a shooter run by another class).
                         if (others != null && save != null && others.Count < 8)
@@ -856,7 +896,7 @@ namespace OriCoop
                 if (census)
                     Plugin.Log.LogInfo("net: world timers scene=" + (manager.transform.root != null ? manager.transform.root.name : "?")
                         + " found=" + found + " sendable=" + sent + " excluded=" + excluded + " other_layout=" + layout
-                        + " bad=" + bad + " save_entries=" + entries.Length
+                        + " bad=" + bad + " repeating_triggers=" + repeating + " paused=" + paused + " save_entries=" + entries.Length
                         + (others.Count != 0 ? " other_timer_like=" + string.Join(",", new List<string>(others).ToArray()) : ""));
             });
             LastSendableTimers = timers.Count;
@@ -867,14 +907,14 @@ namespace OriCoop
 
         // Guest: whether to take the host's phase for one timer (TimerPhase.Judge). A layout it cannot read is taken,
         // as before T-250.
-        static bool TakeTimerPhase(string key, ISerializable live, byte[] bytes)
+        static bool TakeTimerPhase(string key, ISerializable live, byte[] bytes, float period)
         {
             float local, remote;
             byte[] mine;
             try { mine = CaptureBytes(live); }
             catch (Exception e) { Disable(key, live, e); return false; }
             if (!TimerPhase.TryRead(mine, out local) || !TimerPhase.TryRead(bytes, out remote)) return true;
-            TimerPhase.Verdict verdict = TimerPhase.Judge(local, remote);
+            TimerPhase.Verdict verdict = TimerPhase.Judge(local, remote, period);
             if (verdict == TimerPhase.Verdict.InStep) { TimerPhasesInStep++; return false; }
             if (verdict == TimerPhase.Verdict.NearRestart) { TimerPhasesNearRestart++; return false; }
             if (verdict == TimerPhase.Verdict.Take) TimerPhasesTaken++;
@@ -884,7 +924,7 @@ namespace OriCoop
                 s_timerTraces++;
                 Component c = live as Component;
                 CoopTrace.Event("world", "timer.phase", "key", key, "type", live.GetType().Name,
-                    "path", c != null ? c.name : "?", "local", local, "host", remote, "verdict", verdict.ToString());
+                    "path", c != null ? c.name : "?", "local", local, "host", remote, "period", period, "verdict", verdict.ToString());
             }
             return true;
         }

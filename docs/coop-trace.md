@@ -72,10 +72,14 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `shooter.action` / `shooter.holder` / `shooter.projectile` (fields read by reflection, once each), `shooter.holders`
   (count), `shooter.spawn` (each projectile's pos, vel, gravity, life, angle to own Ori / to the partner).
 - world, T-250 timer phase (`src\OriCoop\WorldSync.cs`, rules in `World\TimerPhase.cs`): the host sends the phase of
-  every `OnTimerPerformAction` in its loaded scenes every 0.7-1.3 s (world message 12; `TimedTrigger` is left out, #436). A guest takes it
-  only when its own is more than 0.25 s off and neither side is within 0.25 s of a restart: `timer.phase` (key, type,
-  path, local, host, verdict), first 200 per process. The 5 s `net: world bytes/sec` log line adds
-  `timers sent= taken= in_step= near_restart=`.
+  every `OnTimerPerformAction` and every running repeating `TimedTrigger` (the Ginso Tree / Moon Grotto shooters,
+  #443) in its loaded scenes every 0.7-1.3 s (world message 12). A one-shot `TimedTrigger` is left out (#436), and so
+  is a repeating one while `Paused` (its spawner waits for the last projectile), on either PC. A guest takes it only
+  when its own is more than 0.25 s off and neither side is within 0.25 s of a restart (or of the trigger's `Duration`):
+  `timer.phase` (key, type, path, local, host, period, verdict), first 200 per process. The 5 s
+  `net: world bytes/sec` log line adds `timers sent= taken= in_step= near_restart= paused=`; the once-per-scene
+  `net: world timers scene=` line adds `repeating_triggers= paused=`. NetWorldObjTest WO2 pushes the guest's Ginso
+  shooter half a period off (`timer.skew`) and checks that it takes the host's phase again.
 - save / scene: save, load, pause/resume, difficulty (with the enemy health multiplier actually in effect),
   scene load/unload, current scene.
 - net: every 1 s RTT, loss, reliable pending/resends, remote scene; connect/disconnect with reason.

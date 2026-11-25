@@ -297,6 +297,46 @@ namespace OriCoop
                     h.Check(WorldSync.TimerPhasesSent > timersBefore, tag + " T-250 host resent its level timers' phase in ginsoTreePuzzles (sent "
                         + (WorldSync.TimerPhasesSent - timersBefore) + ", last resend " + WorldSync.LastSendableTimers + " timers)");
             }
+            yield return ShooterSkew(h, tag, step + 3, host);
+        }
+
+        // #443: the Ginso puzzle shooter is a repeating TimedTrigger. The guest pushes its own half a period off (as if it
+        // had loaded the scene 1.5 s later); the host's resend must bring it back (WorldSync.TimerPhasesTaken).
+        static IEnumerator ShooterSkew(TestHarness h, string tag, int step, bool host)
+        {
+            yield return Barrier(h, step, 0, 0f, 0f);
+            if (!host) yield return GuestSkew(h, tag);
+            yield return Barrier(h, step + 1, 0, 0f, 0f);   // the host stays in the scene, resending, until the guest is done
+        }
+
+        static IEnumerator GuestSkew(TestHarness h, string tag)
+        {
+            List<TimedTrigger> shooters = new List<TimedTrigger>();
+            foreach (TimedTrigger t in UnityEngine.Object.FindObjectsOfType<TimedTrigger>())
+            {
+                bool paused; float period;
+                if (t != null && t.transform.root != null && t.transform.root.name == "ginsoTreePuzzles"
+                    && WorldSync.RepeatingTrigger(t, out paused, out period) && period > 1f) shooters.Add(t);
+            }
+            h.Check(shooters.Count > 0 && WorldSync.TimedTriggerTime != null, tag + " #443 guest found a repeating TimedTrigger in ginsoTreePuzzles ("
+                + shooters.Count + ", m_time field " + (WorldSync.TimedTriggerTime != null) + ")");
+            if (shooters.Count == 0 || WorldSync.TimedTriggerTime == null) yield break;
+            TimedTrigger shooter = shooters[0];
+            bool isPaused; float duration;
+            float runBy = Time.realtimeSinceStartup + 6f;
+            while (Time.realtimeSinceStartup < runBy && (!WorldSync.RepeatingTrigger(shooter, out isPaused, out duration) || isPaused)) { KeepAlive(); yield return null; }
+            WorldSync.RepeatingTrigger(shooter, out isPaused, out duration);
+            float before = (float)WorldSync.TimedTriggerTime.GetValue(shooter);
+            float skewed = (before + duration / 2f) % duration;
+            if (skewed < 0.4f || skewed > duration - 0.4f) skewed = duration / 2f;
+            int takenBefore = WorldSync.TimerPhasesTaken;
+            WorldSync.TimedTriggerTime.SetValue(shooter, skewed);
+            CoopTrace.Event("world", "timer.skew", "path", shooter.name, "from", before, "to", skewed, "duration", duration, "paused", isPaused);
+            float takeBy = Time.realtimeSinceStartup + 9f;
+            while (Time.realtimeSinceStartup < takeBy && WorldSync.TimerPhasesTaken == takenBefore) { KeepAlive(); yield return null; }
+            h.Check(WorldSync.TimerPhasesTaken > takenBefore, tag + " #443 guest took the host's shooter phase within 9 s after its own was pushed "
+                + (skewed - before).ToString("0.00") + " s off (taken " + (WorldSync.TimerPhasesTaken - takenBefore) + ", in_step "
+                + WorldSync.TimerPhasesInStep + ", near_restart " + WorldSync.TimerPhasesNearRestart + ", paused " + WorldSync.TimerPhasesPaused + ")");
         }
 
         // W3 jump-flip platforms: at the same moment the host's Ori jumps once and the guest's Ori jumps twice. Every
