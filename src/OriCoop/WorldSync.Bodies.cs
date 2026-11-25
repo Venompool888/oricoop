@@ -375,7 +375,13 @@ namespace OriCoop
                     {
                         if (source.Owns(view.Key)) continue;
                         pose.Apply(view.Body);
-                        if (!nativeScenes.Contains(view.Scene))
+                        if (nativeScenes.Contains(view.Scene))
+                        {
+                            // RigidbodySerialize reads Transform before the next physics step copies the pose across.
+                            if (view.Save.SerializePosition) view.Save.transform.position = pose.P;
+                            if (view.Save.SerializeRotation) view.Save.transform.rotation = pose.Q;
+                        }
+                        else
                             StoreSceneProgress(view.Scene, view.Id, BodyPose.Capture(view).NativeArchive());
                     }
                     else
