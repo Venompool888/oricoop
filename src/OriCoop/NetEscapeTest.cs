@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.IO;
+using System.Reflection;
 using Game;
 using UnityEngine;
 
@@ -367,9 +368,15 @@ namespace OriCoop
                 yield return WaitFor(() => Sein.World.Events.WaterPurified, 6f);
                 h.Check(Sein.World.Events.WaterPurified, "ESC3 " + Role + ": the escape's end ran on this PC (WaterPurified)");
                 h.Check(TestHarness.RestoreCheckpointCalls == restores2, "ESC3 " + Role + ": getting through does not restart anything");
-                // #431: after this phase the guest's own Ori was still inactive in the G checks (F8 refused: "Sein inactive",
-                // state=Game, not loading). The escape's end may hide the Ori for its own sequence; it must be back in play.
-                yield return WaitFor(() => NetPlay.NotInGameplayReason() == null, 20f);
+                // #431: the escape's end is kuroMoment's MasterTimelineSequence. It hides the Ori and was still playing 20 s
+                // later (story active) on both PCs; the phase then moved everyone away and both Oris stayed inactive, so F8
+                // refused to open in the G checks. A player sits through it or skips it: the test skips it the game's own
+                // way, only when the skip registered is that sequence's, so its OnFinish runs and hands the Ori back.
+                yield return WaitFor(() => EndSkip() != null, 5f);
+                string endSkip = EndSkip();
+                h.Note("ESC3 " + Role + ": escape end skip: " + (endSkip ?? "not the escape's end (" + SkipDebug() + ")"));
+                if (endSkip != null) SkipCutsceneController.Instance.SkipCutscene();
+                yield return WaitFor(() => NetPlay.NotInGameplayReason() == null && !StorySync.StoryActive, 20f);
                 h.Check(NetPlay.NotInGameplayReason() == null, "ESC3 " + Role + ": back in gameplay after the escape's end ("
                     + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ", story " + StorySync.StoryActive + ")");
                 if (!host) yield return Wait(3f);
@@ -389,6 +396,55 @@ namespace OriCoop
                 if (Own != null) Own.Mortality.DamageReciever.IsImmortal = immortal0;
                 Sein.World.Events.WaterPurified = purified0;   // later phases run in the test save's world
             }
+        }
+
+        // The skip SkipCutsceneController holds, when it belongs to the escape end's MasterTimelineSequence (kuroMoment):
+        // "field -> sequence in root", else null. Read by reflection (the field is the game's), tolerant of its shape.
+        static string EndSkip()
+        {
+            SkipCutsceneController c = SkipCutsceneController.Instance;
+            if (c == null || !c.SkippingAvailable) return null;
+            foreach (FieldInfo f in typeof(SkipCutsceneController).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                object v;
+                try { v = f.GetValue(c); } catch (Exception) { continue; }
+                List<object> items = new List<object>();
+                if (v is IList) foreach (object o in (IList)v) items.Add(o); else items.Add(v);
+                foreach (object item in items)
+                {
+                    Delegate d = item as Delegate;
+                    Component comp = (d != null ? d.Target : item) as Component;
+                    if (comp == null) continue;
+                    try
+                    {
+                        MasterTimelineSequence seq = comp as MasterTimelineSequence;
+                        if (seq == null) seq = comp.GetComponentInParent<MasterTimelineSequence>();
+                        if (seq == null || seq.transform.root.name.IndexOf("kuroMoment", StringComparison.OrdinalIgnoreCase) < 0) continue;
+                        return f.Name + " -> " + seq.name + " in " + seq.transform.root.name;
+                    }
+                    catch (Exception) { }   // a destroyed object left in the field
+                }
+            }
+            return null;
+        }
+        static string SkipDebug()
+        {
+            SkipCutsceneController c = SkipCutsceneController.Instance;
+            if (c == null) return "no skip controller";
+            string text = "available=" + c.SkippingAvailable;
+            foreach (FieldInfo f in typeof(SkipCutsceneController).GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic))
+            {
+                object v;
+                try { v = f.GetValue(c); } catch (Exception) { continue; }
+                if (v == null) continue;
+                Delegate d = v as Delegate;
+                Component comp = (d != null ? d.Target : v) as Component;
+                string what;
+                try { what = comp != null ? comp.GetType().Name + " " + comp.name + " in " + comp.transform.root.name : v.GetType().Name; }
+                catch (Exception) { what = "destroyed " + v.GetType().Name; }
+                text += ", " + f.Name + "=" + what;
+            }
+            return text;
         }
 
         // Stories that some PC starts in or near the escape (arriving, the water event, the heart room) make StorySync
