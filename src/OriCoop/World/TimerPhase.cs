@@ -5,8 +5,9 @@ namespace OriCoop.World
     // T-250 (#338), the maintainer's choice B: the host's level timers set the pace. Two kinds of level timer keep one
     // float of phase in their Archive (4 bytes, WorldSync's AmbientPhase layout):
     // - OnTimerPerformAction (e.g. moonGrottoLaserPuzzle).
-    // - TimedTrigger with Repeat on: the Ginso Tree puzzle shooter (#443 probe: projectileSpawnerPinkPlant, Duration 3,
-    //   Repeat, started from TimedTrigger.FixedUpdate) and the Moon Grotto / Forlorn shooters are built this way. A
+    // - TimedTrigger with Repeat on: the Moon Grotto / Forlorn shooters (#443 probe: Duration 3-6, Repeat, started from
+    //   TimedTrigger.FixedUpdate). The Ginso Tree puzzle shooter is built the same way but waits for its last projectile,
+    //   which lives a different time on each PC; it fires with the host's shots instead (World/ShooterFollow.cs, #444). A
     //   one-shot TimedTrigger (Repeat off) stays out (#436): it is a delay, and writing the host's time into it fired its
     //   action on the guest at the wrong moment. A repeating one while Paused (its ProjectileSpawner waits for the last
     //   projectile to be destroyed) stays out too: its float is not moving, so it says nothing about the pace.

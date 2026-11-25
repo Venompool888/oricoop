@@ -199,6 +199,7 @@ namespace OriCoop
             try
             {
                 if (__instance == null || !CoopTrace.On(Sub, 1) || !IsShooter(__instance)) return;
+                if (WorldObjSync.DroppedNow(__instance)) return;   // a guest's own shot dropped for the host's (#444): did not run
                 string scene = SceneName(__instance); int id = WorldObjSync.IdOf(__instance);
                 int n = s_starts.Next(scene, id.ToString(CultureInfo.InvariantCulture));
                 if (n == 0) return;

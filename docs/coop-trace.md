@@ -72,14 +72,22 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `shooter.action` / `shooter.holder` / `shooter.projectile` (fields read by reflection, once each), `shooter.holders`
   (count), `shooter.spawn` (each projectile's pos, vel, gravity, life, angle to own Ori / to the partner).
 - world, T-250 timer phase (`src\OriCoop\WorldSync.cs`, rules in `World\TimerPhase.cs`): the host sends the phase of
-  every `OnTimerPerformAction` and every running repeating `TimedTrigger` (the Ginso Tree / Moon Grotto shooters,
-  #443) in its loaded scenes every 0.7-1.3 s (world message 12). A one-shot `TimedTrigger` is left out (#436), and so
-  is a repeating one while `Paused` (its spawner waits for the last projectile), on either PC. A guest takes it only
+  every `OnTimerPerformAction` and every running repeating `TimedTrigger` (the Moon Grotto / Forlorn shooters, #443)
+  in its loaded scenes every 0.7-1.3 s (world message 12). A one-shot `TimedTrigger` is left out (#436), and so is a
+  repeating one while `Paused`, on either PC. A repeating one whose `ProjectileSpawner` waits for its last projectile
+  (the Ginso Tree puzzle shooter) has no phase sync: it fires with the host's shots (#444, below). A guest takes it only
   when its own is more than 0.25 s off and neither side is within 0.25 s of a restart (or of the trigger's `Duration`):
   `timer.phase` (key, type, path, local, host, period, verdict), first 200 per process. The 5 s
-  `net: world bytes/sec` log line adds `timers sent= taken= in_step= near_restart= paused=`; the once-per-scene
-  `net: world timers scene=` line adds `repeating_triggers= paused=`. NetWorldObjTest WO2 pushes the guest's Ginso
-  shooter half a period off (`timer.skew`) and checks that it takes the host's phase again.
+  `net: world bytes/sec` log line adds `timers sent= taken= in_step= near_restart= paused=` and
+  `shots followed= dropped= own=`; the once-per-scene `net: world timers scene=` line adds
+  `repeating_triggers= paused= follows_host_shots=`.
+- phys, #444 shots that follow the host (`src\OriCoop\WorldObjSync.cs`, rule in `World\ShooterFollow.cs`): the host
+  sends each shot of the Ginso shooter (message 75 kind 7, BepInEx log `[wobj] send shot`); a guest runs it
+  (`wobj.apply kind=shot`) and drops its own timer's shots while the host's keep coming (`wobj.shot.drop`, 15 s
+  window); with none for 15 s its own run again (`wobj.shot.own`). A dropped shot logs no `shooter.start`. The
+  BepInEx log names each repeating trigger once: `[wobj] shooter <name> id= waits_for_projectile= follows_host=`.
+  NetWorldObjTest WO2 pushes the guest's own timer half a period off (`timer.skew`) and checks for 14 s that the
+  guest fires every host shot and none of its own.
 - save / scene: save, load, pause/resume, difficulty (with the enemy health multiplier actually in effect),
   scene load/unload, current scene.
 - net: every 1 s RTT, loss, reliable pending/resends, remote scene; connect/disconnect with reason.

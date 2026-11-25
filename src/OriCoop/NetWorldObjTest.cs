@@ -300,43 +300,53 @@ namespace OriCoop
             yield return ShooterSkew(h, tag, step + 3, host);
         }
 
-        // #443: the Ginso puzzle shooter is a repeating TimedTrigger. The guest pushes its own half a period off (as if it
-        // had loaded the scene 1.5 s later); the host's resend must bring it back (WorldSync.TimerPhasesTaken).
+        // #444 (the maintainer's choice): the Ginso puzzle shooter waits for its last projectile, so it fires with the
+        // host's shots (WorldObjSync kind 7, World/ShooterFollow.cs). The guest first pushes its own timer half a period
+        // off; for 14 s every shot the host's shooter fires must run on the guest, and the guest's own timer none.
         static IEnumerator ShooterSkew(TestHarness h, string tag, int step, bool host)
         {
             yield return Barrier(h, step, 0, 0f, 0f);
+            int sent0 = WorldObjSync.ShotsSent, followed0 = WorldObjSync.ShotsFollowed, dropped0 = WorldObjSync.ShotsDropped;
+            int own0 = WorldObjSync.ShotsOwn, ownAtFirst = -1;
             if (!host) yield return GuestSkew(h, tag);
-            yield return Barrier(h, step + 1, 0, 0f, 0f);   // the host stays in the scene, resending, until the guest is done
+            float until = Time.realtimeSinceStartup + 14f;
+            while (Time.realtimeSinceStartup < until)
+            {
+                if (!host && ownAtFirst < 0 && WorldObjSync.ShotsFollowed > followed0) ownAtFirst = WorldObjSync.ShotsOwn;
+                KeepAlive(); yield return null;
+            }
+            int mine = host ? WorldObjSync.ShotsSent - sent0 : WorldObjSync.ShotsFollowed - followed0;
+            yield return Barrier(h, step + 1, mine, 0f, 0f);
+            Sample p = Partner(step + 1);
+            if (host) h.Check(mine >= 2, tag + " #444 host sent its Ginso shooter's shots (" + mine + " in 14 s)");
+            else
+            {
+                h.Check(mine >= 2, tag + " #444 guest's Ginso shooter fired the host's shots (" + mine + " in 14 s, dropped own "
+                    + (WorldObjSync.ShotsDropped - dropped0) + ", own before the first " + (ownAtFirst < 0 ? -1 : ownAtFirst - own0) + ")");
+                h.Check(ownAtFirst >= 0 && WorldObjSync.ShotsOwn == ownAtFirst, tag + " #444 guest's own timer fired no shot once it followed the host's ("
+                    + (ownAtFirst < 0 ? "never followed" : (WorldObjSync.ShotsOwn - ownAtFirst) + " own") + ")");
+            }
+            h.Check(p != null && Math.Abs(p.Id - mine) <= 1, tag + " #444 host's shots and guest's followed shots agree (mine=" + mine
+                + " partner=" + (p == null ? -1 : p.Id) + ")");
         }
 
+        // The guest pushes its own Ginso shooter timer half a period off: only the host's shots may decide when it fires.
         static IEnumerator GuestSkew(TestHarness h, string tag)
         {
             List<TimedTrigger> shooters = new List<TimedTrigger>();
             foreach (TimedTrigger t in UnityEngine.Object.FindObjectsOfType<TimedTrigger>())
-            {
-                bool paused; float period;
-                if (t != null && t.transform.root != null && t.transform.root.name == "ginsoTreePuzzles"
-                    && WorldSync.RepeatingTrigger(t, out paused, out period) && period > 1f) shooters.Add(t);
-            }
-            h.Check(shooters.Count > 0 && WorldSync.TimedTriggerTime != null, tag + " #443 guest found a repeating TimedTrigger in ginsoTreePuzzles ("
+                if (t != null && t.transform.root != null && t.transform.root.name == "ginsoTreePuzzles" && WorldObjSync.IsFollowedShooter(t)) shooters.Add(t);
+            h.Check(shooters.Count > 0 && WorldSync.TimedTriggerTime != null, tag + " #444 guest found the Ginso shooter that follows the host ("
                 + shooters.Count + ", m_time field " + (WorldSync.TimedTriggerTime != null) + ")");
             if (shooters.Count == 0 || WorldSync.TimedTriggerTime == null) yield break;
             TimedTrigger shooter = shooters[0];
             bool isPaused; float duration;
-            float runBy = Time.realtimeSinceStartup + 6f;
-            while (Time.realtimeSinceStartup < runBy && (!WorldSync.RepeatingTrigger(shooter, out isPaused, out duration) || isPaused)) { KeepAlive(); yield return null; }
             WorldSync.RepeatingTrigger(shooter, out isPaused, out duration);
             float before = (float)WorldSync.TimedTriggerTime.GetValue(shooter);
             float skewed = (before + duration / 2f) % duration;
             if (skewed < 0.4f || skewed > duration - 0.4f) skewed = duration / 2f;
-            int takenBefore = WorldSync.TimerPhasesTaken;
             WorldSync.TimedTriggerTime.SetValue(shooter, skewed);
             CoopTrace.Event("world", "timer.skew", "path", shooter.name, "from", before, "to", skewed, "duration", duration, "paused", isPaused);
-            float takeBy = Time.realtimeSinceStartup + 9f;
-            while (Time.realtimeSinceStartup < takeBy && WorldSync.TimerPhasesTaken == takenBefore) { KeepAlive(); yield return null; }
-            h.Check(WorldSync.TimerPhasesTaken > takenBefore, tag + " #443 guest took the host's shooter phase within 9 s after its own was pushed "
-                + (skewed - before).ToString("0.00") + " s off (taken " + (WorldSync.TimerPhasesTaken - takenBefore) + ", in_step "
-                + WorldSync.TimerPhasesInStep + ", near_restart " + WorldSync.TimerPhasesNearRestart + ", paused " + WorldSync.TimerPhasesPaused + ")");
         }
 
         // W3 jump-flip platforms: at the same moment the host's Ori jumps once and the guest's Ori jumps twice. Every

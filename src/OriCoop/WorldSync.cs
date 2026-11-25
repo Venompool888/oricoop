@@ -159,7 +159,8 @@ namespace OriCoop
                     + " snapshot=" + (s_snapshotBytes / elapsed).ToString("F1")
                     + " digest=" + (s_digestBytes / elapsed).ToString("F1")
                     + " timers sent=" + TimerPhasesSent + " taken=" + TimerPhasesTaken + " in_step=" + TimerPhasesInStep
-                    + " near_restart=" + TimerPhasesNearRestart + " paused=" + TimerPhasesPaused);
+                    + " near_restart=" + TimerPhasesNearRestart + " paused=" + TimerPhasesPaused
+                    + " shots followed=" + WorldObjSync.ShotsFollowed + " dropped=" + WorldObjSync.ShotsDropped + " own=" + WorldObjSync.ShotsOwn);
                 s_bandwidthAt = now; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             }
         }
@@ -726,7 +727,11 @@ namespace OriCoop
             {
                 bool oneShot = false, paused = false; float period = 0f;
                 if (live != null && TimerPhase.IsTimedTrigger(type)) oneShot = !RepeatingTrigger(live, out paused, out period);
-                if (!oneShot)
+                // #444: a shooter that fires with the host's shots (WorldObjSync) has no phase to keep. A first sighting
+                // still goes the ordinary way, so the digests keep agreeing (#436).
+                bool follows = !oneShot && WorldObjSync.IsFollowedShooter(live as TimedTrigger);
+                if (follows && s_blobs.ContainsKey(key)) { TimerPhasesFollowed++; return; }
+                if (!oneShot && !follows)
                 {
                     TimerPhase.Route route = TimerPhase.GuestRoute(live != null, s_bad.Contains(key), s_blobs.ContainsKey(key));
                     if (route == TimerPhase.Route.Skip) return;
@@ -801,13 +806,13 @@ namespace OriCoop
 
         // T-250 (#338, choice B): the host's level timers set the pace (World/TimerPhase.cs). Every ResendMin..ResendMax
         // seconds the host sends the phase of every OnTimerPerformAction and every running repeating TimedTrigger (the
-        // Ginso Tree shooter, #443) in its loaded scenes, as ordinary
+        // Moon Grotto / Forlorn shooters, #443) in its loaded scenes, as ordinary
         // world blobs (message 12): no new message, no protocol change. A guest takes one only when it is out of step.
         // Test-only mutation ORICOOP_MUTATE_TIMER_PHASE_ONCE: the host does not resend (the phase crosses only in the
         // first snapshot again, as before T-250).
         static readonly bool s_mutateTimerPhaseOnce = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_TIMER_PHASE_ONCE") == "1";
         static readonly TimerPhaseSchedule s_timerPhase = new TimerPhaseSchedule(250u);
-        public static int TimerPhasesSent, TimerPhasesTaken, TimerPhasesInStep, TimerPhasesNearRestart, TimerPhasesPaused;
+        public static int TimerPhasesSent, TimerPhasesTaken, TimerPhasesInStep, TimerPhasesNearRestart, TimerPhasesPaused, TimerPhasesFollowed;
         public static int LastSendableTimers;   // timers the host's latest resend found (0: none in its loaded scenes)
         static int s_timerTraces;
         const int MaxTimerTraces = 200;
@@ -848,7 +853,7 @@ namespace OriCoop
             Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
                 if (scene == MoonGuid.Empty) return;
                 bool census = s_timerCensus.Add(scene.ToString()) && s_timerCensus.Count <= MaxTimerCensus;
-                int found = 0, sent = 0, excluded = 0, layout = 0, bad = 0, repeating = 0, paused = 0;
+                int found = 0, sent = 0, excluded = 0, layout = 0, bad = 0, repeating = 0, paused = 0, followed = 0;
                 HashSet<string> others = census ? new HashSet<string>() : null;
                 SaveSceneManager.SaveId[] entries = manager.SaveData.ToArray();
                 foreach (SaveSceneManager.SaveId entry in entries)
@@ -859,6 +864,7 @@ namespace OriCoop
                     if (!levelTimer && RepeatingTrigger(save, out triggerPaused, out period))
                     {
                         repeating++;
+                        if (WorldObjSync.IsFollowedShooter(save as TimedTrigger)) { followed++; continue; }   // fires with the host's shots (#444)
                         if (!TimerPhase.Keeps(true, triggerPaused)) { paused++; continue; }   // not moving: nothing to pace
                         levelTimer = true;
                     }
@@ -896,7 +902,7 @@ namespace OriCoop
                 if (census)
                     Plugin.Log.LogInfo("net: world timers scene=" + (manager.transform.root != null ? manager.transform.root.name : "?")
                         + " found=" + found + " sendable=" + sent + " excluded=" + excluded + " other_layout=" + layout
-                        + " bad=" + bad + " repeating_triggers=" + repeating + " paused=" + paused + " save_entries=" + entries.Length
+                        + " bad=" + bad + " repeating_triggers=" + repeating + " paused=" + paused + " follows_host_shots=" + followed + " save_entries=" + entries.Length
                         + (others.Count != 0 ? " other_timer_like=" + string.Join(",", new List<string>(others).ToArray()) : ""));
             });
             LastSendableTimers = timers.Count;
