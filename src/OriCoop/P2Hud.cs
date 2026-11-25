@@ -235,8 +235,8 @@ namespace OriCoop
             // Parent space is the HUD camera's orientation: down-right and a hair farther from the camera.
             float off = worldH * 0.05f / Mathf.Max(0.0001f, hud.Go.transform.lossyScale.x);
             hud.Shadow.transform.localPosition = new Vector3(off, -off, 0.01f);
-            // Online the tag is drawn in the game's own font (below); the TextMesh stays as the fallback.
-            if (!NetPlay.Enabled) { HideGameText(hud); return; }
+            // Opt-in names can contain glyphs outside the game's fixed atlas. Keep the dynamic OS font for those tags.
+            if (!NetPlay.Enabled || TeammateIdentity.Name(seat).Length != 0) { HideGameText(hud); return; }
             try
             {
                 if (!HasGameText(hud))

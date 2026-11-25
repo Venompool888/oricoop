@@ -122,6 +122,7 @@ namespace OriCoop
 
         static void GoTo(int page)
         {
+            EndNameEdit(false);
             Page = page; s_focus = 0; s_waitFor = 0; s_message = "";
             s_settingsH = 0f;
             if (page == PageModeSelect) s_focus = PlayMode.LastChoice == PlayMode.Single ? 0 : 1;
