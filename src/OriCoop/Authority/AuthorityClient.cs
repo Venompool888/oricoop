@@ -69,6 +69,10 @@ namespace OriCoop.Authority
             Send(new CsMessage { Type = CsWire.CsLease, Op = 2, Key = key }, true);
         }
 
+        // Ordinary bodies publish on change. The final resting pose has no later packet to replace it.
+        internal const string BodyStatePrefix = "w:dynamic:body:";
+        internal static bool ReliableState(string key) { return key.StartsWith(BodyStatePrefix, StringComparison.Ordinal); }
+
         public void PublishState(string key, byte[] data, bool active)
         {
             if (mode == AuthorityMode.None || !Owns(key)) return;
@@ -78,7 +82,7 @@ namespace OriCoop.Authority
             latest[key] = new StateUpdate { Key = key, From = LocalSeat, Epoch = EpochOf(key),
                 Ver = ver, Active = active, Data = (byte[])data.Clone() };
             Send(new CsMessage { Type = CsWire.CsState, Key = key, Epoch = EpochOf(key), Ver = ver,
-                Active = (byte)(active ? 1 : 0), Data = data }, false);
+                Active = (byte)(active ? 1 : 0), Data = data }, ReliableState(key));
         }
 
         public void Propose(byte kind, string key, byte[] data, bool claim, bool release)
