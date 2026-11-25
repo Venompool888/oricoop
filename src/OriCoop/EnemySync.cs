@@ -1482,7 +1482,13 @@ namespace OriCoop
                 // scene before this PC's own 03 registered "spiritTreeWorldMap" (run G-1: host loaded it in the frame the
                 // guest reported worldMapSpiritTree, 1.3 s before its own 03 got there).
                 if (Active && Services.Net.IsHost && (Local != null || CutsceneRespawn.Off) && (s_mutateStreamInStory || StorySync.RealStories == 0))   // no local Ori (cutscene): stream like single player
-                    foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) ___m_cameraPositions.Add(remote.Value);
+                {
+                    // #406 (3): every scene update. Asking each seat gives the same positions as the RemotePositions
+                    // iterator without a new iterator per call (see NearPartner); the camera list's order does not matter.
+                    Vector3 remote;
+                    for (int seat = 1; seat <= Players.MaxSeats; seat++)
+                        if (s_host.RemotePos(seat, out remote)) ___m_cameraPositions.Add(remote);
+                }
             }
         }
         [HarmonyPatch(typeof(ScenesManager), "UnloadScene")]
