@@ -49,6 +49,7 @@ namespace OriCoop.Authority
             StateUpdate state;
             return latest.TryGetValue(key, out state) ? state : null;
         }
+        public IEnumerable<StateUpdate> CachedStates { get { return latest.Values; } }
 
         void Send(CsMessage message, bool reliable)
         {

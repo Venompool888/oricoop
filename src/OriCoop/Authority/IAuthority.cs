@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 
 namespace OriCoop.Authority
 {
@@ -43,6 +44,7 @@ namespace OriCoop.Authority
         uint EpochOf(string key);
         bool Owns(string key);
         StateUpdate LatestState(string key);
+        IEnumerable<StateUpdate> CachedStates { get; }
 
         // Ask to simulate `key`. score: lower = more relevant (distance). active: I am interacting with it right now.
         void RequestLease(string key, float score, bool active);

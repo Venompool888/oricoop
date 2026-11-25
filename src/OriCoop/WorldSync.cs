@@ -104,6 +104,7 @@ namespace OriCoop
 
         static void Reset()
         {
+            ResetBodies();
             s_blobs.Clear(); s_known.Clear(); s_changed.Clear(); s_bad.Clear();
             s_excluded.Clear(); s_parts.Clear(); s_deferred.Clear();
             s_remoteManifest.Clear(); s_compareManifest.Clear(); s_loggedLocalTypes.Clear();
@@ -146,6 +147,7 @@ namespace OriCoop
                 foreach (int seat in seats) { SendSnapshot(seat, "queued"); ProgressSync.SendSnapshot(seat); }
             }
             if (!NetPlay.AnyRemoteInGameplay || s_awaitSnapshot) return;
+            if (!s_mutateUnsyncedBodies) TickBodies();
             float now = Time.realtimeSinceStartup;
             if (now >= s_scanAt) { s_scanAt = now + 0.25f; SendBlobs(RouteAggregates(Capture(false))); }
             if (now >= s_digestAt) { s_digestAt = now + 5f; SendDigest(); }
@@ -384,12 +386,6 @@ namespace OriCoop
                 }
                 else if (schema == Meaning.RespawnPickup) { w.Write(r.ReadBoolean()); r.ReadSingle(); }
                 else if (schema == Meaning.Respawner) { r.ReadInt32(); r.ReadInt32(); w.Write(r.ReadBoolean()); r.ReadSingle(); }
-                else if (schema == Meaning.Body)
-                {
-                    // RigidbodySerialize.Serialize: pose / velocities of a simulated body. Both games simulate it, so the
-                    // floats never agree exactly; only the layout counts for the digest (the bytes still sync).
-                    w.Write(bytes.Length); input.Position = input.Length;
-                }
                 else { w.Write(bytes); input.Position = input.Length; }
                 if (input.Position != input.Length) throw new InvalidDataException("unrecognized canonical Archive suffix");
                 w.Flush(); return HashBytes(output.ToArray());
@@ -457,6 +453,12 @@ namespace OriCoop
                     ISerializable save = entry.Save;
                     if (Excluded(save)) { s_excluded.Add(key); s_blobs.Remove(key); continue; }
                     s_excluded.Remove(key);
+                    RigidbodySerialize body = save as RigidbodySerialize;
+                    if (body != null)
+                    {
+                        RegisterBody(scene, entry.Id, body);
+                        continue;
+                    }
                     if (s_bad.Contains(key)) continue;
                     if (StorySync.MirrorOwns(save as Component)) s_mirrorKeys.Add(key);
                     if (save is ActionSequenceSerializer && StorySequenceOf(save) != null) s_storyProgress.Remember(key);   // T-207 review 7
@@ -704,6 +706,8 @@ namespace OriCoop
 
         static void Apply(MoonGuid scene, MoonGuid id, byte[] bytes, Meaning schema, string type)
         {
+            // Rigidbody poses travel through the lease owner. A general world snapshot cannot supersede them.
+            if (schema == Meaning.Body) return;
             string key = Key(scene, id);
             ISerializable live = Find(scene, id);
             if (s_excluded.Contains(key) || (live != null && Excluded(live))) return;
@@ -772,6 +776,7 @@ namespace OriCoop
 
         // Test-only mutation (net-3p world check): the host keeps an accepted guest blob to itself again (pre-T-141).
         static readonly bool s_mutateNoRebroadcast = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_NO_REBROADCAST") == "1";
+        static readonly bool s_mutateUnsyncedBodies = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_UNSYNCED_BODIES") == "1";
 
         // Device seats this PC is connected to (a guest device's extra local seats share its peer: one copy per device).
         static int[] RemoteDevices()
@@ -1225,6 +1230,7 @@ namespace OriCoop
             static void Postfix()
             {
                 if (!NetPlay.Connected || !SaveSync.Ready) return;
+                RestoreBodies();
                 // A queued live application belongs to the world before the restore. The
                 // refreshed snapshot will supply this seat's items after the restore.
                 foreach (Blob waiting in new List<Blob>(s_deferred.Values))

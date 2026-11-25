@@ -14,8 +14,9 @@ namespace OriCoop.Net
     // New and ignored by net10: GateRelease (msg 97, T-207), the prologue clock and log (msg 96 kinds 2 and 3, T-205).
     // net12: RoomLink carries the native flame and save rejection; story starts and world snapshots sync well activations.
     // net13: a completed story can carry survivor vitals and positions in an optional StoryEnd tail (T-246).
+    // net14: ordinary rigidbody poses use shared leases instead of generic world blobs (T-224).
     internal static class ProtocolVersion
     {
-        public const string Mod = "0.2.0-net13";
+        public const string Mod = "0.2.0-net14";
     }
 }
