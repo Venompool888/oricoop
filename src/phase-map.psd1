@@ -30,6 +30,7 @@
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
         'WorldSync.Bodies' = 'W,WO'
+        'NetPickupCheckpointTest' = 'W'; 'SavedPickupCopies' = 'W'; 'NetCellAuthorityTest' = 'W'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
@@ -56,8 +57,11 @@
         @{ Switch = 'ORICOOP_MUTATE_LEVER_DROP_HOLD'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-194 a partner's world blob does not drop this PC's hold on a lever (CUT real grab)
         @{ Switch = 'ORICOOP_MUTATE_STONE_RAW_APPLY'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-204 a partner activating a map stone releases this PC's highlight (CUT map stone, story stays local)
         @{ Switch = 'ORICOOP_MUTATE_MAP_DOWNGRADE'; File = 'src\OriCoop\World\WorldItems.cs'; Suite = 'net'; Phase = 'W' }   # T-214 map exploration only grows (W map: a cell explored while a snapshot is on its way)
+        @{ Switch = 'ORICOOP_MUTATE_PICKUP_CLONE_ALIAS'; File = 'src\OriCoop\SavedPickupCopies.cs'; Suite = 'net'; Phase = 'W' }
+        @{ Switch = 'ORICOOP_MUTATE_PICKUP_CLONE_FORGOTTEN'; File = 'src\OriCoop\SavedPickupCopies.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_PICKUP_GUID_ONLY'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a pickup is its GUID plus scene and spot (W pickups: two copies of one prefab; the host cannot take the guest's pickup again)
         @{ Switch = 'ORICOOP_MUTATE_CELL_REFILLS_HOST'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a health / energy cell refills the player who took it (W cells)
+        @{ Switch = 'ORICOOP_MUTATE_CELL_REWARD_LOSER'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_HOST_SEAT_ONE';  File = 'src\OriCoop\Authority\NetRoute.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_FX_FORWARD';  File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-3p';    Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_LATE_COMMIT'; File = 'src\OriCoop\Saves\CoopSaves.Lineage.cs'; Suite = 'net-3p'; Phase = '' }
