@@ -49,9 +49,58 @@ static class CloudLeaseVersionsTests
         }
     }
 
+    // Seat 3 observes a guest-owned object. Lose every unreliable packet on one hop after an initial pose arrived.
+    static void StateAfterPacketLoss(string key, bool loseOnUplink, bool expectReliable, bool guestOwns)
+    {
+        bool losingPackets = false;
+        AuthorityClient[] guests = new AuthorityClient[4];
+        HostArbiter host = new HostArbiter(() => 1, (seat, message, reliable) => {
+            if (!losingPackets || loseOnUplink || reliable) guests[seat].Receive(message);
+        }, () => 0);
+        for (int seat = 2; seat <= 3; seat++)
+        {
+            int sender = seat;
+            guests[seat] = new AuthorityClient(AuthorityMode.HostP2P, () => sender, (message, reliable) => {
+                if (!losingPackets || !loseOnUplink || reliable) host.FromRemote(sender, message);
+            }, false);
+        }
+        for (int seat = 1; seat <= 3; seat++) host.SeatJoined(seat);
+        IAuthority owner = guestOwns ? (IAuthority)guests[2] : host.Local;
+        owner.RequestLease(key, 1f, true);
+        Check(owner.Owns(key), "owner did not get the lease");
+        owner.PublishState(key, new byte[] { 10 }, true);
+        StateUpdate initial = guests[3].LatestState(key);
+        Check(initial != null && initial.From == owner.LocalSeat && initial.Data[0] == 10,
+            "observing seat did not receive the initial pose");
+
+        losingPackets = true;
+        owner.PublishState(key, new byte[] { 20 }, true);
+        StateUpdate moving = guests[3].LatestState(key);
+        owner.PublishState(key, new byte[] { 30 }, false);   // the body sleeps and sends nothing more
+        StateUpdate last = guests[3].LatestState(key);
+        if (expectReliable)
+        {
+            Check(last.From == owner.LocalSeat && last.Ver == 3 && !last.Active && last.Data[0] == 30,
+                "observer missed the final resting pose (version " + last.Ver + ", position " + last.Data[0] + ")");
+            Check(moving.Ver == 2 && moving.Active && moving.Data[0] == 20, "observer missed the moving pose");
+        }
+        else Check(moving.Ver == 1 && last.Ver == 1 && last.Data[0] == 10,
+            "an ordinary state used the reliable channel");
+    }
+
     static int Main()
     {
         const string key = "w:push:7";
+        const string body = "w:dynamic:body:7";
+        Run("a guest sends the final rigidbody pose through uplink loss", () => StateAfterPacketLoss(body, true, true, true));
+        Run("the host relays a guest's final rigidbody pose through downlink loss", () => StateAfterPacketLoss(body, false, true, true));
+        Run("the host sends its own final rigidbody pose through downlink loss", () => StateAfterPacketLoss(body, false, true, false));
+        Run("other lease states stay unreliable on both hops", delegate {
+            StateAfterPacketLoss(key, true, false, true);
+            StateAfterPacketLoss(key, false, false, true);
+            StateAfterPacketLoss("w:dynamic:bodyguard:7", true, false, true);
+            StateAfterPacketLoss("w:dynamic:bodyguard:7", false, false, true);
+        });
         Run("a third seat takes the new owner's first states after a handover", delegate {
             Room room = new Room();
             room.Clients[1].RequestLease(key, 1f, true);

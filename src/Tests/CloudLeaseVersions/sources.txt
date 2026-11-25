@@ -2,3 +2,4 @@ OriCoop\Authority\IAuthority.cs
 OriCoop\Authority\CsWire.cs
 OriCoop\Authority\Arbiter.cs
 OriCoop\Authority\AuthorityClient.cs
+OriCoop\Authority\HostArbiter.cs
