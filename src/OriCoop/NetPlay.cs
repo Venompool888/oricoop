@@ -857,6 +857,7 @@ namespace OriCoop
         static readonly Action s_extraTick = OnlineLocalPlayers.Tick, s_extraSample = OnlineLocalPlayers.SampleExtras;
 
         // ---------------------------------------------------------------- per frame (Runner.Update)
+        static bool s_readFlushed = true;   // the last Update reached its flush after reading (see the Poll below)
         public static void Update()
         {
             // Before the Enabled check: Steam invites must be caught (and acted on) while online play is off.
@@ -874,12 +875,25 @@ namespace OriCoop
             SubsystemGuard.Run("OnlineLocalPlayers.Tick", s_extraTick);
             if (HasHub)
             {
-                s_hub.Poll();
+                // One packet per guest: the acks wait for the forwards queued while reading (was ack, then forwards).
+                // No try/finally here: the test build's input-block transpiler rewrites this method (it calls
+                // Input.GetKeyDown), and with an extra exception block the rewritten method threw every frame (#421).
+                // Instead, if the last read threw before its flush, this poll flushes as it used to.
+                bool defer = s_readFlushed; s_readFlushed = false;
+                s_hub.Poll(!defer);
                 foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
                     if (remote.Peer != null) ReadPeer(remote.Peer, remote, true);
-                s_hub.Flush();
+                if (s_hub != null) s_hub.Flush();
+                s_readFlushed = true;
             }
-            else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
+            else
+            {
+                bool defer = s_readFlushed; s_readFlushed = false;
+                Peer.Poll(!defer);
+                if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null);
+                if (Peer != null) Peer.Flush();
+                s_readFlushed = true;
+            }
             if (s_factorySession) Authority.CServerLink.TickOwnerNotice();
             if (!Connected || WaitingForSeat) return;
 
@@ -1065,6 +1079,9 @@ namespace OriCoop
                 try { SendSeatFrame(puppet.Seat, puppet.Sein, tick); }
                 finally { puppet.Input.Swap(); }
             }
+            // One flush for every local seat's frame, so split-screen sends one packet per step, not one per seat.
+            // (If a seat's frame threw, Update's flush after reading sends what was queued, the same frame.)
+            if (s_hub != null) s_hub.Flush(); else if (Peer != null) Peer.Flush();
         }
 
         static void SendSeatFrame(int seat, SeinCharacter p1, uint tick)
@@ -1133,7 +1150,6 @@ namespace OriCoop
                 byte[] packet = Seats.FrameStreams.Encode(Players.LocalSeat, new int[] { seat }, new byte[][] { body });
                 Broadcast(packet, packet.Length, false);
             }
-            if (s_hub != null) s_hub.Flush(); else Peer.Flush();
         }
 
         static void PlayRemote()
