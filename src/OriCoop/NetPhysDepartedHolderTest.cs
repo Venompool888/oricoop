@@ -1,12 +1,27 @@
 using System;
 using System.Collections;
 using System.IO;
+using HarmonyLib;
 using UnityEngine;
 
 namespace OriCoop
 {
     public static partial class NetPhysTest
     {
+        static PushPullBlock s_departureStone;
+        static SeinCharacter s_departureOri;
+        static bool s_gripAtDespawn;
+
+        [HarmonyPatch(typeof(Plugin), "DespawnPuppet")]
+        static class ObserveGripAtDespawn
+        {
+            static void Prefix(Puppet puppet)
+            {
+                if (s_departureStone != null && s_departureOri != null && puppet.Sein == s_departureOri)
+                    s_gripAtDespawn = PushBlockSync.Ignores(s_departureStone, s_departureOri.PlatformBehaviour.PlatformMovement);
+            }
+        }
+
         static bool StoneMaterial(PushPullBlock block, PhysicMaterial expected)
         {
             bool found = false;
@@ -50,14 +65,14 @@ namespace OriCoop
             if (host)
             {
                 float until = Time.realtimeSinceStartup + 15f;
-                bool heldBeforeDeparture = grab.Started;
-                while (departing != null && Time.realtimeSinceStartup < until)
+                s_departureStone = block; s_departureOri = departing; s_gripAtDespawn = false;
+                try
                 {
-                    heldBeforeDeparture = PushBlockSync.Ignores(block, departing.PlatformBehaviour.PlatformMovement);
-                    KeepAlive(); yield return null;
+                    while (departing != null && Time.realtimeSinceStartup < until) { KeepAlive(); yield return null; }
                 }
+                finally { s_departureStone = null; s_departureOri = null; }
                 h.Check(departing == null && block != null, "PJ the guest's original puppet is destroyed while the host keeps the stone loaded");
-                h.Check(heldBeforeDeparture, "PJ guest was still gripping the stone immediately before its puppet disappeared");
+                h.Check(s_gripAtDespawn, "PJ guest is still gripping the stone when its puppet despawns");
                 h.Check(StoneMaterial(block, block.PushPullMaterial), "PJ departing guest frees the stone's resting friction");
                 GrabSetup next = new GrabSetup();
                 yield return GrabBlock(block, next, CoopDir);
