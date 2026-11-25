@@ -30,7 +30,6 @@
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
-        'NetMapMarkerTest' = 'S4'; 'TeammateMapMarkers' = 'S4'
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
         'WorldObjSync' = 'WO,R'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
@@ -45,6 +44,7 @@
         'VirtualPads' = 'MOVE'; 'VirtualPadPatch' = 'MOVE'; 'PsHid' = 'MOVE'; 'PadDetector' = ''; 'PadGlyphs' = ''; 'GlyphProbe' = ''   # T-178 (PsReport/MirrorJudge/PadTypes: unit tests only)
         'PsReport' = ''; 'MirrorJudge' = ''; 'PadTypes' = ''
         'NetEscapeTest' = 'ESC'; 'EscapeRules' = 'ESC'; 'Revive.Escape' = 'R,ESC'; 'EscapeProbe' = ''   # T-169 escapes (3P part: net-3p suites)
+        'NetMapMarkerTest' = 'S4'; 'TeammateMapMarkers' = 'S4'
         'EnemySync' = 'E3,E5,CUT'   # T-183: partner scene streaming is paused during stories (KURO, phase CUT)
     }
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
