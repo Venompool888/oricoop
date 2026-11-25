@@ -57,6 +57,12 @@ static partial class StoryTests
             Equal(merged, SkillSplit.Merge(own.Local(merged), SkillSplit.Shared(host, tree), tree)); // later merges: live
             own.Hold(guest); own.Hold(host);                               // two pushes before a merge: the first hold wins
             Equal(guest, own.Local(host)); Equal(false, own.Held);
+            own.Hold(guest);
+            own.Hold(c, true); own.Hold(d, true);                           // the latest checkpoint explicitly records D
+            own.Hold(host);                                                // an unrecorded load still sees the host's live bits
+            Equal(d, own.Local(host));
+            own.Hold(guest); own.Hold(0, true);                             // a recorded empty tree clears earlier purchases
+            Equal(0UL, own.Local(host));
         });
         Check("skills: points never go below zero; unknown tree keeps the old shared behaviour", delegate {
             Equal(0, SkillSplit.Points(1, Tree, Tree, Prices));

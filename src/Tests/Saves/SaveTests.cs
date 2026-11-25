@@ -97,6 +97,9 @@ partial class SaveTests
         Run("host seat readiness and departure", MoreSeatReadiness);
         Run("guest seat readiness", GuestReadiness);
         Run("four seat checkpoint and loaded flow", CheckpointFlow);
+        Run("T-223 guest restores the newest complete checkpoint during a load", NewestCheckpointDuringLoad);
+        Run("T-223 checkpoints belong to the current host and session", CheckpointHostAndSession);
+        Run("T-223 each native load uses its checkpoint's own seat skill record", CheckpointSkillsDuringLoad);
         Run("T-129 seat joining after the lineage settled gets the commit", LateJoinerGetsCommit);
         Run("T-129 seat joining while the lineage is open gets the decision commit", OpenLineageJoinerGetsCommit);
         Run("T-126 promotion only for a guest that joined", PromotionOnlyForJoinedGuest);

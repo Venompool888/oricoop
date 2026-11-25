@@ -645,7 +645,7 @@ namespace OriCoop
             return found;
         }
 
-        static ISerializable Find(MoonGuid scene, MoonGuid id)
+        internal static ISerializable Find(MoonGuid scene, MoonGuid id)
         {
             ISerializable found = null;
             Visit(delegate(MoonGuid sceneId, SaveSceneManager manager) {
@@ -682,7 +682,7 @@ namespace OriCoop
         // Native inventory only enters the checkpoint in CreateCheckpoint. Keep the corresponding scene
         // changes in PendingScenes until that same save. Scene streaming reads pending first and a death
         // discards pending. Applying a guest pickup directly to Scenes used to roll back only the inventory.
-        static void StoreSceneProgress(MoonGuid scene, MoonGuid id, byte[] bytes)
+        internal static void StoreSceneProgress(MoonGuid scene, MoonGuid id, byte[] bytes)
         {
             if (scene == MoonGuid.Empty) { StoreCheckpoint(scene, id, bytes); return; }
             SaveGameData data = Game.Checkpoint.SaveGameData;
@@ -1134,7 +1134,7 @@ namespace OriCoop
         // A partner collected this pickup (reward already applied by ProgressSync; Collected actions are not replayed).
         // false = that copy is not live here and its scene has no checkpoint record of it.
         // active != null: a later retry, which only looks for the live copy among these.
-        public static bool MarkCollected(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null)
+        public static bool MarkCollected(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null, bool allowArchived = true)
         {
             PickupBase live = FindPickup(id, scene, hasSpot, spot, active);
             if (live != null)
@@ -1149,7 +1149,7 @@ namespace OriCoop
                 }
                 return true;
             }
-            if (active != null) return false;
+            if (active != null || !allowArchived) return false;
             // Its scene is not loaded here: edit that scene's checkpoint record, if it has one in the PickupBase layout
             // (float m_currentTime + bool IsCollected, PickupBase.cs:134; no subclass overrides it).
             foreach (SaveScene saved in CurrentScenes())
