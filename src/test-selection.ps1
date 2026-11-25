@@ -68,7 +68,6 @@ $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
-    'KeystoneRecovery' = @('net', 'net-3p-cs'); 'NetKeystoneRecoveryTest' = @('net', 'net-3p-cs')
     'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-cs')
     # T-203: the shared new-game prologue. Its own code and test run the two prologue suites, the existing-save join
     # (titlejoin: nothing of it may start there) and, for the input hook and the intro hold it stands next to, net + local.
@@ -90,6 +89,7 @@ $TS_FileSuites = [ordered]@{
     'LoadRestart'      = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
     # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
     'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')
+    'KeystoneRecovery' = @('net', 'net-3p-cs'); 'NetKeystoneRecoveryTest' = @('net', 'net-3p-cs')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-cs', 'rooms'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')

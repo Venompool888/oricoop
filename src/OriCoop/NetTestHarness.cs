@@ -1717,10 +1717,10 @@ namespace OriCoop
                     // barrier may still be unacknowledged when it closes.
                     if (step < 9) yield return Safely(h, "W barrier " + step, WorldBarrier(h, step));
                     if (step == 5) yield return Safely(h, "W map", MapKeep(h, false));
+                    if (step == 5) yield return Safely(h, "W keystone recovery", CheckKeystoneRecovery(h, 1, 25900));
                     if (step == 5) yield return Safely(h, "W map late", MapKeep(h, true));
                     if (step == 5) yield return Safely(h, "W pickups", PickupCopies(h));
                     if (step == 5) yield return Safely(h, "W cells", CellRefill(h));
-                    if (step == 5) yield return Safely(h, "W keystone recovery", CheckKeystoneRecovery(h, 1, 25900));
                 }
             }
             finally
