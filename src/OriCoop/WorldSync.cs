@@ -712,11 +712,14 @@ namespace OriCoop
             ISerializable live = Find(scene, id);
             if (s_excluded.Contains(key) || (live != null && Excluded(live))) return;
             if (live != null && Describe(live) != schema) throw new InvalidDataException("world schema differs for " + key);
-            // T-250: the host's timer phase (SendTimerPhases) is only taken when this PC's own is out of step.
-            // Outside a snapshot a timer's canonical hash never changes, so its blob is only ever that resend: for a
-            // timer this PC has not loaded there is nothing to keep in step (and nothing to write into the checkpoint).
-            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.IsTimer(type)
-                && (live == null || s_bad.Contains(key) || !TakeTimerPhase(key, live, bytes))) return;
+            // T-250: the host's timer phase (SendTimerPhases) is only taken when this PC's own is out of step. A timer
+            // this PC does not know yet still goes the ordinary way (#436: TimerPhase.GuestRoute).
+            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.IsTimer(type))
+            {
+                TimerPhase.Route route = TimerPhase.GuestRoute(live != null, s_bad.Contains(key), s_blobs.ContainsKey(key));
+                if (route == TimerPhase.Route.Skip) return;
+                if (route == TimerPhase.Route.Judge && !TakeTimerPhase(key, live, bytes)) return;
+            }
             int[] forwardTo = null;
             if (NetPlay.IsHost)
             {
@@ -783,7 +786,7 @@ namespace OriCoop
         static readonly bool s_mutateNoRebroadcast = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_NO_REBROADCAST") == "1";
 
         // T-250 (#338, choice B): the host's level timers set the pace (World/TimerPhase.cs). Every ResendMin..ResendMax
-        // seconds the host sends the phase of every OnTimerPerformAction / TimedTrigger in its loaded scenes, as ordinary
+        // seconds the host sends the phase of every OnTimerPerformAction in its loaded scenes, as ordinary
         // world blobs (message 12): no new message, no protocol change. A guest takes one only when it is out of step.
         // Test-only mutation ORICOOP_MUTATE_TIMER_PHASE_ONCE: the host does not resend (the phase crosses only in the
         // first snapshot again, as before T-250).
@@ -813,7 +816,7 @@ namespace OriCoop
                 {
                     if (entry == null || entry.Id == null || entry.SaveObject == null) continue;
                     ISerializable save = entry.Save;
-                    if (!(save is OnTimerPerformAction) && !(save is TimedTrigger))
+                    if (!(save is OnTimerPerformAction))
                     {
                         // Census only: a timer-like save type this rule does not know (a shooter run by another class).
                         if (others != null && save != null && others.Count < 8)

@@ -2,9 +2,10 @@ using System;
 
 namespace OriCoop.World
 {
-    // T-250 (#338), the maintainer's choice B: the host's level timers set the pace. OnTimerPerformAction and
-    // TimedTrigger (the Ginso Tree puzzle shooters' "shootProjectile" sequences run off such timers) keep one float of
-    // phase in their Archive (4 bytes, WorldSync's AmbientPhase layout). Before this ticket that phase crossed only in
+    // T-250 (#338), the maintainer's choice B: the host's level timers set the pace. OnTimerPerformAction (the Ginso
+    // Tree puzzle shooters' "shootProjectile" sequences run off such timers) keeps one float of phase in its Archive
+    // (4 bytes, WorldSync's AmbientPhase layout). TimedTrigger has the same layout but is left out (#436): it is a
+    // one-shot delay, and writing the host's time into it fired its action on the guest at the wrong moment. Before this ticket that phase crossed only in
     // the first full world snapshot; a scene loaded later started its timers when it loaded on each PC, so the same
     // shooter fired at different moments on each PC. Now the host sends its timers' phase again every second or so
     // (existing world message 12, no protocol change) and a guest takes it when its own phase is off by more than
@@ -19,8 +20,20 @@ namespace OriCoop.World
         public static bool IsTimer(string typeName)
         {
             if (string.IsNullOrEmpty(typeName)) return false;
-            return Ends(typeName, "OnTimerPerformAction") || Ends(typeName, "TimedTrigger");
+            return Ends(typeName, "OnTimerPerformAction");
         }
+
+        // Guest, a timer blob that came outside a snapshot. Ordinary: the world blob path as for any object (the timer's
+        // first sighting, e.g. in a scene this PC has not loaded: #436, skipping it left the guest's digest without the
+        // object and forced a full resync). Skip: already known and not live here, nothing to keep in step. Judge: live
+        // here, TakeTimerPhase decides.
+        public static Route GuestRoute(bool live, bool bad, bool known)
+        {
+            if (live && !bad) return Route.Judge;
+            return known ? Route.Skip : Route.Ordinary;
+        }
+
+        public enum Route { Ordinary, Skip, Judge }
 
         static bool Ends(string full, string name)
         {
