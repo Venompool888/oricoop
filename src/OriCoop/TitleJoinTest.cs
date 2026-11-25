@@ -176,6 +176,7 @@ namespace OriCoop
                 if (Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_ROOM_EXIT") == "1")
                 {
                     yield return StartCoroutine(RoomExitChecks());
+                    if (m_role == "host") yield return StartCoroutine(TitleHostSlotExit());
                     Finish(); yield break;
                 }
                 if (Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_RECOVERY") == "1")

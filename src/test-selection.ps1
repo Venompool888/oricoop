@@ -107,6 +107,7 @@ $TS_FileSuites = [ordered]@{
     'MenuSoulFlameGuard' = @('net'); 'MenuSoulFlameTest' = @('net')   # T-179 skill tree B: net phase S4
     'TitleAnyKey'      = @('local', 'titlejoin'); 'TitleAnyKeyTest' = @('local')   # T-180 stuck key on press-any-key: run-test's title scenario
     'TitleRoomExitTest' = @('titlejoin-room-exit', 'titlejoin-steam-exit')
+    'TitleRoomOverlayExitTest' = @('titlejoin-room-exit', 'titlejoin-steam-exit')
     'ImeGuard'         = @('local')   # T-181 IME off: checked in run-test's lifecycle scenario
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local'); 'EscapeProbe' = @('local')   # T-169 run-test.ps1 -Scenarios escapeprobe
 }
