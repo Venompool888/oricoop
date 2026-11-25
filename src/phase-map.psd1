@@ -170,6 +170,7 @@
         @{ Switch = 'ORICOOP_MUTATE_STREAM_IN_STORY'; File = 'src\OriCoop\EnemySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 the host does not stream the partner's scenes during a story (KURO: 03 and 04 ran once, Ori back at the tree)
         @{ Switch = 'ORICOOP_MUTATE_GATE_FIRE_BUTTON'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 the gate's fire does not re-check the pickup key (SEIN: story starts when the partner arrives)
         @{ Switch = 'ORICOOP_MUTATE_GATE_NO_ADOPT'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a player standing in a waited-at area counts as present (SEIN: story starts when the partner arrives)
+        @{ Switch = 'ORICOOP_MUTATE_SMALL_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'R' }   # T-255 the self-revive hint draws as large as the native hint (R6)
         @{ Switch = 'ORICOOP_MUTATE_DIM_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'CUT' }   # T-255 the gate prompts draw their text at full alpha (GATE G1, ORICOOP_P3_GATE=1)
         @{ Switch = 'ORICOOP_MUTATE_STORY_ENDS_ON_GAP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running script with a takeover step ahead is not over (SEIN: a story announced as long as the script ran)
         @{ Switch = 'ORICOOP_MUTATE_SEQ_PROGRESS_SHARED'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running story script keeps its own step (SEIN with STORY_ENDS_ON_GAP: the host's Ori walks after the story)
