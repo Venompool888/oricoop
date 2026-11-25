@@ -402,6 +402,7 @@ namespace OriCoop
                     + ", takeover mask " + StorySync.TakeoverMaskPublic() + ", letterbox " + Letterbox.ShowLetterboxes);
                 h.Check(NetPlay.NotInGameplayReason() == null, "ESC3 " + Role + ": back in gameplay after the escape's end ("
                     + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ", story " + StorySync.StoryActive + ")");
+                yield return Barrier(h, 14);   // both PCs playable again before anyone is sent back (as in the Windows control)
             }
             finally
             {
