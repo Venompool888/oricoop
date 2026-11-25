@@ -29,6 +29,7 @@
     # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
+        'WorldSync.Bodies' = 'W,WO'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
@@ -160,6 +161,7 @@
         @{ Switch = 'ORICOOP_MUTATE_SWARM_DROP_FROZEN_OWN'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 review 4 the end of a session keeps a frozen simulator's pieces (E5k)
         @{ Switch = 'ORICOOP_NET_NO_FORWARD';        File = 'src\OriCoop\NetPlay.cs';        Suite = 'net-4p';    Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_WORLD_NO_REBROADCAST'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net-3p'; Phase = '' }   # T-141 3P guest world change
+        @{ Switch = 'ORICOOP_MUTATE_UNSYNCED_BODIES'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'WO' }
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_NO_TEAM'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net';   Phase = 'ESC' }   # T-169 one finisher brings the team
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_MASH_NEAREST'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net-3p'; Phase = '' }   # T-169 mash revive: a random teammate in the escape
         @{ Switch = 'ORICOOP_MUTATE_WORLD_WHOLE_BLOB'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net-3p'; Phase = '' }   # T-168 same-RTT world events (net W5, net-4p and net-3p-cs check it too)

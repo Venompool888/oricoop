@@ -165,6 +165,120 @@ namespace OriCoop
             if (mine != null && p != null && p.Id == id) s_pick = mine;
         }
 
+        static IEnumerator FloatingLog(TestHarness h, bool host)
+        {
+            const string scene = "moonGrottoDoubleJump";
+            Func<RigidbodySerialize, bool> isLog = s => s.name == "log" && s.transform.parent != null
+                && s.transform.parent.name == "floatingLogSetup";
+            if (host) yield return Load<RigidbodySerialize>(h, "WO11", scene, null, isLog);
+            yield return Barrier(h, 3100, 0, 0f, 0f);
+            if (!host) yield return Load<RigidbodySerialize>(h, "WO11", scene, null, isLog);
+            yield return Agree<RigidbodySerialize>(h, "WO11 floating log", 3101);
+            RigidbodySerialize saved = s_pick as RigidbodySerialize;
+            Rigidbody body = saved == null ? null : saved.GetComponent<Rigidbody>();
+            bool usable = body != null && saved.IsGuidInitialized() && saved.GetComponent<Collider>() != null
+                && saved.GetComponentInParent<PushPullBlock>() == null && saved.GetComponentInParent<Entity>() == null
+                && saved.SerializePosition && saved.SerializeVelocity && saved.SeriailzeIsKinematic;
+            yield return Barrier(h, 3107, usable ? 1 : 0, 0f, 0f);
+            bool ready = usable && Partner(3107) != null && Partner(3107).Id == 1;
+            h.Check(ready, "WO11 scene log is an ordinary saved rigidbody with position and velocity on both PCs");
+            if (!ready) yield break;
+            string key = "w:dynamic:body:" + Core.Scenes.Manager.GetSceneInformation(scene).SceneMoonGuid + ":" + saved.MoonGuid;
+            SpringJoint[] springs = Array.FindAll(saved.transform.parent.GetComponentsInChildren<SpringJoint>(), j => j.connectedBody == body);
+            float[] stiffness = Array.ConvertAll(springs, j => j.spring), damping = Array.ConvertAll(springs, j => j.damper);
+            bool gravity = body.useGravity; float drag = body.drag;
+            PlatformMovement movement = Own.PlatformBehaviour.PlatformMovement; bool suspended = movement.IsSuspended;
+            Vector3 initial = body.position, originalVelocity = body.velocity, originalAngular = body.angularVelocity;
+            Quaternion originalRotation = body.rotation; bool asleep = body.IsSleeping();
+            try
+            {
+                // The native log oscillates between two moving spring holders. Isolate the one-sided impulse
+                // so that a spring or a falling Ori cannot carry the other copy along independently.
+                foreach (SpringJoint j in springs) { j.spring = 0f; j.damper = 0f; }
+                body.useGravity = false; body.drag = 4f;
+                if (!body.isKinematic) { body.velocity = Vector3.zero; body.angularVelocity = Vector3.zero; }
+                movement.IsSuspended = true;
+                Place(initial + new Vector3(host ? 3.5f : 18f, 1.5f, 0f));
+                float until = Time.realtimeSinceStartup + 3f;
+                while (Authority.AuthoritySource.Current.OwnerOf(key) != 1 && Time.realtimeSinceStartup < until) yield return null;
+                int owner = Authority.AuthoritySource.Current.OwnerOf(key);
+                float before = body.position.y;
+                yield return Barrier(h, 3102, owner, before, 0f);
+                h.Note("WO11 floating log " + saved.MoonGuid + " owner=" + owner + " kinematic=" + body.isKinematic + " y=" + F(before));
+                yield return LogImpulse(h, body, before, host, 1f, 3103, "host");
+                h.Check(owner == 1 && Partner(3102) != null && Partner(3102).Id == 1, "WO11 both PCs observed the host's lease");
+                uint version = LogVersion(key);
+                float quietSince = Time.realtimeSinceStartup;
+                until = quietSince + 8f;
+                while (version > 0 && Time.realtimeSinceStartup - quietSince < 1.25f && Time.realtimeSinceStartup < until)
+                {
+                    yield return null;
+                    uint next = LogVersion(key);
+                    if (version != next || body.velocity.sqrMagnitude > 0.0004f || body.angularVelocity.sqrMagnitude > 0.0004f)
+                        quietSince = Time.realtimeSinceStartup;
+                    version = next;
+                }
+                bool settled = version > 0 && Time.realtimeSinceStartup - quietSince >= 1.25f;
+                yield return Barrier(h, 3108, (int)version, 0f, 0f);
+                yield return Wait(1.5f);
+                h.Check(settled && version == LogVersion(key) && Partner(3108) != null && Partner(3108).Id == (int)version,
+                    "WO11 a settled log publishes no new state during the idle window (v" + version + " to " + LogVersion(key) + ")");
+                if (!host) body.position += Vector3.down * 3f;
+                yield return Wait(3f);
+                float after = body.position.y;
+                yield return Barrier(h, 3104, (int)LogVersion(key), after, 0f);
+                Sample partner = Partner(3104);
+                h.Check(partner != null && Mathf.Abs(partner.A - after) < 0.45f && after > before + 1f,
+                    "WO11 the idle owner's pose corrects a displaced follower (here " + F(after) + ", peer " + (partner == null ? "missing" : F(partner.A)) + ")");
+                h.Check(version > 0 && LogVersion(key) == version && partner != null && partner.Id == (int)version,
+                    "WO11 follower correction reused the same owner state (v" + version + " to " + LogVersion(key) + ")");
+                Place(body.position + new Vector3(host ? 18f : 3.5f, 1.5f, 0f));
+                until = Time.realtimeSinceStartup + 6f;
+                while (Authority.AuthoritySource.Current.OwnerOf(key) != 2 && Time.realtimeSinceStartup < until) yield return null;
+                owner = Authority.AuthoritySource.Current.OwnerOf(key);
+                before = body.position.y;
+                yield return Barrier(h, 3105, owner, before, 0f);
+                h.Check(owner == 2 && Partner(3105) != null && Partner(3105).Id == 2, "WO11 the nearby guest takes over the log on both PCs");
+                yield return LogImpulse(h, body, before, !host, -1f, 3106, "guest");
+            }
+            finally
+            {
+                movement.IsSuspended = suspended;
+                if (body != null)
+                {
+                    body.position = initial; body.rotation = originalRotation; body.useGravity = gravity; body.drag = drag;
+                    if (!body.isKinematic) { body.velocity = originalVelocity; body.angularVelocity = originalAngular; }
+                    for (int i = 0; i < springs.Length; i++)
+                        if (springs[i] != null) { springs[i].spring = stiffness[i]; springs[i].damper = damping[i]; }
+                    if (asleep) body.Sleep();
+                }
+            }
+        }
+
+        static uint LogVersion(string key)
+        {
+            Authority.StateUpdate state = Authority.AuthoritySource.Current.LatestState(key);
+            return state == null ? 0u : state.Ver;
+        }
+
+        static IEnumerator LogImpulse(TestHarness h, Rigidbody body, float before, bool actor, float direction, int step, string role)
+        {
+            if (actor) body.AddForce(Vector3.up * (12f * direction), ForceMode.VelocityChange);
+            float peak = 0f, until = Time.realtimeSinceStartup + 2f;
+            while (Time.realtimeSinceStartup < until)
+            {
+                peak = Mathf.Max(peak, body.velocity.y * direction);
+                KeepAlive(); yield return null;
+            }
+            float after = body.position.y, velocity = body.velocity.y;
+            yield return Barrier(h, step, 0, after, velocity);
+            Sample partner = Partner(step);
+            h.Check((after - before) * direction > 1f, "WO11 one " + role + " impulse moves the floating log on this PC (delta " + F(after - before) + ")");
+            h.Check(peak > 1f, "WO11 the " + role + " impulse produces native body velocity on this PC (peak " + F(peak) + ")");
+            h.Check(partner != null && Mathf.Abs(partner.A - after) < 0.45f && Mathf.Abs(partner.B - velocity) < 0.6f,
+                "WO11 the resting log agrees in position and velocity after the " + role + " impulse (here " + F(after) + ", peer " + (partner == null ? "missing" : F(partner.A)) + ")");
+        }
+
         public static IEnumerator Run(TestHarness h)
         {
             s_partner.Clear(); Resyncs = 0; NetPlay.On(MsgBarrier, OnBarrier);
@@ -182,6 +296,8 @@ namespace OriCoop
             int resyncsBefore = WorldSync.DigestResyncs;
             try
             {
+                try { yield return FloatingLog(h, host); yield return Settle(h, "WO11"); }
+                finally { Place(home); }
                 for (int run = 0; run < 2; run++)
                 {
                     bool lag = run == 1; string L = lag ? "L" : "";
