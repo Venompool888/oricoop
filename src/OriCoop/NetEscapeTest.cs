@@ -384,9 +384,11 @@ namespace OriCoop
                 // Only after the team has met at the end (barrier 13 and the host's distance check): skipping before it, the
                 // guest's skip ran its OnFinish at once and the host's controller never held a skip in 30 s (PR #432 rounds
                 // 3-4). This order is the one Windows verified (both PCs found the skip, G screens 6/6).
+                // The wait ends once this PC's Ori is playable again, as in that control. Story sync may still say a story
+                // runs for 30 s and more after the skip (round 5); waiting on it too left the guest's G close check failing.
                 float skipFrom = Time.realtimeSinceStartup, skipUntil = skipFrom + 30f;
                 string endSkip = null;
-                while (Time.realtimeSinceStartup < skipUntil && !(NetPlay.NotInGameplayReason() == null && !StorySync.StoryActive))
+                while (Time.realtimeSinceStartup < skipUntil && !(endSkip != null && NetPlay.NotInGameplayReason() == null))
                 {
                     if (endSkip == null && (endSkip = EndSkip()) != null)
                     {
@@ -396,6 +398,8 @@ namespace OriCoop
                     yield return null;
                 }
                 if (endSkip == null) h.Note("ESC3 " + Role + ": no skip of the escape's end in " + F(Time.realtimeSinceStartup - skipFrom) + " s (" + SkipDebug() + ")");
+                else h.Note("ESC3 " + Role + ": playable " + F(Time.realtimeSinceStartup - skipFrom) + " s after the skip; story " + StorySync.StoryActive
+                    + ", takeover mask " + StorySync.TakeoverMaskPublic() + ", letterbox " + Letterbox.ShowLetterboxes);
                 h.Check(NetPlay.NotInGameplayReason() == null, "ESC3 " + Role + ": back in gameplay after the escape's end ("
                     + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ", story " + StorySync.StoryActive + ")");
             }

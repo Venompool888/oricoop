@@ -2835,8 +2835,13 @@ namespace OriCoop
                         CoopMenu.Close();
                         PauseMenuEntry.Release();
                         menu.HideMenuScreen(true);
-                        h.Check(!menu.MainMenuVisible && !ori.IsSuspended && !GameController.Instance.InputLocked,
-                            "G screens: closing the offline screens releases their suspends and input lock");
+                        bool released = !menu.MainMenuVisible && !ori.IsSuspended && !GameController.Instance.InputLocked;
+                        h.Check(released, "G screens: closing the offline screens releases their suspends and input lock");
+                        if (!released)   // #431 round 5: failed with no word on which part stayed
+                            h.Note("G screens close: menu visible=" + menu.MainMenuVisible + ", suspended=" + ori.IsSuspended
+                                + ", input locked=" + GameController.Instance.InputLocked + ", co-op menu open=" + CoopMenu.IsOpen
+                                + ", popup=" + SessionRules.PopupOpen + ", story=" + StorySync.StoryActive + ", takeover mask=" + StorySync.TakeoverMaskPublic()
+                                + ", letterbox=" + Letterbox.ShowLetterboxes + "; " + CoopMenu.GameplayDetail());
                     }
                     float failGoneBy = Time.realtimeSinceStartup + 1f;
                     while (P2Context.P2 != null && Time.realtimeSinceStartup < failGoneBy) yield return null;
