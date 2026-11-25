@@ -368,12 +368,22 @@ namespace OriCoop
                 yield return WaitFor(() => Sein.World.Events.WaterPurified, 6f);
                 h.Check(Sein.World.Events.WaterPurified, "ESC3 " + Role + ": the escape's end ran on this PC (WaterPurified)");
                 h.Check(TestHarness.RestoreCheckpointCalls == restores2, "ESC3 " + Role + ": getting through does not restart anything");
+                if (!host) yield return Wait(3f);
+                yield return Barrier(h, 13, Own.Position);
+                if (host)
+                {
+                    Vector3 guestAt = new Vector3(Of(13, 2).A, Of(13, 2).B, 0f);
+                    h.Check(Dist(Own.Position, guestAt) < 8f, "ESC3 host: brought to the end with the guest (" + F(Dist(Own.Position, guestAt))
+                        + " apart, host " + Own.Position + ", guest " + guestAt + ", fallbacks " + Revive.EscapeFallbacks + ")");
+                }
+                yield return Wait(1f);
                 // #431: the escape's end is kuroMoment's MasterTimelineSequence. It hides the Ori and was still playing 20 s
                 // later (story active) on both PCs; the phase then moved everyone away and both Oris stayed inactive, so F8
                 // refused to open in the G checks. A player sits through it or skips it: the test skips it the game's own
                 // way, only when the skip registered is that sequence's, so its OnFinish runs and hands the Ori back.
-                // The skip registers when the sequence gets there, later on the PC that did not reach the end trigger (the
-                // host's controller held no skip at all 5 s after WaterPurified, PR #432 round 3): skip as soon as it shows.
+                // Only after the team has met at the end (barrier 13 and the host's distance check): skipping before it, the
+                // guest's skip ran its OnFinish at once and the host's controller never held a skip in 30 s (PR #432 rounds
+                // 3-4). This order is the one Windows verified (both PCs found the skip, G screens 6/6).
                 float skipFrom = Time.realtimeSinceStartup, skipUntil = skipFrom + 30f;
                 string endSkip = null;
                 while (Time.realtimeSinceStartup < skipUntil && !(NetPlay.NotInGameplayReason() == null && !StorySync.StoryActive))
@@ -388,15 +398,6 @@ namespace OriCoop
                 if (endSkip == null) h.Note("ESC3 " + Role + ": no skip of the escape's end in " + F(Time.realtimeSinceStartup - skipFrom) + " s (" + SkipDebug() + ")");
                 h.Check(NetPlay.NotInGameplayReason() == null, "ESC3 " + Role + ": back in gameplay after the escape's end ("
                     + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ", story " + StorySync.StoryActive + ")");
-                if (!host) yield return Wait(3f);
-                yield return Barrier(h, 13, Own.Position);
-                if (host)
-                {
-                    Vector3 guestAt = new Vector3(Of(13, 2).A, Of(13, 2).B, 0f);
-                    h.Check(Dist(Own.Position, guestAt) < 8f, "ESC3 host: brought to the end with the guest (" + F(Dist(Own.Position, guestAt))
-                        + " apart, host " + Own.Position + ", guest " + guestAt + ", fallbacks " + Revive.EscapeFallbacks + ")");
-                }
-                yield return Wait(1f);
             }
             finally
             {
