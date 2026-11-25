@@ -2726,7 +2726,8 @@ namespace OriCoop
                 if (PhaseOn("WO") && Mark(h, "WO")) yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
                 if (PhaseOn("CAM") && Mark(h, "CAM")) yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
                 if (PhaseOn("CUT") && Mark(h, "CUT")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64); yield return Safely(h, "P3", NetCutsceneTest.Run(h)); }
-                if (PhaseOn("ESC") && Mark(h, "ESC")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 66); yield return Safely(h, "ESC", NetEscapeTest.Run(h)); yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 68); }   // escape rules (NetEscapeTest.cs, T-169)
+                if (PhaseOn("ESC") && Mark(h, "ESC")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 66); yield return Safely(h, "ESC", NetEscapeTest.Run(h)); yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 68);
+                    h.Check(NetPlay.NotInGameplayReason() == null, "ESC end: back in gameplay at the start spot (" + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ")"); }   // escape rules (NetEscapeTest.cs, T-169); #431
                 h.Note("=== phase END");
                 // With selected phases the last one is followed by G at once: the end that finished first left the
                 // session while the other still waited for that phase's last barrier (E5 alone: "E5L barrier 44").

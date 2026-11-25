@@ -328,6 +328,8 @@ namespace OriCoop
                 endR = Time.realtimeSinceStartup + 30f;
                 while ((Characters.Sein == null || !Characters.Sein.gameObject.activeInHierarchy || GameController.Instance.InputLocked) && Time.realtimeSinceStartup < endR) yield return null;
                 yield return Wait(3f);
+                h.Check(NetPlay.NotInGameplayReason() == null, "ESC4 " + Role + ": back in gameplay after the restart (#431; "
+                    + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ")");
                 h.Check(!Revive.AnyDowned, "ESC4 " + Role + ": nobody downed after the restart");
                 yield return Barrier(h, 9);
 
@@ -365,6 +367,11 @@ namespace OriCoop
                 yield return WaitFor(() => Sein.World.Events.WaterPurified, 6f);
                 h.Check(Sein.World.Events.WaterPurified, "ESC3 " + Role + ": the escape's end ran on this PC (WaterPurified)");
                 h.Check(TestHarness.RestoreCheckpointCalls == restores2, "ESC3 " + Role + ": getting through does not restart anything");
+                // #431: after this phase the guest's own Ori was still inactive in the G checks (F8 refused: "Sein inactive",
+                // state=Game, not loading). The escape's end may hide the Ori for its own sequence; it must be back in play.
+                yield return WaitFor(() => NetPlay.NotInGameplayReason() == null, 20f);
+                h.Check(NetPlay.NotInGameplayReason() == null, "ESC3 " + Role + ": back in gameplay after the escape's end ("
+                    + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ", story " + StorySync.StoryActive + ")");
                 if (!host) yield return Wait(3f);
                 yield return Barrier(h, 13, Own.Position);
                 if (host)
