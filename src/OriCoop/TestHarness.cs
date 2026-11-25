@@ -257,6 +257,7 @@ namespace OriCoop
             if (Want("bothdown")) yield return StartCoroutine(BothDown());
             if (Want("title")) yield return StartCoroutine(ReturnToTitle());
             if (Want("signpost")) yield return StartCoroutine(SignpostTest.Run(this));
+            if (Want("roomfailures")) yield return StartCoroutine(Rooms.RoomFailureTest.Run(this));
             if (Want("escapeprobe")) yield return StartCoroutine(EscapeProbe.Run(this));
             CheckScenariosRan(scenarioChecks0);
 

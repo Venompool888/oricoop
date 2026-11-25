@@ -992,6 +992,74 @@ static class RoomTests
         }
     }
 
+    static void SessionExpiredPasswordReply()
+    {
+        using (Fixture x = new Fixture())
+        using (ManualResetEvent started = new ManualResetEvent(false))
+        using (ManualResetEvent release = new ManualResetEvent(false))
+        {
+            bool wanted = true, prompted = false, completed = false;
+            x.Session.Password = delegate { prompted = true; };
+            x.Http.Expect("info", delegate
+            {
+                started.Set(); release.WaitOne(5000, false);
+                return Fields("ok", "0", "error", "bad_token").Encode();
+            });
+            x.Session.Call(delegate { return x.Client.Info(x.Auth); }, delegate { completed = true; }, delegate { return wanted; });
+            try { Check(started.WaitOne(5000, false), "info did not start"); wanted = false; }
+            finally { release.Set(); }
+            x.Drain();
+            Check(!prompted && !completed, "abandoned info opened a password page or completed");
+        }
+    }
+
+    static void FailedHostDownloadReleasesBeforeRetry()
+    {
+        using (Fixture x = new Fixture())
+        {
+            x.Session.Online = true;
+            x.Http.Reply("enter", "ok", "1", "mode", "host");
+            x.Http.Reply("download", "ok", "0", "error", "network");
+            x.Http.Reply("leave", "ok", "1");
+            x.Session.Enter("save");
+            x.PumpUntil(delegate { return x.Error != null; });
+            Check(x.Error == "network" && !x.Session.Active && !x.Session.Holder && x.Game.Hosted == -1,
+                "failed initial download still owns the room when retry becomes available");
+            x.Http.Done();
+            x.Host();
+            Check(x.Game.Hosted == 2, "retry did not acquire the room and host");
+            x.Http.Done();
+        }
+    }
+
+    static void ExpiredRebindDoesNotReplaceCurrentToken()
+    {
+        using (Fixture x = new Fixture())
+        using (ManualResetEvent started = new ManualResetEvent(false))
+        using (ManualResetEvent release = new ManualResetEvent(false))
+        {
+            bool wanted = true, completed = false;
+            x.Http.Reply("info", "ok", "0", "error", "bad_token");
+            x.Http.Reply("challenge", "ok", "1", "salt", new byte[8], "nonce", new byte[] { 1 });
+            x.Http.Expect("rebind", delegate
+            {
+                started.Set(); release.WaitOne(5000, false);
+                return Fields("ok", "1", "token", "stale").Encode();
+            });
+            x.Session.Password = delegate(Action<string> enter) { enter("4321"); };
+            x.Session.Call(delegate { return x.Client.Info(x.Auth); }, delegate { completed = true; }, delegate { return wanted; });
+            try
+            {
+                x.PumpUntil(delegate { return started.WaitOne(0, false); });
+                wanted = false; x.Store.SaveToken("room", "newer");
+            }
+            finally { release.Set(); }
+            x.Drain();
+            Check(!completed && x.Auth.Token == "token" && x.Store.LoadToken("room") == "newer",
+                "late password rebind overwrote the newer room token");
+        }
+    }
+
     static int failures;
     static void Run(string name, Action test)
     {
@@ -1043,6 +1111,9 @@ static class RoomTests
         Run("session queues uploads before leave", SessionQueuedUploadsBeforeLeave);
         Run("session upload conflict", SessionConflict);
         Run("session rebind", SessionRebind);
+        Run("abandoned info does not ask for a password", SessionExpiredPasswordReply);
+        Run("abandoned rebind preserves the newer token", ExpiredRebindDoesNotReplaceCurrentToken);
+        Run("failed initial download releases its lease before retry", FailedHostDownloadReleasesBeforeRetry);
         Run("session offline copy", SessionCopyOffline);
         return failures == 0 ? 0 : 1;
     }
