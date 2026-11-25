@@ -41,7 +41,6 @@ namespace OriCoop
 
         static void TickNameEdit()
         {
-            PollPads();
             if (!SameNameInput() || AnyPadPressed(B)) { EndNameEdit(false); return; }
             if (Input.GetKeyDown(KeyCode.F8)) { Close(); return; }
             if (AnyPadPressed(A)) EndNameEdit(true);

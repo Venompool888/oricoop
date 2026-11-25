@@ -228,10 +228,10 @@ namespace OriCoop
                 return;
             }
             if (!inGame && s_testPage == "") { Close(); return; }
-            if (EditingName) { TickNameEdit(); return; }
             s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
             PollPads();
 
+            if (EditingName) { TickNameEdit(); return; }
             if (s_waitFor != 0)
             {
                 for (int i = 0; i < 4; i++)
