@@ -59,7 +59,15 @@ namespace OriCoop
 
         public static void Init(ConfigFile cfg, string bepinexDir)
         {
-            s_level = cfg.Bind("Trace", "Level", 2, "Co-op trace file (BepInEx\\OriCoop-trace-*.log): 0 = off, 1 = events (state changes), 2 = + periodic samples, 3 = + verbose.");
+            s_level = cfg.Bind("Trace", "Level", 1, "Co-op trace file (BepInEx\\OriCoop-trace-*.log): 0 = off, 1 = events (state changes), 2 = + periodic samples, 3 = + verbose.");
+            // #423: the default was 2, and BepInEx keeps a default once written, so older configs still hold 2. Move a 2
+            // that predates this change to the new default once; a 2 set after that stays (debugging: set it back to 2).
+            ConfigEntry<bool> lowered = cfg.Bind("Trace", "DefaultLowered", false, "Internal: the old default Level 2 was moved to 1 once.");
+            if (!lowered.Value)
+            {
+                if (s_level.Value == 2) s_level.Value = 1;
+                lowered.Value = true;
+            }
             s_subLevels = cfg.Bind("Trace", "SubsystemLevels", "", "Per-subsystem override, e.g. \"phys=3,enemy=1,log=1\".");
             s_sampleFrames = cfg.Bind("Trace", "SampleFrames", 30, "Periodic samples (positions, physics objects) every this many frames.");
             s_maxMB = cfg.Bind("Trace", "MaxFileMB", 64, "Above this size only level-1 events are written; at twice this size the file stops.");
