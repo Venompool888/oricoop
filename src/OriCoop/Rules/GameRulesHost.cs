@@ -1,5 +1,4 @@
 using System.Collections.Generic;
-using System.Reflection;
 using Game;
 using HarmonyLib;
 using UnityEngine;
@@ -8,11 +7,6 @@ namespace OriCoop.Rules
 {
     internal sealed class GameRulesHost : IRulesHost
     {
-        static readonly FieldInfo Started = AccessTools.Field(typeof(SaveSync), "s_started");
-        static readonly FieldInfo Pending = AccessTools.Field(typeof(SaveSync), "s_pending");
-        static readonly FieldInfo Loading = AccessTools.Field(typeof(SaveSync), "s_loading");
-        static readonly FieldInfo Disabled = AccessTools.Field(typeof(SaveSync), "s_disabled");
-
         public int LocalSeat { get { return Players.LocalSeat; } }
         public int RemoteCount { get { return NetPlay.RemoteCount; } }
         public int PuppetCount { get { return Players.Remotes.Count; } }
@@ -55,11 +49,10 @@ namespace OriCoop.Rules
         public void SessionEnded() { NetHud.OnSessionEnded(); }
         public void Toast(string message) { NetHud.Toast(message); }
         public void PushCheckpoint() { SaveSync.PushCheckpointNow(); }
-        public bool SaveFieldsAvailable { get { return Started != null && Pending != null && Loading != null && Disabled != null; } }
-        public bool SaveStarted { get { return (bool)Started.GetValue(null); } }
-        public bool SavePending { get { return Pending.GetValue(null) != null; } }
-        public bool SaveLoading { get { return (bool)Loading.GetValue(null); } }
-        public bool SaveDisabled { get { return (bool)Disabled.GetValue(null); } }
+        public bool SaveStarted { get { return SaveSync.TransferStarted; } }
+        public bool SavePending { get { return SaveSync.HavePendingCheckpoint; } }
+        public bool SaveLoading { get { return SaveSync.TransferLoading; } }
+        public bool SaveDisabled { get { return SaveSync.TransferDisabled; } }
         public bool GuestWaiting { get { return GuestJoin.Waiting; } }
         public bool GuestNeedsSlot { get { return GuestJoin.NeedSlotChoice; } }
         public bool PrologueWatching { get { return SharedPrologue.Watching; } }

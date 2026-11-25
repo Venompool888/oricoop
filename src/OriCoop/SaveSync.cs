@@ -445,6 +445,9 @@ namespace OriCoop
         // game's own load-from-title action runs and its PerformLoad reads the host's checkpoint (TitleLoadPatch);
         // FinishLoading then places the guest beside the host exactly as after a teardown reload.
         public static bool HavePendingCheckpoint { get { return s_started && !s_loading && !s_disabled && s_checkpoints.HasPending; } }
+        internal static bool TransferStarted { get { return s_started; } }
+        internal static bool TransferLoading { get { return s_loading; } }
+        internal static bool TransferDisabled { get { return s_disabled; } }
 
         public static bool BeginTitleLoad()
         {
