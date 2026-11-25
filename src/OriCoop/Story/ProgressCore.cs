@@ -10,10 +10,12 @@ namespace OriCoop.Story
 
     internal sealed class ProgressSnapshot
     {
+        public uint Generation, Revision;
         public ulong Abilities;
         public int MaxHealth, Keys, Maps, Collected, Experience, Level, Points;
         public float MaxEnergy;
-        public void Write(BinaryWriter w)
+        public void Write(BinaryWriter w) { WriteState(w); w.Write(Generation); w.Write(Revision); }
+        void WriteState(BinaryWriter w)
         {
             w.Write(Abilities); w.Write(MaxHealth); w.Write(MaxEnergy); w.Write(Keys); w.Write(Maps);
             w.Write(Collected); w.Write(Experience); w.Write(Level); w.Write(Points);
@@ -23,30 +25,103 @@ namespace OriCoop.Story
             ProgressSnapshot s = new ProgressSnapshot();
             s.Abilities = r.ReadUInt64(); s.MaxHealth = r.ReadInt32(); s.MaxEnergy = r.ReadSingle();
             s.Keys = r.ReadInt32(); s.Maps = r.ReadInt32(); s.Collected = r.ReadInt32();
-            s.Experience = r.ReadInt32(); s.Level = r.ReadInt32(); s.Points = r.ReadInt32(); return s;
+            s.Experience = r.ReadInt32(); s.Level = r.ReadInt32(); s.Points = r.ReadInt32();
+            s.Generation = r.ReadUInt32(); s.Revision = r.ReadUInt32(); return s;
         }
         public ulong Hash()
         {
-            MemoryStream m = new MemoryStream(); BinaryWriter w = new BinaryWriter(m); Write(w); w.Flush();
+            MemoryStream m = new MemoryStream(); BinaryWriter w = new BinaryWriter(m); WriteState(w); w.Flush();
             ulong h = 14695981039346656037UL;
             foreach (byte b in m.ToArray()) { h ^= b; h = unchecked(h * 1099511628211UL); }
             return h;
         }
     }
+    internal sealed class CellClaim
+    {
+        public uint Sequence, Revision;
+        public ActionKind Kind;
+        public int Amount;
+        public float Maximum;
+    }
+
     internal sealed class ProgressInbox
     {
         public ProgressSnapshot Snapshot;
         public float ReceivedAt = -1f;
-        public void Receive(bool host, ProgressSnapshot snapshot, float now)
+        readonly List<CellClaim> claims = new List<CellClaim>();
+
+        readonly Dictionary<int, uint> retired = new Dictionary<int, uint>();
+        int authority;
+        uint generation, revision, applied;
+        public bool HasClaims { get { return claims.Count != 0; } }
+
+        public void Reset()
         {
-            if (host) return;
-            Snapshot = snapshot;
+            retired.Clear(); authority = 0; ClearGeneration();
+        }
+        void ClearGeneration()
+        {
+            GuestLoaded(); claims.Clear(); generation = revision = 0;
+        }
+        // A new Hello represents a new reliable connection, which can restart its generations at one.
+        public void SeatJoined(int seat) { retired.Remove(seat); }
+        public bool ObserveHost(int host)
+        {
+            if (authority == host) return false;
+            bool changed = authority != 0;
+            if (changed && generation != 0) retired[authority] = generation;
+            authority = host; ClearGeneration(); return changed;
+        }
+        bool AcceptGeneration(int host, int sender, uint incoming)
+        {
+            ObserveHost(host);
+            uint previous;
+            if (host <= 0 || sender != host || incoming == 0 || incoming < generation
+                || (retired.TryGetValue(host, out previous) && incoming <= previous)) return false;
+            if (incoming != generation)
+            {
+                // The first reply can follow a collection made before the join snapshot arrived.
+                if (generation != 0) ClearGeneration();
+                generation = incoming;
+            }
+            return true;
+        }
+        public void Receive(int host, int sender, ProgressSnapshot snapshot, float now)
+        {
+            if (!AcceptGeneration(host, sender, snapshot.Generation) || snapshot.Revision <= revision) return;
+            revision = snapshot.Revision; Snapshot = snapshot;
             if (ReceivedAt < 0) ReceivedAt = now;
+        }
+        public void Register(uint sequence, ActionKind kind, int amount)
+        {
+            claims.Add(new CellClaim { Sequence = sequence, Kind = kind, Amount = amount });
+        }
+        public void ReceiveResult(int host, int sender, CellResult result)
+        {
+            if (!AcceptGeneration(host, sender, result.Generation)) return;
+            int index = claims.FindIndex(c => c.Sequence == result.Sequence && c.Kind == result.Kind);
+            if (index < 0) return;
+            if (result.Accepted)
+            {
+                claims[index].Maximum = result.Maximum; claims[index].Revision = result.Revision;
+            }
+            else claims.RemoveAt(index);
+        }
+        public CellClaim TakeCell(float maxHealth, float maxEnergy)
+        {
+            if (applied == 0) return null;
+            int index = claims.FindIndex(c => c.Maximum > 0f && applied >= c.Revision
+                && c.Maximum <= (c.Kind == ActionKind.MaxHealth ? maxHealth : maxEnergy));
+            if (index < 0) return null;
+            CellClaim claim = claims[index]; claims.RemoveAt(index); return claim;
         }
         public ProgressSnapshot Take()
         {
-            ProgressSnapshot snapshot = Snapshot; Snapshot = null; ReceivedAt = -1f; return snapshot;
+            ProgressSnapshot snapshot = Snapshot;
+            if (snapshot != null) applied = snapshot.Revision;
+            Snapshot = null; ReceivedAt = -1f; return snapshot;
         }
+        public void GuestLoaded() { Snapshot = null; ReceivedAt = -1f; applied = 0; }
     }
     internal sealed class ProgressAction
     {
@@ -135,15 +210,15 @@ namespace OriCoop.Story
     internal sealed class CellResult
     {
         public const byte Message = 24;
-        public uint Sequence;
+        public uint Sequence, Generation, Revision;
         public ActionKind Kind;
         public bool Accepted;
         public float Maximum;
         public static bool IsCell(ActionKind kind) { return kind == ActionKind.MaxHealth || kind == ActionKind.MaxEnergy; }
-        public void Write(BinaryWriter w) { w.Write(Sequence); w.Write((byte)Kind); w.Write(Accepted); w.Write(Maximum); }
+        public void Write(BinaryWriter w) { w.Write(Sequence); w.Write((byte)Kind); w.Write(Accepted); w.Write(Maximum); w.Write(Generation); w.Write(Revision); }
         public static CellResult Read(BinaryReader r)
         {
-            CellResult cell = new CellResult { Sequence = r.ReadUInt32(), Kind = (ActionKind)r.ReadByte(), Accepted = r.ReadBoolean(), Maximum = r.ReadSingle() };
+            CellResult cell = new CellResult { Sequence = r.ReadUInt32(), Kind = (ActionKind)r.ReadByte(), Accepted = r.ReadBoolean(), Maximum = r.ReadSingle(), Generation = r.ReadUInt32(), Revision = r.ReadUInt32() };
             if (!IsCell(cell.Kind) || float.IsNaN(cell.Maximum) || float.IsInfinity(cell.Maximum) || (cell.Accepted && cell.Maximum <= 0f))
                 throw new InvalidDataException("invalid cell result");
             return cell;
@@ -179,6 +254,16 @@ namespace OriCoop.Story
             actions.RemoveWhere(delegate(ulong key) { return (int)(key >> 32) == seat; });
             // Shared progress may still settle. A new connection in this seat must not receive its predecessor's reward.
             foreach (ProgressAction action in pending) if (action.SenderSeat == seat) action.SenderSeat = 0;
+        }
+        // A queued cell was collected in the world that just rolled back. Other action types retain their FIFO order.
+        public void DiscardQueuedCells()
+        {
+            int count = pending.Count;
+            for (int i = 0; i < count; i++)
+            {
+                ProgressAction action = pending.Dequeue();
+                if (!CellResult.IsCell(action.Kind)) pending.Enqueue(action);
+            }
         }
         public void Reset() { actions.Clear(); collected.Clear(); pending.Clear(); }
     }

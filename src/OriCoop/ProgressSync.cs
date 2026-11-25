@@ -19,7 +19,7 @@ namespace OriCoop
         static readonly ProgressQueue<MoonGuid> s_pending = new ProgressQueue<MoonGuid>();
         static readonly ProgressInbox s_inbox = new ProgressInbox();
         static readonly OwnSkillTree s_ownTree = new OwnSkillTree();
-        static uint s_sequence;
+        static uint s_sequence, s_hostGeneration = 1, s_snapshotRevision;
         static ulong s_sentHash;
         static bool s_sent, s_applying;
         static int s_energyDoorDepth;
@@ -40,8 +40,6 @@ namespace OriCoop
         // A progress snapshot changes everyone's capacity. Only the host's result for this exact request grants a refill.
         static readonly bool s_mutateCellRefillsHost = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_CELL_REFILLS_HOST") == "1";
         static readonly bool s_mutateRewardLoser = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_CELL_REWARD_LOSER") == "1";
-        sealed class CellClaim { public uint Sequence; public ActionKind Kind; public int Amount; public float Maximum; }
-        static readonly List<CellClaim> s_cellClaims = new List<CellClaim>();
         public static int CellRefills;
         public static int UnmarkedPickups { get { return s_unmarked.Count; } }
         internal static int SnapshotGuestLoad;
@@ -103,7 +101,7 @@ namespace OriCoop
             });
             Services.Net.SessionStarted += Reset; Services.Net.SessionEnded += Reset;
             Services.Net.PlayerLeft += delegate(int seat) { s_pending.SeatLeft(seat); };       // T-143
-            Services.Net.PlayerJoined += delegate(int seat) { s_pending.SeatJoined(seat); };
+            Services.Net.PlayerJoined += delegate(int seat) { s_pending.SeatJoined(seat); s_inbox.SeatJoined(seat); };
             // SharedProgress's proximity postfix bypasses trigger callbacks. Disable that local-coop
             // shortcut online, where touching a puppet must never collect on behalf of its owner.
             Type t = typeof(SharedProgress).GetNestedType("PickupPatch", BindingFlags.NonPublic);
@@ -112,8 +110,8 @@ namespace OriCoop
         static bool LocalPickupShortcut() { return !Services.Net.Enabled; }
         static void Reset()
         {
-            s_pending.Reset(); s_inbox.Take(); s_ownTree.Clear(); s_unmarked.Clear();
-            s_cellClaims.Clear();
+            s_pending.Reset(); s_inbox.Reset(); s_ownTree.Clear(); s_unmarked.Clear();
+            s_hostGeneration = 1; s_snapshotRevision = 0;
             s_sequence = 0; s_sent = false; s_next = 0; ActionsApplied = ActionsRejected = SnapshotGuestLoad = 0;
             s_loggedMissingTree = false;
             SavedPickupCopies.SceneChanged();
@@ -190,12 +188,22 @@ namespace OriCoop
             return -1;
         }
         public static ulong Hash() { return Ready ? Capture().Hash() : 0; }
+        internal static void ObserveAuthority(int host)
+        {
+            if (s_inbox.ObserveHost(host)) AdvanceHostGeneration();
+        }
+        static void AdvanceHostGeneration()
+        {
+            s_hostGeneration++; s_snapshotRevision = 0; s_sent = false;
+            s_pending.DiscardQueuedCells();
+        }
         public static void Tick()
         {
             // Snapshots (abilities, health/energy, inventory, level) only need both progress states present; they
             // no longer wait for NetPlay.LocalInGameplay(). A relay run left it false after a half-run scene story
             // and the guest never got the host's WallJump=false (CUT reset). The host's pickup-action queue still
             // needs a live local player.
+            if (Services.Net.Connected) ObserveAuthority(Authority.NetRoute.HostSeat);
             ReportStall();
             if (!Services.Net.Connected || !Ready) return;
             SavedPickupCopies.HideLoaded();
@@ -208,7 +216,7 @@ namespace OriCoop
             {
                 if (s_ownTree.Held && s_tree == 0) return;
                 if (s_inbox.Snapshot != null) { Apply(s_inbox.Take()); SnapshotGuestLoad = SaveSync.GuestLoads; }
-                if (s_cellClaims.Count != 0 && Services.Session.LocalInGameplay) FinishCellClaims();
+                if (s_inbox.HasClaims && Services.Session.LocalInGameplay) FinishCellClaims();
                 if (!s_ownTree.Held) SeatSkillSync.Report();
             }
             if (Services.Net.IsHost && Services.Session.LocalInGameplay)
@@ -249,7 +257,8 @@ namespace OriCoop
         public static void SendSnapshot(int seat = 0)
         {
             if (!Services.Net.IsHost || !Services.Net.Connected || !Ready || !Services.Session.Ready) return;
-            ProgressSnapshot s = Capture();
+            ObserveAuthority(Authority.NetRoute.HostSeat);
+            ProgressSnapshot s = Capture(); s.Generation = s_hostGeneration; s.Revision = ++s_snapshotRevision;
             if (seat == 0)
             { Services.Net.Send(MsgProgress, true, s.Write); s_sentHash = s.Hash(); s_sent = true; }
             else Services.Net.SendTo(seat, MsgProgress, true, s.Write);
@@ -281,7 +290,10 @@ namespace OriCoop
         }
         static void ReceiveProgress(BinaryReader r)
         {
-            ProgressSnapshot s = ProgressSnapshot.Read(r); s_inbox.Receive(Services.Net.IsHost, s, Time.realtimeSinceStartup);
+            int host = Authority.NetRoute.HostSeat;
+            ObserveAuthority(host);
+            if (!Services.Net.IsHost && Services.Net.Sender == host)
+                s_inbox.Receive(host, Services.Net.Sender, ProgressSnapshot.Read(r), Time.realtimeSinceStartup);
         }
         static void Apply(ProgressSnapshot s)
         {
@@ -314,7 +326,7 @@ namespace OriCoop
             return changed;
         }
 
-        internal static void GuestLoaded() { s_inbox.Take(); }
+        internal static void GuestLoaded() { s_inbox.GuestLoaded(); }
 
         // T-043: both host and guest roll back to their own recorded tree. T-142's live hold is for unrecorded seats.
         public static void HoldOwnSkillTree(bool joined)
@@ -377,12 +389,16 @@ namespace OriCoop
             if (m.gameObject.activeInHierarchy && m.NavigationManager != null && m.NavigationManager.CurrentMenuItem != null) m.UpdateRequirementsText();
         }
 
-        static uint SendAction(ActionKind kind, MoonGuid guid, int amount, int extra, PickupBase at = null)
+        static void SendAction(ActionKind kind, MoonGuid guid, int amount, int extra, PickupBase at = null)
         {
             ProgressAction a = at != null ? Located(at) : new ProgressAction();
             a.Sequence = ++s_sequence; a.Kind = kind; a.Guid = (guid ?? MoonGuid.Empty).ToByteArray(); a.Amount = amount; a.Extra = extra;
+            if (CellResult.IsCell(kind) && !s_mutateCellRefillsHost)
+            {
+                ObserveAuthority(Authority.NetRoute.HostSeat);
+                s_inbox.Register(a.Sequence, kind, amount);
+            }
             Services.Net.Send(MsgAction, true, a.Write);
-            return a.Sequence;
         }
         // T-214: where this pickup is on this PC (scene and spot). Every copy of a prefab carries the same GUID.
         internal static ProgressAction Located(PickupBase p)
@@ -445,33 +461,29 @@ namespace OriCoop
         static void SendCellResult(ProgressAction a, bool accepted)
         {
             if (!CellResult.IsCell(a.Kind) || a.SenderSeat == 0 || s_mutateCellRefillsHost) return;
-            CellResult result = new CellResult { Sequence = a.Sequence, Kind = a.Kind, Accepted = accepted };
+            CellResult result = new CellResult { Sequence = a.Sequence, Kind = a.Kind, Accepted = accepted, Generation = s_hostGeneration, Revision = s_snapshotRevision };
             if (accepted) result.Maximum = a.Kind == ActionKind.MaxHealth ? Own.Mortality.Health.MaxHealth : Own.Energy.Max;
             Services.Net.SendTo(a.SenderSeat, CellResult.Message, true, result.Write);
         }
 
         static void ReceiveCellResult(BinaryReader r)
         {
-            if (Services.Net.IsHost || Services.Net.Sender != Authority.NetRoute.HostSeat) return;
-            CellResult result = CellResult.Read(r);
-            int i = s_cellClaims.FindIndex(c => c.Sequence == result.Sequence && c.Kind == result.Kind);
-            if (i < 0) return;
-            if (result.Accepted) s_cellClaims[i].Maximum = result.Maximum;
-            else s_cellClaims.RemoveAt(i);
+            int host = Authority.NetRoute.HostSeat;
+            ObserveAuthority(host);
+            if (!Services.Net.IsHost && Services.Net.Sender == host)
+                s_inbox.ReceiveResult(host, Services.Net.Sender, CellResult.Read(r));
         }
 
         static void FinishCellClaims()
         {
             SeinCharacter own = Own;
-            for (int i = 0; i < s_cellClaims.Count;)
+            SeinPickupProcessor collector = PickupCollector(own);
+            if (collector == null) return;
+            CellClaim claim;
+            while ((claim = s_inbox.TakeCell(own.Mortality.Health.MaxHealth, own.Energy.Max)) != null)
             {
-                CellClaim claim = s_cellClaims[i];
                 bool health = claim.Kind == ActionKind.MaxHealth;
-                float maximum = health ? own.Mortality.Health.MaxHealth : own.Energy.Max;
-                if (claim.Maximum <= 0f || maximum < claim.Maximum) { i++; continue; }
-                SeinPickupProcessor collector = PickupCollector(own);
-                if (collector == null) return;
-                s_cellClaims.RemoveAt(i); CellRefills++;
+                CellRefills++;
                 if (health) own.Mortality.Health.RestoreAllHealth();
                 else
                 {
@@ -617,9 +629,7 @@ namespace OriCoop
                 ActionKind kind = Kind(p);
                 FieldInfo amount = p.GetType().GetField("Amount"); int n = amount == null ? 1 : (int)amount.GetValue(p);
                 ExpOrbPickup orb = p as ExpOrbPickup;
-                uint sequence = SendAction(kind, guid, n, orb == null ? 0 : (int)orb.MessageType, p);
-                if (CellResult.IsCell(kind) && !s_mutateCellRefillsHost)
-                    s_cellClaims.Add(new CellClaim { Sequence = sequence, Kind = kind, Amount = n });
+                SendAction(kind, guid, n, orb == null ? 0 : (int)orb.MessageType, p);
                 if (kind == ActionKind.MarkOnly) return true; // current health/energy belong to the collecting player
                 p.Collected(); return false;
             }
@@ -743,6 +753,14 @@ namespace OriCoop
         static class PreserveLocalInputLocks
         {
             static bool Prefix() { return !Services.Net.Enabled || !StoryHost.Current.WorldApplying; }
+        }
+        [HarmonyPatch(typeof(RestoreCheckpointController), "RestoreCheckpoint")]
+        static class HostCheckpointRestore
+        {
+            static void Prefix()
+            {
+                if (Services.Net.Connected && Services.Net.IsHost) AdvanceHostGeneration();
+            }
         }
         [HarmonyPatch(typeof(GameController), "RestoreCheckpoint")]
         static class ResetPickupLedger
