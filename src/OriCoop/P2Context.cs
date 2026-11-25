@@ -136,7 +136,10 @@ namespace OriCoop
 
         public static void PatchTouchTypes(Harmony h)
         {
-            MethodInfo prefix = typeof(P2Context).GetMethod("TouchPrefix", BindingFlags.Static | BindingFlags.NonPublic);
+            // One typed prefix per argument type: an `object[] __args` prefix made Harmony allocate an array on
+            // every OnTrigger*/OnCollision* call of every game type, every physics step, in single player too.
+            MethodInfo colliderPrefix = typeof(P2Context).GetMethod("TouchPrefixCollider", BindingFlags.Static | BindingFlags.NonPublic);
+            MethodInfo collisionPrefix = typeof(P2Context).GetMethod("TouchPrefixCollision", BindingFlags.Static | BindingFlags.NonPublic);
             MethodInfo fin = typeof(P2Context).GetMethod("Finalizer", BindingFlags.Static | BindingFlags.NonPublic);
             Assembly game = typeof(SeinCharacter).Assembly;
             Type[] all;
@@ -152,6 +155,7 @@ namespace OriCoop
                     if (m == null || m.IsAbstract || m.IsGenericMethodDefinition || s_touchPatched.Contains(m)) continue;
                     ParameterInfo[] ps = m.GetParameters();
                     if (ps.Length != 1 || (ps[0].ParameterType != typeof(Collider) && ps[0].ParameterType != typeof(Collision))) continue;
+                    MethodInfo prefix = ps[0].ParameterType == typeof(Collider) ? colliderPrefix : collisionPrefix;
                     try { HarmonyMethod guard = new HarmonyMethod(prefix); guard.priority = Priority.First; h.Patch(m, guard, null, null, new HarmonyMethod(fin), null); s_touchPatched.Add(m); n++; }
                     catch (Exception e) { Plugin.Log.LogWarning("touch patch " + t.Name + "." + name + " failed: " + e.Message); }
                 }
@@ -178,18 +182,20 @@ namespace OriCoop
             return false;
         }
 
-        static bool TouchPrefix(object __instance, object[] __args)
+        static bool TouchPrefixCollider(object __instance, Collider __0) { return Touch(__instance as Component, __0); }
+        static bool TouchPrefixCollision(object __instance, Collision __0) { return Touch(__instance as Component, __0 != null ? __0.collider : null); }
+
+        static bool Touch(Component self, Component other)
         {
             Puppet puppet = null;
-            if (__args != null && __args.Length == 1)
+            // Most touches are not by a puppet (none at all in single player): ask that first, so the
+            // self-is-an-Ori hierarchy walks below only run when a puppet really is the toucher.
+            Puppet touched = Players.Of(other);
+            if (touched != null)
             {
-                Component self = __instance as Component;
-                Component other = __args[0] as Collider;
-                if (other == null) { Collision col = __args[0] as Collision; if (col != null) other = col.collider; }
                 // Not for the Oris' own components: P1's sensors touching P2 must stay P1's.
                 bool selfIsOri = self != null && ((P1 != null && self.transform.IsChildOf(P1.transform)) || BelongsToP2(self));
-                Puppet touched = Players.Of(other);
-                bool puppetTouch = !selfIsOri && touched != null && touched.Sein.gameObject.activeInHierarchy;
+                bool puppetTouch = !selfIsOri && touched.Sein.gameObject.activeInHierarchy;
                 // Enter/exit zones (the guide stone's text, T-024) count every Ori, puppets included (P2Extras zones):
                 // skipping them here meant a partner standing there alone showed nothing on this screen.
                 if (puppetTouch && NetPlay.Enabled && !MovementTouch(self) && !EnemySync.ProjectileTouch(self) && !(self is SeinEnterExitTrigger))
@@ -250,10 +256,13 @@ namespace OriCoop
         static void ProxPrefix(object __instance)
         {
             Component c = __instance as Component;
-            Puppet p = !Inside && c != null && Players.OfInstance(c.GetInstanceID()) == null ? Players.NearestPuppet(c.transform.position) : null;
             // Online doors and proximity story triggers see only the local owner. Enemy targeting is
             // deliberately left as phase 1 behavior until phase 3 supplies enemy ownership.
-            if (NetPlay.Enabled && !(c is Entity) && !(c is EntityController)) p = null;
+            // Runs per object per Update/FixedUpdate: decide that (and "no puppets at all") before any lookup.
+            Puppet p = null;
+            if (!Inside && c != null && Players.Remotes.Count != 0 && (!NetPlay.Enabled || c is Entity || c is EntityController)
+                && Players.OfInstance(c.GetInstanceID()) == null)
+                p = Players.NearestPuppet(c.transform.position);
             s_entered.Push(p != null);
             if (p != null) Enter(p);
         }
