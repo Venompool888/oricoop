@@ -557,7 +557,7 @@ static class SteamTests
     // id on channel 0 and accepts the host's session, as a guest's SteamTransport does.
     private sealed class RawLink : IDatagramTransport
     {
-        public static readonly EndPoint Host = new IPEndPoint(IPAddress.Parse("10.255.254.2"), 1);
+        public static readonly EndPoint Host = new IPEndPoint(IPAddress.Parse("192.0.2.2"), 1);
         private readonly FakeSteamApi steam;
         private readonly ulong host;
         public RawLink(FakeSteamApi steam, ulong host)
