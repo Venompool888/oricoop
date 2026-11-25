@@ -372,11 +372,20 @@ namespace OriCoop
                 // later (story active) on both PCs; the phase then moved everyone away and both Oris stayed inactive, so F8
                 // refused to open in the G checks. A player sits through it or skips it: the test skips it the game's own
                 // way, only when the skip registered is that sequence's, so its OnFinish runs and hands the Ori back.
-                yield return WaitFor(() => EndSkip() != null, 5f);
-                string endSkip = EndSkip();
-                h.Note("ESC3 " + Role + ": escape end skip: " + (endSkip ?? "not the escape's end (" + SkipDebug() + ")"));
-                if (endSkip != null) SkipCutsceneController.Instance.SkipCutscene();
-                yield return WaitFor(() => NetPlay.NotInGameplayReason() == null && !StorySync.StoryActive, 20f);
+                // The skip registers when the sequence gets there, later on the PC that did not reach the end trigger (the
+                // host's controller held no skip at all 5 s after WaterPurified, PR #432 round 3): skip as soon as it shows.
+                float skipFrom = Time.realtimeSinceStartup, skipUntil = skipFrom + 30f;
+                string endSkip = null;
+                while (Time.realtimeSinceStartup < skipUntil && !(NetPlay.NotInGameplayReason() == null && !StorySync.StoryActive))
+                {
+                    if (endSkip == null && (endSkip = EndSkip()) != null)
+                    {
+                        h.Note("ESC3 " + Role + ": escape end skip after " + F(Time.realtimeSinceStartup - skipFrom) + " s: " + endSkip);
+                        SkipCutsceneController.Instance.SkipCutscene();
+                    }
+                    yield return null;
+                }
+                if (endSkip == null) h.Note("ESC3 " + Role + ": no skip of the escape's end in " + F(Time.realtimeSinceStartup - skipFrom) + " s (" + SkipDebug() + ")");
                 h.Check(NetPlay.NotInGameplayReason() == null, "ESC3 " + Role + ": back in gameplay after the escape's end ("
                     + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ", story " + StorySync.StoryActive + ")");
                 if (!host) yield return Wait(3f);
