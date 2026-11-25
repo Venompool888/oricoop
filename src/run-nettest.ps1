@@ -20,8 +20,8 @@ if (-not $PSBoundParameters.ContainsKey('LateJoinSec') -and $Clients -ge 3) { $L
 . (Join-Path $PSScriptRoot 'test-launch.ps1')   # copy lock, quiet launch, owner watchdog (docs\testing-rules.md)
 if ($SaveHandover) {
     if (-not $CServer -or $Clients -ne 3 -or $LocalPlayers) { throw '-SaveHandover requires -CServer -Clients 3.' }
-    $localServerExe = if ($env:ORICOOP_LOCAL_CSERVER_EXE) { $env:ORICOOP_LOCAL_CSERVER_EXE } else { Join-Path $TL_Root 'src\CServer\CServer.exe' }
-    if (-not (Test-Path -LiteralPath $localServerExe -PathType Leaf)) { throw 'Set ORICOOP_LOCAL_CSERVER_EXE to the local C-server test executable.' }
+    . (Join-Path $PSScriptRoot 'test-servers\LocalCServer.ps1')
+    $localServerExe = Get-LocalCServerExecutable -Kind Server -Path $env:ORICOOP_LOCAL_CSERVER_EXE
     $script:ExtraEnv['ORICOOP_TEST_SAVE_HANDOVER'] = '1'
     $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
 } elseif ($CServer) {

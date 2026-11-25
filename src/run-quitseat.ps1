@@ -1,11 +1,8 @@
 # Close a real game while it owns the fourth seat of a disposable local C-server room.
 param([string]$Observer = $env:ORICOOP_QUIT_OBSERVER, [int]$TimeoutSec = 175)
 $ErrorActionPreference = 'Stop'
-if (-not $Observer) { $Observer = Join-Path $PSScriptRoot 'CServer\CServerTest.exe' }
-if (-not (Test-Path -LiteralPath $Observer -PathType Leaf)) {
-    throw 'Build the local C-server test executable with build-cserver.ps1 and pass its path with -Observer.'
-}
-$observerExe = (Resolve-Path -LiteralPath $Observer).Path
+. (Join-Path $PSScriptRoot 'test-servers\LocalCServer.ps1')
+$observerExe = Get-LocalCServerExecutable -Kind Test -Path $Observer
 $dir = Join-Path ([IO.Path]::GetTempPath()) ('oricoop-quitseat-' + [Guid]::NewGuid().ToString('N'))
 $null = New-Item -ItemType Directory -Path $dir
 $room = Join-Path $dir 'room.txt'

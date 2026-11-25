@@ -135,6 +135,7 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -eq 'src\phase-map.psd1' -or $p -eq 'src\test-selection.ps1') { return @{ Suites = $TS_AllSuites; Why = 'the test selection itself: everything' } }
     if ($p -like 'docs\*' -or $p -like '*.md') { return @{ Suites = @(); Why = 'docs' } }
     if ($p -like 'src\Tests\*') { return @{ Suites = @(); Why = 'unit tests only' } }
+    if ($p -eq 'src\test-servers\LocalCServer.ps1') { return @{ Suites = @('net-save-handover', 'quitseat'); Why = 'local C-server fixtures' } }
     if ($p -like 'src\test-servers\*') { return @{ Suites = @('net-3p-cs', 'titlejoin-cs', 'rooms'); Why = 'remote test server tooling' } }
     if ($p -like 'src\RoomServer\*') { return @{ Suites = @('rooms'); Why = 'room server' } }
     if ($p -like 'src\CServer\*') { return @{ Suites = @('net', 'net-3p-cs', 'rooms'); Why = 'C-server (net-3p-cs runs it; My rooms plays on it, T-159)' } }

@@ -84,6 +84,8 @@ namespace OriCoop
 
             SeinCharacter sein = Characters.Sein;
             bool inGame = sein != null && sein.gameObject.activeInHierarchy && GameController.Instance != null && !GameController.Instance.InputLocked;
+            // The guest's native input stays locked until its first checkpoint arrives in this handover test.
+            if (NetSaveHandoverTest.Enabled && m_slotChosen && NetPlay.LocalInGameplay()) inGame = true;
 
             if (m_inGameT < 0f)
             {
