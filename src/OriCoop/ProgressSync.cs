@@ -33,7 +33,7 @@ namespace OriCoop
         public static int ActionsApplied, ActionsRejected;
         // T-214: pickups a guest collected that this host could not find (scene not loaded, or a copy the save registry
         // does not have). Each is marked collected as soon as it is live here, and the host's own touch gives nothing.
-        sealed class Unmarked { public MoonGuid Id, Scene; public bool HasSpot; public Vector2 Spot; }
+        sealed class Unmarked { public MoonGuid Id, Scene; public bool HasSpot, Registered; public Vector2 Spot; }
         static readonly List<Unmarked> s_unmarked = new List<Unmarked>();
         static float s_unmarkedAt;
         public static int LateMarks, HostRetakesBlocked;
@@ -117,6 +117,7 @@ namespace OriCoop
             s_refillHealthUntil = s_refillEnergyUntil = -1f;
             s_sequence = 0; s_sent = false; s_next = 0; ActionsApplied = ActionsRejected = SnapshotGuestLoad = 0;
             s_loggedMissingTree = false;
+            SavedPickupCopies.SceneChanged();
             s_loggedCollector = 0; s_collectorWarningAt = 0; s_ignoredActions = 0; s_ignoredLogAt = 0;
             SkillPurchaseForwardingEnabled = true;
         }
@@ -198,6 +199,7 @@ namespace OriCoop
             // needs a live local player.
             ReportStall();
             if (!Services.Net.Connected || !Ready) return;
+            SavedPickupCopies.HideLoaded();
             EnsureSkillTree(Own);
             if (!s_mutateNoSeatSkills && Services.Net.IsHost && SeatSkillSync.HostRestorePending
                 && !SaveSync.HostAdopting && !GameController.Instance.IsLoadingGame)
@@ -235,7 +237,7 @@ namespace OriCoop
                 for (int i = s_unmarked.Count - 1; i >= 0; i--)
                 {
                     Unmarked u = s_unmarked[i];
-                    if (!WorldSync.MarkCollected(u.Id, u.Scene, u.HasSpot, u.Spot, active)) continue;
+                    if (!WorldSync.MarkCollected(u.Id, u.Scene, u.HasSpot, u.Spot, active, u.Registered)) continue;
                     s_unmarked.RemoveAt(i); LateMarks++;
                     Services.Log.Info("net: pickup " + u.Id + " a partner collected earlier is loaded here now: marked collected");
                 }
@@ -326,11 +328,12 @@ namespace OriCoop
         // T-043: both host and guest roll back to their own recorded tree. T-142's live hold is for unrecorded seats.
         public static void HoldOwnSkillTree(bool joined)
         {
-            if (Services.Net.IsHost || s_ownTree.Held) return;
+            if (Services.Net.IsHost) return;
             ulong bits = 0;
-            SkillRecord record = SeatSkillSync.ForLoadingCheckpoint();
+            SkillRecord record = SaveSync.LoadingCheckpointSkills;
             bool recorded = !s_mutateNoSeatSkills && record != null && record.TryGet(CoopSaves.PlayerId, out bits);
-            bool liveReady = Ready;
+            if (!recorded && s_ownTree.Held) return;
+            bool liveReady = !recorded && Ready;
             if (!recorded && !liveReady)
             {
                 // T-214: a first join from the title has no Ori yet and, without a record of this player, nothing to
@@ -347,7 +350,7 @@ namespace OriCoop
             }
             ulong hold;
             if (!SkillRestore.GuestHold(recorded, bits, joined, liveReady ? OwnedBits(Own) : 0, out hold)) return;
-            s_ownTree.Hold(hold);
+            s_ownTree.Hold(hold, recorded);
             if (recorded) SeatSkillSync.Restores++;
             Services.Log.Info("net: holding " + (recorded ? "recorded" : "live") + " skill tree across checkpoint (abilities " + hold.ToString("X") + ")");
         }
@@ -393,7 +396,8 @@ namespace OriCoop
         static ProgressAction Located(PickupBase p)
         {
             Vector3 at = p.transform.position;
-            return new ProgressAction { Scene = WorldSync.SceneOf(p).ToByteArray(), HasSpot = true, X = at.x, Y = at.y };
+            MoonGuid scene = WorldSync.SceneOf(p);
+            return new ProgressAction { Scene = scene.ToByteArray(), Registered = ValidGuid(scene) && ValidGuid(p.MoonGuid) && ReferenceEquals(WorldSync.Find(scene, p.MoonGuid), p), HasSpot = true, X = at.x, Y = at.y };
         }
         static void ReceiveAction(BinaryReader r)
         {
@@ -411,7 +415,7 @@ namespace OriCoop
         {
             SeinCharacter p = Own; MoonGuid guid = GameStoryHost.ReadGuid(a.Guid);
             bool pickup = a.Kind <= ActionKind.MarkOnly;
-            if (pickup && ValidGuid(guid) && !s_pending.RecordPickup(guid, a.Place))
+            if (pickup && ValidGuid(guid) && (SavedPickupCopies.Contains(guid, a) || !s_pending.RecordPickup(guid, a.Place)))
             { ActionsRejected++; Services.Log.Info("net: duplicate pickup ignored " + guid); return; }
             s_applying = true;
             try
@@ -449,8 +453,10 @@ namespace OriCoop
         static void MarkCollected(ProgressAction a, MoonGuid guid)
         {
             if (PickupPlace.MutateGuidOnly) { StoryHost.Current.MarkCollected(guid); return; }
-            Unmarked u = new Unmarked { Id = guid, Scene = GameStoryHost.ReadGuid(a.Scene ?? new byte[16]), HasSpot = a.HasSpot, Spot = new Vector2(a.X, a.Y) };
-            if (WorldSync.MarkCollected(u.Id, u.Scene, u.HasSpot, u.Spot)) return;
+            Unmarked u = new Unmarked { Id = guid, Scene = GameStoryHost.ReadGuid(a.Scene ?? new byte[16]), HasSpot = a.HasSpot, Registered = a.Registered, Spot = new Vector2(a.X, a.Y) };
+            bool marked = WorldSync.MarkCollected(u.Id, u.Scene, u.HasSpot, u.Spot, null, a.Registered || SavedPickupCopies.MutateAlias);
+            if (a.Kind != ActionKind.MarkOnly && (!a.Registered || !marked)) SavedPickupCopies.Remember(guid, a);
+            if (marked) return;
             // Only what gives a reward can be taken twice; orbs of current health / energy are each player's own.
             if (a.Kind == ActionKind.MarkOnly) return;
             s_unmarked.Add(u);
@@ -543,7 +549,13 @@ namespace OriCoop
                     if (!ValidGuid(guid)) return true;
                     if (PickupPlace.MutateGuidOnly) { s_pending.RecordPickup(guid); return true; }
                     if (s_applying) return true;   // a guest's action collecting the real copy here (ApplyPickup); already in the ledger
-                    if (s_pending.RecordPickup(guid, Located(p).Place) || Kind(p) == ActionKind.MarkOnly) return true;
+                    ProgressAction location = Located(p);
+                    if (Kind(p) == ActionKind.MarkOnly) return true;
+                    if (!SavedPickupCopies.Contains(guid, location) && s_pending.RecordPickup(guid, location.Place))
+                    {
+                        if (!location.Registered) SavedPickupCopies.Remember(guid, location);
+                        return true;
+                    }
                     // T-214: a partner collected this very pickup and its reward was given then; it could not be marked
                     // here at that time. No second reward: it just goes.
                     p.IsCollected = true; p.gameObject.SetActive(false); HostRetakesBlocked++;
@@ -551,6 +563,10 @@ namespace OriCoop
                     return false;
                 }
                 if (!Services.Session.Ready) return false;
+                if (ValidGuid(guid) && SavedPickupCopies.Contains(guid, Located(p)))
+                {
+                    p.IsCollected = true; p.gameObject.SetActive(false); return false;
+                }
                 ActionKind kind = Kind(p);
                 FieldInfo amount = p.GetType().GetField("Amount"); int n = amount == null ? 1 : (int)amount.GetValue(p);
                 ExpOrbPickup orb = p as ExpOrbPickup;
@@ -684,7 +700,7 @@ namespace OriCoop
         [HarmonyPatch(typeof(GameController), "RestoreCheckpoint")]
         static class ResetPickupLedger
         {
-            static void Postfix() { s_pending.ClearPickups(); s_unmarked.Clear(); s_sent = false; }
+            static void Postfix() { s_pending.ClearPickups(); s_unmarked.Clear(); SavedPickupCopies.SceneChanged(); s_sent = false; }
         }
     }
 }

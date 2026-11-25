@@ -1,5 +1,6 @@
 using System.IO;
 using OriCoop.Saves;
+using OriCoop.Story;
 
 partial class SaveTests
 {
@@ -15,7 +16,7 @@ partial class SaveTests
         GuestCheckpoints saves = new GuestCheckpoints(guest, () => true, (position, bytes) => {
             Check(position.HasPosition && position.X == bytes[0], "position does not belong to its save");
             return bytes;
-        });
+        }, () => null);
         SendCheckpoint(host, 2, 11); room.Pump();
         Check(saves.Begin()[0] == 11, "first restore did not start");
         SendCheckpoint(host, 2, 22); room.Pump();
@@ -36,12 +37,36 @@ partial class SaveTests
         Check(saves.Begin()[0] == 55 && !saves.LoadingWipe, "older pending save won before loading began");
     }
 
+    static void CheckpointSkillsDuringLoad()
+    {
+        FakeNetwork room = new FakeNetwork();
+        FakeBus host = room.Add(1), guest = room.Add(2), nextHost = room.Add(3);
+        SkillRecord roomRecord = new SkillRecord(), first = new SkillRecord(), middle = new SkillRecord(), last = new SkillRecord();
+        GuestCheckpoints saves = new GuestCheckpoints(guest, () => true, (p, bytes) => bytes, () => roomRecord);
+        saves.ExpectSkills(1, first);
+        SendCheckpoint(host, 2, 11); room.Pump(); saves.Begin();
+        saves.ExpectSkills(1, middle);
+        SendCheckpoint(host, 2, 22); room.Pump();
+        saves.ExpectSkills(1, last);
+        SendCheckpoint(host, 2, 33); room.Pump();
+        Check(saves.LoadingSkills == first, "later skill records changed the active restore");
+        saves.Finish();
+        Check(saves.Begin()[0] == 33 && saves.LoadingSkills == last, "latest restore used another checkpoint's record");
+        saves.Finish();
+
+        saves.ExpectSkills(1, middle);
+        guest.Leave(1); room.Host = 3; guest.HostSeat = 3;
+        saves.ExpectSkills(1, first);
+        SendCheckpoint(nextHost, 2, 44); room.Pump(); saves.Begin();
+        Check(saves.LoadingSkills == roomRecord, "a former host's loose record leaked into the new host's save");
+    }
+
     static void CheckpointHostAndSession()
     {
         FakeNetwork room = new FakeNetwork();
         FakeBus oldHost = room.Add(1), guest = room.Add(2), newHost = room.Add(3);
         bool inSession = true;
-        GuestCheckpoints saves = new GuestCheckpoints(guest, () => inSession, (p, bytes) => bytes);
+        GuestCheckpoints saves = new GuestCheckpoints(guest, () => inSession, (p, bytes) => bytes, () => null);
         SendCheckpoint(oldHost, 2, 11); room.Pump(); saves.Begin();
         saves.ExpectWipe();
         SendCheckpoint(oldHost, 2, 22); room.Pump();

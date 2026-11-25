@@ -54,7 +54,7 @@ namespace OriCoop
         public static void Init()
         {
             SavesHost.Current = new GameSavesHost();
-            s_checkpoints = new GuestCheckpoints(Services.Net, () => s_started && !s_disabled, ReceiveCheckpoint);
+            s_checkpoints = new GuestCheckpoints(Services.Net, () => s_started && !s_disabled, ReceiveCheckpoint, SeatSkillSync.ForRoomSave);
             Services.Net.On(SaveWire.SaveOffer, ReceiveOffer);
             Services.Net.On(SaveWire.LoadedMessage, delegate(BinaryReader r)
             {
@@ -426,6 +426,9 @@ namespace OriCoop
             if (s_joined && !Services.Net.IsHost) s_checkpoints.ExpectWipe();
         }
 
+        internal static void ExpectCheckpointSkills(Story.SkillRecord record) { s_checkpoints.ExpectSkills(Services.Net.Sender, record); }
+        internal static Story.SkillRecord LoadingCheckpointSkills { get { return s_checkpoints.LoadingSkills; } }
+
         static byte[] ReceiveCheckpoint(SavePosition position, byte[] bytes)
         {
             s_hostCheckpointBytes = SeatSkillSync.ForLoad(bytes, "checkpoint transfer");
@@ -446,8 +449,8 @@ namespace OriCoop
         public static bool BeginTitleLoad()
         {
             if (!HavePendingCheckpoint) return false;
-            SavesHost.Current.HoldOwnSkillTree(s_joined);
             s_titleLoadBytes = s_checkpoints.Begin();
+            SavesHost.Current.HoldOwnSkillTree(s_joined);
             s_loading = true;
             s_restartFinished = s_restoreFinished = false;
             s_joinStartedAt = Services.Clock.RealTime;
