@@ -55,6 +55,48 @@ static class TimerPhaseTests
         return guest;
     }
 
+    // A repeating TimedTrigger as the #443 probe showed it: counts up to Duration, fires, then stays Paused while its
+    // projectile lives (ProjectileSpawner.WaitForProjectileToBeDestroyed), the projectile's life a little different per PC.
+    sealed class Shooter
+    {
+        public float Phase, Duration, Alive, PausedFor;
+        public readonly List<float> FiredAt = new List<float>();
+        public bool Paused { get { return PausedFor > 0f; } }
+        public void Step(float dt, float now)
+        {
+            if (PausedFor > 0f) { PausedFor -= dt; return; }
+            Phase += dt;
+            if (Phase >= Duration) { Phase = 0f; FiredAt.Add(now); PausedFor = Alive; }
+        }
+    }
+
+    // The host sends only a running trigger; the guest judges only while its own runs (WorldSync's rule).
+    static void RunShooter(float duration, float hostAlive, float guestAlive, float offset, float latency, float seconds,
+        out Shooter host, out Shooter guest, out int taken, bool resend = true)
+    {
+        const float dt = 1f / 60f;
+        host = new Shooter { Duration = duration, Alive = hostAlive };
+        guest = new Shooter { Duration = duration, Alive = guestAlive };
+        for (float t = 0f; t < offset; t += dt) host.Step(dt, -1f);   // the guest loaded the scene offset s later
+        host.FiredAt.Clear();
+        TimerPhaseSchedule schedule = new TimerPhaseSchedule(250u);
+        List<InFlight> wire = new List<InFlight>(); taken = 0;
+        int frames = (int)(seconds * 60f);
+        for (int frame = 0; frame < frames; frame++)
+        {
+            float now = frame * dt;
+            host.Step(dt, now); guest.Step(dt, now);
+            if (resend && schedule.Due(now) && TimerPhase.Keeps(true, host.Paused)) wire.Add(new InFlight { Arrive = now + latency, Value = host.Phase });
+            for (int i = wire.Count - 1; i >= 0; i--)
+            {
+                if (wire[i].Arrive > now) continue;
+                if (TimerPhase.Keeps(true, guest.Paused)
+                    && TimerPhase.Judge(guest.Phase, wire[i].Value, duration) == TimerPhase.Verdict.Take) { guest.Phase = wire[i].Value; taken++; }
+                wire.RemoveAt(i);
+            }
+        }
+    }
+
     // How far apart the two timers fire (seconds, the shorter way round the period).
     static float Apart(Timer host, Timer guest)
     {
@@ -78,6 +120,54 @@ static class TimerPhaseTests
             Check(!TimerPhase.IsTimer("TimedTrigger") && !TimerPhase.IsTimer("Game.TimedTrigger"), "TimedTrigger is not resent");
             Check(!TimerPhase.IsTimer("SinMovement") && !TimerPhase.IsTimer("LaserPulsator") && !TimerPhase.IsTimer(null)
                 && !TimerPhase.IsTimer("NotOnTimerPerformActionX"), "not timers");
+        });
+        run("#443: a repeating TimedTrigger is a level timer while it runs; a one-shot or paused one is not", delegate {
+            Check(TimerPhase.IsTimedTrigger("TimedTrigger") && TimerPhase.IsTimedTrigger("Game.TimedTrigger"), "TimedTrigger type");
+            Check(!TimerPhase.IsTimedTrigger("OnTimerPerformAction") && !TimerPhase.IsTimedTrigger(null)
+                && !TimerPhase.IsTimedTrigger("TimedTriggerX"), "not TimedTrigger");
+            Check(TimerPhase.MayBeTimer("OnTimerPerformAction") && TimerPhase.MayBeTimer("TimedTrigger")
+                && !TimerPhase.MayBeTimer("ProjectileSpawner") && !TimerPhase.MayBeTimer("TimedDoor"), "may be a timer");
+            Check(TimerPhase.Keeps(true, false), "repeating, running: kept");
+            Check(!TimerPhase.Keeps(true, true), "repeating, paused: left");
+            Check(!TimerPhase.Keeps(false, false) && !TimerPhase.Keeps(false, true), "one-shot: left (#436)");
+        });
+        run("#443: with the period known, a float near the period counts as near the restart too", delegate {
+            Check(TimerPhase.Judge(2.9f, 1.0f, 3f) == TimerPhase.Verdict.NearRestart, "guest about to fire (counting up)");
+            Check(TimerPhase.Judge(1.0f, 2.95f, 3f) == TimerPhase.Verdict.NearRestart, "host just reset (counting down)");
+            Check(TimerPhase.Judge(2.9f, 1.0f, 0f) == TimerPhase.Verdict.Take, "period unknown: as before");
+            Check(TimerPhase.Judge(1.0f, 2.0f, 3f) == TimerPhase.Verdict.Take, "1 s apart, mid period");
+            Check(TimerPhase.Judge(1.0f, 1.1f, 3f) == TimerPhase.Verdict.InStep, "in step");
+            Check(TimerPhase.Judge(1.0f, 2.0f, float.NaN) == TimerPhase.Verdict.Take, "NaN period ignored");
+        });
+        foreach (float offset in new float[] { 0.8f, 1.5f, 2.2f })
+        foreach (float jitter in new float[] { 0f, 0.15f })
+        {
+            float off = offset, jit = jitter;
+            run("#443: a Ginso shooter (Duration 3, paused while its projectile lives) " + off + " s behind, projectile life +"
+                + jit + " s on the guest, fires with the host's", delegate {
+                Shooter host, guest; int taken;
+                RunShooter(3f, 1.4f, 1.4f + jit, off, 0.08f, 60f, out host, out guest, out taken);
+                float worst = 0f;
+                foreach (float t in host.FiredAt)
+                {
+                    if (t < 30f || t > 55f) continue;
+                    float nearest = float.MaxValue;
+                    foreach (float g in guest.FiredAt) nearest = Math.Min(nearest, Math.Abs(g - t));
+                    worst = Math.Max(worst, nearest);
+                }
+                Check(worst <= TimerPhase.Tolerance + jit + 0.1f, "guest fires up to " + worst + " s from the host's after 30 s, taken " + taken);
+                Check(taken >= 1, "never taken");
+                float gap = float.MaxValue;
+                for (int i = 1; i < guest.FiredAt.Count; i++) if (guest.FiredAt[i - 1] >= 5f) gap = Math.Min(gap, guest.FiredAt[i] - guest.FiredAt[i - 1]);
+                Check(gap >= 3f + 1.4f - TimerPhase.Tolerance - 0.1f, "guest fired twice within " + gap + " s");
+            });
+        }
+        run("#443: without the resend the same shooter stays out of step", delegate {
+            Shooter host, guest; int taken;
+            RunShooter(3f, 1.4f, 1.4f, 1.5f, 0.08f, 60f, out host, out guest, out taken, false);
+            float t = host.FiredAt[host.FiredAt.Count - 1], nearest = float.MaxValue;
+            foreach (float g in guest.FiredAt) nearest = Math.Min(nearest, Math.Abs(g - t));
+            Check(nearest > 1f, "in step without a resend: " + nearest);
         });
         run("#436: a guest keeps a timer it has not seen yet (unloaded scene), so the digests still agree", delegate {
             Check(TimerPhase.GuestRoute(false, false, false) == TimerPhase.Route.Ordinary, "unloaded, first sighting: ordinary path");
