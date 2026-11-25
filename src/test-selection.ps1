@@ -15,6 +15,8 @@ $TS_Suites = [ordered]@{
     'net-newgame' = @('run-nettest.ps1', '-GuestNewGame')
     'net-lp2'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '2')
     'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
+    'net-stones'   = @('run-pushblocks.ps1')
+    'net-stones-cs' = @('run-pushblocks.ps1', '-CServer')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
     'titlejoin-steam' = @('run-titlejoin.ps1', '-Transport', 'steam')
@@ -65,6 +67,10 @@ $TS_ModuleSuites = @{
 $TS_SteamFiles = @('SteamTransport', 'SteamApi', 'RealSteamApi', 'FakeSteamApi', 'SteamInviteHook', 'NetPlay', 'JoinErrorText')   # NetPlay: PumpSteam / OpenSteam drive the Steam session
 # Harness / test files -> the suite that runs them (checked before the module table).
 $TS_FileSuites = [ordered]@{
+    'NetPhysTest' = @('net', 'net-stones', 'net-stones-cs')
+    'PushBlockSync' = @('net', 'net-3p', 'net-3p-cs', 'net-stones', 'net-stones-cs')
+    'NetCoPushReportTest' = @('net-stones'); 'NetPhysDepartedHolderTest' = @('net-stones'); 'CoPushReport' = @('net-stones')
+    'NetPhysTest.SoloRejoin' = @('net-stones-cs'); 'StoneSeed' = @('net-stones-cs')
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
@@ -142,6 +148,7 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -match '^src\\(run-[\w-]+\.ps1)$') {
         $own = $Matches[1]
         $s = @($TS_Suites.Keys | Where-Object { $TS_Suites[$_][0] -eq $own })
+        if ($own -eq 'run-nettest.ps1') { $s += @('net-stones', 'net-stones-cs') }
         if ($s.Count) { return @{ Suites = $s; Why = 'its own script (every suite that runs it)' } }
     }
     if ($p -like 'src\assets\*') { return @{ Suites = @('local'); Why = 'assets' } }

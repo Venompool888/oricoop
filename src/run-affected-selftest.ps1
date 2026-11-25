@@ -57,6 +57,8 @@ foreach ($x in $ph) { '[   1.00] === phase ' + $x; '[   1.00] PASS ' + $x + ' ok
 '[   2.00] === phase END'; '[   6.00] RESULT PASS 2/2'; 'NETTEST PASS'
 '@)
 
+Set-Content (Join-Path $fake 'run-pushblocks.ps1') ($common + [Environment]::NewLine + "'[   1.00] RESULT PASS 1/1'; 'NETTEST PASS'")
+
 function Invoke-Fake([hashtable]$vars, [string[]]$files) {
     Remove-Item (Join-Path $fake 'calls') -Recurse -Force -ErrorAction SilentlyContinue
     $flaky = Join-Path $fake 'flaky.tsv'; Remove-Item $flaky -ErrorAction SilentlyContinue

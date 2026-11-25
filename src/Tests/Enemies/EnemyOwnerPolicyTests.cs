@@ -12,7 +12,7 @@ namespace OriCoop.Authority
 static class EnemyOwnerPolicyTests
 {
     // Use the real arbitration and client protocol: a fake grant cannot reveal lease churn.
-    sealed class LeaseRig
+    internal sealed class LeaseRig
     {
         public double Now;
         public readonly Arbiter Arbiter = new Arbiter("enemies", new ArbiterOptions(), 0);
@@ -32,7 +32,7 @@ static class EnemyOwnerPolicyTests
                 Deliver(Arbiter.JoinAt(seat, (ulong)seat, "seat" + seat, Now));
             }
         }
-        void Deliver(List<Outgoing> output)
+        internal void Deliver(List<Outgoing> output)
         {
             foreach (Outgoing message in output)
                 for (int seat = 1; seat <= 2; seat++)

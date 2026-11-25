@@ -9,7 +9,7 @@ using OriCoop.Authority;
 namespace OriCoop
 {
     // Online pushable-stone phase P. Both PCs observe their own game; numbered barriers use message 72.
-    public static class NetPhysTest
+    public static partial class NetPhysTest
     {
         const byte MsgBarrier = 72;
         static readonly Dictionary<int, Sample> s_localSteps = new Dictionary<int, Sample>();
@@ -27,7 +27,7 @@ namespace OriCoop
             public float Extra;   // one scenario-defined number (PH: share of frames on ground)
         }
 
-        static SeinCharacter Own { get { return P2Context.P1; } }
+        static SeinCharacter Own { get { return P2Context.P1 != null ? P2Context.P1 : Game.Characters.Sein; } }
         static SeinCharacter Puppet { get { return P2Context.P2; } }
         static string F(float value) { return value.ToString("F2"); }
         static string V(Vector3 value) { return "(" + F(value.x) + "," + F(value.y) + ")"; }
@@ -637,40 +637,57 @@ namespace OriCoop
             Note(h, "PE end", block);
         }
 
-        // Keep both players' input and the authority connection live. Only this stone's publications pause.
+        static string s_gapStone;
+        static int s_gapPackets;
+
+        [HarmonyLib.HarmonyPatch(typeof(DynamicLease), "Receive")]
+        static class PauseGuestStoneStates
+        {
+            static bool Prepare() { return TestHarness.Enabled; }
+            static bool Prefix(StateUpdate state)
+            {
+                if (state.Key != s_gapStone || s_gapStone == null) return true;
+                s_gapPackets++;
+                return false;
+            }
+        }
+
+        // Pause delivery to the helper only. The arbiter must still hear the owner's active states.
         static IEnumerator OwnerStateGap(TestHarness h, PushPullBlock block, bool host)
         {
             PushBlockSync.St stone = PushBlockSync.StateOf(block);
             DynamicLease lease = stone.Lease;
             uint epoch = lease.Epoch;
-            if (host)
-            {
-                h.Check(lease.Owns && lease.Active, "PI the first pusher owns the moving stone");
-                stone.SentAt = float.PositiveInfinity;
-                try { yield return Wait(1.15f); }
-                finally { stone.SentAt = -10f; }
-            }
+            if (host) h.Check(lease.Owns && lease.Active, "PI the first pusher owns the moving stone");
             else
             {
-                bool heldDuringGap = false, predicted = false, resumed = false;
-                float lastGapPacket = 0f, until = Time.realtimeSinceStartup + 4f;
-                while (Time.realtimeSinceStartup < until && !resumed)
+                bool heldDuringGap = false, predicted = false;
+                float lastPacket = lease.ReceivedAt;
+                s_gapStone = stone.Key;
+                s_gapPackets = 0;
+                try
                 {
-                    KeepAlive();
-                    float now = Time.realtimeSinceStartup;
-                    if (heldDuringGap && lease.ReceivedAt > lastGapPacket) resumed = true;
-                    if (lease.Epoch == epoch && lease.StateEpoch == epoch && !lease.Owns && lease.RemoteActive
-                        && now < stone.InteractionUntil && now - lease.ReceivedAt > 0.3f)
+                    float until = Time.realtimeSinceStartup + 0.7f;
+                    while (Time.realtimeSinceStartup < until)
                     {
-                        heldDuringGap = true;
-                        lastGapPacket = lease.ReceivedAt;
-                        predicted |= stone.Simulation.Predicting || !block.GetComponent<Rigidbody>().isKinematic;
+                        KeepAlive();
+                        float now = Time.realtimeSinceStartup;
+                        if (lease.Epoch == epoch && lease.StateEpoch == epoch && !lease.Owns && lease.RemoteActive
+                            && now < stone.InteractionUntil && now - lastPacket > 0.3f)
+                        {
+                            heldDuringGap = true;
+                            predicted |= stone.Simulation.Predicting || !block.GetComponent<Rigidbody>().isKinematic;
+                        }
+                        yield return null;
                     }
-                    yield return null;
                 }
-                h.Check(heldDuringGap, "PI the guest kept pushing during the owner's state gap");
+                finally { s_gapStone = null; }
+                h.Check(heldDuringGap && s_gapPackets > 0, "PI the guest kept pushing during the owner's state gap");
                 h.Check(!predicted, "PI the helper follows throughout the gap without starting a local simulation");
-                h.Check(resumed, "PI fresh owner states resume on the same stone");
+                float resumeBy = Time.realtimeSinceStartup + 3f;
+                while (lease.ReceivedAt <= lastPacket && Time.realtimeSinceStartup < resumeBy)
+                { KeepAlive(); yield return null; }
+                h.Check(lease.Epoch == epoch && lease.ReceivedAt > lastPacket, "PI fresh owner states resume on the same stone");
             }
             yield return Barrier(h, 273, block);
             Bot(false);
@@ -833,8 +850,20 @@ namespace OriCoop
                     else if (scenario == "PE") yield return PushSameStone(h, block, resting, restingRot, host);
                     else if (scenario == "PI") yield return PushSameStone(h, block, resting, restingRot, host, true);
                     else if (scenario == "PF") yield return Handover(h, block, resting, restingRot, host);
+                    else if (scenario == "PK")
+                    {
+                        yield return SoloRejoin(h, scene, block, resting, host);
+                        // The guest's native checkpoint restore replaced its original stone instance.
+                        block = FindBlock(scene, true);
+                    }
                     else if (scenario == "PG") yield return DownedHolder(h, block, resting, restingRot, host);
-                    else h.Check(false, "P co-op scenario '" + scenario + "' exists (PH, PE, PF, PG)");
+                    else if (scenario == "PR") yield return PushReports(h, block, resting, restingRot, host);
+                    else if (scenario == "PJ")
+                    {
+                        yield return DepartedHolder(h, block, resting, restingRot, host);
+                        if (block == null) block = FindBlock(scene, true);
+                    }
+                    else h.Check(false, "Unknown P co-op scenario '" + scenario + "'");
                 }
                 yield return CoopReset(h, 290, block, resting, restingRot, host);
             }

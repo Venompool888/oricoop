@@ -101,6 +101,11 @@ $Mutations = @(
     @{ Name = 'MUTATE_STONE_DROP_HELPER (PE)'; Env = @{ ORICOOP_MUTATE_STONE_DROP_HELPER = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PE ' }   # T-197
     @{ Name = 'MUTATE_STONE_STALE_STATE (PF)'; Env = @{ ORICOOP_MUTATE_STONE_STALE_STATE = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PF (push \d|a session reset)' }   # T-197
     @{ Name = 'MUTATE_STONE_KEEP_DOWNED_GRAB (PG)'; Env = @{ ORICOOP_MUTATE_STONE_KEEP_DOWNED_GRAB = '1'; ORICOOP_PHASES = 'P' }; Script = @('run-nettest.ps1'); Expect = '^PG (a downed player|the downed partner)' }   # T-197
+    @{ Name = 'MUTATE_STONE_EXPIRE_OWNER_PUSH'; Env = @{ ORICOOP_MUTATE_STONE_EXPIRE_OWNER_PUSH = '1' }; Script = @('run-pushblocks.ps1', '-Scenario', 'PI'); Expect = '^PI the helper follows throughout' }
+    @{ Name = 'MUTATE_COPUSH_DEVICE_POSE'; Env = @{ ORICOOP_MUTATE_COPUSH_DEVICE_POSE = '1' }; Script = @('run-pushblocks.ps1', '-Scenario', 'PR'); Expect = "^PR (the remote stone records|the secondary puppet re-grabs)" }
+    @{ Name = 'MUTATE_COPUSH_ARRIVAL_ORDER'; Env = @{ ORICOOP_MUTATE_COPUSH_ARRIVAL_ORDER = '1' }; Script = @('run-pushblocks.ps1', '-Scenario', 'PR'); Expect = '^PR a delayed push after a stop' }
+    @{ Name = 'MUTATE_STONE_KEEP_DEPARTED_GRIP'; Env = @{ ORICOOP_MUTATE_STONE_KEEP_DEPARTED_GRIP = '1' }; Script = @('run-pushblocks.ps1', '-Scenario', 'PJ'); Expect = '^PJ stone returns to resting friction' }
+    @{ Name = 'MUTATE_STONE_RESEED_UNPUBLISHED'; Env = @{ ORICOOP_MUTATE_STONE_RESEED_UNPUBLISHED = '1' }; Script = @('run-pushblocks.ps1', '-CServer', '-Scenario', 'PK'); Expect = '^PK rejoining kept the unpublished live pose' }
     @{ Name = 'WORLDOBJ_OFF (WO)';      Env = @{ ORICOOP_WORLDOBJ_OFF = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');        Expect = '^WO' }
     @{ Name = 'WOBJ_NO_DEFER (WO5D)';   Env = @{ ORICOOP_WOBJ_NO_DEFER = '1'; ORICOOP_NET_ONLY = 'WO' }; Script = @('run-nettest.ps1');       Expect = '^WO5D ' }
     @{ Name = 'MUTATE_WOBJ_KEEP_FIRED (R3)'; Env = @{ ORICOOP_MUTATE_WOBJ_KEEP_FIRED = '1'; ORICOOP_PHASES = 'R' }; Script = @('run-nettest.ps1'); Expect = '^R3 the reload forgets one-shot' }   # T-144
