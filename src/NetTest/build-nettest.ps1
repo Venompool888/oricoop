@@ -4,7 +4,9 @@ $output = Join-Path $PSScriptRoot 'bin'
 New-Item -ItemType Directory -Force $output | Out-Null
 $csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
 $sources = @(
-    Get-ChildItem (Join-Path $root 'OriCoop\Net') -Filter *.cs | ForEach-Object { $_.FullName }
+    # RealSteamApi.cs forwards to the game's ManagedSteam wrapper, which this console self-test does not reference;
+    # RealSteamApiStub.cs stands in for it here (as src\Tests\Steam does).
+    Get-ChildItem (Join-Path $root 'OriCoop\Net') -Filter *.cs | Where-Object { $_.Name -ne 'RealSteamApi.cs' } | ForEach-Object { $_.FullName }
     Get-ChildItem $PSScriptRoot -Filter *.cs | ForEach-Object { $_.FullName }
 )
 $exe = Join-Path $output 'NetTest.exe'
