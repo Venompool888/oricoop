@@ -30,7 +30,7 @@ namespace OriCoop
             }
         }
 
-        public bool IsLocal(int seat) { return Array.IndexOf(LocalSeats, seat) >= 0; }
+        public bool IsLocal(int seat) { return Players.IsLocal(seat); }
 
         public SeinCharacter OriOf(int seat) { return Players.OriOf(seat); }
         public int SeatOf(SeinCharacter ori) { return Players.SeatOf(ori); }

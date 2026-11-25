@@ -38,6 +38,13 @@ namespace OriCoop.Seats
             for (int i = 1; i <= 4; i++) if (device != 0 && owners[i] == device) result.Add(i);
             return result.ToArray();
         }
+        // SeatsOf as a SeatMask set, without allocating (per-frame callers).
+        public int MaskOf(int device)
+        {
+            int mask = 0;
+            if (device != 0) for (int i = 1; i <= 4; i++) if (owners[i] == device) mask |= 1 << i;
+            return mask;
+        }
         public bool Accepts(int source, int sender, int seat)
         { return source >= 1 && source <= 4 && sender == source && Owner(source) == source && Owner(seat) == source; }
         public void Write(BinaryWriter writer) { for (int i = 1; i <= 4; i++) writer.Write((byte)owners[i]); }
