@@ -18,11 +18,10 @@ namespace OriCoop
     {
         static bool s_started, s_loading, s_disabled, s_restartFinished, s_restoreFinished, s_hostAdopt;
         static bool s_joined;   // T-142: this guest finished its join load in this session; later loads are host checkpoints
-        static int s_wipeHost;  // host that announced a team wipe before its next reliable checkpoint
-        static bool s_loadingWipe;
+        static GuestCheckpoints s_checkpoints;
         static readonly SeatReadiness s_guests = new SeatReadiness();
         static readonly HostPromotion s_promotion = new HostPromotion();
-        static byte[] s_pending;
+        static byte[] s_hostAdoptBytes;
         static byte[] s_hostCheckpointBytes;
         static byte[] s_loadingBytes;
         static byte[] s_titleLoadBytes;   // guest joining from an empty slot: PerformLoad reads these (GuestJoin.cs)
@@ -55,7 +54,7 @@ namespace OriCoop
         public static void Init()
         {
             SavesHost.Current = new GameSavesHost();
-            Services.Net.On(SaveWire.SaveMessage, Receive);
+            s_checkpoints = new GuestCheckpoints(Services.Net, () => s_started && !s_disabled, ReceiveCheckpoint, SeatSkillSync.ForRoomSave);
             Services.Net.On(SaveWire.SaveOffer, ReceiveOffer);
             Services.Net.On(SaveWire.LoadedMessage, delegate(BinaryReader r)
             {
@@ -74,7 +73,6 @@ namespace OriCoop
             Services.Net.PlayerJoined += delegate(int seat) { if (Services.Net.IsHost) s_guests.Join(seat); else if (s_joined) s_guests.SawJoin(seat); };
             Services.Net.PlayerLeft += delegate(int seat)
             {
-                if (seat == s_wipeHost) s_wipeHost = 0;
                 s_guests.Leave(seat);
                 if (Services.Net.IsHost) UpdateHostReady();
             };
@@ -84,11 +82,9 @@ namespace OriCoop
         static void Reset()
         {
             Ready = s_started = s_loading = s_disabled = s_hostAdopt = s_joined = false;
-            s_wipeHost = 0;
-            s_loadingWipe = false;
             s_guests.Clear();
             s_promotion.Reset();
-            s_pending = null;
+            s_hostAdoptBytes = null;
             s_hostCheckpointBytes = null;
             s_loadingBytes = null;
             s_titleLoadBytes = null;
@@ -109,6 +105,7 @@ namespace OriCoop
 
         internal static void RebindDevice(int previous, int primary)
         {
+            s_checkpoints.RebindDevice(previous, primary);
             s_guests.Rebind(previous, primary);
             CoopSaves.RebindDevice(previous, primary);
             SeatSkillSync.RebindDevice(previous, primary);
@@ -152,7 +149,7 @@ namespace OriCoop
             SubsystemGuard.Run("GuestJoin.Tick", s_guestJoinTick);
             if (!Services.Net.Connected || !s_started || s_disabled) return;
             CheckPromotion();
-            if (s_pending == null && !s_loading) TickSkillSave();
+            if (!s_checkpoints.HasPending && s_hostAdoptBytes == null && !s_loading) TickSkillSave();
             if (Services.Net.IsHost && !s_hostAdopt)
             {
                 // Co-op save lineage first (CoopSaves): the host may adopt the partner's progress before the
@@ -183,10 +180,10 @@ namespace OriCoop
                 return;
             }
             // Let the player's title/slot load settle before entering the native return-to-menu path.
-            if (s_pending != null && !s_loading && SavesHost.Current.LocalInGameplay())
+            if ((s_checkpoints.HasPending || s_hostAdoptBytes != null) && SavesHost.Current.LocalInGameplay())
             {
-                s_loadingBytes = s_pending;
-                s_pending = null;
+                s_loadingBytes = s_hostAdopt ? s_hostAdoptBytes : s_checkpoints.Begin();
+                s_hostAdoptBytes = null;
                 s_loading = true;
                 s_restartFinished = s_restoreFinished = false;
                 s_joinStartedAt = Services.Clock.RealTime;
@@ -233,9 +230,9 @@ namespace OriCoop
             SeinCharacter own = Characters.Sein;
             if (own == null || GameController.Instance.IsLoadingGame) return;
             if (InstantLoadScenesController.Instance.IsLoading) return;
-            if (s_loadingWipe)
+            if (!s_checkpoints.CanFinish || s_checkpoints.LoadingWipe)
             {
-                Services.Log.Info("net: team wipe restored at room checkpoint " + own.Position);
+                if (s_checkpoints.LoadingWipe) Services.Log.Info("net: team wipe restored at room checkpoint " + own.Position);
                 FinishJoin();
                 return;
             }
@@ -277,7 +274,10 @@ namespace OriCoop
 
         static void FinishJoin()
         {
-            s_loading = s_restoreFinished = s_loadingWipe = false; Ready = true;
+            s_loading = s_restoreFinished = false;
+            // A newer transfer is waiting or the host changed. Only the current host's latest restore is acknowledged.
+            if (!s_checkpoints.Finish()) return;
+            Ready = true;
             if (!Services.Net.IsHost)
             {
                 s_joined = true;
@@ -298,7 +298,7 @@ namespace OriCoop
         public static void HostAdopt(byte[] bytes)
         {
             if (!Services.Net.IsHost || s_loading || s_disabled || bytes == null) return;
-            s_hostAdopt = true; s_pending = SeatSkillSync.ForLoad(bytes, "partner progress"); ResetGuests();
+            s_hostAdopt = true; s_hostAdoptBytes = SeatSkillSync.ForLoad(bytes, "partner progress"); ResetGuests();
         }
 
         // A host restore uses the join transfer and native teardown.
@@ -344,9 +344,9 @@ namespace OriCoop
         static void OfferSave(SaveGameController save)
         {
             if (s_mutateNoSaveOffer) return;   // test-only: the T-021 bug (a guest's save point is swallowed)
-            if (!Ready || s_loading || s_disabled || s_pending != null)
+            if (!Ready || s_loading || s_disabled || s_checkpoints.HasPending)
             {
-                Services.Log.Info("net: guest save not offered: ready=" + Ready + " loading=" + s_loading + " pending=" + (s_pending != null));
+                Services.Log.Info("net: guest save not offered: ready=" + Ready + " loading=" + s_loading + " pending=" + s_checkpoints.HasPending);
                 return;
             }
             try
@@ -423,34 +423,37 @@ namespace OriCoop
         {
             // BothDown and the subsequent checkpoint are reliable and ordered from the same host.
             // A seat still waiting for its first transfer joins normally, even if the room just wiped.
-            if (s_joined && !Services.Net.IsHost) s_wipeHost = Services.Net.HostSeat;
+            if (s_joined && !Services.Net.IsHost) s_checkpoints.ExpectWipe();
         }
 
-        static void Receive(BinaryReader r)
+        internal static void ExpectCheckpointSkills(Story.SkillRecord record) { s_checkpoints.ExpectSkills(Services.Net.Sender, record); }
+        internal static Story.SkillRecord LoadingCheckpointSkills { get { return s_checkpoints.LoadingSkills; } }
+
+        static byte[] ReceiveCheckpoint(SavePosition position, byte[] bytes)
         {
-            if (Services.Net.IsHost || s_loading || s_pending != null || s_disabled) return;
-            HaveCheckpointPosition = SaveWire.ReadHasPosition(r);
-            SavePosition p = SaveWire.ReadCoordinates(r);
-            HostCheckpointPosition = new Vector3(p.X, p.Y, p.Z);
-            s_pending = s_hostCheckpointBytes = SeatSkillSync.ForLoad(SaveWire.ReadSaveBytes(r), "checkpoint transfer");
-            s_loadingWipe = s_wipeHost != 0 && s_wipeHost == Services.Net.Sender;
-            s_wipeHost = 0;
+            s_hostCheckpointBytes = SeatSkillSync.ForLoad(bytes, "checkpoint transfer");
+            HaveCheckpointPosition = position.HasPosition;
+            HostCheckpointPosition = new Vector3(position.X, position.Y, position.Z);
             if (CoopSaves.CommitsReceived == 0) CheckpointsBeforeCommit++;
             if (CopySlotAtCheckpoint == -2) CopySlotAtCheckpoint = CoopSaves.SessionSlot;
             Ready = false; JoinedHost = false;
-            Services.Log.Info("net: received checkpoint " + s_pending.Length + " bytes; waiting for gameplay load path");
+            Services.Log.Info("net: received checkpoint " + s_hostCheckpointBytes.Length + " bytes; waiting for gameplay load path");
+            return s_hostCheckpointBytes;
         }
 
         // Guest joining from an empty slot (GuestJoin.cs): no game runs yet, so there is nothing to tear down. The
         // game's own load-from-title action runs and its PerformLoad reads the host's checkpoint (TitleLoadPatch);
         // FinishLoading then places the guest beside the host exactly as after a teardown reload.
-        public static bool HavePendingCheckpoint { get { return !Services.Net.IsHost && s_started && s_pending != null && !s_loading && !s_disabled; } }
+        public static bool HavePendingCheckpoint { get { return s_started && !s_loading && !s_disabled && s_checkpoints.HasPending; } }
+        internal static bool TransferStarted { get { return s_started; } }
+        internal static bool TransferLoading { get { return s_loading; } }
+        internal static bool TransferDisabled { get { return s_disabled; } }
 
         public static bool BeginTitleLoad()
         {
             if (!HavePendingCheckpoint) return false;
+            s_titleLoadBytes = s_checkpoints.Begin();
             SavesHost.Current.HoldOwnSkillTree(s_joined);
-            s_titleLoadBytes = s_pending; s_pending = null;
             s_loading = true;
             s_restartFinished = s_restoreFinished = false;
             s_joinStartedAt = Services.Clock.RealTime;
@@ -551,7 +554,7 @@ namespace OriCoop
                 s_restoreFinished = true; s_loadFinishedAt = Services.Clock.RealTime;
                 s_joinFrame = SavesHost.Current.NewestRemoteTick;
                 Services.Log.Info("net: host checkpoint restored in " + (s_loadWatch == null ? 0 : s_loadWatch.ElapsedMilliseconds)
-                    + " ms; guest=" + GuestLoadPosition + (s_loadingWipe ? "; team wipe" : "; awaiting fresh host position"));
+                    + " ms; guest=" + GuestLoadPosition + (s_checkpoints.LoadingWipe ? "; team wipe" : "; awaiting fresh host position"));
             }
         }
 

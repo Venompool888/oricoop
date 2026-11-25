@@ -1373,7 +1373,7 @@ namespace OriCoop
             CheckKeyCheckpoint(h, save.SaveToBytes(), keysBeforeExit, false, "native rollback leaves key available");
         }
 
-        static void CollectTestKeystones(int amount, MoonGuid id = null)
+        static void CollectTestKeystones(int amount)
         {
             SeinCharacter own = Own;
             SeinPickupProcessor collector = ProgressSync.PickupCollector(own);
@@ -1386,7 +1386,7 @@ namespace OriCoop
                 KeystonePickup pickup = go.AddComponent<KeystonePickup>();
                 // Runtime orbs may have no stable world GUID. This still exercises the production
                 // pickup collector prefix, reliable event, host effect, and progress replication.
-                pickup.MoonGuid = id ?? MoonGuid.Empty; pickup.Amount = amount;
+                pickup.MoonGuid = MoonGuid.Empty; pickup.Amount = amount;
                 pickup.OnValidate();
                 collector.OnCollectKeystonePickup(pickup);
             }
@@ -1709,6 +1709,8 @@ namespace OriCoop
                     if (step == 5) yield return Safely(h, "W map late", MapKeep(h, true));
                     if (step == 5) yield return Safely(h, "W pickups", PickupCopies(h));
                     if (step == 5) yield return Safely(h, "W cells", CellRefill(h));
+                    if (step == 5) yield return Safely(h, "W cell ownership", NetCellAuthorityTest.Run(h, n => { PublishWorldBarrier(h, n, false); return WorldBarrier(h, n); }, () => ClosePopups()));
+                    if (step == 5) yield return Safely(h, "W clone checkpoint", CloneCheckpoint(h));
                 }
             }
             finally
@@ -2764,7 +2766,11 @@ namespace OriCoop
                     {
                         yield return WorldBarrier(h, 24900);
                         keysBeforeExit = PartnerWorld(24900).Keys;
-                        CollectTestKeystones(1, WKey);
+                        // The fixture above is a registered object in a scene absent on the host. Its wire
+                        // claim must identify that record; detached test GameObjects have no native registration.
+                        Story.ProgressAction claim = new Story.ProgressAction { Sequence = 0x72490001, Kind = Story.ActionKind.Keystone,
+                            Amount = 1, Guid = WKey.ToByteArray(), Scene = WKeyScene.ToByteArray(), HasSpot = true, Registered = true };
+                        NetPlay.Send(21, true, claim.Write);
                     }
                     float by = Time.realtimeSinceStartup + 6f;
                     while (Own.Inventory.Keystones != keysBeforeExit + 1 && Time.realtimeSinceStartup < by) yield return null;
