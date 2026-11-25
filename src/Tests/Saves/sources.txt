@@ -1,5 +1,6 @@
 OriCoop\Seams\Seams.cs
 OriCoop\Saves\SaveWire.cs
+OriCoop\Saves\GuestCheckpoints.cs
 OriCoop\Saves\ISavesHost.cs
 OriCoop\Saves\SeatReadiness.cs
 OriCoop\Saves\RoomSaveSelection.cs
