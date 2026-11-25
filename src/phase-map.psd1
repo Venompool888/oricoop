@@ -28,6 +28,7 @@
     }
     # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
     Files = @{
+        'NetMapMarkerTest' = 'S4'; 'TeammateMapMarkers' = 'S4'
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
@@ -49,6 +50,7 @@
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
     # Suite 'net' means the 2-player net suites (net, net-newgame), which take ORICOOP_PHASES.
     Mutations = @(
+        @{ Switch = 'ORICOOP_MUTATE_MAP_PROJECTION'; File = 'src\OriCoop\TeammateMapMarkers.cs'; Suite = 'net'; Phase = 'S4' }
         @{ Switch = 'ORICOOP_MUTATE_GUARD_FIGHTS_SCENE'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }
         @{ Switch = 'ORICOOP_MUTATE_LEVER_DROP_HOLD'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-194 a partner's world blob does not drop this PC's hold on a lever (CUT real grab)
         @{ Switch = 'ORICOOP_MUTATE_STONE_RAW_APPLY'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-204 a partner activating a map stone releases this PC's highlight (CUT map stone, story stays local)

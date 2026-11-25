@@ -322,8 +322,10 @@ namespace OriCoop
             float peak = host ? ori.Position.y : P2Context.P2.Position.y;
             float sentPeak = NetPlay.LatestRemotePos.y, drop = 0f, sentDrop = 0f, scrollStart = 0f;
             long frames = NetPlay.FramesPlayed;
+            Action restoreName = null;
             try
             {
+                if (!host) restoreName = NetMapMarkerTest.NameGuest();
                 Revive.Enabled = true;
                 if (host)
                 {
@@ -358,6 +360,7 @@ namespace OriCoop
                         "S4 map: gravity accelerates P1's fall while map navigation does not steer Ori (drop=" + F(drop) + ")");
                     h.Check(Mathf.Abs(AreaMapUI.Instance.Navigation.ScrollPosition.x - scrollStart) > 1f,
                         "S4 map: the stick pans the area map");
+                    NetMapMarkerTest.CheckPosition(h, false);
                     h.Check(!GameController.Instance.InputLocked, "S4 map: global input lock stays off");
                     Bot(0); NetTestHarness.BotLT = true;
                     TestClock.Window zoom = new TestClock.Window(2.5f);
@@ -365,6 +368,8 @@ namespace OriCoop
                     NetTestHarness.BotLT = false;
                     h.Check(GameMapUI.Instance.IsVisible && GameMapTransitionManager.Instance.InWorldMapMode,
                         "S4 map: the zoom-out input switches to the world map");
+                    yield return new WaitForFixedUpdate();
+                    NetMapMarkerTest.CheckPosition(h, true);
                     float before = ori.Mortality.Health.Amount;
                     receiver.OnRecieveDamage(new Damage(4f, Vector2.right, ori.Position, DamageType.Enemy, null));
                     h.Check(GameMapUI.Instance.IsVisible && ori.Mortality.Health.Amount < before,
@@ -380,10 +385,21 @@ namespace OriCoop
                 else h.Check(drop > 2f && sentDrop > 2f && NetPlay.FramesPlayed > frames,
                     "S4 map: P2 receives P1's falling positions and sees the puppet fall (sent=" + F(sentDrop) + ", puppet=" + F(drop) + ")");
                 yield return Barrier(h, 186);
+                if (host) UI.Menu.ShowAreaMap();
+                yield return Barrier(h, 2570);
+                if (!host) NetPlay.TestReportLoading = true;
+                if (host) yield return NetMapMarkerTest.WaitForSeat(h, false);
+                yield return Barrier(h, 2571);
+                if (!host) NetPlay.TestReportLoading = false;
+                if (host) yield return NetMapMarkerTest.WaitForSeat(h, true);
+                if (host) yield return NetMapMarkerTest.LocalSeat(h);
+                yield return Barrier(h, 2572);
             }
             finally
             {
                 Bot(0); NetTestHarness.BotLT = false;
+                NetPlay.TestReportLoading = false;
+                if (restoreName != null) restoreName();
                 Revive.Enabled = revive;
                 if (Revive.AnyDowned) Revive.ClearAll("S4 map test cleanup", false);
                 if (host)

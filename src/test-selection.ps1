@@ -65,6 +65,7 @@ $TS_ModuleSuites = @{
 $TS_SteamFiles = @('SteamTransport', 'SteamApi', 'RealSteamApi', 'FakeSteamApi', 'SteamInviteHook', 'NetPlay', 'JoinErrorText')   # NetPlay: PumpSteam / OpenSteam drive the Steam session
 # Harness / test files -> the suite that runs them (checked before the module table).
 $TS_FileSuites = [ordered]@{
+    'TeammateMapMarkers' = @('net')
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
