@@ -97,7 +97,8 @@ namespace OriCoop
         }
 
         // T-255 (playtest 6: the force-start and leave prompts, and the new hint boxes, looked dim next to the game's own
-        // hints). Likely cause, not yet confirmed in game: the copy's renderers share the game's hint materials, and the
+        // hints). Measured on the test PC (PR #428): the copy's text materials read alpha 0.50 and drew grey; at 1.0 they
+        // draw as white as the native hint beside them. The likely reason: the copy's renderers share the game's hint materials, and the
         // game's fades write the alpha of shared materials (TitleMenu.FixClonedGlows found that on the title menu). With
         // our copy's MessageBoxVisibility gone nothing drives that alpha for us, so the copy drew at whatever alpha the last
         // native hint had faded the shared materials to. The first SetText logs the alphas it found. Every renderer of the copy now gets its own material: the text and its

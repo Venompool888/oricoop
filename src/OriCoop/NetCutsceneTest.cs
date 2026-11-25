@@ -912,7 +912,7 @@ namespace OriCoop
             float hintUntil = Now + 1.5f;   // past the native hint's fade-in
             while (Now < hintUntil) yield return null;
             h.Note("GATE brightness " + ForcedSync.BrightnessDebug(native));
-            GateCheck(h, ForcedSync.PromptsAsBrightAs(native), "G1 gate prompts draw as bright as a native hint");
+            GateCheck(h, ForcedSync.PromptsFullyOpaque(), "G1 gate prompts draw their text at full alpha (the native hint beside them for the screenshot)");
             try { Application.CaptureScreenshot(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(h.ResultPath)), "gate-" + (NetPlay.IsHost ? "host" : "guest") + ".png")); }
             catch (Exception e) { h.Note("gate screenshot failed: " + e.Message); }
             yield return null;   // the screenshot is taken at the end of this frame
