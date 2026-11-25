@@ -118,7 +118,7 @@ namespace OriCoop
             s_digestSequence = s_receivedDigest = 0;
             ResetDigestRepair();
             ResetDelta();
-            s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear();
+            s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear(); s_timerTakeAt.Clear();
         }
 
         public static void Tick()
@@ -794,6 +794,10 @@ namespace OriCoop
         static int s_timerTraces;
         const int MaxTimerTraces = 200;
         static readonly HashSet<string> s_timerCensus = new HashSet<string>();
+        // Guest: when it last took the host's phase for a timer in each scene (key prefix). A digest diff in that scene
+        // shortly after says whether writing the phase made other objects differ (#357 follow-up).
+        static readonly Dictionary<string, float> s_timerTakeAt = new Dictionary<string, float>();
+        static string SceneOfKey(string key) { int i = key.IndexOf(':'); return i < 0 ? key : key.Substring(0, i); }
         const int MaxTimerCensus = 400;
 
         static void SendTimerPhases()
@@ -861,6 +865,7 @@ namespace OriCoop
             if (verdict == TimerPhase.Verdict.InStep) { TimerPhasesInStep++; return false; }
             if (verdict == TimerPhase.Verdict.NearRestart) { TimerPhasesNearRestart++; return false; }
             if (verdict == TimerPhase.Verdict.Take) TimerPhasesTaken++;
+            s_timerTakeAt[SceneOfKey(key)] = Time.realtimeSinceStartup;
             if (s_timerTraces < MaxTimerTraces)
             {
                 s_timerTraces++;
@@ -1195,6 +1200,15 @@ namespace OriCoop
             writer.Close(); stream.Close(); return hash;
         }
 
+        // " timer_take_ago=N.N" when this PC took a host timer phase in the same scene in the last 30 s, else "".
+        static string TimerTakeNote(string key)
+        {
+            float at;
+            if (!s_timerTakeAt.TryGetValue(SceneOfKey(key), out at)) return "";
+            float ago = Time.realtimeSinceStartup - at;
+            return ago <= 30f ? " timer_take_ago=" + ago.ToString("F1") : "";
+        }
+
         public static void SendDigest()
         {
             if (!NetPlay.Connected || !SaveSync.Ready || !ProgressSync.Ready || !NetPlay.LocalInGameplay() || s_awaitSnapshot) return;
@@ -1309,7 +1323,8 @@ namespace OriCoop
                 string key = keys[i]; DigestDifference diff = differences[key];
                 Plugin.Log.LogInfo("net: world digest diff scene/object=" + key + " type=" + (diff.Local.Type ?? diff.Remote.Type)
                     + " local=" + (diff.Local.Type != null ? diff.Local.Hash.ToString("X16") : "missing")
-                    + " remote=" + (diff.Remote.Type != null ? diff.Remote.Hash.ToString("X16") : "missing"));
+                    + " remote=" + (diff.Remote.Type != null ? diff.Remote.Hash.ToString("X16") : "missing")
+                    + TimerTakeNote(key));
             }
             LastDigestMatch = differences.Count == 0 && !s_digestProgressDiffers;
             if (differences.Count != 0) Plugin.Log.LogInfo("net: world digest manifest " + differences.Count + " differing GUIDs (first 5 shown)");
