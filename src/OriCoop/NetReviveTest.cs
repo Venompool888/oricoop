@@ -383,8 +383,10 @@ namespace OriCoop
                 yield return Wait(1.5f);   // past the native hint's fade-in
                 float selfAlpha = Revive.SelfHintAlpha(Players.LocalSeat);
                 h.Note("R6 guest brightness: self-revive text a=" + F(selfAlpha) + " [" + Revive.SelfHintBrightness(Players.LocalSeat)
-                    + "]; native text a=" + F(GameText.TextAlphaOf(native)) + "; every mod prompt shown: " + GameText.ShownAlphas());
+                    + "]; native text a=" + F(GameText.TextAlphaOf(native)) + "; every mod prompt shown: " + GameText.ShownAlphas() + "; heights: native h=" + GameText.HeightOf(native) + ", " + GameText.ShownHeights());
                 h.Check(selfAlpha >= 0.98f, "R6 guest: the self-revive hint draws its text at full alpha (" + F(selfAlpha) + "; the native hint beside it for the screenshot)");
+                float selfH = Revive.SelfHintHeight(Players.LocalSeat), nativeH = GameText.HeightOfNative(native);
+                h.Check(GameText.NativeSized(selfH, nativeH), "R6 guest: the self-revive hint draws as large as the native hint (h=" + selfH.ToString("0.000") + ", native h=" + nativeH.ToString("0.000") + ")");
                 string faint = GameText.FaintShown(0.98f);
                 h.Check(faint.Length == 0, "R6 guest: every mod prompt on screen draws its text at full alpha (" + GameText.ShownCount() + " shown" + (faint.Length > 0 ? "; faint: " + faint : "") + ")");
                 try { Application.CaptureScreenshot(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(h.ResultPath)), "revive-self-guest.png")); }

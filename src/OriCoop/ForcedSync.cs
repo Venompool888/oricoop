@@ -687,8 +687,8 @@ namespace OriCoop
                 : L10n.F("gate.wait", MissingPlayers(gate.Missing), LastCount, LastTotal);
             Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null;
             Vector3 view = game != null ? game.WorldToViewportPoint(point + new Vector3(0f, 2f, 0f)) : new Vector3(0.5f, 0.5f, 0f);
-            float x = Mathf.Clamp(view.x, 0.31f, 0.69f), y = Mathf.Clamp(view.y, 0.15f, 0.89f);
-            if (s_bottom.SetText(BottomText)) s_bottom.PlaceViewport(x, y, 0.03f, 0.6f);
+            float x = Mathf.Clamp(view.x, 0.31f, 0.69f), y = Mathf.Clamp(view.y, 0.15f, 0.85f);   // T-255: room for the force line above at native size
+            if (s_bottom.SetText(BottomText)) s_bottom.PlaceViewport(x, y, GameText.PromptHeight, 0.6f);
             if (Waits[seat] == null || Waits[seat].State.Key != gate.Key) { HideKeys(); return; }
 
             if (s_top == null) s_top = new GameText("OriCoop_GateForce");
@@ -698,8 +698,8 @@ namespace OriCoop
             bool keyboard = !primary && ExtraUsesKeyboard(seat);
             TopText = L10n.F("gate.force", primary ? ButtonIconUtility.GetButtonString(PlayerInput.Instance.Bash) : keyboard ? "<icon>p</>" : "<icon>i</>");
             LeaveText = L10n.F("gate.leave", primary ? ButtonIconUtility.GetButtonString(PlayerInput.Instance.SoulFlame) : keyboard ? "<icon>H</>" : "<icon>f</>");
-            if (s_top.SetText(TopText)) s_top.PlaceViewport(x, y + 0.05f, 0.028f, 0.36f);
-            if (s_leave.SetText(LeaveText)) s_leave.PlaceViewport(x, y - 0.05f, 0.028f, 0.36f);
+            if (s_top.SetText(TopText)) s_top.PlaceViewport(x, y + 0.08f, GameText.PromptHeight, 0.6f);   // T-255: native size (was 0.028, half the native hint)
+            if (s_leave.SetText(LeaveText)) s_leave.PlaceViewport(x, y - 0.08f, GameText.PromptHeight, 0.6f);
             s_ring.Place(point + new Vector3(3.3f, 2.2f, 0f), 0.08f, HoldProgress, 1f);
         }
         internal static bool WaitPromptOnScreen() { return s_bottom != null && s_bottom.OnScreen(false); }
@@ -716,6 +716,19 @@ namespace OriCoop
             if (TopText.Length > 0 && (s_top == null || s_top.TextAlpha() < floor)) return false;
             if (LeaveText.Length > 0 && (s_leave == null || s_leave.TextAlpha() < floor)) return false;
             return true;
+        }
+        // T-255 test oracle: every gate prompt shown draws at native size. Lists the ones that don't, "" when all do.
+        internal static string SmallPrompts(float native)
+        {
+            string small = "";
+            GameText[] all = { s_bottom, s_top, s_leave };
+            foreach (GameText g in all)
+            {
+                if (g == null) continue;
+                float hh = g.ScreenHeight();
+                if (hh >= 0f && !GameText.NativeSized(hh, native)) small += (small.Length > 0 ? ", " : "") + g.Name + " h=" + hh.ToString("0.000");
+            }
+            return small;
         }
         internal static string BrightnessDebug(MessageBox native)
         {

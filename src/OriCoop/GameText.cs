@@ -18,6 +18,7 @@ namespace OriCoop
         float m_baseH, m_baseW;   // text size in world units at scale 1 (measured after each text change)
         Vector3 m_scale0;
         readonly string m_name;
+        internal string Name { get { return m_name; } }
         bool m_warnedCreate, m_warnedPlace, m_warnedText;
         int m_layer = -1;
         public bool Ok { get { return Go != null && m_box != null; } }
@@ -43,6 +44,45 @@ namespace OriCoop
                     .Append(" colour a=").Append(g.m_box.TextBox.color.a.ToString("0.00"));
             return sb.Length > 0 ? sb.ToString() : "none";
         }
+        // T-255: how tall a mod prompt draws, as a fraction of the screen height. The native hint box measured 0.061 on the
+        // test PC (PR #438); prompts at 0.030-0.035 read as half its size. Every gameplay prompt uses this one height.
+        internal static readonly float PromptHeight = NativeGui.MutationOn("ORICOOP_MUTATE_SMALL_PROMPTS") ? 0.03f : 0.06f;   // test: the old half size
+        // How tall this text draws on screen, as a fraction of the screen height (HUD camera); -1 when not shown.
+        internal float ScreenHeight()
+        {
+            Bounds b;
+            Camera gui = P2Hud.GuiCamera();
+            if (!Shown || gui == null || !Measure(out b)) return -1f;
+            return gui.WorldToViewportPoint(b.max).y - gui.WorldToViewportPoint(b.min).y;
+        }
+        internal static string ShownHeights()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (GameText g in s_all)
+            {
+                float h = g.ScreenHeight();
+                if (h < 0f) continue;
+                sb.Append(sb.Length > 0 ? "; " : "").Append(g.m_name).Append(" h=").Append(h.ToString("0.000"));
+            }
+            return sb.Length > 0 ? sb.ToString() : "none";
+        }
+        internal static float HeightOfNative(MessageBox box)
+        {
+            Camera gui = P2Hud.GuiCamera();
+            if (box == null || box.TextBox == null || box.TextBox.textRenderers == null || gui == null) return -1f;
+            bool any = false; Bounds b = new Bounds();
+            foreach (var tr in box.TextBox.textRenderers)
+            {
+                if (tr == null || tr.renderedCharCount == 0) continue;
+                foreach (Renderer r in tr.GetComponentsInChildren<Renderer>())
+                { if (!r.enabled) continue; if (!any) { b = r.bounds; any = true; } else b.Encapsulate(r.bounds); }
+            }
+            return any ? gui.WorldToViewportPoint(b.max).y - gui.WorldToViewportPoint(b.min).y : -1f;
+        }
+        internal static string HeightOf(MessageBox box) { float h = HeightOfNative(box); return h >= 0f ? h.ToString("0.000") : "?"; }
+        // The check: a prompt counts as native size at 80% of the native hint's height or more (or of PromptHeight when
+        // the native hint could not be measured).
+        internal static bool NativeSized(float h, float native) { return h >= 0.8f * (native > 0f ? native : 0.06f); }
         internal static int ShownCount() { int n = 0; foreach (GameText g in s_all) if (g.Shown) n++; return n; }
         internal static string FaintShown(float floor)
         {
