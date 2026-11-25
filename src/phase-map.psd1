@@ -30,6 +30,7 @@
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
+        'NetMapMarkerTest' = 'S4'; 'TeammateMapMarkers' = 'S4'
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
         'WorldObjSync' = 'WO,R'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
@@ -37,7 +38,6 @@
         'EnemySync.Swarm' = 'E3,E5'; 'SwarmFamily' = 'E5'   # T-195: the splitting Swarm (E5s checks; ids: unit tests)
         'EnemySync.Leftovers' = 'E3,E5'; 'EnemySyncTest.Leftovers' = 'E5'; 'HitIds' = 'E3,E5'   # T-208: enemy-sync leftovers (E5k checks; rules: unit tests)
         'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'; 'CoopMenu' = 'S4'; 'MenuSoulFlameGuard' = 'S4'; 'MenuSoulFlameTest' = 'S4'   # Online screens leave LockInput alone
-        'NetMapMarkerTest' = 'S4'; 'TeammateMapMarkers' = 'S4'
         'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = 'INTRO'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
