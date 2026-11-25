@@ -16,7 +16,10 @@ namespace OriCoop.Net
         public event Action<NetPeer> PeerCreated, Connected;
         public event Action<NetPeer, string> Disconnected;
 
-        public void Poll()
+        public void Poll() { Poll(true); }
+
+        // flush=false: as NetPeer.Poll(false); the caller must Flush() afterwards.
+        public void Poll(bool flush)
         {
             EndPoint from; int length;
             while ((length = socket.Receive(buffer, out from)) > 0)
@@ -60,7 +63,7 @@ namespace OriCoop.Net
                 }
                 route.Enqueue(buffer, length, from);
             }
-            foreach (NetPeer peer in new List<NetPeer>(peers.Values)) peer.Poll();
+            foreach (NetPeer peer in new List<NetPeer>(peers.Values)) peer.Poll(flush);
         }
 
         public void Flush() { foreach (NetPeer peer in peers.Values) peer.Flush(); }

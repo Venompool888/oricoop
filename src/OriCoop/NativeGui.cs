@@ -15,7 +15,7 @@ namespace OriCoop
             public MeshRenderer Quad;
             public int Frame = -1;
             public string Page;
-            public string Key;            // last layout inputs: skip rebuilding the text when nothing changed
+            public readonly Ui.NativeLabelKey Key = new Ui.NativeLabelKey();   // last layout inputs: skip rebuilding the text when nothing changed
             public Vector3 Pos, Scale;
             public Rect LastRect;         // screen rect last drawn into (for scroll-view hiding)
             public Color Tint = Color.white;   // a label's colour, also applied to the game's button icons in it
@@ -50,7 +50,7 @@ namespace OriCoop
             {
                 Element e;
                 if (id == null || !s_elements.TryGetValue(id, out e) || e == null) return;
-                e.Key = null;
+                e.Key.Clear();
                 if (e.Go != null) e.Go.SetActive(false);
             }
             catch (System.Exception error) { WarnOnce("Hide", id, error); }
@@ -227,7 +227,15 @@ namespace OriCoop
             if (e == null || e.Go == null) throw new System.InvalidOperationException("Native element was destroyed");
             e.Frame = Time.frameCount; e.Page = s_state.Page;
             if (!e.Go.activeSelf) e.Go.SetActive(true);
-            foreach (Transform t in e.Go.GetComponentsInChildren<Transform>(true)) t.gameObject.layer = OverlayLayer;
+            SetLayer(e.Go.transform);
+        }
+
+        // Same objects as GetComponentsInChildren<Transform>(true) (this one and every child, active or not), without
+        // a new array for every label on every frame (#406).
+        static void SetLayer(Transform t)
+        {
+            t.gameObject.layer = OverlayLayer;
+            for (int i = 0; i < t.childCount; i++) SetLayer(t.GetChild(i));
         }
 
         // Just past the near plane: in front of every game UI object, so a depth-writing game shader can't hide us.
@@ -287,8 +295,8 @@ namespace OriCoop
             Touch(e); e.LastRect = r; e.Tint = color;
             Camera camera = P2Hud.GuiCamera();
             int order = ++DrawOrder;
-            string key = text + "|" + r + "|" + fontPx + "|" + anchor + "|" + color + "|" + Screen.width + "x" + Screen.height + "|" + L10n.Zh;
-            if (key == e.Key && e.Go.activeSelf)
+            int screenWidth = Screen.width, screenHeight = Screen.height; bool zh = L10n.Zh;
+            if (e.Key.Same(text, r.x, r.y, r.width, r.height, fontPx, (int)anchor, color.r, color.g, color.b, color.a, screenWidth, screenHeight, zh) && e.Go.activeSelf)
             {
                 e.Go.transform.rotation = camera.transform.rotation;
                 e.Go.transform.localScale = e.Scale; e.Go.transform.position = e.Pos;
@@ -332,7 +340,7 @@ namespace OriCoop
             foreach (Renderer renderer in e.Go.GetComponentsInChildren<Renderer>(true)) renderer.enabled = false;
             e.Pos = e.Go.transform.position; e.Scale = e.Go.transform.localScale;
             SetOrder(e, order);
-            e.Key = key; // A failed render must be rebuilt on the next attempt.
+            e.Key.Store(text, r.x, r.y, r.width, r.height, fontPx, (int)anchor, color.r, color.g, color.b, color.a, screenWidth, screenHeight, zh); // A failed render must be rebuilt on the next attempt.
             s_state.AddLabel(id);
         }
 

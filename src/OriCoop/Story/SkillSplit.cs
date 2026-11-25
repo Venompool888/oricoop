@@ -44,8 +44,8 @@ namespace OriCoop.Story
         ulong bits;
         public bool Held { get { return held; } }
 
-        // Two pushes before the next merge: the second load starts from the host's bits, so the first hold wins.
-        public void Hold(ulong owned) { if (held) return; bits = owned; held = true; }
+        // A second load already sees the host's live tree. Only a checkpoint's explicit record can replace our hold.
+        public void Hold(ulong owned, bool recorded = false) { if (held && !recorded) return; bits = owned; held = true; }
 
         // The `local` abilities for the next snapshot merge: the held ones once, then the live ones again.
         public ulong Local(ulong live)

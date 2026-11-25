@@ -150,6 +150,7 @@ static class WorldTests
         MirrorHoldTests.Register(Run);  // T-172
         DigestRepairTests.Register(Run);
         TimerPhaseTests.Register(Run);  // T-250
+        ShooterFollowTests.Register(Run);   // T-250 / #444
         SnapshotRequestsTests.Register(Run);   // T-254
         Console.WriteLine("World: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;

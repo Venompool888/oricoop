@@ -81,7 +81,7 @@ foreach ($s in $inSource) { Ok ($listed -contains $s) ($s + ' (in the source) ha
 # Every nightly mutation switch has a row.
 $nightly = Join-Path $TS_Root 'src\run-nightly.ps1'
 if (Test-Path $nightly) {
-    $helpers = @('ORICOOP_NET_ONLY', 'ORICOOP_FORCE_ZH', 'ORICOOP_TITLEJOIN_LEAVE', 'ORICOOP_S4_SKEW', 'ORICOOP_PHASES', 'ORICOOP_P3_KURO', 'ORICOOP_P3_SEIN', 'ORICOOP_P3_EXTERNAL')   # P3 helpers select native CUT scenarios
+    $helpers = @('ORICOOP_NET_ONLY', 'ORICOOP_FORCE_ZH', 'ORICOOP_TITLEJOIN_LEAVE', 'ORICOOP_S4_SKEW', 'ORICOOP_PHASES', 'ORICOOP_P3_KURO', 'ORICOOP_P3_SEIN', 'ORICOOP_P3_GATE', 'ORICOOP_P3_EXTERNAL')   # P3_KURO / P3_SEIN / P3_GATE / P3_EXTERNAL pick the Kuro (T-183) / Sein pickup (T-196) / gate (T-255) / external-story (T-222) test
     $nightlySwitches = @(Select-String -LiteralPath $nightly -Pattern "Env = @\{([^}]*)\}" | ForEach-Object { [regex]::Matches($_.Matches[0].Groups[1].Value, '(ORICOOP_\w+)\s*=') } |
         ForEach-Object { $_.Groups[1].Value } | Where-Object { $helpers -notcontains $_ } | Sort-Object -Unique)
     foreach ($s in $nightlySwitches) { Ok ($listed -contains $s) ($s + ' (nightly mutation) has a row in phase-map.psd1') }
@@ -148,6 +148,15 @@ Ok (((Get-FailedPhases $ff).Phases -join ',') -eq 'E5,WO') ('fail-fast summary c
 # T-226: fail-fast stopped the run in E5, so E5 and every later phase never ran to its end: all of them are rerun, the
 # phases before E5 (they ran and passed) are not.
 Ok ((Get-RerunPhases 'net' $ff '') -eq 'E5,R,S4,P,WO,CAM,CUT,ESC') ('fail-fast: rerun the failed phase and every later one (E5,R,S4,P,WO,CAM,CUT,ESC; got ' + (Get-RerunPhases 'net' $ff '') + ')')
+# 2026-11-25: the harness hit its time limit in CUT on a busy PC. Fail-fast printed its summary first, then the result files
+# placed the timeout in CUT: the rerun is CUT and the phase after it (ESC), not every phase again.
+$to = "FAIL-FAST: stopping after the first failure`n  host.log: FAIL timed out (inGame=True started=True)`n" +
+    "[ 0.1] net role=host`n[ 0.2] === phase W`n[ 1.0] PASS W ok`n[ 2.0] === phase CUT`n[ 900.0] FAIL timed out (inGame=True started=True)`n[ 900.1] RESULT FAIL 1/9`nno result file: fail-fast stopped the run"
+Ok ((Get-RerunPhases 'net' $to '') -eq 'CUT,ESC') ('a timeout in CUT reruns CUT and ESC (got ' + (Get-RerunPhases 'net' $to '') + ')')
+# The same timeout with only the summary and one client's markers: placed in the furthest phase a client started.
+$to2 = "FAIL-FAST: stopping after the first failure`n  b-guest-1.log: FAIL timed out (inGame=True started=True)`n" +
+    "[ 0.1] net role=host`n[ 0.2] === phase W`n[ 2.0] === phase CAM`n[ 3.0] === phase CUT`n[ 4.0] PASS CUT x`nno result file: fail-fast stopped the run"
+Ok ((Get-RerunPhases 'net' $to2 'W,CAM,CUT,ESC') -eq 'CUT,ESC') ('an unplaced timeout belongs to the furthest phase started (CUT,ESC; got ' + (Get-RerunPhases 'net' $to2 'W,CAM,CUT,ESC') + ')')
 Ok ((Get-RerunPhases 'net' $ff 'INTRO,E5,WO,CAM') -eq 'E5,WO,CAM') ('fail-fast with selected phases: from the first failed one on (E5,WO,CAM; got ' + (Get-RerunPhases 'net' $ff 'INTRO,E5,WO,CAM') + ')')
 $ffIntro = "FAIL-FAST: stopping after the first failure`n  host-1.log: FAIL INTRO barrier 0 all seats observed`nno result file: fail-fast stopped the run"
 Ok ((Get-RerunPhases 'net-newgame' $ffIntro 'INTRO,MOVE,W') -eq 'INTRO,MOVE,W') 'fail-fast in the first phase: the whole suite again'

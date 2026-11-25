@@ -23,15 +23,8 @@ namespace OriCoop
         public static int FocusEvents, SuppressedResumeScreens, BackgroundFixes, SaveScreensShown;
         public static bool Blocking { get { return Phase != SavePhase.None; } }
         public static string WaitingText = "";                  // the transfer screen's headline as last drawn (tests)
-        static bool s_failureShown, s_reflectionWarned;
+        static bool s_failureShown;
         static float s_failedAt, s_phaseSince;
-
-        static void WarnReflection()
-        {
-            if (s_reflectionWarned) return;
-            s_reflectionWarned = true;
-            Services.Log.Warn("net: SessionScreens cannot read SaveSync state (fields renamed?); save screen disabled");
-        }
 
         public static void Tick()
         {
@@ -50,7 +43,6 @@ namespace OriCoop
         {
             Progress = -1f;
             if (!Services.Net.Enabled || Services.Net.IsHost) { s_failureShown = false; return SavePhase.None; }
-            if (!Host.SaveFieldsAvailable) { WarnReflection(); return SavePhase.None; }
             bool disabled = Host.SaveDisabled, loading = Host.SaveLoading, started = Host.SaveStarted;
             bool pending = Host.SavePending;
             if (Phase == SavePhase.Failed)

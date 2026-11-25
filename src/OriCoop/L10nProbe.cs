@@ -18,7 +18,9 @@ namespace OriCoop
     // ORICOOP_FORCE_ZH=1 (Chinese) and once without (English). Checks() is called from TestHarness's title scenario.
     static class L10nProbe
     {
-        public static bool On { get { return Environment.GetEnvironmentVariable("ORICOOP_L10N_PROBE") == "1"; } }
+        // Set by the test launcher before the game starts; read once (this was an env lookup several times per OnGUI event).
+        static readonly bool s_on = Environment.GetEnvironmentVariable("ORICOOP_L10N_PROBE") == "1";
+        public static bool On { get { return s_on; } }
 
         static readonly Dictionary<string, string> s_seen = new Dictionary<string, string>();   // text -> where
         static string s_where = "";

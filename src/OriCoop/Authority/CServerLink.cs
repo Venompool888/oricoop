@@ -152,6 +152,7 @@ namespace OriCoop.Authority
             c.ArbiterChanged += delegate(int seat)
             {
                 NetPlay.HostOverride = c.IsArbiter;
+                ProgressSync.ObserveAuthority(seat);
                 Plugin.Log.LogInfo("cserver: legacy arbiter is now P" + seat);
             };
             c.SeatOffline += delegate(int seat) { if (seat != c.Seat) NetPlay.RemoteLeft(seat); };

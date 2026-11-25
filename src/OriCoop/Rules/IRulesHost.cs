@@ -35,7 +35,6 @@ namespace OriCoop.Rules
         void SessionEnded();
         void Toast(string message);
         void PushCheckpoint();
-        bool SaveFieldsAvailable { get; }
         bool SaveStarted { get; }
         bool SavePending { get; }
         bool SaveLoading { get; }

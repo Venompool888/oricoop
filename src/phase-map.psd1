@@ -29,6 +29,8 @@
     # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
+        'WorldSync.Bodies' = 'W,WO'
+        'NetPickupCheckpointTest' = 'W'; 'SavedPickupCopies' = 'W'; 'NetCellAuthorityTest' = 'W'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
@@ -46,6 +48,8 @@
         'PsReport' = ''; 'MirrorJudge' = ''; 'PadTypes' = ''
         'NetEscapeTest' = 'ESC'; 'EscapeRules' = 'ESC'; 'Revive.Escape' = 'R,ESC'; 'EscapeProbe' = ''   # T-169 escapes (3P part: net-3p suites)
         'EnemySync' = 'E3,E5,CUT'   # T-183: partner scene streaming is paused during stories (KURO, phase CUT)
+        'CoopTraceAudio' = ''; 'AudioWatch' = ''   # T-252: audio trace lines only, nothing in play changes (rules: AudioWatch unit tests)
+        'GameText' = 'R,CUT'   # T-255: full-alpha text is checked in GATE G1 (CUT, ORICOOP_P3_GATE=1) and R6 (the self-revive hint); its module M8 selects no net phase
     }
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
     # Suite 'net' means the 2-player net suites (net, net-newgame), which take ORICOOP_PHASES.
@@ -54,8 +58,11 @@
         @{ Switch = 'ORICOOP_MUTATE_LEVER_DROP_HOLD'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-194 a partner's world blob does not drop this PC's hold on a lever (CUT real grab)
         @{ Switch = 'ORICOOP_MUTATE_STONE_RAW_APPLY'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-204 a partner activating a map stone releases this PC's highlight (CUT map stone, story stays local)
         @{ Switch = 'ORICOOP_MUTATE_MAP_DOWNGRADE'; File = 'src\OriCoop\World\WorldItems.cs'; Suite = 'net'; Phase = 'W' }   # T-214 map exploration only grows (W map: a cell explored while a snapshot is on its way)
+        @{ Switch = 'ORICOOP_MUTATE_PICKUP_CLONE_ALIAS'; File = 'src\OriCoop\SavedPickupCopies.cs'; Suite = 'net'; Phase = 'W' }
+        @{ Switch = 'ORICOOP_MUTATE_PICKUP_CLONE_FORGOTTEN'; File = 'src\OriCoop\SavedPickupCopies.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_PICKUP_GUID_ONLY'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a pickup is its GUID plus scene and spot (W pickups: two copies of one prefab; the host cannot take the guest's pickup again)
         @{ Switch = 'ORICOOP_MUTATE_CELL_REFILLS_HOST'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a health / energy cell refills the player who took it (W cells)
+        @{ Switch = 'ORICOOP_MUTATE_CELL_REWARD_LOSER'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_HOST_SEAT_ONE';  File = 'src\OriCoop\Authority\NetRoute.cs'; Suite = 'net-3p-cs'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_FX_FORWARD';  File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-3p';    Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_LATE_COMMIT'; File = 'src\OriCoop\Saves\CoopSaves.Lineage.cs'; Suite = 'net-3p'; Phase = '' }
@@ -159,10 +166,12 @@
         @{ Switch = 'ORICOOP_MUTATE_SWARM_DROP_FROZEN_OWN'; File = 'src\OriCoop\EnemySync.Leftovers.cs'; Suite = 'net'; Phase = 'E5' }   # T-208 review 4 the end of a session keeps a frozen simulator's pieces (E5k)
         @{ Switch = 'ORICOOP_NET_NO_FORWARD';        File = 'src\OriCoop\NetPlay.cs';        Suite = 'net-4p';    Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_WORLD_NO_REBROADCAST'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net-3p'; Phase = '' }   # T-141 3P guest world change
+        @{ Switch = 'ORICOOP_MUTATE_UNSYNCED_BODIES'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'WO' }
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_NO_TEAM'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net';   Phase = 'ESC' }   # T-169 one finisher brings the team
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_MASH_NEAREST'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net-3p'; Phase = '' }   # T-169 mash revive: a random teammate in the escape
         @{ Switch = 'ORICOOP_MUTATE_WORLD_WHOLE_BLOB'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net-3p'; Phase = '' }   # T-168 same-RTT world events (net W5, net-4p and net-3p-cs check it too)
         @{ Switch = 'ORICOOP_MUTATE_TIMER_PHASE_ONCE'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = '' }   # T-250 the host resends its level timers' phase (no game check yet: World TimerPhaseTests)
+        @{ Switch = 'ORICOOP_MUTATE_SHOT_FOLLOW_OFF'; File = 'src\OriCoop\WorldObjSync.cs'; Suite = 'net'; Phase = 'WO' }   # #444 the Ginso shooter fires with the host's shots (WO2 / WO2L check it)
         @{ Switch = 'ORICOOP_MUTATE_SHARE_TRIGGERS'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 string triggers stay per PC (KURO post-story checks; World unit tests)
         @{ Switch = 'ORICOOP_MUTATE_MIRROR_TRIGGER_RUNS'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 a mirror's start consumes the string trigger (KURO: 03 and 04 ran once)
         @{ Switch = 'ORICOOP_MUTATE_START_IN_SCENE_TRIP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-185 a mirrored start waits for this PC's scene trip (KURO=1 over 90 ms: stories ended only once 04 finished, own Ori back at the tree)
@@ -170,6 +179,8 @@
         @{ Switch = 'ORICOOP_MUTATE_STREAM_IN_STORY'; File = 'src\OriCoop\EnemySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 the host does not stream the partner's scenes during a story (KURO: 03 and 04 ran once, Ori back at the tree)
         @{ Switch = 'ORICOOP_MUTATE_GATE_FIRE_BUTTON'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 the gate's fire does not re-check the pickup key (SEIN: story starts when the partner arrives)
         @{ Switch = 'ORICOOP_MUTATE_GATE_NO_ADOPT'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a player standing in a waited-at area counts as present (SEIN: story starts when the partner arrives)
+        @{ Switch = 'ORICOOP_MUTATE_SMALL_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'R' }   # T-255 the self-revive hint draws as large as the native hint (R6)
+        @{ Switch = 'ORICOOP_MUTATE_DIM_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'CUT' }   # T-255 the gate prompts draw their text at full alpha (GATE G1, ORICOOP_P3_GATE=1)
         @{ Switch = 'ORICOOP_MUTATE_STORY_ENDS_ON_GAP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running script with a takeover step ahead is not over (SEIN: a story announced as long as the script ran)
         @{ Switch = 'ORICOOP_MUTATE_WINDOW_BLOCKS_LOCAL'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
         @{ Switch = 'ORICOOP_MUTATE_REPEAT_WINDOW_MIRROR'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
