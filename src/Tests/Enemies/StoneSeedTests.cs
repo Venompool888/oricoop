@@ -44,6 +44,9 @@ static class StoneSeedTests
             Check(new StoneSeed().ForReseed(host, Key, 19, 0, 0).Data[0] == 12, "another scene instance inherited a local pose");
             var otherRoom = LastGuestLeft();
             Check(scene.ForReseed(otherRoom.Clients[1], Key, 19, 0, 0).Data[0] == 12, "another room inherited a local pose");
+            scene.Unloaded();
+            Check(scene.ForReseed(host, Key, 19, 0, 0).Data[0] == 12, "a reactivated instance reused movement from before the scene unloaded");
+            scene.LastPeerLeft(host, Key, 12, 0, 0);
             rig.Deliver(rig.Arbiter.JoinAt(2, 2, "second", ++rig.Now));
             rig.Clients[2].RequestLease(Key, 0, true);
             rig.Clients[2].PublishState(Key, new byte[] { 25 }, false);

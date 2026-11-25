@@ -10,6 +10,8 @@ namespace OriCoop.Authority
         uint vacantEpoch;
         float lastX, lastY, lastAngle;
 
+        public void Unloaded() { soloRoom = null; lastPublished = null; }
+
         public void LastPeerLeft(IAuthority room, string key, float x, float y, float angle)
         {
             soloRoom = room;

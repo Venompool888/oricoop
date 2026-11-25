@@ -1078,7 +1078,7 @@ namespace OriCoop
                 // With no puppet the native game moves this instance without the network FixedUpdate path.
                 foreach (var pair in s_inst)
                 {
-                    if (pair.Key == null || pair.Value.St == null) continue;
+                    if (pair.Key == null || !pair.Key.isActiveAndEnabled || pair.Value.St == null) continue;
                     Rigidbody body = s_body(pair.Key);
                     if (body == null) continue;
                     Vector3 live = body.position;
@@ -1102,8 +1102,9 @@ namespace OriCoop
             static void Postfix(PushPullBlock __instance)
             {
                 Inst i;
-                if (Online && s_inst.TryGetValue(__instance, out i) && i.St != null)
-                    DynamicLease.For(i.St.Key).Cancel();
+                if (!s_inst.TryGetValue(__instance, out i)) return;
+                i.Seed.Unloaded();
+                if (Online && i.St != null) DynamicLease.For(i.St.Key).Cancel();
             }
         }
 
