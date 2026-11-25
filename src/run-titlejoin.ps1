@@ -3,6 +3,7 @@
 # or room code and connects. Checks: the guest never sees a save slot, loads the host's save, ends beside the host,
 # and keeps a co-op copy in a slot. -Transport direct (default, LAN) | cserver (remote test server) |
 # steam (fake Steam on loopback; the guest accepts an automatic invite).
+# -RoomExit: exercise the rendered room cancel, disconnect reasons, and keyboard backspace (direct or fake Steam).
 # -WaitCancel: stay in the host lobby, cancel the real guest save wait and check recovery from a failed room-list refresh.
 # -FullSlots: the guest has 10 unrelated saves (every slot full): it is asked which slot keeps the co-op copy.
 # -Prologue skip|late|hostquit (T-203, T-205, TitlePrologueTest.cs): the host starts a NEW game on an empty slot; the
@@ -25,6 +26,9 @@ param([ValidateSet('direct', 'cserver', 'steam')][string]$Transport = 'direct', 
     [ValidateSet('', 'skip', 'late', 'hostquit', 'deep', 'probe')][string]$Prologue = '', [int]$FastForward = 0, [switch]$GuestSlot, [int]$ProbeJoin = 0,
     [ValidateSet('', 'drop-create')][string]$SteamFault = '', [switch]$RoomExit, [switch]$WaitCancel, [switch]$LobbyRecovery)
 $ErrorActionPreference = 'Stop'
+if ($RoomExit -and ($Transport -eq 'cserver' -or $WaitCancel -or $LobbyRecovery -or $Prologue -or $FullSlots -or $SteamFault)) {
+    throw '-RoomExit needs a direct or Steam title join without another scenario'
+}
 if ($LobbyRecovery) { $Transport = 'steam' }   # isolates both players with FakeSteamApi
 if ($WaitCancel -and ($Transport -ne 'direct' -or $Prologue -or $FullSlots -or $SteamFault)) { throw '-WaitCancel needs a direct title join without another scenario' }
 if ($Transport -eq 'steam' -and ($Prologue -or $FullSlots)) { throw '-Transport steam does not support -Prologue or -FullSlots' }

@@ -73,6 +73,8 @@ foreach ($leaf in $map.Full) {
     Ok ($got -contains 'net') ("shared-core file $leaf runs the direct 'net' suite (every phase)" + $(if ($got -notcontains 'net') { ' (selected: ' + ($got -join ',') + ')' } else { '' }))
 }
 # Rooms files (M7) do not drag in the multi-seat suites: their code never runs there.
+$exitSuites = @((Get-Selection @('src\OriCoop\TitleRoomExitTest.cs')).Suites)
+Ok (($exitSuites -join ',') -eq 'titlejoin-room-exit,titlejoin-steam-exit') 'the room-exit fixture selects direct and Steam menu checks'
 $faultOnly = @((Get-Selection @('src\OriCoop\RoomFailureTest.cs')).Suites)
 Ok (($faultOnly -join ',') -eq 'roomfailures') 'the isolated room-service fault test runs its own local scenario'
 foreach ($leaf in @('RoomSession', 'RoomsPanel', 'RoomLocalStore', 'RoomClient')) {
