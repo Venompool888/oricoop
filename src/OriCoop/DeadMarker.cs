@@ -26,6 +26,7 @@ namespace OriCoop
         static byte[] LoadBytes(out string source)
         {
             source = "";
+            s_overrideChanged = false;   // the stamp below is the one now loaded
             try
             {
                 string p = OverridePath;
@@ -48,7 +49,19 @@ namespace OriCoop
             }
         }
 
+        // Material() is called several times per frame per downed player; the override file (skin kit, live reload)
+        // only needs checking about once a second.
+        static int s_nextOverrideCheck;
+        static bool s_overrideChanged;
         static bool OverrideChanged()
+        {
+            int now = Environment.TickCount;
+            if (unchecked(now - s_nextOverrideCheck) < 0) return s_overrideChanged;
+            s_nextOverrideCheck = unchecked(now + 1000);
+            s_overrideChanged = OverrideChangedNow();
+            return s_overrideChanged;
+        }
+        static bool OverrideChangedNow()
         {
             try
             {
