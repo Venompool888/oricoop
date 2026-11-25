@@ -26,7 +26,11 @@ namespace OriCoop
 {
     public class InputState { }
     public static class Roles { public static int Mine = 1; }
-    public static class NetPlay { public static bool Enabled = true; public static int RemoteCount; public static int[] LocalSeats = { 1, 2 }; }
+    public static class NetPlay
+    {
+        public static bool Enabled = true; public static int RemoteCount; public static int[] LocalSeats = { 1, 2 };
+        public static bool IsLocalSeat(int seat) { return System.Array.IndexOf(LocalSeats, seat) >= 0; }
+    }
     public static class P2Context { public static bool Inside; public static Puppet Current; public static Game.SeinCharacter P1, P2; }
     public static class Revive { public static bool IsDowned(Game.SeinCharacter s) { return false; } }
     public static class OnlineLocalPlayers
