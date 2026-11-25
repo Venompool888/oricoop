@@ -196,8 +196,9 @@ namespace OriCoop
             s_dotTex.hideFlags = HideFlags.HideAndDontSave;
         }
 
-        void GoTo(int page, string submittedAddress = null)
+        void GoTo(int page)
         {
+            int previous = m_page;
             m_page = page;
             m_ignoreInputUntil = Time.unscaledTime + 0.3f;
             m_inputError = "";
@@ -214,8 +215,8 @@ namespace OriCoop
                 m_gridCol = 0;
                 if (OnlineLobby.Transport == "direct")
                 {
-                    m_directAddressInput = submittedAddress ?? NetPlay.ConfigAddress ?? "";
-                    if (submittedAddress == null && m_directAddressInput.IndexOf(':') < 0 && NetPlay.ConfigPort > 0 && NetPlay.ConfigPort != 47011)
+                    m_directAddressInput = previous == PageJoining ? m_lastJoinTarget : NetPlay.ConfigAddress ?? "";
+                    if (previous != PageJoining && m_directAddressInput.IndexOf(':') < 0 && NetPlay.ConfigPort > 0 && NetPlay.ConfigPort != 47011)
                         m_directAddressInput += ":" + NetPlay.ConfigPort;
                 }
             }
@@ -424,7 +425,7 @@ namespace OriCoop
             else if (m_page == PageJoining)
             {
                 if (OnlineLobby.Transport == "steam") { GoTo(PageRole); m_roleFocus = 1; }
-                else GoTo(PageJoinInput, m_lastJoinTarget);
+                else GoTo(PageJoinInput);
             }
         }
 
