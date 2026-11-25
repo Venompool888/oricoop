@@ -81,7 +81,7 @@ foreach ($s in $inSource) { Ok ($listed -contains $s) ($s + ' (in the source) ha
 # Every nightly mutation switch has a row.
 $nightly = Join-Path $TS_Root 'src\run-nightly.ps1'
 if (Test-Path $nightly) {
-    $helpers = @('ORICOOP_NET_ONLY', 'ORICOOP_FORCE_ZH', 'ORICOOP_TITLEJOIN_LEAVE', 'ORICOOP_S4_SKEW', 'ORICOOP_PHASES', 'ORICOOP_P3_KURO', 'ORICOOP_P3_SEIN')   # P3_KURO / P3_SEIN pick the Kuro (T-183) / Sein pickup (T-196) test
+    $helpers = @('ORICOOP_NET_ONLY', 'ORICOOP_FORCE_ZH', 'ORICOOP_TITLEJOIN_LEAVE', 'ORICOOP_S4_SKEW', 'ORICOOP_PHASES', 'ORICOOP_P3_KURO', 'ORICOOP_P3_SEIN', 'ORICOOP_P3_GATE')   # P3_KURO / P3_SEIN / P3_GATE pick the Kuro (T-183) / Sein pickup (T-196) / gate (T-255) test
     $nightlySwitches = @(Select-String -LiteralPath $nightly -Pattern "Env = @\{([^}]*)\}" | ForEach-Object { [regex]::Matches($_.Matches[0].Groups[1].Value, '(ORICOOP_\w+)\s*=') } |
         ForEach-Object { $_.Groups[1].Value } | Where-Object { $helpers -notcontains $_ } | Sort-Object -Unique)
     foreach ($s in $nightlySwitches) { Ok ($listed -contains $s) ($s + ' (nightly mutation) has a row in phase-map.psd1') }
