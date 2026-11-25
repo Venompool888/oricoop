@@ -67,6 +67,7 @@ namespace OriCoop
         static long s_deltaBytes, s_snapshotBytes, s_digestBytes;
         static bool s_sendingSnapshot;
         static uint s_digestSequence, s_receivedDigest;
+        static bool s_digestWorldMatched;   // #422: the received digest's world part matched, so its manifest is not compared
         static int s_digestSender;
         static bool s_digestProgressDiffers;
         static float s_digestResyncAt, s_digestBackoff = DigestBackoffMin;
@@ -115,7 +116,7 @@ namespace OriCoop
             s_snapshotRequests.Clear(); s_snapshotNumber = 0;
             s_mirrorHold.Clear(); s_mirrorKeys.Clear(); s_storyProgress.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
-            s_digestSequence = s_receivedDigest = 0;
+            s_digestSequence = s_receivedDigest = 0; s_digestWorldMatched = false;
             ResetDigestRepair();
             ResetDelta();
             s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear();
@@ -1202,7 +1203,16 @@ namespace OriCoop
             uint sequence = ++s_digestSequence;
             NetPlay.Send(MsgDigest, true, delegate(BinaryWriter w) { w.Write(sequence); w.Write(count); w.Write(hash); w.Write(progress); });
             s_digestBytes += 25;
-            SendManifest(sequence);
+            // #422: a guest's manifest only feeds the host's diff log; repair runs on the guest, from the host's manifest.
+            // While this guest's last check against the host (at most two rounds ago) matched, the host learns all it
+            // needs from the digest itself, so the growing manifest is not sent. The host always sends its manifest.
+            if (NetPlay.IsHost || !GuestInSync()) SendManifest(sequence);
+        }
+
+        static bool GuestInSync()
+        {
+            return LastDigestMatch && s_digestSender == NetRoute.HostSeat && LastDigestAt > 0
+                && Time.realtimeSinceStartup - LastDigestAt < 12f;
         }
 
         static void ReceiveDigest(BinaryReader reader)
@@ -1214,7 +1224,11 @@ namespace OriCoop
             if (!NetPlay.IsHost && sender != NetRoute.HostSeat) return;
             int localCount; ulong localHash = Digest(out localCount), localProgress = ProgressSync.Hash();
             s_digestSender = sender; s_receivedDigest = sequence;
-            s_remoteManifest.Clear(); CopyManifest(s_compareManifest);
+            // #422: equal count and hash mean the same objects with the same hashes, so the manifest would show no
+            // differences; skip copying and comparing it (both sides stay empty and the round ends as a match).
+            s_digestWorldMatched = count == localCount && hash == localHash;
+            s_remoteManifest.Clear();
+            if (s_digestWorldMatched) s_compareManifest.Clear(); else CopyManifest(s_compareManifest);
             LastRemoteCount = count; LastLocalCount = localCount; LastRemoteHash = hash; LastLocalHash = localHash;
             s_digestProgressDiffers = progress != localProgress;
             LastDigestMatch = count == localCount && hash == localHash && !s_digestProgressDiffers;
@@ -1293,6 +1307,7 @@ namespace OriCoop
         {
             uint sequence = reader.ReadUInt32(); bool final = reader.ReadBoolean(); int count = reader.ReadUInt16();
             if (sequence == 0 || sequence != s_receivedDigest || NetPlay.Sender != s_digestSender) return;
+            if (s_digestWorldMatched) count = 0;   // nothing to compare (see ReceiveDigest)
             for (int i = 0; i < count; i++)
             {
                 MoonGuid scene = new MoonGuid(reader), id = new MoonGuid(reader);
