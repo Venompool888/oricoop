@@ -300,7 +300,8 @@ namespace OriCoop
             float distance = LocalBodyDistance(view);
             Vector3 ownerPosition;
             bool near = distance < BodyReach;
-            bool claim = owner == 0 || (near && (!NetPlay.RemotePos(owner, out ownerPosition) || distance + 0.5f < DistanceTo(view, ownerPosition)));
+            bool claim = owner == 0 || NetPlay.RemoteLoading(owner)
+                || (near && (!NetPlay.RemotePos(owner, out ownerPosition) || distance + 0.5f < DistanceTo(view, ownerPosition)));
             if (!source.Owns(key) && claim && now >= view.RequestAt)
             {
                 source.RequestLease(key, distance, near); view.Requested = true; view.RequestAt = now + 0.35f;
@@ -356,6 +357,14 @@ namespace OriCoop
                     || Game.Checkpoint.SaveGameData == null) return;
                 IAuthority source = AuthoritySource.Current;
                 if (source.Mode == AuthorityMode.None || !BodyClock(source, Time.realtimeSinceStartup)) return;
+                // CreateCheckpoint samples Master and visible scenes only. A loaded but invisible
+                // scene still needs an archive, just like a scene loaded only by the partner.
+                HashSet<MoonGuid> nativeScenes = new HashSet<MoonGuid> { MoonGuid.Empty };
+                if (Core.Scenes.Manager != null)
+                    foreach (SceneManagerScene scene in Core.Scenes.Manager.ActiveScenes)
+                        if (scene != null && scene.IsVisible && scene.HasStartBeenCalled && scene.MetaData != null
+                            && scene.SceneRoot != null && scene.SceneRoot.SaveSceneManager != null)
+                            nativeScenes.Add(scene.MetaData.SceneMoonGuid);
                 foreach (StateUpdate state in source.CachedStates)
                 {
                     if (!state.Key.StartsWith(AuthorityClient.BodyStatePrefix, StringComparison.Ordinal)) continue;
@@ -364,7 +373,10 @@ namespace OriCoop
                     BodyView view;
                     if (s_bodies.TryGetValue(state.Key, out view) && view.Body != null && view.Save != null && view.Save.isActiveAndEnabled)
                     {
-                        if (!source.Owns(view.Key)) pose.Apply(view.Body);
+                        if (source.Owns(view.Key)) continue;
+                        pose.Apply(view.Body);
+                        if (!nativeScenes.Contains(view.Scene))
+                            StoreSceneProgress(view.Scene, view.Id, BodyPose.Capture(view).NativeArchive());
                     }
                     else
                     {
@@ -372,6 +384,14 @@ namespace OriCoop
                         if (id != null) StoreSceneProgress(id.Scene, id.Id, pose.NativeArchive());
                     }
                 }
+                foreach (BodyView view in s_bodies.Values)
+                    if (view.Save != null && view.Save.isActiveAndEnabled && view.Body != null
+                        && !nativeScenes.Contains(view.Scene) && source.Owns(view.Key))
+                    {
+                        // Capture the local simulation at this instant, including impulses after its last network tick.
+                        BodyPose current = BodyPose.Capture(view);
+                        if (current.Valid()) StoreSceneProgress(view.Scene, view.Id, current.NativeArchive());
+                    }
             }
         }
 

@@ -146,8 +146,9 @@ namespace OriCoop
                 if (all) { SendSnapshot(0, "queued"); ProgressSync.SendSnapshot(); }
                 foreach (int seat in seats) { SendSnapshot(seat, "queued"); ProgressSync.SendSnapshot(seat); }
             }
-            if (!NetPlay.AnyRemoteInGameplay || s_awaitSnapshot) return;
+            if (s_awaitSnapshot) return;
             if (!s_mutateUnsyncedBodies) TickBodies();
+            if (!NetPlay.AnyRemoteInGameplay) return;
             float now = Time.realtimeSinceStartup;
             if (now >= s_scanAt) { s_scanAt = now + 0.25f; SendBlobs(RouteAggregates(Capture(false))); }
             if (now >= s_digestAt) { s_digestAt = now + 5f; SendDigest(); }
