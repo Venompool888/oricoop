@@ -109,6 +109,13 @@ static class WorldTests
             Check(!keys.StoreInCheckpoint("scene:pickup", false, false), "the first partner blob arrives after the scene unloaded: not stored");
             Check(keys.StoreInCheckpoint("scene:other", false, false), "an object never seen loaded is still stored");
         });
+        Run("a remote story in a never-loaded scene preserves the native checkpoint", delegate {
+            StoryProgressKeys keys = new StoryProgressKeys();
+            Check(!keys.StoreInCheckpoint("unseen:story", false, false, true), "first tagged progress stays local");
+            Check(!keys.StoreInCheckpoint("unseen:story", false, false), "remember through retransmission");
+            Check(keys.StoreInCheckpoint("unseen:platform", false, false), "an ordinary sequence still advances");
+            Check(keys.StoreInCheckpoint("known:mechanism", true, false, true), "local loaded mechanism takes precedence");
+        });
         Run("one-shot hazard fires on both PCs again after a checkpoint reload", delegate {
             OneShotTriggers a = new OneShotTriggers(), b = new OneShotTriggers();
             const int rock = 77;

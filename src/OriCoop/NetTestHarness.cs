@@ -1708,6 +1708,7 @@ namespace OriCoop
                     if (step == 5) yield return Safely(h, "W map", MapKeep(h, false));
                     if (step == 5) yield return Safely(h, "W map late", MapKeep(h, true));
                     if (step == 5) yield return Safely(h, "W pickups", PickupCopies(h));
+                    if (step == 5) yield return Safely(h, "W unseen story archive", UnseenStoryArchive(h));
                     if (step == 5) yield return Safely(h, "W cells", CellRefill(h));
                 }
             }

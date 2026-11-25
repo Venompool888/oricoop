@@ -448,6 +448,19 @@ namespace OriCoop
             }
         }
 
+        static Blob CaptureRecord(MoonGuid scene, MoonGuid id, ISerializable save)
+        {
+            byte[] bytes = CaptureBytes(save);
+            if (bytes.Length > MaxBlob) throw new InvalidDataException("Archive exceeds 4 MB limit");
+            string type = save.GetType().FullName;
+            if (StorySequenceOf(save) != null)
+            {
+                s_storyProgress.Remember(Key(scene, id));
+                if (!s_untypedStoryProgress) type = World.StoryProgressKeys.StoryType;
+            }
+            return MakeBlob(scene, id, bytes, Describe(save), type);
+        }
+
         static List<Blob> Capture(bool full)
         {
             List<Blob> changed = new List<Blob>();
@@ -463,12 +476,9 @@ namespace OriCoop
                     s_excluded.Remove(key);
                     if (s_bad.Contains(key)) continue;
                     if (StorySync.MirrorOwns(save as Component)) s_mirrorKeys.Add(key);
-                    if (save is ActionSequenceSerializer && StorySequenceOf(save) != null) s_storyProgress.Remember(key);   // T-207 review 7
                     try
                     {
-                        byte[] bytes = CaptureBytes(save);
-                        if (bytes.Length > MaxBlob) throw new InvalidDataException("Archive exceeds 4 MB limit");
-                        Blob blob = MakeBlob(scene, entry.Id, bytes, Describe(save), save.GetType().FullName);
+                        Blob blob = CaptureRecord(scene, entry.Id, save);
                         Blob old;
                         bool seen = s_blobs.TryGetValue(key, out old);
                         if (seen && old.Hash != blob.Hash)
@@ -755,7 +765,8 @@ namespace OriCoop
             if (schema == Meaning.Controller) bytes = LocalTriggers(live, key, bytes);
             // T-207 (1): a partner's story-sequence progress stays out of this PC's checkpoint too (StoryProgressKeys).
             if (schema == Meaning.Pickup || schema == Meaning.Door) StoreSceneProgress(scene, id, bytes);
-            else if (s_storyProgress.StoreInCheckpoint(key, live != null, StorySequenceOf(live) != null)) StoreCheckpoint(scene, id, bytes);
+            else if (s_storyProgress.StoreInCheckpoint(key, live != null, StorySequenceOf(live) != null,
+                schema == Meaning.Raw && type == World.StoryProgressKeys.StoryType)) StoreCheckpoint(scene, id, bytes);
             else { StoryProgressNotStored++; CoopTrace.Event("story", "sequence.progress.not-stored", "key", key); }
             if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay() && !TestDeferApply) ApplyLive(scene, id, bytes);
             else if (live != null && !s_bad.Contains(key))
@@ -918,6 +929,7 @@ namespace OriCoop
         //   partner's step and ran the tail of the script a second time.
         // A partner's "not running" value is still taken by a copy that is not running here.
         // Test-only mutation ORICOOP_MUTATE_SEQ_PROGRESS_SHARED: the partner's progress replaces it again.
+        static readonly bool s_untypedStoryProgress = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_UNTYPED_STORY_PROGRESS") == "1";
         static readonly bool s_mutateSharedProgress = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SEQ_PROGRESS_SHARED") == "1";
         public static int SequenceProgressKept, StoryProgressNotStored;
         static readonly World.StoryProgressKeys s_storyProgress = new World.StoryProgressKeys();
