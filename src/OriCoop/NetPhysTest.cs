@@ -559,14 +559,15 @@ namespace OriCoop
         // back. Before the fix the second pusher fell out of the push state within half a second (the grab ray stopped
         // at the partner's capsule; the hold was dropped when the lease was refused; the takeover prediction made the
         // stone run ahead and jump back).
-        static IEnumerator PushSameStone(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host)
+        static IEnumerator PushSameStone(TestHarness h, PushPullBlock block, Vector3 resting, Quaternion restingRot, bool host, bool pauseStates = false)
         {
-            yield return CoopReset(h, 230, block, resting, restingRot, host);
+            int step = pauseStates ? 270 : 230;
+            yield return CoopReset(h, step, block, resting, restingRot, host);
             GrabSetup first = new GrabSetup();
             if (host) { yield return GrabBlock(block, first, CoopDir); if (first.Started) Bot(true, CoopDir); }
-            yield return Barrier(h, 231, block, first.Started);
+            yield return Barrier(h, step + 1, block, first.Started);
             Sample partner;
-            if (!s_partnerSteps.TryGetValue(231, out partner)) yield break;
+            if (!s_partnerSteps.TryGetValue(step + 1, out partner)) yield break;
             if (!(host ? first.Started : partner.GrabStarted))
             {
                 Bot(false);
@@ -577,13 +578,18 @@ namespace OriCoop
             yield return Wait(0.5f);   // the host owns the stone and it moves
             GrabSetup second = new GrabSetup();
             if (!host) { yield return GrabBlock(block, second, CoopDir, true); if (second.Started) Bot(true, CoopDir); }
-            yield return Barrier(h, 232, block, second.Started);
-            if (!s_partnerSteps.TryGetValue(232, out partner)) yield break;
+            yield return Barrier(h, step + 2, block, second.Started);
+            if (!s_partnerSteps.TryGetValue(step + 2, out partner)) yield break;
             if (!(host ? partner.GrabStarted : second.Started))
             {
                 Bot(false); s_watch = null;
                 h.Check(false, "PE setup: the guest grabbed the stone the host is pushing (try " + second.Attempts + ")");
-                yield return Barrier(h, 233, block);
+                yield return Barrier(h, step + 3, block);
+                yield break;
+            }
+            if (pauseStates)
+            {
+                yield return OwnerStateGap(h, block, host);
                 yield break;
             }
             // The push stays on the first 9 units of the floor (further left it rises, and an Ori that leaves the ground
@@ -629,6 +635,51 @@ namespace OriCoop
             h.Note("PE: partner copies took hold again " + PushBlockSync.PuppetRegrabs + " times on this PC; owner P" + PushBlockSync.StateOf(block).OwnerSeat
                 + ", own Ori grabbing " + (Own != null && Own.Abilities.GrabBlock.IsGrabbing) + " at the end");
             Note(h, "PE end", block);
+        }
+
+        // Keep both players' input and the authority connection live. Only this stone's publications pause.
+        static IEnumerator OwnerStateGap(TestHarness h, PushPullBlock block, bool host)
+        {
+            PushBlockSync.St stone = PushBlockSync.StateOf(block);
+            DynamicLease lease = stone.Lease;
+            uint epoch = lease.Epoch;
+            if (host)
+            {
+                h.Check(lease.Owns && lease.Active, "PI the first pusher owns the moving stone");
+                stone.SentAt = float.PositiveInfinity;
+                try { yield return Wait(1.15f); }
+                finally { stone.SentAt = -10f; }
+            }
+            else
+            {
+                bool heldDuringGap = false, predicted = false, resumed = false;
+                float lastGapPacket = 0f, until = Time.realtimeSinceStartup + 4f;
+                while (Time.realtimeSinceStartup < until && !resumed)
+                {
+                    KeepAlive();
+                    float now = Time.realtimeSinceStartup;
+                    if (heldDuringGap && lease.ReceivedAt > lastGapPacket) resumed = true;
+                    if (lease.Epoch == epoch && lease.StateEpoch == epoch && !lease.Owns && lease.RemoteActive
+                        && now < stone.InteractionUntil && now - lease.ReceivedAt > 0.3f)
+                    {
+                        heldDuringGap = true;
+                        lastGapPacket = lease.ReceivedAt;
+                        predicted |= stone.Simulation.Predicting || !block.GetComponent<Rigidbody>().isKinematic;
+                    }
+                    yield return null;
+                }
+                h.Check(heldDuringGap, "PI the guest kept pushing during the owner's state gap");
+                h.Check(!predicted, "PI the helper follows throughout the gap without starting a local simulation");
+                h.Check(resumed, "PI fresh owner states resume on the same stone");
+            }
+            yield return Barrier(h, 273, block);
+            Bot(false);
+            yield return Wait(0.8f);
+            yield return Barrier(h, 274, block);
+            Sample partner; string detail;
+            if (s_partnerSteps.TryGetValue(274, out partner))
+                h.Check(Agree(block, partner, out detail), "PI the stone settles at the same position on both PCs (" + detail + ")");
+            s_watch = null;
         }
 
         // PF (T-197): the lease goes host -> guest -> host, each pushing the stone on alone. A PC that follows the new
@@ -780,6 +831,7 @@ namespace OriCoop
                 {
                     if (scenario == "PH") yield return Rider(h, block, resting, restingRot, host);
                     else if (scenario == "PE") yield return PushSameStone(h, block, resting, restingRot, host);
+                    else if (scenario == "PI") yield return PushSameStone(h, block, resting, restingRot, host, true);
                     else if (scenario == "PF") yield return Handover(h, block, resting, restingRot, host);
                     else if (scenario == "PG") yield return DownedHolder(h, block, resting, restingRot, host);
                     else h.Check(false, "P co-op scenario '" + scenario + "' exists (PH, PE, PF, PG)");
