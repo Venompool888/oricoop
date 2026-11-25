@@ -698,8 +698,8 @@ namespace OriCoop
             bool keyboard = !primary && ExtraUsesKeyboard(seat);
             TopText = L10n.F("gate.force", primary ? ButtonIconUtility.GetButtonString(PlayerInput.Instance.Bash) : keyboard ? "<icon>p</>" : "<icon>i</>");
             LeaveText = L10n.F("gate.leave", primary ? ButtonIconUtility.GetButtonString(PlayerInput.Instance.SoulFlame) : keyboard ? "<icon>H</>" : "<icon>f</>");
-            if (s_top.SetText(TopText)) s_top.PlaceViewport(x, y + 0.05f, 0.028f, 0.36f);
-            if (s_leave.SetText(LeaveText)) s_leave.PlaceViewport(x, y - 0.05f, 0.028f, 0.36f);
+            if (s_top.SetText(TopText)) s_top.PlaceViewport(x, y + 0.05f, 0.03f, 0.6f);   // T-255: as tall as the wait line (was capped at 0.36 of the width, so it drew small)
+            if (s_leave.SetText(LeaveText)) s_leave.PlaceViewport(x, y - 0.05f, 0.03f, 0.6f);
             s_ring.Place(point + new Vector3(3.3f, 2.2f, 0f), 0.08f, HoldProgress, 1f);
         }
         internal static bool WaitPromptOnScreen() { return s_bottom != null && s_bottom.OnScreen(false); }

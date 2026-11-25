@@ -43,6 +43,33 @@ namespace OriCoop
                     .Append(" colour a=").Append(g.m_box.TextBox.color.a.ToString("0.00"));
             return sb.Length > 0 ? sb.ToString() : "none";
         }
+        // T-255: how tall each prompt on screen draws, as a fraction of the screen height (HUD camera), for the size comparison.
+        internal static string ShownHeights()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            Camera gui = P2Hud.GuiCamera();
+            foreach (GameText g in s_all)
+            {
+                Bounds b;
+                if (!g.Shown || gui == null || !g.Measure(out b)) continue;
+                float h = gui.WorldToViewportPoint(b.max).y - gui.WorldToViewportPoint(b.min).y;
+                sb.Append(sb.Length > 0 ? "; " : "").Append(g.m_name).Append(" h=").Append(h.ToString("0.000"));
+            }
+            return sb.Length > 0 ? sb.ToString() : "none";
+        }
+        internal static string HeightOf(MessageBox box)
+        {
+            Camera gui = P2Hud.GuiCamera();
+            if (box == null || box.TextBox == null || box.TextBox.textRenderers == null || gui == null) return "?";
+            bool any = false; Bounds b = new Bounds();
+            foreach (var tr in box.TextBox.textRenderers)
+            {
+                if (tr == null || tr.renderedCharCount == 0) continue;
+                foreach (Renderer r in tr.GetComponentsInChildren<Renderer>())
+                { if (!r.enabled) continue; if (!any) { b = r.bounds; any = true; } else b.Encapsulate(r.bounds); }
+            }
+            return any ? (gui.WorldToViewportPoint(b.max).y - gui.WorldToViewportPoint(b.min).y).ToString("0.000") : "?";
+        }
         internal static int ShownCount() { int n = 0; foreach (GameText g in s_all) if (g.Shown) n++; return n; }
         internal static string FaintShown(float floor)
         {
