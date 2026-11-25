@@ -943,16 +943,22 @@ namespace OriCoop
         internal static bool RemoteLoading(int seat)
         { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello && !remote.InGameplay; }
 
-        public static bool LocalInGameplay()
+        public static bool LocalInGameplay() { return NotInGameplayReason() == null; }
+
+        // Why this PC is not in co-op gameplay, or null when it is (constant strings: called every frame).
+        public static string NotInGameplayReason()
         {
             SeinCharacter s = Characters.Sein;
-            if (s == null || !s.gameObject.activeInHierarchy || (P2Context.P2 != null && s == P2Context.P2)) return false;
+            if (s == null) return "no Sein";
+            if (!s.gameObject.activeInHierarchy) return "Sein inactive";
+            if (P2Context.P2 != null && s == P2Context.P2) return "Sein is P2";
             GameController gc = GameController.Instance;
-            if (gc == null || gc.IsLoadingGame) return false;
-            if (GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen()) return false;
+            if (gc == null) return "no game controller";
+            if (gc.IsLoadingGame) return "loading a game";
+            if (GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen()) return "title screen";
             // T-203: the new-game prologue is not co-op gameplay: no checkpoint leaves a host in the middle of it.
-            if (GameStateMachine.Instance != null && GameStateMachine.Instance.CurrentState == GameStateMachine.State.Prologue) return false;
-            return true;
+            if (GameStateMachine.Instance != null && GameStateMachine.Instance.CurrentState == GameStateMachine.State.Prologue) return "prologue";
+            return null;
         }
 
         static void Handle(byte[] m, bool reliable, RemoteState source)
