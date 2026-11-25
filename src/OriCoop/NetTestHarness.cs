@@ -899,6 +899,13 @@ namespace OriCoop
             // T-213 (10): seat 2 notes seat 3 as "joined after me, no load announced yet" (how a guest gets that note:
             // Saves unit tests). When seat 2 becomes the host below it must send seat 3 its checkpoint, not take it as loaded.
             int t213Loads = SaveSync.GuestLoads, t213Sent = SaveSync.CheckpointsSent;
+            int previousRecoveryRow = -1;
+            if (NetRoute.ServerMode)
+            {
+                yield return OpenKeystoneMenu(h, Players.LocalSeat == 1);
+                if (Players.LocalSeat == 1) previousRecoveryRow = CoopMenu.KeystoneRow;
+                else CoopMenu.Close();
+            }
             if (NetRoute.ServerMode && Players.LocalSeat == 2) SaveSync.TestAwaitSave(3);
             s_ownerNotices.Clear();
             yield return ThreeRound(h, 6);
@@ -919,6 +926,9 @@ namespace OriCoop
                 if (Players.LocalSeat == 2) { yield return Wait(0.5f); ForcedSync.TestSendCount("t158-gate", 1, 2); }
                 if (Players.LocalSeat == 1)
                 {
+                    h.Check(CoopMenu.KeystoneRow < 0, "T-259 the former host loses the F8 recovery action");
+                    if (previousRecoveryRow >= 0) CheckRecoveryDenied(h, previousRecoveryRow);
+                    CoopMenu.Close();
                     by = Time.realtimeSinceStartup + 6f;
                     while (ForcedSync.TestCount("t158-gate") != 1 && Time.realtimeSinceStartup < by) yield return null;
                     h.Check(ForcedSync.TestCount("t158-gate") == 1, "3P server: the creator obeys the arbiter's gate count (T-158)");
@@ -963,6 +973,7 @@ namespace OriCoop
                         "3P server: the new host sends its save to the waiting guest and sees it load (T-213; sent +"
                         + (SaveSync.CheckpointsSent - t213Sent) + ", seat 3 ready " + SaveSync.ReadyForSeat(3) + ")");
                 }
+                yield return CheckKeystoneRecovery(h, 2, 25910);
                 if (Players.LocalSeat == 2)
                 {
                     yield return Wait(1f);
@@ -1709,6 +1720,7 @@ namespace OriCoop
                     if (step == 5) yield return Safely(h, "W map late", MapKeep(h, true));
                     if (step == 5) yield return Safely(h, "W pickups", PickupCopies(h));
                     if (step == 5) yield return Safely(h, "W cells", CellRefill(h));
+                    if (step == 5) yield return Safely(h, "W keystone recovery", CheckKeystoneRecovery(h, 1, 25900));
                 }
             }
             finally

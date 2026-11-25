@@ -68,6 +68,7 @@ $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
+    'KeystoneRecovery' = @('net', 'net-3p-cs'); 'NetKeystoneRecoveryTest' = @('net', 'net-3p-cs')
     'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-cs')
     # T-203: the shared new-game prologue. Its own code and test run the two prologue suites, the existing-save join
     # (titlejoin: nothing of it may start there) and, for the input hook and the intro hold it stands next to, net + local.
