@@ -136,6 +136,7 @@ namespace OriCoop
             int primary = s_seats.Owner(previous);
             if (primary != 0 && primary != previous)
             { OnlineLocalPlayers.ChangePrimary(previous, primary); Players.AssignedSeat = primary; }
+            TeammateIdentity.LocalSeatsChanged();
             OnlineLocalPlayers.Reconcile();
             for (int seat = 1; seat <= 4; seat++)
                 if (!Players.IsLocal(seat)) { s_extraCount[seat] = 0; s_extraSent.Remove(seat); }

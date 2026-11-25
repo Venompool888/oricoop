@@ -687,6 +687,7 @@ namespace OriCoop
             if (keepHostLocals) RetainHostLocalSeats(); else ResetLocalSeats();
             s_statusDirty = true; s_sentCount = 0;
             s_bus.ClearEarly(); s_bus.ClearRenumbered();
+            TeammateIdentity.TransportReset(keepHostLocals);
         }
 
         // Test hook: ORICOOP_NET_SIM = "lagMs,jitterMs,lossPercent,dupPercent" on outgoing packets.
