@@ -432,8 +432,6 @@ namespace OriCoop
             float now = Time.realtimeSinceStartup;
             if (what == "grab") st.GrabbedAt = now;
             if (Moving(pm) || now - st.GrabbedAt < 0.5f) st.InteractionUntil = now + 0.15f;
-            SeinCharacter me = LocalOri(pm);
-            NoteOwnPush(st, me == null ? 0 : Players.SeatOf(me), PushDir(pm), now);
             Simulates(st);
             LeaseStep(b, st);
             Rigidbody rb = s_body(b);
@@ -552,8 +550,21 @@ namespace OriCoop
         {
             static void Postfix(SeinGrabBlock __instance)
             {
-                if (!Enabled || s_mutateDropHelper || !Online || __instance == null || __instance.IsGrabbing || __instance.Sein == null) return;
-                try { Regrab(__instance); }
+                if (!Enabled || !Online || __instance == null || __instance.Sein == null) return;
+                try
+                {
+                    if (__instance.IsGrabbing)
+                    {
+                        // Report the native actor's completed state. A couch player's physics callback can
+                        // happen outside its input swap, where the current context points to the primary.
+                        SeinCharacter actor = LocalOri(__instance.PlatformMovement);
+                        if (actor == null) return;
+                        PushPullBlock block = s_fPushable.GetValue(__instance) as PushPullBlock;
+                        if (block != null && Ready(block))
+                            NoteOwnPush(InstOf(block).St, Players.SeatOf(actor), PushDir(__instance.PlatformMovement), Time.realtimeSinceStartup);
+                    }
+                    else if (!s_mutateDropHelper) Regrab(__instance);
+                }
                 catch (Exception e) { if (CoopTraceEvery("regrab", 5f)) Plugin.Log.LogWarning("[phys] regrab: " + e.Message); }
             }
         }
@@ -802,6 +813,11 @@ namespace OriCoop
                 if (!Ready(__instance)) return true;
                 try
                 {
+                    if (Online && Enabled)
+                    {
+                        SeinCharacter actor = LocalOri(platformMovement);
+                        if (actor != null) NoteOwnPush(InstOf(__instance).St, Players.SeatOf(actor), 0, Time.realtimeSinceStartup);
+                    }
                     if (Online && Enabled && (IsPuppet(platformMovement) || Players.RemoteContext)) { SetIgnore(__instance, platformMovement, false); return false; }
                     if (Online && Enabled && platformMovement == LocalPm) InstOf(__instance).St.InteractionUntil = -10f;
                     if (Online && Enabled && platformMovement == LocalPm && !Simulates(InstOf(__instance).St))

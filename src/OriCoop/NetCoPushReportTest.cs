@@ -97,6 +97,15 @@ namespace OriCoop
                 }
                 if (!host) h.Check(pushing, "PR the secondary Ori pushes the real stone on its own PC");
                 yield return Barrier(h, 414, block, pushing);
+                PushBlockSync.St currentStone = PushBlockSync.StateOf(block);
+                OriCoop.Authority.CoPushReport last;
+                bool received = currentStone.Reports.TryGetValue(guest, out last);
+                object held = AccessTools.Field(typeof(SeinGrabBlock), "m_pushable").GetValue(extra.Abilities.GrabBlock);
+                h.Note("PR P" + extraSeat + " device=" + NetPlay.DeviceSeat(extraSeat) + " actual seat=" + Players.SeatOf(extra)
+                    + " selected stone=" + ReferenceEquals(held, block) + " grab=" + extra.Abilities.GrabBlock.IsGrabbing
+                    + " ground=" + extra.PlatformBehaviour.PlatformMovement.IsOnGround + " current dir=" + PushBlockSync.PushDir(extra.PlatformBehaviour.PlatformMovement)
+                    + " local dir=" + currentStone.SeatPushDir[extraSeat] + " sent mask=" + currentStone.SentSeatDirs
+                    + " received=" + received + " received mask=" + last.Seats + " seq=" + last.Sequence + " age=" + F(Time.realtimeSinceStartup - last.At));
                 if (host)
                 {
                     h.Check(pushing, "PR the remote stone records the pushing secondary Ori's own seat");
