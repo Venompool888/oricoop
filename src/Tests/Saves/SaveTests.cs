@@ -109,6 +109,10 @@ partial class SaveTests
         Run("T-213 promoted host sends its save to a seat still waiting for its first one", PromotedHostSendsToWaitingSeat);
         Run("T-213 a waiting mark ends with the seat, the session and the promotion", WaitingSeatMarkEnds);
         Run("T-213 the promotion keeps a seat that joined after the role change unsent", PromotionKeepsSeatJoinedAfterRoleChange);
+        Run("T-225 guest hears a waiting seat before its own load and serves it after promotion", HandoverDuringFirstLoad);
+        Run("T-225 a replacement for a loaded seat still needs its own checkpoint", HandoverAfterSeatReuse);
+        Run("T-225 a queued peer introduction never acknowledges a new host's transfer", PeerPlayingIsNotACheckpointAck);
+        Run("T-225 an early introduction survives the same occupant's subsequent Hello", PeerPlayingBeforeHello);
         // T-157: after SaveSync disabled itself (failed load) a restart is a real quit to the title, not its load.
         Run("load restart: only while loading and not disabled", delegate {
             Check(LoadRestart.IsOwn(true, false), "a running load restart was taken for a quit");

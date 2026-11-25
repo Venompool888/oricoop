@@ -11,6 +11,8 @@ namespace OriCoop.Saves
     public static class SaveWire
     {
         public const byte SaveMessage = 10, LoadedMessage = 11;
+        // A guest introduces its already-loaded world to a new peer. It never acknowledges a host's checkpoint.
+        public const byte PeerPlaying = 102;
         // T-043: guest -> host, a save point the guest touched: [base timeline string][len][bytes].
         public const byte SaveOffer = 0x57;
         public const int MaximumSaveBytes = 4 * 1024 * 1024 - 64;

@@ -16,8 +16,10 @@ namespace OriCoop.Net
     // net13: a completed story can carry survivor vitals and positions in an optional StoryEnd tail (T-246).
     // net14: ordinary rigidbody poses use shared leases instead of generic world blobs (T-224).
     // net15: pickup actions identify native registry ownership; cell results address the collector and its authoritative progress snapshot (T-223).
+    // net16 (T-225): handover keeps guest readiness and movement tied to their current seats.
+    // Msg 102 reports readiness to another guest. The host still accepts only Msg 11 as its load acknowledgement.
     internal static class ProtocolVersion
     {
-        public const string Mod = "0.2.0-net15";
+        public const string Mod = "0.2.0-net16";
     }
 }
