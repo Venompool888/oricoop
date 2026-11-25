@@ -94,9 +94,9 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `snapshot why=` at spectate start / end / another teammate, own player down / up, a new scene and a device change.
   **`audio lost.suspect reasons=`** when the sound looks lost, with the full state (listener and its position, pause,
   volumes, focus, time scale, scene, camera target, playing / quiet / out-of-range sources, the 4 playing sounds
-  nearest to the view as `name@dist/volume/maxDistance/rolloff`, every player's position and downed state); the same
+  nearest to the view as `name@dist/volume/maxDistance/rolloff/blend`, blend 0 = 2D, every player's position and downed state); the same
   moment as a warning `audio: sound may be lost (...)` in `LogOutput.log`. Then `lost.change`, `lost.still` (every
-  30 s) and `lost.clear for_s=`. Reasons: `no_listener`, `many_listeners`, `listener_paused`, `listener_volume`,
+  30 s) and `lost.clear for_s=`. Reasons: `no_listener`, `many_listeners` (both only in a level: while the game starts there is no camera yet), `listener_paused`, `listener_volume`,
   `settings_zero`, `listener_off_view` (listener more than 15 units from what the camera shows),
   `listener_far_from_watched` (while down, from the teammate you watch), `view_sounds_quiet` (2+ sounds next to the
   view play but none can be heard), `silent` (nothing plays for 5 s in a running level), `dsp_stalled` (the audio

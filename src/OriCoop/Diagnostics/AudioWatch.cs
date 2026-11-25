@@ -65,8 +65,9 @@ namespace OriCoop.Diagnostics
         public static List<string> Seen(AudioReading r)
         {
             List<string> s = new List<string>();
-            if (r.Listeners == 0) s.Add(NoListener);
-            if (r.Listeners > 1) s.Add(ManyListeners);
+            // Only in a level: while the game starts or loads a save there is no camera (and no listener) yet.
+            if (r.InGameplay && r.Listeners == 0) s.Add(NoListener);
+            if (r.InGameplay && r.Listeners > 1) s.Add(ManyListeners);
             if (r.Paused && r.Running && r.InGameplay) s.Add(Paused);
             if (r.Volume < 0.05f) s.Add(Muted);
             if (r.SettingsMin >= 0f && r.SettingsMin < 0.01f) s.Add(SettingsZero);
@@ -147,7 +148,7 @@ namespace OriCoop.Diagnostics
         public int TakeSuppressed() { int n = Suppressed; Suppressed = 0; return n; }
     }
 
-    // Compact text of a few sounds for a trace field: "name@dist/vol/max/rolloff;..." (fields with spaces quoted by
+    // Compact text of a few sounds for a trace field: "name@dist/vol/max/rolloff/blend;..." (blend 0 = 2D, 1 = 3D) (fields with spaces quoted by
     // CoopTrace itself). Names lose spaces and separators so the list stays one value.
     public static class AudioText
     {
@@ -159,12 +160,13 @@ namespace OriCoop.Diagnostics
             return sb.Length > 48 ? sb.ToString(0, 48) : sb.ToString();
         }
 
-        public static string Sound(string name, float distance, float volume, float maxDistance, string rolloff)
+        public static string Sound(string name, float distance, float volume, float maxDistance, string rolloff, float blend)
         {
             return Clean(name) + "@" + distance.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
                 + "/" + volume.ToString("0.##", System.Globalization.CultureInfo.InvariantCulture)
                 + "/" + maxDistance.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture)
-                + "/" + (rolloff ?? "-");
+                + "/" + (rolloff ?? "-")
+                + "/" + blend.ToString("0.#", System.Globalization.CultureInfo.InvariantCulture);
         }
     }
 }

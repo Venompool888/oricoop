@@ -290,17 +290,19 @@ namespace OriCoop
                 bool isQuiet = src.mute || !src.enabled || src.volume < 0.02f || far;
                 if (isQuiet) quiet++;
                 if (far) outOfRange++;
-                if (s_haveView && blend > 0.5f)
+                if (s_haveView)
                 {
+                    // Any blend: the game may play its sounds 2D and place them itself. The list keeps every playing
+                    // source, nearest to the view first, so a snapshot shows where the sounds are even when none is near.
                     float d = Flat(pos, s_view);
                     if (d <= AudioWatch.NearView)
                     {
                         nearPlaying++;
                         if (isQuiet) nearQuiet++;
-                        if (near.Count < 32)
-                            near.Add(new KeyValuePair<float, string>(d, AudioText.Sound(src.clip != null ? src.clip.name : src.name, d,
-                                src.mute ? 0f : src.volume, src.maxDistance, src.rolloffMode.ToString())));
                     }
+                    if (near.Count < 64)
+                        near.Add(new KeyValuePair<float, string>(d, AudioText.Sound(src.clip != null ? src.clip.name : src.name, d,
+                            src.mute ? 0f : src.volume, src.maxDistance, src.rolloffMode.ToString(), blend)));
                 }
             }
             near.Sort((a, b) => a.Key.CompareTo(b.Key));

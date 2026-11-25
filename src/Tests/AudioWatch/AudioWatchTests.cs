@@ -93,6 +93,18 @@ static class AudioWatchTests
             AudioReading some = Fine(); some.NearViewPlaying = 3; some.NearViewQuiet = 2;
             Eq("", Feed(w3, some, 5)[5], "one of three audible");
         });
+        Run("no listener while the game starts or loads is not a loss (#442 test: 0.67 s after start)", delegate {
+            AudioWatch w = new AudioWatch();
+            AudioReading r = Fine(); r.InGameplay = false; r.Listeners = 0; r.Playing = 0; r.NearViewPlaying = 0;
+            Eq("", Feed(w, r, 10)[10], "title / loading: no camera yet");
+            r.Listeners = 2;
+            Eq("", Feed(w, r, 10)[10], "title / loading: two listeners");
+            AudioWatch w2 = new AudioWatch();
+            AudioReading inLevel = Fine(); inLevel.Listeners = 0;
+            List<string> got = Feed(w2, inLevel, 2);
+            Eq("", got[1], "in a level, 1 s");
+            Eq(AudioWatch.NoListener, got[2], "in a level, 2 s");
+        });
         Run("listener count, pause, volumes and the audio clock", delegate {
             AudioReading r = Fine(); r.Listeners = 0;
             Eq(AudioWatch.NoListener, string.Join(",", AudioWatch.Seen(r).ToArray()), "no listener");
@@ -151,7 +163,8 @@ static class AudioWatchTests
             Eq(true, b.Take(120f), "two minutes later");
         });
         Run("sound text stays one value", delegate {
-            Eq("ori_jump@3.2/0.5/20/Linear", AudioText.Sound("ori jump", 3.24f, 0.5f, 20f, "Linear"), "sound");
+            Eq("ori_jump@3.2/0.5/20/Linear/1", AudioText.Sound("ori jump", 3.24f, 0.5f, 20f, "Linear", 1f), "sound");
+            Eq("music@40/0.8/500/Logarithmic/0", AudioText.Sound("music", 40f, 0.8f, 500f, "Logarithmic", 0f), "2D sound");
             Eq("a_b_c_d_e", AudioText.Clean("a;b@c/d=e"), "separators");
             Eq("-", AudioText.Clean(null), "no name");
             Eq(48, AudioText.Clean(new string('x', 80)).Length, "long name");
