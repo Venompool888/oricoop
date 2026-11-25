@@ -168,8 +168,8 @@ static class CoopMenuFlowTests
             foreach (int page in new[] { CoopMenuFlow.PageHostMethod, CoopMenuFlow.PageJoinMethod })
                 foreach (bool zh in new[] { true, false })
                 {
-                    string text = string.Format(L10n.T(CoopMenuFlow.DescKey(page, CoopMenuFlow.RowOf("cserver"), true), zh), "10.0.0.5:47022");
-                    Check(text.Contains("10.0.0.5:47022"), "page " + page + " room-code row names the server: " + text);
+                    string text = string.Format(L10n.T(CoopMenuFlow.DescKey(page, CoopMenuFlow.RowOf("cserver"), true), zh), "192.0.2.5:47022");
+                    Check(text.Contains("192.0.2.5:47022"), "page " + page + " room-code row names the server: " + text);
                 }
             Check(L10n.T("title.local", true) == "本地同屏", "local play keeps its name (T-154)");
             // The room-code dial joins a running game (C-server room code); a 我的房间 invite code is another code that needs
