@@ -45,6 +45,7 @@
         'PsReport' = ''; 'MirrorJudge' = ''; 'PadTypes' = ''
         'NetEscapeTest' = 'ESC'; 'EscapeRules' = 'ESC'; 'Revive.Escape' = 'R,ESC'; 'EscapeProbe' = ''   # T-169 escapes (3P part: net-3p suites)
         'EnemySync' = 'E3,E5,CUT'   # T-183: partner scene streaming is paused during stories (KURO, phase CUT)
+        'GameText' = 'CUT'   # T-255: the gate prompts' full-alpha text is checked in GATE G1 (CUT, ORICOOP_P3_GATE=1); its module M8 selects no net phase
     }
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
     # Suite 'net' means the 2-player net suites (net, net-newgame), which take ORICOOP_PHASES.
