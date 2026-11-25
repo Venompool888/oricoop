@@ -182,15 +182,17 @@ function Get-Selection([string[]]$files) {
     $suites = [ordered]@{}; $phases = @{}; $full = $false; $why = [ordered]@{}; $phaseWhy = [ordered]@{}
     foreach ($f in $files) {
         $r = Get-SuitesFor $f $moduleMap
-        if ($f -match '^src[/\\]OriCoop[/\\](?:Saves[/\\])?(SaveSync|SaveWire|SeatReadiness|NetTestHarness)\.cs$') {
-            $r.Suites += 'net-save-handover'
-        }
-        if ($f -match '^src[/\\](?:OriCoop[/\\](?:Authority[/\\])?(NetPlay|Plugin|CServerClient|CServerLink|TestHarness)|CServer[/\\]CServer(?:Test)?)\.cs$') {
-            $r.Suites += 'quitseat'
-        }
         $why[$f] = $r
         foreach ($s in $r.Suites) { $suites[$s] = $true }
         $ph = Get-PhasesFor $f $moduleMap $phaseMap
+        if ($f -match '^src[/\\]OriCoop[/\\](?:Saves[/\\])?(SaveSync|SaveWire|SeatReadiness|NetTestHarness)\.cs$') {
+            $suites['net-save-handover'] = $true
+            $r.Suites += 'net-save-handover'
+        }
+        if ($f -match '^src[/\\](?:OriCoop[/\\](?:Authority[/\\])?(NetPlay|Plugin|CServerClient|CServerLink|TestHarness)|CServer[/\\]CServer(?:Test)?)\.cs$') {
+            $suites['quitseat'] = $true
+            $r.Suites += 'quitseat'
+        }
         if ($ph -eq 'FULL') { $full = $true; $phaseWhy[$f] = 'FULL' }
         else { foreach ($x in @($ph)) { $phases[$x] = $true }; $phaseWhy[$f] = (@($ph) -join ',') }
     }
