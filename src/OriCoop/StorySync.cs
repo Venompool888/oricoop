@@ -1241,8 +1241,9 @@ namespace OriCoop
                 }
                 return true;
             }
-            static void Postfix(ActionSequence __instance, StartCall __state)
+            static void Postfix(ActionSequence __instance, StartCall __state, bool __runOriginal)
             {
+                if (!__runOriginal) return;
                 if (Services.Net.Enabled && !s_mirroring && !PuppetCall) StartsSeen++;
                 if (OwnedSequences.Contains(__instance))
                 {
@@ -1313,8 +1314,9 @@ namespace OriCoop
                 if (replay && s_native != null && Remote.Count > 0 && !PuppetCall) OwnedControllers.Add(__instance);
                 return true;
             }
-            static void Postfix(CutsceneController __instance, CutsceneState state, StartCall __state)
+            static void Postfix(CutsceneController __instance, CutsceneState state, StartCall __state, bool __runOriginal)
             {
+                if (!__runOriginal) return;
                 if (state != null && OwnedControllers.Contains(__instance)) Performed[KeyOf(new Story { Kind = 1,
                     Scene = SceneOf(__instance), Id = MoonGuid.Empty, Path = PathOf(__instance.transform), State = PathOf(state.transform) })] = Time.realtimeSinceStartup;
                 if (!__state.Root || state == null || Starting.Contains(__instance) || Mirrored.Contains(__instance)) return;
