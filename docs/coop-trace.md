@@ -33,7 +33,8 @@ event, then `key=value` fields (values with spaces are quoted with `\"` escapes)
   same stamps. Unity errors/exceptions become `log unity.exception msg=... at=<top stack frame>`.
 
 ## Levels (BepInEx config `local.oricoop.cfg`, section `[Trace]`)
-- `Level` = 0 off, 1 events (state changes), **2 (default)** + periodic samples, 3 + verbose.
+- `Level` = 0 off, **1 (default)** events (state changes), 2 + periodic samples, 3 + verbose. Before #423 the default was 2;
+  a config still holding that old 2 is moved to 1 once (`DefaultLowered`). Set 2 again to get the periodic samples.
 - `SubsystemLevels` = e.g. `phys=3,enemy=1`. `SampleFrames` = 30 (samples every N frames).
 - Env overrides for tests: `ORICOOP_TRACE_LEVEL`, `ORICOOP_TRACE_DIR`.
 
