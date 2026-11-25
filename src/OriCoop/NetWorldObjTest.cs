@@ -165,6 +165,73 @@ namespace OriCoop
             if (mine != null && p != null && p.Id == id) s_pick = mine;
         }
 
+        static IEnumerator FloatingLog(TestHarness h, bool host)
+        {
+            const string scene = "moonGrottoDoubleJump";
+            Func<RigidbodySerialize, bool> isLog = s => s.name == "log" && s.transform.parent != null
+                && s.transform.parent.name == "floatingLogSetup";
+            if (host) yield return Load<RigidbodySerialize>(h, "WO11", scene, null, isLog);
+            yield return Barrier(h, 3100, 0, 0f, 0f);
+            if (!host) yield return Load<RigidbodySerialize>(h, "WO11", scene, null, isLog);
+            yield return Agree<RigidbodySerialize>(h, "WO11 floating log", 3101);
+            RigidbodySerialize saved = s_pick as RigidbodySerialize;
+            if (saved == null) yield break;
+            Rigidbody body = saved.GetComponent<Rigidbody>();
+            bool usable = body != null && saved.IsGuidInitialized() && saved.GetComponent<Collider>() != null
+                && saved.GetComponentInParent<PushPullBlock>() == null && saved.GetComponentInParent<Entity>() == null
+                && saved.SerializePosition && saved.SerializeVelocity && saved.SeriailzeIsKinematic;
+            h.Check(usable, "WO11 scene log is an ordinary saved rigidbody with position and velocity");
+            if (!usable) yield break;
+            string key = "w:dynamic:body:" + Core.Scenes.Manager.GetSceneInformation(scene).SceneMoonGuid + ":" + saved.MoonGuid;
+            SpringJoint[] springs = Array.FindAll(saved.transform.parent.GetComponentsInChildren<SpringJoint>(), j => j.connectedBody == body);
+            float[] stiffness = Array.ConvertAll(springs, j => j.spring), damping = Array.ConvertAll(springs, j => j.damper);
+            bool gravity = body.useGravity; float drag = body.drag;
+            PlatformMovement movement = Own.PlatformBehaviour.PlatformMovement; bool suspended = movement.IsSuspended;
+            Vector3 initial = body.position;
+            try
+            {
+                // The native log oscillates between two moving spring holders. Isolate the one-sided impulse
+                // so that a spring or a falling Ori cannot carry the other copy along independently.
+                foreach (SpringJoint j in springs) { j.spring = 0f; j.damper = 0f; }
+                body.useGravity = false; body.drag = 4f;
+                if (!body.isKinematic) body.velocity = Vector3.zero;
+                movement.IsSuspended = true;
+                Place(initial + new Vector3(host ? 3f : 15f, 5f, 0f));
+                float until = Time.realtimeSinceStartup + 3f;
+                while (Authority.AuthoritySource.Current.OwnerOf(key) != 1 && Time.realtimeSinceStartup < until) yield return null;
+                int owner = Authority.AuthoritySource.Current.OwnerOf(key);
+                float before = body.position.y;
+                yield return Barrier(h, 3102, owner, before, 0f);
+                h.Note("WO11 floating log " + saved.MoonGuid + " owner=" + owner + " kinematic=" + body.isKinematic + " y=" + F(before));
+                if (host) body.AddForce(Vector3.up * 12f, ForceMode.VelocityChange);
+                yield return Wait(2f);
+                float after = body.position.y;
+                yield return Barrier(h, 3103, 0, after, body.velocity.y);
+                Sample partner = Partner(3103);
+                h.Check(after > before + 1f, "WO11 one host impulse moves the floating log on this PC (delta " + F(after - before) + ")");
+                h.Check(partner != null && Mathf.Abs(partner.A - after) < 0.45f && Mathf.Abs(partner.B - body.velocity.y) < 0.6f,
+                    "WO11 the resting log agrees in position and velocity on both PCs (here " + F(after) + ", peer " + (partner == null ? "missing" : F(partner.A)) + ")");
+                h.Check(owner == 1 && Partner(3102) != null && Partner(3102).Id == 1, "WO11 both PCs observed the host's lease");
+                if (!host) body.position += Vector3.down * 3f;
+                yield return Wait(3f);
+                after = body.position.y;
+                yield return Barrier(h, 3104, 0, after, 0f);
+                partner = Partner(3104);
+                h.Check(partner != null && Mathf.Abs(partner.A - after) < 0.45f && after > before + 1f,
+                    "WO11 the idle owner's pose corrects a displaced follower (here " + F(after) + ", peer " + (partner == null ? "missing" : F(partner.A)) + ")");
+            }
+            finally
+            {
+                movement.IsSuspended = suspended;
+                if (body != null)
+                {
+                    body.position = initial; body.useGravity = gravity; body.drag = drag;
+                    for (int i = 0; i < springs.Length; i++)
+                        if (springs[i] != null) { springs[i].spring = stiffness[i]; springs[i].damper = damping[i]; }
+                }
+            }
+        }
+
         public static IEnumerator Run(TestHarness h)
         {
             s_partner.Clear(); Resyncs = 0; NetPlay.On(MsgBarrier, OnBarrier);
@@ -182,6 +249,8 @@ namespace OriCoop
             int resyncsBefore = WorldSync.DigestResyncs;
             try
             {
+                yield return FloatingLog(h, host);
+                yield return Settle(h, "WO11");
                 for (int run = 0; run < 2; run++)
                 {
                     bool lag = run == 1; string L = lag ? "L" : "";
