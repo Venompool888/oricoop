@@ -47,6 +47,7 @@ namespace OriCoop
                 yield return UntilStone(() => NetPlay.PartnerHere && SaveSync.Ready && SaveSync.GuestLoads > loads, 50f);
                 h.Check(NetPlay.PartnerHere && SaveSync.Ready && SaveSync.GuestLoads > loads, "PK guest rejoined and loaded the host's checkpoint");
                 block = FindBlock(scene, true);
+                if (block != null) CoopIdlePlace(block, resting, false);
                 yield return Barrier(h, 322, block);
                 yield return UntilStone(() => AuthoritySource.Current.OwnerOf(key) == NetRoute.HostSeat &&
                     AuthoritySource.Current.LatestState(key) != null && AuthoritySource.Current.LatestState(key).Epoch == AuthoritySource.Current.EpochOf(key), 8f);
@@ -64,25 +65,34 @@ namespace OriCoop
                 {
                     yield return GrabBlock(block, grab, CoopDir);
                     if (grab.Started) { Bot(true, CoopDir); yield return GameWait(1.5f, new float[1]); }
-                    Bot(false); yield return Wait(0.7f);
+                    Bot(false);
+                    yield return UntilStone(() => Own != null && !Own.Abilities.GrabBlock.IsGrabbing, 3f);
+                    yield return Wait(0.7f);
                 }
                 Vector3 solo = block.Position;
                 StateUpdate atRelease = authority.LatestState(key);
-                bool unpublished = grab.Started && Mathf.Abs(solo.x - oldX) > 1f && authority.OwnerOf(key) == 0 &&
+                bool unpublished = grab.Started && Own != null && !Own.Abilities.GrabBlock.IsGrabbing &&
+                    Mathf.Abs(solo.x - oldX) > 1f && authority.OwnerOf(key) == 0 &&
                     atRelease != null && atRelease.Epoch == published.Epoch && atRelease.Ver == published.Ver;
                 h.Check(unpublished, "PK native solo push changed the stone before a new publication (cached=" + F(oldX) + ", live=" + F(solo.x) +
                     ", grabbed=" + grab.Started + ", attempts=" + grab.Attempts + ", owner=" + authority.OwnerOf(key) + ")");
+                // The guest lands next to the host. Park clear of the stone so landing on it cannot acquire a different lease.
+                CoopIdlePlace(block, resting, true);
                 WatchStart(block);
                 File.WriteAllText(resume, "pushed");
-                yield return UntilStone(() => NetPlay.PartnerHere && SaveSync.ReadyForSeat(guest), 50f);
+                yield return UntilStone(() => NetPlay.PartnerHere && SaveSync.ReadyForSeat(guest) && PushBlockSync.Online && Puppet != null, 50f);
                 yield return Barrier(h, 322, block);
-                float moved = Vector3.Distance(block.Position, solo), step = s_watchStep;
-                s_watch = null;
-                h.Check(unpublished && moved < 0.6f && step < 0.8f,
-                    "PK rejoining kept the unpublished live pose (solo=" + F(solo.x) + ", after=" + F(block.Position.x) + ", largest step=" + F(step) + ")");
                 authority.RequestLease(key, 0f, true);
                 yield return UntilStone(() => authority.Owns(key) && authority.LatestState(key) != null &&
                     authority.LatestState(key).Epoch == authority.EpochOf(key), 8f);
+                StateUpdate first = authority.LatestState(key);
+                float sharedX = authority.Owns(key) && first != null && first.From == authority.LocalSeat &&
+                    first.Epoch == authority.EpochOf(key) ? BitConverter.ToSingle(first.Data, 0) : float.NaN;
+                float moved = Vector3.Distance(block.Position, solo), step = s_watchStep;
+                s_watch = null;
+                h.Check(unpublished && moved < 0.6f && step < 0.8f && Mathf.Abs(sharedX - solo.x) < 0.6f,
+                    "PK rejoining kept the unpublished live pose (solo=" + F(solo.x) + ", after=" + F(block.Position.x) +
+                    ", first publication=" + F(sharedX) + ", largest step=" + F(step) + ")");
                 if (File.Exists(resume)) File.Delete(resume);
             }
             yield return Wait(0.4f);

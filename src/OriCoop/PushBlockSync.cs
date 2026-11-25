@@ -609,6 +609,9 @@ namespace OriCoop
         public const byte MsgCoPush = 89;   // docs/net-msg-ids.md
         public static int CoPushSent, CoPushReceived, CoPushBoosted, CoPushHeard;
         static uint s_pushSequence;
+        static readonly Puppet[] s_pushActors = new Puppet[5];
+        static readonly uint[] s_pushBirths = new uint[5];
+        static readonly uint?[,] s_releasedPushSeats = new uint?[5, 5];
         static readonly bool s_devicePose = TestHarness.Enabled && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_COPUSH_DEVICE_POSE") == "1";
         static readonly bool s_arrivalOrder = TestHarness.Enabled && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_COPUSH_ARRIVAL_ORDER") == "1";
         // T-115 mutation: the P2P host does not relay 89 / 80 (the 3P test must fail).
@@ -640,15 +643,32 @@ namespace OriCoop
         // seat: whose call this is; this PC reports one direction for all its Oris on the stone (CoPushRule.DeviceDir).
         internal static void NoteOwnPush(St st, int seat, int dir, float now)
         {
+            int device = Players.LocalSeat;
+            bool newPusher = false;
+            if (seat >= 1 && seat <= 4 && seat != device)
+            {
+                Puppet actor = null;
+                foreach (Puppet p in Players.Remotes) if (p.IsLocal && p.Seat == seat) { actor = p; break; }
+                if (!ReferenceEquals(actor, s_pushActors[seat]) || s_pushBirths[seat] == 0)
+                {
+                    s_pushActors[seat] = actor;
+                    do { s_pushBirths[seat] = unchecked(++s_pushSequence); } while (s_pushBirths[seat] == 0);
+                    newPusher = dir != 0;
+                }
+            }
             if (seat >= 1 && seat < st.SeatPushDir.Length) { st.SeatPushDir[seat] = dir; st.SeatPushAt[seat] = now; }
             dir = CoPushRule.DeviceDir(st.SeatPushDir, st.SeatPushAt, now, 0.15f);
             byte seats = CoPushReport.Pack(st.SeatPushDir, st.SeatPushAt, now, 0.15f);
             st.LocalPushDir = dir; st.LocalPushAt = now;
-            if (seats == st.SentSeatDirs && (seats == 0 || now - st.PushSentAt < 0.1f)) return;
+            if (seats == st.SentSeatDirs && (seats == 0 || !newPusher && now - st.PushSentAt < 0.1f)) return;
             st.SentSeatDirs = seats; st.SentPushDir = dir; st.PushSentAt = now;
             int id = st.Id; sbyte d = (sbyte)dir;
             uint sequence = unchecked(++s_pushSequence);
-            Action<BinaryWriter> write = w => { w.Write(id); w.Write(d); w.Write(sequence); w.Write(seats); };
+            Action<BinaryWriter> write = w => {
+                w.Write(id); w.Write(d); w.Write(sequence); w.Write(seats);
+                for (int actorSeat = 1; actorSeat <= 4; actorSeat++)
+                    if (actorSeat != device && ((seats >> (2 * (actorSeat - 1))) & 3) != 0) w.Write(s_pushBirths[actorSeat]);
+            };
             if (TestObserveReport != null) TestObserveReport(id, write);
             NetPlay.Send(MsgCoPush, false, write);
             CoPushSent++;
@@ -665,13 +685,29 @@ namespace OriCoop
         {
             CoPushReport previous, incoming;
             st.Reports.TryGetValue(sender, out previous);
-            if (!CoPushReport.TryRead(dir, tail, now, previous, s_arrivalOrder, out incoming)) return;
+            if (!CoPushReport.TryRead(dir, tail, now, previous, s_arrivalOrder, out incoming, sender, s_releasedPushSeats)) return;
+            if (incoming.Ordered)
+                for (int seat = 1; seat <= 4; seat++)
+                    if (seat != sender && NetPlay.DeviceSeat(seat) != sender) incoming.ForgetSeat(seat);
             st.Reports[sender] = incoming; CoPushReceived++;
         }
 
-        static void ForgetPushReports(int sender)
+        static void ForgetPushReports(int seat)
         {
-            foreach (St st in s_byId.Values) st.Reports.Remove(sender);
+            foreach (St st in s_byId.Values)
+            {
+                st.Reports.Remove(seat);
+                for (int sender = 1; sender <= 4; sender++)
+                {
+                    CoPushReport report;
+                    if (!st.Reports.TryGetValue(sender, out report) || !report.Ordered) continue;
+                    uint? floor = s_releasedPushSeats[sender, seat];
+                    if (!floor.HasValue || CoPushReport.Newer(report.Sequence, floor.Value))
+                        s_releasedPushSeats[sender, seat] = report.Sequence;
+                    report.ForgetSeat(seat); st.Reports[sender] = report;
+                }
+            }
+            for (int s = 1; s <= 4; s++) s_releasedPushSeats[seat, s] = null;
         }
 
         internal static Action<int, Action<BinaryWriter>> TestObserveReport;
@@ -1036,6 +1072,7 @@ namespace OriCoop
         static void ResetOwnership(string why, bool lastPeerLeft = false)
         {
             Prune();
+            Array.Clear(s_releasedPushSeats, 0, s_releasedPushSeats.Length);
             if (lastPeerLeft && NetRoute.ServerMode && NetPlay.IsHost && NetPlay.Connected)
             {
                 // With no puppet the native game moves this instance without the network FixedUpdate path.
