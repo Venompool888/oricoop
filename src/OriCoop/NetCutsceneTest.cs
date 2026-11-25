@@ -900,8 +900,24 @@ namespace OriCoop
             GateCheck(h, ForcedSync.IsLocked(Own) == NetPlay.IsHost && ForcedSync.ForcePromptOnScreen() == NetPlay.IsHost
                 && ForcedSync.LeavePromptOnScreen() == NetPlay.IsHost, "G1 only the locked host sees the force and leave glyphs");
             h.Note("GATE visuals " + ForcedSync.VisualDebug());
+            // T-255: a native hint on screen beside the gate prompts, for the screenshot and the brightness check.
+            MessageBox native = null;
+            try
+            {
+                TranslatedMessageProvider p = ScriptableObject.CreateInstance<TranslatedMessageProvider>();
+                p.Messages.Add(new TranslatedMessageProvider.MessageItem { English = "Native hint [Bash] [SpiritFlame]", Chinese = "" });
+                native = Game.UI.Hints.Show(p, HintLayer.Gameplay, 4f);
+            }
+            catch (Exception e) { h.Note("GATE native hint failed: " + e.Message); }
+            float hintUntil = Now + 1.5f;   // past the native hint's fade-in
+            while (Now < hintUntil) yield return null;
+            h.Note("GATE brightness " + ForcedSync.BrightnessDebug(native));
+            GateCheck(h, ForcedSync.PromptsAsBrightAs(native), "G1 gate prompts draw as bright as a native hint");
             try { Application.CaptureScreenshot(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(h.ResultPath)), "gate-" + (NetPlay.IsHost ? "host" : "guest") + ".png")); }
             catch (Exception e) { h.Note("gate screenshot failed: " + e.Message); }
+            yield return null;   // the screenshot is taken at the end of this frame
+            try { if (native != null && native.Visibility != null) native.Visibility.HideMessageScreenImmediately(); }
+            catch (Exception e) { h.Note("GATE native hint hide failed: " + e.Message); }
             if (NetPlay.IsHost)
             {
                 GateCheck(h, ForcedSync.PillarsShown && ForcedSync.Blocked > blocked, "G1 pillars shown and native trigger blocked");
