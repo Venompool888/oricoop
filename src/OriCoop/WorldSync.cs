@@ -119,7 +119,7 @@ namespace OriCoop
             s_digestSequence = s_receivedDigest = 0; s_digestWorldMatched = false;
             ResetDigestRepair();
             ResetDelta();
-            s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear();
+            s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear(); s_timerTakeAt.Clear();
         }
 
         public static void Tick()
@@ -713,11 +713,14 @@ namespace OriCoop
             ISerializable live = Find(scene, id);
             if (s_excluded.Contains(key) || (live != null && Excluded(live))) return;
             if (live != null && Describe(live) != schema) throw new InvalidDataException("world schema differs for " + key);
-            // T-250: the host's timer phase (SendTimerPhases) is only taken when this PC's own is out of step.
-            // Outside a snapshot a timer's canonical hash never changes, so its blob is only ever that resend: for a
-            // timer this PC has not loaded there is nothing to keep in step (and nothing to write into the checkpoint).
-            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.IsTimer(type)
-                && (live == null || s_bad.Contains(key) || !TakeTimerPhase(key, live, bytes))) return;
+            // T-250: the host's timer phase (SendTimerPhases) is only taken when this PC's own is out of step. A timer
+            // this PC does not know yet still goes the ordinary way (#436: TimerPhase.GuestRoute).
+            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.IsTimer(type))
+            {
+                TimerPhase.Route route = TimerPhase.GuestRoute(live != null, s_bad.Contains(key), s_blobs.ContainsKey(key));
+                if (route == TimerPhase.Route.Skip) return;
+                if (route == TimerPhase.Route.Judge && !TakeTimerPhase(key, live, bytes)) return;
+            }
             int[] forwardTo = null;
             if (NetPlay.IsHost)
             {
@@ -784,7 +787,7 @@ namespace OriCoop
         static readonly bool s_mutateNoRebroadcast = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_NO_REBROADCAST") == "1";
 
         // T-250 (#338, choice B): the host's level timers set the pace (World/TimerPhase.cs). Every ResendMin..ResendMax
-        // seconds the host sends the phase of every OnTimerPerformAction / TimedTrigger in its loaded scenes, as ordinary
+        // seconds the host sends the phase of every OnTimerPerformAction in its loaded scenes, as ordinary
         // world blobs (message 12): no new message, no protocol change. A guest takes one only when it is out of step.
         // Test-only mutation ORICOOP_MUTATE_TIMER_PHASE_ONCE: the host does not resend (the phase crosses only in the
         // first snapshot again, as before T-250).
@@ -795,6 +798,10 @@ namespace OriCoop
         static int s_timerTraces;
         const int MaxTimerTraces = 200;
         static readonly HashSet<string> s_timerCensus = new HashSet<string>();
+        // Guest: when it last took the host's phase for a timer in each scene (key prefix). A digest diff in that scene
+        // shortly after says whether writing the phase made other objects differ (#357 follow-up).
+        static readonly Dictionary<string, float> s_timerTakeAt = new Dictionary<string, float>();
+        static string SceneOfKey(string key) { int i = key.IndexOf(':'); return i < 0 ? key : key.Substring(0, i); }
         const int MaxTimerCensus = 400;
 
         static void SendTimerPhases()
@@ -810,7 +817,7 @@ namespace OriCoop
                 {
                     if (entry == null || entry.Id == null || entry.SaveObject == null) continue;
                     ISerializable save = entry.Save;
-                    if (!(save is OnTimerPerformAction) && !(save is TimedTrigger))
+                    if (!(save is OnTimerPerformAction))
                     {
                         // Census only: a timer-like save type this rule does not know (a shooter run by another class).
                         if (others != null && save != null && others.Count < 8)
@@ -862,6 +869,7 @@ namespace OriCoop
             if (verdict == TimerPhase.Verdict.InStep) { TimerPhasesInStep++; return false; }
             if (verdict == TimerPhase.Verdict.NearRestart) { TimerPhasesNearRestart++; return false; }
             if (verdict == TimerPhase.Verdict.Take) TimerPhasesTaken++;
+            s_timerTakeAt[SceneOfKey(key)] = Time.realtimeSinceStartup;
             if (s_timerTraces < MaxTimerTraces)
             {
                 s_timerTraces++;
@@ -1196,6 +1204,15 @@ namespace OriCoop
             writer.Close(); stream.Close(); return hash;
         }
 
+        // " timer_take_ago=N.N" when this PC took a host timer phase in the same scene in the last 30 s, else "".
+        static string TimerTakeNote(string key)
+        {
+            float at;
+            if (!s_timerTakeAt.TryGetValue(SceneOfKey(key), out at)) return "";
+            float ago = Time.realtimeSinceStartup - at;
+            return ago <= 30f ? " timer_take_ago=" + ago.ToString("F1") : "";
+        }
+
         public static void SendDigest()
         {
             if (!NetPlay.Connected || !SaveSync.Ready || !ProgressSync.Ready || !NetPlay.LocalInGameplay() || s_awaitSnapshot) return;
@@ -1324,7 +1341,8 @@ namespace OriCoop
                 string key = keys[i]; DigestDifference diff = differences[key];
                 Plugin.Log.LogInfo("net: world digest diff scene/object=" + key + " type=" + (diff.Local.Type ?? diff.Remote.Type)
                     + " local=" + (diff.Local.Type != null ? diff.Local.Hash.ToString("X16") : "missing")
-                    + " remote=" + (diff.Remote.Type != null ? diff.Remote.Hash.ToString("X16") : "missing"));
+                    + " remote=" + (diff.Remote.Type != null ? diff.Remote.Hash.ToString("X16") : "missing")
+                    + TimerTakeNote(key));
             }
             LastDigestMatch = differences.Count == 0 && !s_digestProgressDiffers;
             if (differences.Count != 0) Plugin.Log.LogInfo("net: world digest manifest " + differences.Count + " differing GUIDs (first 5 shown)");

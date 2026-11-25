@@ -72,7 +72,7 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `shooter.action` / `shooter.holder` / `shooter.projectile` (fields read by reflection, once each), `shooter.holders`
   (count), `shooter.spawn` (each projectile's pos, vel, gravity, life, angle to own Ori / to the partner).
 - world, T-250 timer phase (`src\OriCoop\WorldSync.cs`, rules in `World\TimerPhase.cs`): the host sends the phase of
-  every `OnTimerPerformAction` / `TimedTrigger` in its loaded scenes every 0.7-1.3 s (world message 12). A guest takes it
+  every `OnTimerPerformAction` in its loaded scenes every 0.7-1.3 s (world message 12; `TimedTrigger` is left out, #436). A guest takes it
   only when its own is more than 0.25 s off and neither side is within 0.25 s of a restart: `timer.phase` (key, type,
   path, local, host, verdict), first 200 per process. The 5 s `net: world bytes/sec` log line adds
   `timers sent= taken= in_step= near_restart=`.

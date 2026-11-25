@@ -73,10 +73,19 @@ static class TimerPhaseTests
 
     public static void Register(Action<string, Action> run)
     {
-        run("T-250: timer types are OnTimerPerformAction and TimedTrigger only", delegate {
-            Check(TimerPhase.IsTimer("OnTimerPerformAction") && TimerPhase.IsTimer("Game.TimedTrigger"), "timers");
+        run("T-250: the only timer type is OnTimerPerformAction (#436: TimedTrigger is a one-shot delay)", delegate {
+            Check(TimerPhase.IsTimer("OnTimerPerformAction") && TimerPhase.IsTimer("Game.OnTimerPerformAction"), "timers");
+            Check(!TimerPhase.IsTimer("TimedTrigger") && !TimerPhase.IsTimer("Game.TimedTrigger"), "TimedTrigger is not resent");
             Check(!TimerPhase.IsTimer("SinMovement") && !TimerPhase.IsTimer("LaserPulsator") && !TimerPhase.IsTimer(null)
-                && !TimerPhase.IsTimer("NotOnTimerPerformActionX") && !TimerPhase.IsTimer("XTimedTrigger"), "not timers");
+                && !TimerPhase.IsTimer("NotOnTimerPerformActionX"), "not timers");
+        });
+        run("#436: a guest keeps a timer it has not seen yet (unloaded scene), so the digests still agree", delegate {
+            Check(TimerPhase.GuestRoute(false, false, false) == TimerPhase.Route.Ordinary, "unloaded, first sighting: ordinary path");
+            Check(TimerPhase.GuestRoute(false, false, true) == TimerPhase.Route.Skip, "unloaded, already known: resend skipped");
+            Check(TimerPhase.GuestRoute(true, false, false) == TimerPhase.Route.Judge, "live: judged");
+            Check(TimerPhase.GuestRoute(true, false, true) == TimerPhase.Route.Judge, "live and known: judged");
+            Check(TimerPhase.GuestRoute(true, true, false) == TimerPhase.Route.Ordinary, "disabled here, unknown: ordinary path");
+            Check(TimerPhase.GuestRoute(true, true, true) == TimerPhase.Route.Skip, "disabled here, known: skipped");
         });
         run("T-250: Judge leaves an in-step timer and one near its restart, takes one out of step", delegate {
             Check(TimerPhase.Judge(1.0f, 1.2f) == TimerPhase.Verdict.InStep, "0.2 s apart");
