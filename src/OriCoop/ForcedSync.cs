@@ -705,6 +705,26 @@ namespace OriCoop
         internal static bool WaitPromptOnScreen() { return s_bottom != null && s_bottom.OnScreen(false); }
         internal static bool ForcePromptOnScreen() { return s_top != null && s_top.OnScreen(false) && s_top.OnScreen(true); }
         internal static bool LeavePromptOnScreen() { return s_leave != null && s_leave.OnScreen(false) && s_leave.OnScreen(true); }
+        // T-255 test oracle: every gate prompt shown draws its text at full material alpha. Not "as the native hint": on the
+        // test PC the native hint's material reads 0.50 and still draws full white (its own fade path), while our copy at
+        // 0.50 drew grey (screenshot pixels 160 against the native 222; at 1.0: 255). Comparing with it let the dim
+        // mutation pass (PR #428, first run).
+        internal static bool PromptsFullyOpaque()
+        {
+            const float floor = 0.98f;
+            if (BottomText.Length > 0 && (s_bottom == null || s_bottom.TextAlpha() < floor)) return false;
+            if (TopText.Length > 0 && (s_top == null || s_top.TextAlpha() < floor)) return false;
+            if (LeaveText.Length > 0 && (s_leave == null || s_leave.TextAlpha() < floor)) return false;
+            return true;
+        }
+        internal static string BrightnessDebug(MessageBox native)
+        {
+            return "native text a=" + GameText.TextAlphaOf(native).ToString("0.00")
+                + (native != null && native.TextBox != null ? " colour " + native.TextBox.color : " (no native hint)")
+                + "; wait a=" + (s_bottom == null ? "none" : s_bottom.TextAlpha().ToString("0.00") + " [" + s_bottom.BrightDebug + "]")
+                + "; force a=" + (s_top == null ? "none" : s_top.TextAlpha().ToString("0.00") + " [" + s_top.BrightDebug + "]")
+                + "; leave a=" + (s_leave == null ? "none" : s_leave.TextAlpha().ToString("0.00"));
+        }
         static void HideKeys()
         {
             TopText = LeaveText = "";
