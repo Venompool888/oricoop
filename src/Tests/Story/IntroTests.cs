@@ -217,7 +217,8 @@ static partial class StoryTests
             sizes["0.2.0-net13"] = new[] { 6, 55 }; animKey["0.2.0-net13"] = "swimIdle|d0343fbb|12";   // T-246 optional story-end rescue; intro unchanged
             sizes["0.2.0-net14"] = sizes["0.2.0-net13"]; animKey["0.2.0-net14"] = animKey["0.2.0-net13"];   // T-224 body leases; intro unchanged
             string v = OriCoop.Net.ProtocolVersion.Mod;
-            Equal("0.2.0-net14", v);
+            sizes["0.2.0-net15"] = sizes["0.2.0-net14"]; animKey["0.2.0-net15"] = animKey["0.2.0-net14"];   // T-223 pickup actions; intro unchanged
+            Equal("0.2.0-net15", v);
             if (!sizes.ContainsKey(v)) throw new Exception("no pinned wire formats for " + v);
             MemoryStream a = new MemoryStream(); IntroWire.Write(new BinaryWriter(a), new IntroState { Active = true });
             MemoryStream b = new MemoryStream();

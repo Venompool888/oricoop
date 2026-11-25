@@ -56,7 +56,7 @@ namespace OriCoop.Story
         public int Amount, Extra;
         // T-214: where the pickup is on the collecting PC (its scene's GUID, zeros = not known; its position).
         public byte[] Scene;
-        public bool HasSpot;
+        public bool HasSpot, Registered;
         public float X, Y;
         public PickupPlace Place
         {
@@ -70,13 +70,13 @@ namespace OriCoop.Story
         public void Write(BinaryWriter w)
         {
             w.Write(Sequence); w.Write((byte)Kind); w.Write(Guid); w.Write(Amount); w.Write(Extra);
-            w.Write(Scene != null && Scene.Length == 16 ? Scene : new byte[16]); w.Write(HasSpot); w.Write(X); w.Write(Y);
+            w.Write(Scene != null && Scene.Length == 16 ? Scene : new byte[16]); w.Write(HasSpot); w.Write(X); w.Write(Y); w.Write(Registered);
         }
         public static ProgressAction Read(BinaryReader r)
         {
             ProgressAction a = new ProgressAction(); a.Sequence = r.ReadUInt32(); a.Kind = (ActionKind)r.ReadByte();
             a.Guid = StoryWire.ReadId(r); a.Amount = r.ReadInt32(); a.Extra = r.ReadInt32();
-            a.Scene = StoryWire.ReadId(r); a.HasSpot = r.ReadBoolean(); a.X = r.ReadSingle(); a.Y = r.ReadSingle(); return a;
+            a.Scene = StoryWire.ReadId(r); a.HasSpot = r.ReadBoolean(); a.X = r.ReadSingle(); a.Y = r.ReadSingle(); a.Registered = r.ReadBoolean(); return a;
         }
     }
 
