@@ -913,6 +913,9 @@ namespace OriCoop
             while (Now < hintUntil) yield return null;
             h.Note("GATE brightness " + ForcedSync.BrightnessDebug(native));
             GateCheck(h, ForcedSync.PromptsFullyOpaque(), "G1 gate prompts draw their text at full alpha (the native hint beside them for the screenshot)");
+            h.Note("GATE every mod prompt shown: " + GameText.ShownAlphas());
+            string faintGate = GameText.FaintShown(0.98f);
+            GateCheck(h, faintGate.Length == 0, "G1 every mod prompt on screen draws its text at full alpha (" + GameText.ShownCount() + " shown" + (faintGate.Length > 0 ? "; faint: " + faintGate : "") + ")");
             try { Application.CaptureScreenshot(System.IO.Path.Combine(System.IO.Path.GetDirectoryName(System.IO.Path.GetFullPath(h.ResultPath)), "gate-" + (NetPlay.IsHost ? "host" : "guest") + ".png")); }
             catch (Exception e) { h.Note("gate screenshot failed: " + e.Message); }
             yield return null;   // the screenshot is taken at the end of this frame

@@ -26,7 +26,35 @@ namespace OriCoop
         bool m_loggedBright;
         internal string BrightDebug = "";
 
-        public GameText(string name) { m_name = name; Create(); }
+        // T-255: every copy made, so a test can ask whether any prompt on screen draws faint (one oracle for all of them).
+        static readonly System.Collections.Generic.List<GameText> s_all = new System.Collections.Generic.List<GameText>();
+
+        public GameText(string name) { m_name = name; s_all.Add(this); Create(); }
+
+        bool Shown { get { return Ok && Go.activeInHierarchy && !string.IsNullOrEmpty(m_text) && m_renderers != null && m_renderers.Length > 0; } }
+
+        // The mod's prompts on screen now, each with its text's material alpha and its text colour's alpha
+        // ("name a=1.00 colour a=1.00; ..."), and the ones whose material alpha is below `floor` (empty when none).
+        internal static string ShownAlphas()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (GameText g in s_all)
+                if (g.Shown) sb.Append(sb.Length > 0 ? "; " : "").Append(g.m_name).Append(" a=").Append(g.TextAlpha().ToString("0.00"))
+                    .Append(" colour a=").Append(g.m_box.TextBox.color.a.ToString("0.00"));
+            return sb.Length > 0 ? sb.ToString() : "none";
+        }
+        internal static int ShownCount() { int n = 0; foreach (GameText g in s_all) if (g.Shown) n++; return n; }
+        internal static string FaintShown(float floor)
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (GameText g in s_all)
+            {
+                if (!g.Shown) continue;
+                float a = g.TextAlpha();
+                if (a >= 0f && a < floor) sb.Append(sb.Length > 0 ? ", " : "").Append(g.m_name).Append(" a=").Append(a.ToString("0.00"));
+            }
+            return sb.ToString();
+        }
 
         void WarnOnce(ref bool warned, string reason)
         {

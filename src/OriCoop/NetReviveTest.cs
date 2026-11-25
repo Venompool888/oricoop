@@ -371,6 +371,27 @@ namespace OriCoop
                     && Revive.LastSelfHint.Contains(hint.Substring(hint.IndexOf("{0}") + 3)),
                     "R6 guest: the hint says to hold the button to come back at the last soul link or save point (" + Revive.LastSelfHint + ")");
                 h.Check(Revive.SelfHintOnScreen(Players.LocalSeat), "R6 guest: the self-revive text and its button glyph render on screen");
+                // T-255: the playtest showed this hint faint grey. A native hint beside it for the screenshot comparison.
+                MessageBox native = null;
+                try
+                {
+                    TranslatedMessageProvider p = ScriptableObject.CreateInstance<TranslatedMessageProvider>();
+                    p.Messages.Add(new TranslatedMessageProvider.MessageItem { English = "Native hint [Bash] [SpiritFlame]", Chinese = "" });
+                    native = Game.UI.Hints.Show(p, HintLayer.Gameplay, 4f);
+                }
+                catch (System.Exception e) { h.Note("R6 native hint failed: " + e.Message); }
+                yield return Wait(1.5f);   // past the native hint's fade-in
+                float selfAlpha = Revive.SelfHintAlpha(Players.LocalSeat);
+                h.Note("R6 guest brightness: self-revive text a=" + F(selfAlpha) + " [" + Revive.SelfHintBrightness(Players.LocalSeat)
+                    + "]; native text a=" + F(GameText.TextAlphaOf(native)) + "; every mod prompt shown: " + GameText.ShownAlphas());
+                h.Check(selfAlpha >= 0.98f, "R6 guest: the self-revive hint draws its text at full alpha (" + F(selfAlpha) + "; the native hint beside it for the screenshot)");
+                string faint = GameText.FaintShown(0.98f);
+                h.Check(faint.Length == 0, "R6 guest: every mod prompt on screen draws its text at full alpha (" + GameText.ShownCount() + " shown" + (faint.Length > 0 ? "; faint: " + faint : "") + ")");
+                try { Application.CaptureScreenshot(Path.Combine(Path.GetDirectoryName(Path.GetFullPath(h.ResultPath)), "revive-self-guest.png")); }
+                catch (System.Exception e) { h.Note("R6 screenshot failed: " + e.Message); }
+                yield return null;   // the screenshot is taken at the end of this frame
+                try { if (native != null && native.Visibility != null) native.Visibility.HideMessageScreenImmediately(); }
+                catch (System.Exception e) { h.Note("R6 native hint hide failed: " + e.Message); }
                 Revive.TestHoldSelf = true;
                 yield return Wait(1f);
                 h.Check(Revive.DownedOf(1) != null, "R6 guest: still down after holding Y for 1 s");
