@@ -230,6 +230,11 @@ namespace OriCoop
                     visitor(scene.MetaData.SceneMoonGuid, scene.SceneRoot.SaveSceneManager);
         }
 
+        static byte[] CaptureBytesOrNull(ISerializable serializable)
+        {
+            try { return CaptureBytes(serializable); } catch { return null; }
+        }
+
         public static byte[] CaptureBytes(ISerializable serializable)
         {
             Archive ar = new Archive();
@@ -826,7 +831,11 @@ namespace OriCoop
                             if (name.IndexOf("Timer", StringComparison.OrdinalIgnoreCase) >= 0
                                 || name.IndexOf("Timed", StringComparison.OrdinalIgnoreCase) >= 0
                                 || name.IndexOf("Shoot", StringComparison.OrdinalIgnoreCase) >= 0
-                                || name.IndexOf("Projectile", StringComparison.OrdinalIgnoreCase) >= 0) others.Add(name);
+                                || name.IndexOf("Projectile", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                others.Add(name);
+                                ShooterProbe.Inventory(save as Component, CaptureBytesOrNull(save));   // trace only
+                            }
                         }
                         continue;
                     }
