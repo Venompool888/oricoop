@@ -1,5 +1,6 @@
 using System.Collections.Generic;
 using Game;
+using OriCoop.Seats;
 using UnityEngine;
 
 namespace OriCoop
@@ -27,15 +28,28 @@ namespace OriCoop
             get
             {
                 if (NetPlay.Enabled) return NetPlay.LocalSeats;
-                if (First == null || First.Seat != 2 || First.Sein == null) return new int[] { 1 };
-                if (Remotes.Count == 1) return new int[] { 1, 2 };
-                List<int> seats = new List<int> { 1, 2 };
-                foreach (Puppet p in Remotes)
-                    if (p.Seat > 2 && p.IsLocal && p.Sein != null) seats.Add(p.Seat);
-                return seats.ToArray();
+                // Shared arrays (SeatMask): callers read them, never write into them.
+                return SeatMask.Seats(OfflineMask);
             }
         }
-        public static bool IsLocal(int seat) { return System.Array.IndexOf(LocalSeats, seat) >= 0; }
+        // Offline: P1, plus P2 and the extra local seats once P2 (the first puppet) is in.
+        static int OfflineMask
+        {
+            get
+            {
+                int mask = SeatMask.Bit(1);
+                if (First == null || First.Seat != 2 || First.Sein == null) return mask;
+                mask |= SeatMask.Bit(2);
+                foreach (Puppet p in Remotes)
+                    if (p.Seat > 2 && p.IsLocal && p.Sein != null) mask |= SeatMask.Bit(p.Seat);
+                return mask;
+            }
+        }
+        public static bool IsLocal(int seat)
+        {
+            if (NetPlay.Enabled) return NetPlay.IsLocalSeat(seat);
+            return SeatMask.Has(OfflineMask, seat);
+        }
         // T-133: a device's primary seat got a new number (a guest added a local player into a lower free seat).
         // renamed[old] = new, 0 = unchanged. Raised on every PC right after the seat table changed.
         public static event System.Action<int[]> SeatsRenamed;
