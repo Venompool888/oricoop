@@ -29,7 +29,6 @@
     # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
     Files = @{
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
-        'NetStoryArchiveTest' = 'W'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
@@ -40,6 +39,7 @@
         'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'; 'CoopMenu' = 'S4'; 'MenuSoulFlameGuard' = 'S4'; 'MenuSoulFlameTest' = 'S4'   # Online screens leave LockInput alone
         'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = 'INTRO'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
+        'NetStoryWindowTest' = 'CUT'; 'NetExternalStoryTest' = 'CUT'; 'NetStoryArchiveTest' = 'W'
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
         'SharedPrologue' = 'INTRO,MOVE,W'; 'PrologueCore' = ''; 'TitlePrologueTest' = ''; 'TitlePrologueProbe' = ''   # T-203 / T-205: its own checks run in the titlejoin-prologue suites; the input hook and the join wait touch INTRO / MOVE / W
         'VirtualPads' = 'MOVE'; 'VirtualPadPatch' = 'MOVE'; 'PsHid' = 'MOVE'; 'PadDetector' = ''; 'PadGlyphs' = ''; 'GlyphProbe' = ''   # T-178 (PsReport/MirrorJudge/PadTypes: unit tests only)
@@ -54,7 +54,6 @@
         @{ Switch = 'ORICOOP_MUTATE_LEVER_DROP_HOLD'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-194 a partner's world blob does not drop this PC's hold on a lever (CUT real grab)
         @{ Switch = 'ORICOOP_MUTATE_STONE_RAW_APPLY'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-204 a partner activating a map stone releases this PC's highlight (CUT map stone, story stays local)
         @{ Switch = 'ORICOOP_MUTATE_MAP_DOWNGRADE'; File = 'src\OriCoop\World\WorldItems.cs'; Suite = 'net'; Phase = 'W' }   # T-214 map exploration only grows (W map: a cell explored while a snapshot is on its way)
-        @{ Switch = 'ORICOOP_MUTATE_UNTYPED_STORY_PROGRESS'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_PICKUP_GUID_ONLY'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a pickup is its GUID plus scene and spot (W pickups: two copies of one prefab; the host cannot take the guest's pickup again)
         @{ Switch = 'ORICOOP_MUTATE_CELL_REFILLS_HOST'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net'; Phase = 'W' }   # T-214 a health / energy cell refills the player who took it (W cells)
         @{ Switch = 'ORICOOP_MUTATE_HOST_SEAT_ONE';  File = 'src\OriCoop\Authority\NetRoute.cs'; Suite = 'net-3p-cs'; Phase = '' }
@@ -172,6 +171,8 @@
         @{ Switch = 'ORICOOP_MUTATE_GATE_FIRE_BUTTON'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 the gate's fire does not re-check the pickup key (SEIN: story starts when the partner arrives)
         @{ Switch = 'ORICOOP_MUTATE_GATE_NO_ADOPT'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a player standing in a waited-at area counts as present (SEIN: story starts when the partner arrives)
         @{ Switch = 'ORICOOP_MUTATE_STORY_ENDS_ON_GAP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running script with a takeover step ahead is not over (SEIN: a story announced as long as the script ran)
+        @{ Switch = 'ORICOOP_MUTATE_EXTERNAL_MIRROR_ORPHAN'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
+        @{ Switch = 'ORICOOP_MUTATE_UNTYPED_STORY_PROGRESS'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_SEQ_PROGRESS_SHARED'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running story script keeps its own step (SEIN with STORY_ENDS_ON_GAP: the host's Ori walks after the story)
     )
 }

@@ -778,6 +778,7 @@ namespace OriCoop
             ThreePacket late = Three(0, 3);
             h.Note("3P late join loads=" + late.Loads + " placed=" + late.Joined + " distance=" + F(late.Distance));
             h.Check(late.Loads > 0 && late.Joined && late.Distance <= 3f, "3P late guest loads host save and lands within 3 units");
+            if (!NetRoute.ServerMode) yield return NetStoryWindowTest.Relay(h, n => ThreeRound(h, 340 + n));
 
             yield return ThreeMovement(h, 1);
             yield return ThreeRound(h, 1);

@@ -221,6 +221,7 @@ namespace OriCoop
                 yield return Wait(0.4f);
                 s_lever.OnReleaseLever(); s_lever.OnExitLever();
             }
+            if (step == 85) yield return NetStoryWindowTest.Interaction(h, "lever", 910);
             bool sawLetterbox = false, sawCamera = false, freeAgain = false;
             float start = Now, end = Now + 30f, freeSince = -1f;
             while (Now < end)
@@ -615,6 +616,7 @@ namespace OriCoop
             yield return ResetPedestal(h, step);
             s_lastActivation = Now;
             if (NetPlay.IsHost == host) s_pedestal.ActivatePedestal();
+            if (step == 11) yield return NetStoryWindowTest.Interaction(h, "pedestal", 912);
             float end = Now + 25f, freeSince = -1f;
             while (Now < end)
             {
@@ -1335,6 +1337,7 @@ namespace OriCoop
         public static IEnumerator Run(TestHarness h)
         {
             if (!s_registered) { NetPlay.On(BarrierMessage, Receive); s_registered = true; }
+            if (Environment.GetEnvironmentVariable("ORICOOP_P3_EXTERNAL") == "1") { yield return Step(h, 880, NetExternalStoryTest.Run(h)); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_GATE") == "1") { yield return GateRun(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_LOOK") == "1") { yield return LookRun(h); yield break; }
             string kuro = Environment.GetEnvironmentVariable("ORICOOP_P3_KURO");
@@ -1407,6 +1410,7 @@ namespace OriCoop
                 yield return LeverHoldRun(h);
                 // T-204: the map stone, same reason (a partner's state read into the live object).
                 yield return MapStoneRun(h);
+                yield return Step(h, 880, NetExternalStoryTest.Run(h));
             }
             finally
             {

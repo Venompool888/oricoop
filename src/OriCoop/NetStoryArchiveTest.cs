@@ -10,7 +10,9 @@ namespace OriCoop
         // Use the same live capture, chunking and receiver as a native world snapshot.
         internal static void TestSendUnseenScripts(MoonGuid scene, ActionSequenceSerializer story, ActionSequenceSerializer platform)
         {
-            SendBlobs(new List<Blob> { CaptureRecord(scene, story.MoonGuid, story), CaptureRecord(scene, platform.MoonGuid, platform) });
+            List<Blob> captured = new List<Blob> { CaptureRecord(scene, story.MoonGuid, story), CaptureRecord(scene, platform.MoonGuid, platform) };
+            foreach (Blob blob in captured) s_blobs[Key(blob.Scene, blob.Id)] = blob;
+            SendBlobs(captured);
         }
     }
 
