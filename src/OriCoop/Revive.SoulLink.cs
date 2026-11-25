@@ -568,6 +568,10 @@ namespace OriCoop
             LastSelfHint = shown ? text : null;
         }
 
+        // T-255 (playtest screenshot: this hint drew faint grey): its text alpha and what GameText found, for the R6 check.
+        internal static float SelfHintAlpha(int seat) { GameText hint = s_selfHint[seat]; return hint != null ? hint.TextAlpha() : -1f; }
+        internal static string SelfHintBrightness(int seat) { GameText hint = s_selfHint[seat]; return hint != null ? hint.BrightDebug ?? "" : "no hint"; }
+
         internal static bool SelfHintOnScreen(int seat)
         {
             GameText hint = s_selfHint[seat];
