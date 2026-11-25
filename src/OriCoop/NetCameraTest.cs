@@ -52,18 +52,23 @@ namespace OriCoop
                 while (Now - start < 12f)
                 {
                     float t = Now - start;
+                    // A one-off run threw NullReferenceException in CAM (2026-11-25): stop and say so if the Ori went away.
+                    if (Own == null) { h.Note("CAM host: own Ori gone at " + F(t) + " s of the walk"); break; }
                     // 0-2 s far right, 2-9.5 s walk to far left at 8 u/s, then stay far left.
                     float x = t < 2f ? Far : Mathf.Max(-Far, Far - (t - 2f) * Speed);
                     Own.Position = new Vector3(guest.x + x, y, Own.Position.z);
                     Own.Speed = Vector3.zero;
                     yield return null;
                 }
-                h.Check(Mathf.Abs(Own.Position.x - (guest.x - Far)) < 0.5f, "CAM host: path finished 30 left of the guest (" + F(Own.Position.x - guest.x) + ")");
+                h.Check(Own != null && Mathf.Abs(Own.Position.x - (guest.x - Far)) < 0.5f, "CAM host: path finished 30 left of the guest (" + (Own != null ? F(Own.Position.x - guest.x) : "no Ori") + ")");
             }
             finally
             {
-                Own.Mortality.DamageReciever.IsImmortal = immortal;
-                Plugin.Teleport(Own, back - Vector3.up * 0.5f);
+                if (Own != null)
+                {
+                    Own.Mortality.DamageReciever.IsImmortal = immortal;
+                    Plugin.Teleport(Own, back - Vector3.up * 0.5f);
+                }
             }
         }
 
@@ -98,15 +103,17 @@ namespace OriCoop
             float start = Now;
             float baseline = 0f, maxRight = 0f, minLeft = 0f, maxStep = 0f, maxRate = 0f, maxDrift = 0f, endOffset = float.NaN, maxZoom = 1f;
             int baseSamples = 0, controlled = 0, frames = 0, influencedFrames = 0;
-            bool haveLast = false; float lastRel = 0f;
+            bool haveLast = false; float lastRel = 0f; string stopped = null; int nonFinite = 0;
             while (Now - start < 12f)
             {
                 float t = Now - start;
                 yield return null;   // the target was placed in the last LateUpdate; the guest stands still
-                if (Own == null || Partner == null) break;
+                // A one-off run ended with the offset NaN and a NullReferenceException (2026-11-25): say which Ori went away.
+                if (Own == null || Partner == null) { stopped = (Own == null ? "own Ori" : "partner") + " gone at " + F(t) + " s"; break; }
                 var cam = UI.Cameras.Current;
                 bool ours = cam != null && cam.Target != null && cam.Target != Own.Transform && OnlineCamera.Active;
                 float rel = cam != null && cam.Target != null ? cam.Target.position.x - Own.Position.x : 0f;   // target relative to the guest
+                if (float.IsNaN(rel) || float.IsInfinity(rel)) { nonFinite++; continue; }   // counted and reported, never folded into the maxima
                 float dx = Partner.Position.x - Own.Position.x;
                 frames++; if (ours) controlled++;
                 if (OnlineCamera.Influencing > 0) influencedFrames++;
@@ -121,13 +128,15 @@ namespace OriCoop
             }
             h.Note("CAM guest: baseline=" + F(baseline) + " (" + baseSamples + " samples) right=" + F(maxRight) + " left=" + F(minLeft)
                 + " end=" + F(endOffset) + " maxStep=" + F(maxStep) + " maxRate=" + F(maxRate) + " drift=" + F(maxDrift) + " zoom<=" + F(maxZoom)
-                + " controlled=" + controlled + "/" + frames + " influenced=" + influencedFrames + " takeOvers=" + OnlineCamera.TakeOvers);
+                + " controlled=" + controlled + "/" + frames + " influenced=" + influencedFrames + " takeOvers=" + OnlineCamera.TakeOvers
+                + (nonFinite > 0 ? " nonFiniteTargetFrames=" + nonFinite : "") + (stopped != null ? " watch stopped: " + stopped : ""));
+            h.Check(nonFinite == 0, "CAM guest: the camera target stays a finite position (" + nonFinite + " frames not)");
             h.Check(maxDrift < 1f, "CAM guest: the guest stood still (drift " + F(maxDrift) + ")");
             h.Check(controlled > frames * 0.8f, "CAM guest: the influence camera drives the guest's camera (" + controlled + "/" + frames + " frames)");
             h.Check(baseSamples > 0 && baseline < 0.3f, "CAM guest: host 30 away (outside the radius) -> camera on the guest (offset " + F(baseline) + ")");
             h.Check(maxRight > 1f, "CAM guest: host approaching on the right pulls the camera right (" + F(maxRight) + ")");
             h.Check(minLeft < -1f, "CAM guest: host walking on to the left extends the view left though the guest stood still (" + F(minLeft) + ")");
-            h.Check(!float.IsNaN(endOffset) && endOffset < 0.3f, "CAM guest: host gone -> camera back on the guest (offset " + F(endOffset) + ")");
+            h.Check(!float.IsNaN(endOffset) && endOffset < 0.3f, "CAM guest: host gone -> camera back on the guest (offset " + F(endOffset) + (stopped != null ? "; watch stopped: " + stopped : "") + ")");
             h.Check(maxStep < 0.6f, "CAM guest: no camera jump (largest frame step " + F(maxStep) + ", fastest " + F(maxRate) + " u/s)");
             h.Check(maxZoom <= OnlineCamera.Settings.MaxZoom + 0.001f, "CAM guest: zoom-out within the cap (" + F(maxZoom) + ")");
         }
