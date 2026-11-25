@@ -67,10 +67,6 @@ $TS_ModuleSuites = @{
 $TS_SteamFiles = @('SteamTransport', 'SteamApi', 'RealSteamApi', 'FakeSteamApi', 'SteamInviteHook', 'NetPlay', 'JoinErrorText')   # NetPlay: PumpSteam / OpenSteam drive the Steam session
 # Harness / test files -> the suite that runs them (checked before the module table).
 $TS_FileSuites = [ordered]@{
-    'NetPhysTest' = @('net', 'net-stones', 'net-stones-cs')
-    'PushBlockSync' = @('net', 'net-3p', 'net-3p-cs', 'net-stones', 'net-stones-cs')
-    'NetCoPushReportTest' = @('net-stones'); 'NetPhysDepartedHolderTest' = @('net-stones'); 'CoPushReport' = @('net-stones')
-    'NetPhysTest.SoloRejoin' = @('net-stones-cs'); 'StoneSeed' = @('net-stones-cs')
     'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
@@ -103,6 +99,10 @@ $TS_FileSuites = [ordered]@{
     'CServerRoomList'  = @('titlejoin', 'titlejoin-cs'); 'NativeCsRooms' = @('local', 'titlejoin', 'titlejoin-cs')   # T-201: a room list that cannot be read (the server list's room page): titlejoin cserver
     'MenuSoulFlameGuard' = @('net'); 'MenuSoulFlameTest' = @('net')   # T-179 skill tree B: net phase S4
     'TitleAnyKey'      = @('local', 'titlejoin'); 'TitleAnyKeyTest' = @('local')   # T-180 stuck key on press-any-key: run-test's title scenario
+    'NetPhysTest' = @('net', 'net-stones', 'net-stones-cs')
+    'PushBlockSync' = @('net', 'net-3p', 'net-3p-cs', 'net-stones', 'net-stones-cs')
+    'NetCoPushReportTest' = @('net-stones'); 'NetPhysDepartedHolderTest' = @('net-stones'); 'CoPushReport' = @('net-stones')
+    'NetPhysTest.SoloRejoin' = @('net-stones-cs'); 'StoneSeed' = @('net-stones-cs')
     'ImeGuard'         = @('local')   # T-181 IME off: checked in run-test's lifecycle scenario
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local'); 'EscapeProbe' = @('local')   # T-169 run-test.ps1 -Scenarios escapeprobe
 }

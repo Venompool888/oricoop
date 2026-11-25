@@ -23,6 +23,7 @@ namespace OriCoop
         {
             string done = Path.Combine(Path.GetDirectoryName(Environment.GetEnvironmentVariable("ORICOOP_TEST_OUT")), "pj-host-released.txt");
             if (host && File.Exists(done)) File.Delete(done);
+            NetPlay.SetSim(0, 0, 0, 0); // a normally delivered goodbye while the remote still holds the stone
             yield return CoopReset(h, 310, block, resting, rotation, host);
             string endpoint = host ? "" : NetPlay.Peer.Remote.ToString();
             SeinCharacter departing = Puppet;
@@ -30,7 +31,6 @@ namespace OriCoop
             if (!host)
             {
                 yield return GrabBlock(block, grab, CoopDir);
-                if (grab.Started) Bot(true, CoopDir);
             }
             else
             {
@@ -46,12 +46,18 @@ namespace OriCoop
             h.Check(both, "PJ guest grips the tutorial stone and its host collider uses moving friction");
             if (!both) { Bot(false); yield break; }
             // Wait for the barrier's final reliable packet before the departing guest closes the link.
-            yield return Wait(0.25f);
+            if (!host) yield return Wait(0.05f);
             if (host)
             {
-                float until = Time.realtimeSinceStartup + 8f;
-                while (departing != null && Time.realtimeSinceStartup < until) { KeepAlive(); yield return null; }
+                float until = Time.realtimeSinceStartup + 15f;
+                bool heldBeforeDeparture = grab.Started;
+                while (departing != null && Time.realtimeSinceStartup < until)
+                {
+                    heldBeforeDeparture = PushBlockSync.Ignores(block, departing.PlatformBehaviour.PlatformMovement);
+                    KeepAlive(); yield return null;
+                }
                 h.Check(departing == null && block != null, "PJ the guest's original puppet is destroyed while the host keeps the stone loaded");
+                h.Check(heldBeforeDeparture, "PJ guest was still gripping the stone immediately before its puppet disappeared");
                 h.Check(StoneMaterial(block, block.PushPullMaterial), "PJ departing guest frees the stone's resting friction");
                 GrabSetup next = new GrabSetup();
                 yield return GrabBlock(block, next, CoopDir);

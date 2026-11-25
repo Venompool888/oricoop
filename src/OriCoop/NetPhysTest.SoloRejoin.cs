@@ -70,7 +70,8 @@ namespace OriCoop
                 StateUpdate atRelease = authority.LatestState(key);
                 bool unpublished = grab.Started && Mathf.Abs(solo.x - oldX) > 1f && authority.OwnerOf(key) == 0 &&
                     atRelease != null && atRelease.Epoch == published.Epoch && atRelease.Ver == published.Ver;
-                h.Check(unpublished, "PK native solo push changed the stone before a new publication (cached=" + F(oldX) + ", live=" + F(solo.x) + ", owner=" + authority.OwnerOf(key) + ")");
+                h.Check(unpublished, "PK native solo push changed the stone before a new publication (cached=" + F(oldX) + ", live=" + F(solo.x) +
+                    ", grabbed=" + grab.Started + ", attempts=" + grab.Attempts + ", owner=" + authority.OwnerOf(key) + ")");
                 WatchStart(block);
                 File.WriteAllText(resume, "pushed");
                 yield return UntilStone(() => NetPlay.PartnerHere && SaveSync.ReadyForSeat(guest), 50f);
