@@ -325,6 +325,12 @@ namespace OriCoop
             "pause.room", "房间管理", "Room",   // T-189
             "coop.local_seat", "P{0}: {1}", "P{0}: {1}",
             "coop.change_device", "{0}    [更改]", "{0}    [Change device]",
+            "coop.named_input", "{0}: {1}", "{0}: {1}",
+            "coop.rename_player", "改名 (F2 / X)", "Rename (F2 / X)",
+            "coop.player_name", "{0} 的名字", "{0} display name",
+            "coop.name_visibility", "房间内的玩家可以看到这个名字。留空只显示座位号。", "Players in the room can see this name. Leave it blank to use the seat number.",
+            "coop.name_save", "保存", "Save",
+            "coop.name_cancel", "取消", "Cancel",
             "coop.add_local", "加入本机玩家", "Add local player",
             "coop.remove_local", "移除 P{0}", "Remove P{0}",
             "coop.online_input", "键盘鼠标和所有手柄", "Keyboard/mouse + all controllers",

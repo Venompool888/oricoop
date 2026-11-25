@@ -45,12 +45,16 @@ namespace OriCoop
             return L10n.T(L10n.RoleKey(server, seat == (server ? CsLobby.ManagerSeat : 1)));
         }
 
-        // The other player's overhead label, plus the Steam name when there is one.
-        public static string PartnerLabel()
+        internal static string PlayerLabel(int seat)
         {
-            int r = Partner;
-            string name = NetPlay.SteamPartnerName;
-            return string.IsNullOrEmpty(name) ? L10n.F("roles.label", Tag(r), Word(r)) : L10n.F("roles.named_label", Tag(r), Word(r), name);
+            if (!NetPlay.Enabled) return TeammateIdentity.Label(seat);
+            string name = TeammateIdentity.Name(seat);
+            if (string.IsNullOrEmpty(name) && !string.IsNullOrEmpty(NetPlay.SteamPartnerName) && seat == Partner)
+                name = TeammateIdentity.Clean(NetPlay.SteamPartnerName);
+            return string.IsNullOrEmpty(name) ? L10n.F("roles.label", Tag(seat), Word(seat))
+                : L10n.F("roles.named_label", Tag(seat), Word(seat), name);
         }
+
+        public static string PartnerLabel() { return PlayerLabel(Partner); }
     }
 }

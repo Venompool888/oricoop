@@ -713,12 +713,13 @@ namespace OriCoop
                 else if (angle >= -157.5f && angle < -112.5f) arrow = "↙";
                 else arrow = "←";
 
-                string who = Roles.Tag(puppet.Seat);
+                string who = TeammateIdentity.Label(puppet.Seat);
                 string label = (edge.x > Screen.width * 0.5f) ? (who + " " + distStr + " " + arrow) : (arrow + " " + distStr + " " + who);
                 GUIContent content = new GUIContent(label);
                 Vector2 sz = s_arrowStyle.CalcSize(content);
 
                 Rect r = new Rect(edge.x - sz.x * 0.5f, edge.y - sz.y * 0.5f, sz.x, sz.y);
+                r.x = Mathf.Clamp(r.x, 0f, Mathf.Max(0f, Screen.width - r.width));
                 Color rc = Roles.ColorOf(puppet.Seat);
                 DrawText("hud.signal.partner." + puppet.Seat, r, label, s_arrowStyle, new Color(rc.r, rc.g, rc.b, hudAlpha));
             }

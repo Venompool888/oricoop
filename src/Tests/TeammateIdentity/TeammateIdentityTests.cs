@@ -77,7 +77,9 @@ static class TeammateIdentityTests
         Check(TeammateIdentity.Name(2) == "", "transport reset clears names even before a first Hello");
 
         NetPlay.Room.Host = false;
-        Players.LocalSeat = 3; Players.LocalSeats = new int[] { 3 }; TeammateIdentity.LocalSeatsChanged(); TeammateIdentity.Tick();
+        Players.LocalSeat = 3; Players.LocalSeats = new int[] { 3 };
+        Check(TeammateIdentity.Name(1) == "" && TeammateIdentity.Name(3) == "Ori光", "seat assignment has the correct labels even before the next game update");
+        TeammateIdentity.LocalSeatsChanged(); TeammateIdentity.Tick();
         Check(TeammateIdentity.Label(3) == "P3 Ori光", "the same primary keeps its name when a room assigns a different seat");
         Players.Inputs[2] = new InputDevice { Kind = InputDevice.DeviceKind.Pad, Pad = 2 };
         Players.LocalSeat = 2; Players.LocalSeats = new int[] { 2, 3 }; Players.Rename(3, 2);
@@ -89,6 +91,7 @@ static class TeammateIdentityTests
         TeammateIdentity.LocalSeatsChanged(); TeammateIdentity.Tick();
         Check(TeammateIdentity.Name(3) == "" && TeammateIdentity.Name(2) == "晴", "an immediate new local occupant cannot inherit the vanished primary's name");
         Check(TeammateIdentity.Clean("*[ ]#@<>=\u202e\n") == "", "control, bidi and markup-only names are anonymous");
+        Check(TeammateIdentity.Clean(new String(' ', 32) + "光") == "光", "leading whitespace does not consume the display limit");
         string face = Char.ConvertFromUtf32(0x1f60a), many = "";
         for (int i = 0; i < 20; i++) many += face;
         Check(Encoding.UTF8.GetByteCount(TeammateIdentity.Clean(many)) == 64, "unicode length limit preserves complete code points");

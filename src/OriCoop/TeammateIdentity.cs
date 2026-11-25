@@ -17,7 +17,7 @@ namespace OriCoop
         static ConfigEntry<bool> s_useEnvironment;
         static readonly string[] s_local = new string[5];
         static readonly string[,] s_remote = new string[5, 5];
-        static int s_mask, s_originalPrimary; // 0 follows the primary, -1 means that original local player left.
+        static int s_mask, s_lastPrimary, s_originalPrimary; // 0 follows the primary, -1 means that original local player left.
         static bool s_changed;
         static float s_nextCheck;
 
@@ -100,7 +100,11 @@ namespace OriCoop
         internal static string Name(int seat)
         {
             if (seat < 1 || seat > 4) return "";
-            if ((s_mask & Bit(seat)) != 0) return s_local[seat] ?? "";
+            if (s_changed || s_lastPrimary != Players.LocalSeat)
+            {
+                if (Players.IsLocal(seat)) return GetLocalName(seat);
+            }
+            else if ((s_mask & Bit(seat)) != 0) return s_local[seat] ?? "";
             return s_remote[NetPlay.DeviceSeat(seat), seat] ?? "";
         }
 
@@ -116,7 +120,7 @@ namespace OriCoop
         {
             if (s_useEnvironment == null) return;
             float now = Time.realtimeSinceStartup;
-            if (!s_changed && now < s_nextCheck) return;
+            if (!s_changed && s_lastPrimary == Players.LocalSeat && now < s_nextCheck) return;
             s_nextCheck = now + 0.5f;
             Refresh(s_changed);
         }
@@ -124,6 +128,7 @@ namespace OriCoop
         static void Refresh(bool force)
         {
             s_changed = false;
+            s_lastPrimary = Players.LocalSeat;
             if (!NetPlay.Enabled) s_originalPrimary = 0;
             int mask = 0;
             foreach (int seat in Players.LocalSeats)
@@ -179,6 +184,7 @@ namespace OriCoop
             for (int i = 0; i < value.Length && count < 16; i++)
             {
                 char c = value[i];
+                if (clean.Length == 0 && Char.IsWhiteSpace(c)) continue;
                 bool pair = char.IsSurrogatePair(value, i);
                 UnicodeCategory category = CharUnicodeInfo.GetUnicodeCategory(value, i);
                 if (category == UnicodeCategory.Control || category == UnicodeCategory.Format ||

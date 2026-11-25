@@ -178,6 +178,8 @@ namespace OriCoop
         Mesh m_mesh;
         MeshRenderer m_renderer;
         float m_shown = -1f;
+        readonly Color m_core, m_track;
+        readonly float m_aspectY;
         static Material s_mat;
         const int Segments = 72;
 
@@ -192,8 +194,11 @@ namespace OriCoop
             return s_mat;
         }
 
-        public GlowRing(string name)
+        public GlowRing(string name) : this(name, new Color(0.75f, 0.95f, 1f), new Color(0.55f, 0.75f, 1f), 1f) { }
+
+        internal GlowRing(string name, Color core, Color track, float aspectY)
         {
+            m_core = core; m_track = track; m_aspectY = aspectY;
             if (Mat() == null) return;
             Go = new GameObject(name);
             UnityEngine.Object.DontDestroyOnLoad(Go);
@@ -217,7 +222,8 @@ namespace OriCoop
             Vector3[] v = new Vector3[n * 3]; Color[] c = new Color[n * 3];
             int[] tri = new int[((Segments) + (fill > 0f ? arcSegs : 0)) * 12];
             int vi = 0, ti = 0;
-            Color track = new Color(0.55f, 0.75f, 1f, 0.35f * alpha), core = new Color(0.75f, 0.95f, 1f, 0.95f * alpha);
+            Color track = m_track, core = m_core;
+            track.a = 0.35f * alpha; core.a = 0.95f * alpha;
             AddArc(v, c, tri, ref vi, ref ti, Segments, 1f, 0.40f, 0.46f, 0.52f, track);
             if (fill > 0f) AddArc(v, c, tri, ref vi, ref ti, arcSegs, Mathf.Clamp01(fill), 0.36f, 0.46f, 0.56f, core);
             m_mesh.Clear();
@@ -261,11 +267,16 @@ namespace OriCoop
             Go.transform.position = gui.ViewportToWorldPoint(new Vector3(vp.x, vp.y, 8f));
             Go.transform.rotation = gui.transform.rotation;
             float worldH = gui.orthographic ? gui.orthographicSize * 2f * screenFraction : 0.3f;
-            Go.transform.localScale = new Vector3(worldH, worldH, 1f);
+            Go.transform.localScale = new Vector3(worldH, worldH * m_aspectY, 1f);
             return true;
         }
 
         public void Hide() { if (Go != null && Go.activeSelf) Go.SetActive(false); }
-        public void Destroy() { if (Go != null) UnityEngine.Object.Destroy(Go); Go = null; }
+        public void Destroy()
+        {
+            if (Go != null) UnityEngine.Object.Destroy(Go);
+            if (m_mesh != null) UnityEngine.Object.Destroy(m_mesh);
+            Go = null; m_mesh = null;
+        }
     }
 }

@@ -21,6 +21,8 @@ namespace OriCoop
         static readonly Action s_traceFixed = CoopTrace.FixedTick, s_traceUpdate = CoopTrace.Tick;
         static readonly Action s_keyboardRefresh = KeyboardOnlyP1.Refresh, s_netFixed = NetPlay.FixedTick;
         static readonly Action s_netUpdate = NetPlay.Update, s_saveTick = SaveSync.Tick, s_worldTick = WorldSync.Tick;
+        static readonly Action s_identityTick = TeammateIdentity.Tick;
+        static readonly Action s_primaryHud = P2Hud.UpdatePrimary;
         static readonly Action s_progressTick = ProgressSync.Tick, s_enemyTick = EnemySync.Tick;
         static readonly Action s_sessionTick = SessionRules.Tick, s_netHudTick = NetHud.Tick, s_skinTick = P2Skin.Tick;
         static readonly Action s_menuTick = CoopMenu.Tick, s_zonesTick = P2Extras.TickZones, s_modeTick = PlayMode.Tick;
@@ -154,6 +156,7 @@ namespace OriCoop
             askMode.SettingChanged += (s, e) => PlayMode.AskOnLoad = askMode.Value;
             P2Skin.Init(Config);
             NetPlay.Init(Config);
+            TeammateIdentity.Init(Config);
             DisplayFix.Init(Config);
             // T-178: PlayStation pads (DualSense / DualShock 4): button icons and native input without Steam Input.
             var icons = Config.Bind("Controllers", "ButtonIcons", "Auto", new ConfigDescription(
@@ -230,6 +233,7 @@ namespace OriCoop
             SubsystemGuard.Run("PadGlyphs.Tick", s_glyphsTick);
             SubsystemGuard.Run("KeyboardOnlyP1.TrackMenuDevice", s_menuDeviceTick);
             SubsystemGuard.Run("NetPlay.Update", s_netUpdate);
+            SubsystemGuard.Run("TeammateIdentity.Tick", s_identityTick);
             SubsystemGuard.Run("OnlineRoomScreen.Tick", s_roomTick);
             if (!string.IsNullOrEmpty(m_testThrowName)) SubsystemGuard.Run(m_testThrowName, s_testThrow);
             SubsystemGuard.Run("SaveSync.Tick", s_saveTick);
@@ -394,6 +398,7 @@ namespace OriCoop
         {
             SubsystemGuard.Run("NativeGui.LateUpdate", s_nativeGuiLate);
             SubsystemGuard.Run("BottomHud.Update", s_bottomHud);   // T-061: every teammate's status bar, and our own vitals online
+            SubsystemGuard.Run("P2Hud.UpdatePrimary", s_primaryHud);
             // T-026: with no partner present (puppet gone during a death/reload) the HUD below is not updated, so hide
             // the revive markers here; otherwise the last one stays frozen on the HUD layer until the partner returns.
             if (P2Context.P2 == null || P2Context.P1 == null) { SubsystemGuard.Run("ReviveHud.Update", s_reviveHud); return; }
@@ -463,7 +468,10 @@ namespace OriCoop
             foreach (Puppet puppet in Players.Remotes) P2Extras.RetryReturn(puppet);
             VisualInvariants.Check(P2Context.P1, P2Context.P2);
         }
-        void UpdateLocalHud() { P2Hud.Update(P2Context.P2); }
+        void UpdateLocalHud()
+        {
+            foreach (Puppet puppet in Players.Remotes) P2Hud.Update(puppet);
+        }
         void UpdateLateCamera() { UpdateCamera(P2Context.P1, P2Context.P2); }
 
         // [Coop] camera settings for online play (T-058). Live: changing the config file applies at once.
