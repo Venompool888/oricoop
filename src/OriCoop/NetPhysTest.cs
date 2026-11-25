@@ -307,16 +307,21 @@ namespace OriCoop
             yield return Barrier(h, 97, block, pushSetup.Started);
             if (!host) h.Check(pushSetup.Started, "PB guest grabbed the same stone while the host holds it");
             if (!host) Bot(true);
-            // 2.5 s of game time (T-226: was 2.5 real seconds, too little push on a busy machine), capped at 9.5 real s.
-            float pushBegan = Time.realtimeSinceStartup, pushUntil = Time.fixedTime + 2.5f, pushCap = pushBegan + 9.5f; bool guestOwned = false;
+            // 2.5 s of game time (T-226: was 2.5 real seconds, too little push on a busy machine), counted from the moment this
+            // PC sees the guest holding the stone's lease: under load the lease handover itself took part of a fixed window
+            // and left dx=0.48 against 0.5 (2026-11-25). A holder that keeps the stone locked (the T-023 bug) never hands the
+            // lease over, so the window still ends at the cap with dx near 0. Capped at 12 real s from the start of the push.
+            float pushBegan = Time.realtimeSinceStartup, pushUntil = float.MaxValue, pushCap = pushBegan + 12f, ownedAt = -1f; bool guestOwned = false;
             while (Time.fixedTime < pushUntil && Time.realtimeSinceStartup < pushCap)
             {
                 KeepAlive();
                 if (host) { NetTestHarness.BotLX = 0f; P2Input.BotRT = true; }
-                if (AuthoritySource.Current.OwnerOf(PushBlockSync.StateOf(block).Key) == guestSeat) guestOwned = true;
+                if (!guestOwned && AuthoritySource.Current.OwnerOf(PushBlockSync.StateOf(block).Key) == guestSeat)
+                { guestOwned = true; ownedAt = Time.realtimeSinceStartup - pushBegan; pushUntil = Time.fixedTime + 2.5f; }
                 yield return null;
             }
-            h.Note("PB push window: 2.50 game s in " + F(Time.realtimeSinceStartup - pushBegan) + " real s");
+            h.Note("PB push window: lease to the guest after " + (guestOwned ? F(ownedAt) : "never") + " real s, then 2.50 game s; "
+                + F(Time.realtimeSinceStartup - pushBegan) + " real s in all");
             Bot(false);
             yield return Wait(1.0f);
             float dx = block.Position.x - start.x;
