@@ -409,7 +409,7 @@ namespace OriCoop
             CleanupNative();
             RestoreVisible(); Seen.Clear(); Performed.Clear(); Local.Clear(); Remote.Clear(); Accepted.Clear(); Mirrored.Clear(); Starting.Clear();
             StoryTexts.Clear(); ForgetInputLocks();
-            MirrorStartsLog.Clear(); WindowStarts.Clear();
+            MirrorStartsLog.Clear(); WindowStarts.Clear(); WindowMirrors.Clear();
             LocalOnly.Clear(); LocalOnlyControllers.Clear(); LocalWellSequences.Clear();
             s_mirroring = false;
             // Tokens remain monotonic so a delayed end can never release a new story in this process.
@@ -594,10 +594,16 @@ namespace OriCoop
             // Earlier net12 builds announced the first well visit as a story. The pedestal and teleporter
             // already synchronize through their native save objects, including when their scene is unloaded.
             if (data.WellActivation) { WellActivations.TryActivate(WellKey(story.Scene, story.Id)); return; }
-            if (!story.Classified || Remote.ContainsKey(TokenKey(story.Sender, story.Token)) || PlayingLocally(story)) return;
+            if (!story.Classified || Remote.ContainsKey(TokenKey(story.Sender, story.Token))) return;
+            story.Key = KeyOf(story);
+            if (PlayingLocally(story))
+            {
+                if (Services.Net.IsHost && !MutateDropLocalRelay && Ledger.AcceptRelayOnly(story, Time.realtimeSinceStartup))
+                    StoryHost.Current.Rebroadcast(r);
+                return;
+            }
             if (CutsceneGuard.PedestalWindow) MirroredInWindow++;
             LastStoryActivity = Time.realtimeSinceStartup;
-            story.Key = KeyOf(story);
             if (!Ledger.CanReceive(story, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
             if (!Services.Net.IsHost)
             {
@@ -613,7 +619,7 @@ namespace OriCoop
         }
         static bool LocalOnlyStory(Story story)
         {
-            if (CutsceneGuard.PedestalWindow || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return true;
+            if (MutateWindowBlocksLocal && CutsceneGuard.PedestalWindow || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return true;
             return LocalOnlyScoped(story);
         }
         // The story's own sequence / controller was started by this PC's lever or pedestal replay.
@@ -629,14 +635,23 @@ namespace OriCoop
         // one on every PC that plays it ("the cutscene runs natively here, do not also mirror it"). The window used to
         // drop every story start that arrived inside it, also a partner's unrelated one (a map stone, a story trigger
         // elsewhere): it was never played here and the two PCs' story state could differ from then on.
-        // A partner never announces the stories of its own replay (its window keeps them unsent), so a start that
+        // A partner never announces the stories of its own replay (those specific actions stay local), so a start that
         // arrives is not one of those. It is left out only when this PC plays that very story itself: it was started
         // by this PC's replay (LocalOnlyScoped, or inside the replay's call), or natively here inside the window
         // within the last WindowDedupe seconds (both PCs' windows did not close at the same moment).
         // Test-only mutation ORICOOP_MUTATE_WINDOW_DROPS_STARTS: the window drops them all again.
         static readonly bool MutateWindowDropsStarts = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WINDOW_DROPS_STARTS") == "1";
         static readonly RecentObjects<string> WindowStarts = new RecentObjects<string>();
+        static readonly RecentObjects<string> WindowMirrors = new RecentObjects<string>();
+        static readonly bool MutateWindowBlocksLocal = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WINDOW_BLOCKS_LOCAL") == "1";
+        static readonly bool MutateRepeatMirror = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_REPEAT_WINDOW_MIRROR") == "1";
+        static readonly bool MutateDropLocalRelay = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_HOST_DROPS_LOCAL_RELAY") == "1";
         const float WindowDedupe = 5f;
+        static bool NativeWindowStart()
+        {
+            return !MutateRepeatMirror && !s_mirroring && s_replayActionDepth == 0 && CutsceneGuard.PedestalWindow
+                && Online && !PuppetCall;
+        }
         public static int MirroredInWindow;
         static bool PlayingLocally(Story story)
         {
@@ -754,7 +769,11 @@ namespace OriCoop
                     MirrorStartsLog.MirrorPerformed(story.Sequence.GetInstanceID(), Time.realtimeSinceStartup);   // T-183
                     RetireOvertaken(story.Sequence, running || !alreadyPerformed && story.Sequence.enabled);
                     ForcedSync.StoryStarted();
-                    if (!alreadyPerformed) story.Sequence.Perform(null);
+                    if (!alreadyPerformed)
+                    {
+                        story.Sequence.Perform(null);
+                        WindowMirrors.Mark(story.Key, Time.realtimeSinceStartup);
+                    }
                 }
                 else
                 {
@@ -768,7 +787,11 @@ namespace OriCoop
                             story.Controller = controller; CaptureNative(); OwnedControllers.Add(controller);
                             Mirrored.Add(controller);
                             ForcedSync.StoryStarted();
-                            if (!alreadyPerformed) controller.ChangeState(state);
+                            if (!alreadyPerformed)
+                            {
+                                controller.ChangeState(state);
+                                WindowMirrors.Mark(story.Key, Time.realtimeSinceStartup);
+                            }
                             break;
                         }
                         if (story.Controller != null) break;
@@ -804,7 +827,7 @@ namespace OriCoop
         {
             Story story;
             if (Local.TryGetValue(token, out story)
-                && (MutateEndLostInWindow ? !LocalOnlyStory(story) : StoryLedger<Story>.EndOwed(story, LocalOnlyStory(story))))
+                && (MutateEndLostInWindow ? !CutsceneGuard.PedestalWindow && !LocalOnlyStory(story) : StoryLedger<Story>.EndOwed(story, LocalOnlyStory(story))))
             {
                 StoryRecovery recovery = completed && story.RecoversDowned ? Revive.StorySurvivors() : null;
                 Services.Net.Send(EndMessage, true, delegate(BinaryWriter w) {
@@ -823,7 +846,7 @@ namespace OriCoop
             ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r)); Story story;
             // T-212 (4): a story this PC tracks ends when its sender says so, whatever window is open here now (the
             // "already playing locally" entries of a pedestal replay used to sit in Remote for 60 s for this reason).
-            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || MutateEndLostInWindow && LocalOnlyStory(story)) return;
+            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || MutateEndLostInWindow && (CutsceneGuard.PedestalWindow || LocalOnlyStory(story))) return;
             story.Recovery = StoryRecovery.Read(r);
             StoryHost.Current.Rebroadcast(r);
             Accepted.Remove(token);
@@ -1022,9 +1045,9 @@ namespace OriCoop
         static void ReceiveSkip(BinaryReader r)
         {
             ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r)); Story story;
-            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || PlayingLocally(story)) return;
+            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story)) return;
             StoryHost.Current.Rebroadcast(r);
-            if (!Remote.ContainsKey(token)) return;
+            if (!Remote.ContainsKey(token) || PlayingLocally(story)) return;
             Ledger.Skip(story); if (story.Resolved && !story.Watch) SkipRemote(story);
         }
         static void SkipRemote(Story story)
@@ -1202,6 +1225,8 @@ namespace OriCoop
                     && !Mirrored.Contains(__instance) && MirrorOwners.Remove(__instance)) OwnedSequences.Remove(__instance);
                 bool replay = s_mirroring || s_replayActionDepth > 0 || OwnedSequences.Contains(__instance);
                 bool canStart = __instance.enabled && __instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty;
+                if (canStart && NativeWindowStart() && WindowMirrors.Consume(KeyOf(new Story { Kind = 0, Scene = SceneOf(__instance),
+                    Id = __instance.MoonGuid }), Time.realtimeSinceStartup, WindowDedupe)) return false;
                 if (canStart && Online && !PuppetCall) NoteContinuation(__instance);
                 if (!replay && (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0)) LocalOnly.Add(__instance);
                 if (!replay && LocalWellSave) LocalWellSequences.Add(__instance);
@@ -1277,6 +1302,8 @@ namespace OriCoop
             static bool Prefix(CutsceneController __instance, CutsceneState state, out StartCall __state)
             {
                 __state = new StartCall();
+                if (state != null && NativeWindowStart() && WindowMirrors.Consume(KeyOf(new Story { Kind = 1, Scene = SceneOf(__instance),
+                    Id = MoonGuid.Empty, Path = PathOf(__instance.transform), State = PathOf(state.transform) }), Time.realtimeSinceStartup, WindowDedupe)) return false;
                 if (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) LocalOnlyControllers.Add(__instance);
                 __state.LocalOnly = LocalOnlyControllers.Contains(__instance);
                 if (__state.LocalOnly) s_localOnlyRunDepth++;
@@ -1493,7 +1520,7 @@ namespace OriCoop
         {
             static void Prefix()
             {
-                if (!Online || s_mirroring || PuppetCall || CutsceneGuard.PedestalWindow
+                if (!Online || s_mirroring || PuppetCall
                     || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return;
                 foreach (Story story in Local.Values)
                 {

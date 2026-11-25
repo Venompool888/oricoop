@@ -8,6 +8,33 @@ static partial class StoryTests
 {
     static void LeftoverCases()
     {
+        Check("T-222 native event consumes only its own recent mirror, once", delegate {
+            RecentObjects<string> mirrors = new RecentObjects<string>();
+            mirrors.Mark("A", 10f);
+            Equal(false, mirrors.Consume("B", 10.01f, 5f));
+            Equal(true, mirrors.Consume("A", 10.02f, 5f));
+            Equal(false, mirrors.Consume("A", 10.03f, 5f));
+            mirrors.Mark("A", 20f);
+            Equal(false, mirrors.Consume("A", 25f, 5f));
+            mirrors.Mark("A", 26f);
+            mirrors.Clear();
+            Equal(false, mirrors.Consume("A", 26f, 5f));
+        });
+        Check("T-222 host accepts original guest token without tracking a local mirror", delegate {
+            StoryLedger<Run> host = new StoryLedger<Run>();
+            Run local = new Run { Key = "same" };
+            Equal(true, host.PrepareLocal(local, 1, true, 10f));
+            host.TrackLocal(local, true);
+            Run guest = new Run { Key = "same", Sender = 2, Token = local.Token };
+            Equal(true, host.AcceptRelayOnly(guest, 11f));
+            Equal(false, host.AcceptRelayOnly(guest, 12f));
+            Equal(11f, guest.Began);
+            Equal(0, host.Remote.Count);
+            Equal(false, host.Watching); Equal(0, host.LiveRemotes);
+            Equal(1, host.AcceptedSeatTokens(2).Count);
+            host.Accepted.Remove(StoryLedger<Run>.TokenKey(2, guest.Token));
+            Equal(1, host.Accepted.Count); Equal(1, host.Local.Count);
+        });
         // T-212 (1): the session ended while a mirrored story had the screen faded to black.
         Check("T-212.1 black after the session: faded back in once black for 4 s (boundary both sides)", delegate {
             Equal(false, SessionEndRepair.Due(5f, 3.9f));

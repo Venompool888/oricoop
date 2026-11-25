@@ -171,6 +171,9 @@
         @{ Switch = 'ORICOOP_MUTATE_GATE_FIRE_BUTTON'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 the gate's fire does not re-check the pickup key (SEIN: story starts when the partner arrives)
         @{ Switch = 'ORICOOP_MUTATE_GATE_NO_ADOPT'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a player standing in a waited-at area counts as present (SEIN: story starts when the partner arrives)
         @{ Switch = 'ORICOOP_MUTATE_STORY_ENDS_ON_GAP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running script with a takeover step ahead is not over (SEIN: a story announced as long as the script ran)
+        @{ Switch = 'ORICOOP_MUTATE_WINDOW_BLOCKS_LOCAL'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
+        @{ Switch = 'ORICOOP_MUTATE_REPEAT_WINDOW_MIRROR'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
+        @{ Switch = 'ORICOOP_MUTATE_HOST_DROPS_LOCAL_RELAY'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net-3p'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_EXTERNAL_MIRROR_ORPHAN'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
         @{ Switch = 'ORICOOP_MUTATE_UNTYPED_STORY_PROGRESS'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_SEQ_PROGRESS_SHARED'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running story script keeps its own step (SEIN with STORY_ENDS_ON_GAP: the host's Ori walks after the story)
