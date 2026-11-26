@@ -1777,6 +1777,7 @@ namespace OriCoop
                 h.Check(SaveSync.Ready, "W save transfer ready");
                 h.Check(WorldSync.CanonicalSelfTest(), "W canonical world hash self-test " + WorldSync.CanonicalSelfTestFailure);
                 h.Check(WorldSync.TestMapCapture(), "W unchanged live map matches native archive and detects edits across the archive");
+                h.Check(WorldSync.TestCinematicPoseCapture(), "W Gumo's pose keeps all native snapshot values; only its digest ignores the animation");
                 string rollback;
                 bool kept = WorldSync.TestDeferredRollback(out rollback);
                 h.Check(kept, "W rollback while a native scene load defers the snapshot: " + rollback);

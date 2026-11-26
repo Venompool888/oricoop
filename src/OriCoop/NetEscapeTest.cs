@@ -341,6 +341,7 @@ namespace OriCoop
                 yield return Load(h, Btm, BtmSpot + new Vector3(host ? 0f : 3f, 0f, 0f));
                 StartWater(h, 630f);
                 yield return Barrier(h, 10);
+                int cleanupsBefore = StorySync.CleanupsAfterSceneTrip;
                 if (host) yield return Drown(h, "ESC3 host");
                 yield return Barrier(h, 11);
                 if (!host)
@@ -377,32 +378,8 @@ namespace OriCoop
                         + " apart, host " + Own.Position + ", guest " + guestAt + ", fallbacks " + Revive.EscapeFallbacks + ")");
                 }
                 yield return Wait(1f);
-                // #431: the escape's end is kuroMoment's MasterTimelineSequence. It hides the Ori and was still playing 20 s
-                // later (story active) on both PCs; the phase then moved everyone away and both Oris stayed inactive, so F8
-                // refused to open in the G checks. A player sits through it or skips it: the test skips it the game's own
-                // way, only when the skip registered is that sequence's, so its OnFinish runs and hands the Ori back.
-                // Only after the team has met at the end (barrier 13 and the host's distance check): skipping before it, the
-                // guest's skip ran its OnFinish at once and the host's controller never held a skip in 30 s (PR #432 rounds
-                // 3-4). This order is the one Windows verified (both PCs found the skip, G screens 6/6).
-                // The wait ends once this PC's Ori is playable again, as in that control. Story sync may still say a story
-                // runs for 30 s and more after the skip (round 5); waiting on it too left the guest's G close check failing.
-                float skipFrom = Time.realtimeSinceStartup, skipUntil = skipFrom + 30f;
-                string endSkip = null;
-                while (Time.realtimeSinceStartup < skipUntil && !(endSkip != null && NetPlay.NotInGameplayReason() == null))
-                {
-                    if (endSkip == null && (endSkip = EndSkip()) != null)
-                    {
-                        h.Note("ESC3 " + Role + ": escape end skip after " + F(Time.realtimeSinceStartup - skipFrom) + " s: " + endSkip);
-                        SkipCutsceneController.Instance.SkipCutscene();
-                    }
-                    yield return null;
-                }
-                if (endSkip == null) h.Note("ESC3 " + Role + ": no skip of the escape's end in " + F(Time.realtimeSinceStartup - skipFrom) + " s (" + SkipDebug() + ")");
-                else h.Note("ESC3 " + Role + ": playable " + F(Time.realtimeSinceStartup - skipFrom) + " s after the skip; story " + StorySync.StoryActive
-                    + ", takeover mask " + StorySync.TakeoverMaskPublic() + ", letterbox " + Letterbox.ShowLetterboxes);
-                h.Check(NetPlay.NotInGameplayReason() == null, "ESC3 " + Role + ": back in gameplay after the escape's end ("
-                    + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ", story " + StorySync.StoryActive + ")");
-                yield return Barrier(h, 14);   // both PCs playable again before anyone is sent back (as in the Windows control)
+                yield return FinishEscapeStory(h, host, cleanupsBefore);
+                yield return Barrier(h, 14);   // both clients can play before either fixture moves to the start spot
             }
             finally
             {
@@ -411,6 +388,84 @@ namespace OriCoop
                 if (Own != null) Own.Mortality.DamageReciever.IsImmortal = immortal0;
                 Sein.World.Events.WaterPurified = purified0;   // later phases run in the test save's world
             }
+        }
+
+        const string SwampAfterEscape = "thornfeltSwampActTwoStart";
+        static bool watchingEndSkip;
+        static int nativeEndSkips;
+
+        [HarmonyLib.HarmonyPatch(typeof(MasterTimelineSequence), "OnSkipCutscene")]
+        static class CountEscapeEndSkip
+        {
+            static void Postfix(MasterTimelineSequence __instance)
+            {
+                if (watchingEndSkip && __instance.transform.root.name.IndexOf("kuroMoment", StringComparison.OrdinalIgnoreCase) >= 0) nativeEndSkips++;
+            }
+        }
+
+        static IEnumerator FinishEscapeStory(TestHarness h, bool host, int cleanupsBefore)
+        {
+            nativeEndSkips = 0; watchingEndSkip = true;
+            int buttons = NetTestHarness.BotButtons;
+            try
+            {
+                // A late guest may already have applied the host's skip by the time its coroutine runs.
+                // Wait until both have registered the real callback before the member requests it.
+                string registered = null;
+                yield return WaitFor(() => (registered = EndSkip()) != null, 30f);
+                h.Check(registered != null, "ESC3 " + Role + ": the escape ending registered its own skip (" + (registered ?? SkipDebug()) + ")");
+                int requests = host ? StorySync.RequestsShown : StorySync.RequestsSent;
+                yield return Barrier(h, 15);
+                if (!host && registered != null) SkipCutsceneController.Instance.SkipCutscene();
+                yield return WaitFor(() => (host ? StorySync.RequestsShown : StorySync.RequestsSent) > requests, 5f);
+                h.Check((host ? StorySync.RequestsShown : StorySync.RequestsSent) == requests + 1 && nativeEndSkips == 0,
+                    "ESC3 " + Role + ": the member requested the ending skip and both timelines wait for the host");
+                yield return Barrier(h, 16);
+                if (host && registered != null) SkipCutsceneController.Instance.SkipCutscene();
+                yield return WaitFor(() => nativeEndSkips > 0, 10f);
+                h.Check(nativeEndSkips == 1, "ESC3 " + Role + ": the host confirmed and the native escape ending ran once (" + nativeEndSkips + ")");
+
+                // The skip fades into a second scene. Its storyTextMessage acquires the native input lock
+                // when it opens. Advance it through player input and leave after control returns in that scene.
+                bool sawText = false, playable = false;
+                int presses = 0;
+                float until = Time.realtimeSinceStartup + 100f;
+                while (Time.realtimeSinceStartup < until && !playable)
+                {
+                    bool swamp = Core.Scenes.Manager.CurrentScene != null && Core.Scenes.Manager.CurrentScene.Scene == SwampAfterEscape;
+                    InteractiveMessageBox text = swamp ? SwampStoryText() : null;
+                    if (text != null)
+                    {
+                        sawText = true; presses++;
+                        NetTestHarness.BotButtons = buttons | 0x1000; // gamepad A advances dialogue
+                        yield return new WaitForFixedUpdate();
+                        NetTestHarness.BotButtons = buttons;
+                    }
+                    playable = sawText && text == null && swamp && NetPlay.LocalInGameplay() && Own != null && !Own.IsSuspended
+                        && Own.Controller.CanMove && !GameController.Instance.InputLocked && !Letterbox.ShowLetterboxes;
+                    if (!playable) yield return Wait(0.3f);
+                }
+                h.Check(playable, "ESC3 " + Role + ": control returned in the swamp after the ending dialogue (saw text " + sawText
+                    + ", presses " + presses + ", takeover mask " + StorySync.TakeoverMaskPublic() + ", letterbox " + Letterbox.ShowLetterboxes + ")");
+                if (host)
+                {
+                    yield return WaitFor(() => StorySync.CleanupsAfterSceneTrip > cleanupsBefore, 20f);
+                    GameplayCamera camera = UI.Cameras.Current;
+                    h.Check(StorySync.CleanupsAfterSceneTrip > cleanupsBefore && camera != null && camera.Target != null,
+                        "ESC3 host: the mirror ended across a native scene trip and the destination camera still has its live target");
+                }
+            }
+            finally { watchingEndSkip = false; NetTestHarness.BotButtons = buttons; }
+        }
+
+        static readonly FieldInfo MessageState = HarmonyLib.AccessTools.Field(typeof(InteractiveMessageBox), "m_state");
+
+        static InteractiveMessageBox SwampStoryText()
+        {
+            foreach (InteractiveMessageBox input in UnityEngine.Object.FindObjectsOfType<InteractiveMessageBox>())
+                if (input.name == "storyTextMessage(Clone)" && input.MessageBox != null
+                    && (InteractiveMessageBox.State)MessageState.GetValue(input) != InteractiveMessageBox.State.Inactive) return input;
+            return null;
         }
 
         // The skip SkipCutsceneController holds, when it belongs to the escape end's MasterTimelineSequence (kuroMoment):

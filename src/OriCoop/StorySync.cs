@@ -177,7 +177,8 @@ namespace OriCoop
         // Every trip that sets the flag goes through this private overload; the wait is bounded from this moment.
         [HarmonyPatch(typeof(GoToSceneController), "GoToScene", new Type[] { typeof(MoonGuid), typeof(Vector3), typeof(string), typeof(Action), typeof(bool), typeof(bool) })]
         static class SceneTripAsked { static void Postfix() { s_tripAsked = Time.realtimeSinceStartup; SceneTripsAsked++; } }
-        public static int SceneTripsAsked;   // tests: the hook really sees the game's trips
+        public static int SceneTripsAsked;
+        internal static int CleanupsAfterSceneTrip;
         static bool SceneTripHolds()
         {
             if (MutateStartInTrip || s_tripAsked < 0f) return false;
@@ -218,6 +219,7 @@ namespace OriCoop
         static readonly FieldInfo StoryMessageBox = AccessTools.Field(typeof(ShowStoryTextAction), "m_messageBox");
         sealed class NativeState
         {
+            public int SceneTrip;
             public SeinCharacter Ori;
             public GameController Game;
             public bool Lock, ActionLock, Blocked, Movement, Ignore, Animation, Active, CutsceneMoving, Gravity, CenterRay;
@@ -421,6 +423,7 @@ namespace OriCoop
             if (s_native != null || Own == null || GameController.Instance == null) return;
             NativeState n = new NativeState(); n.Ori = Own; n.Game = GameController.Instance;
             n.OwnStory = OwnStoryRunning();
+            n.SceneTrip = SceneTripsAsked;
             n.Lock = n.Game.LockInput; n.ActionLock = n.Game.LockInputByAction; n.Active = n.Ori.Active;
             n.Blocked = n.Ori.CutsceneBlocked != null && n.Ori.CutsceneBlocked.Active;
             n.Movement = n.Ori.Controller.LockMovementInput; n.Ignore = n.Ori.Controller.IgnoreControllerInput;
@@ -473,7 +476,10 @@ namespace OriCoop
                     catch (Exception e) { Services.Log.Warn("net: mirrored state exit: " + e.Message); }
                     finally { if (controller != null) controller.CurrentState = null; }
                 }
+                // A native scene trip installs its own locks, character state and camera. Its persistent Ori and
+                // GameController can be the same instances we captured before it left the previous scene.
                 if (n == null || n.Ori == null || n.Ori != Own || n.Game != GameController.Instance) return;
+                if (n.SceneTrip != SceneTripsAsked) { CleanupsAfterSceneTrip++; return; }
                 // T-175: a flag captured when no story of ours was running is a leftover of the cutscene the mirror took
                 // over, not the original: put back gameplay. A story of ours that started since owns the flags now.
                 bool own = n.OwnStory;
@@ -504,7 +510,7 @@ namespace OriCoop
                     bool? letterbox = MirrorBaseline.Restore(n.Letterboxes, own, ownNow);
                     if (letterbox.HasValue && Letterbox.ShowLetterboxes != letterbox.Value)
                     { Letterbox.ShowLetterboxes = letterbox.Value; CutsceneGuard.Log("story restored letterbox=" + letterbox.Value); }
-                    if (n.GameplayCamera != null && n.GameplayCamera.Target != n.Target)
+                    if (n.GameplayCamera != null && n.Target != null && n.GameplayCamera.Target != n.Target)
                     { n.GameplayCamera.Target = n.Target; CutsceneGuard.Log("story restored camera target"); }
                     if (n.Spirit != null && n.SpiritState == Ori.State.Hovering && Characters.Ori != null && Characters.Ori.CurrentState != Ori.State.Hovering)
                     { Characters.Ori.BackToPlayerController(); CutsceneGuard.Log("story restored spirit Hovering"); }

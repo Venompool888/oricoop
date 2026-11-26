@@ -119,12 +119,21 @@ namespace OriCoop
             var hold = scene.AddComponent<LockPlayerInputAction>(); hold.DurationPlayerCantMove = 20;
             var wait = scene.AddComponent<WaitAction>(); wait.Duration = 20;
             start.Actions.Add(register); start.Actions.Add(hold); start.Actions.Add(wait);
+            GameplayCamera gameplayCamera = UI.Cameras.Current;
+            Transform originalTarget = gameplayCamera.Target;
+            GameObject temporaryTarget = null;
             try
             {
                 yield return NetCutsceneTest.Barrier(h, 894);
                 if (!host) start.Perform(null);
                 yield return Until(() => start.IsRunning && SkipCutsceneController.Instance.SkippingAvailable, 6);
                 h.Check(start.IsRunning && SkipCutsceneController.Instance.SkippingAvailable, "T258 both PCs registered the guest-originated skip action");
+                if (host && originalTarget != null)
+                {
+                    temporaryTarget = new GameObject("Same-scene mirrored camera target");
+                    temporaryTarget.transform.position = originalTarget.position;
+                    gameplayCamera.Target = temporaryTarget.transform;
+                }
                 yield return NetCutsceneTest.Wait(0.5f);
                 int shown = StorySync.RequestsShown, sent = StorySync.RequestsSent;
                 yield return NetCutsceneTest.Barrier(h, 896);
@@ -141,6 +150,20 @@ namespace OriCoop
             {
                 SkipCutsceneController.Instance.Clear(); hold.Stop(); start.Stop(); finish.Stop();
                 UI.Fader.FadeIn(0); UnityEngine.Object.Destroy(scene);
+            }
+            if (host)
+            {
+                try
+                {
+                    yield return Until(() => gameplayCamera.Target == originalTarget, 8f);
+                    h.Check(temporaryTarget != null && originalTarget != null && gameplayCamera.Target == originalTarget,
+                        "T258 ending a mirror in the same scene restores the original live camera target");
+                }
+                finally
+                {
+                    if (gameplayCamera.Target == (temporaryTarget == null ? null : temporaryTarget.transform)) gameplayCamera.Target = originalTarget;
+                    if (temporaryTarget != null) UnityEngine.Object.Destroy(temporaryTarget);
+                }
             }
         }
     }

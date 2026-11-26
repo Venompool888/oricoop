@@ -668,16 +668,58 @@ namespace OriCoop
                     int metadata = 48 + Encoding.UTF8.GetByteCount(blob.Type);
                     if (batch.Length + metadata + length > MaxMessage - 4)
                     { FlushBatch(batch, writer, count, seat); count = 0; }
-                    writer.Write(blob.Scene.ToByteArray()); writer.Write(blob.Id.ToByteArray());
-                    writer.Write((byte)blob.Schema); writer.Write(blob.Type);
-                    writer.Write(blob.Bytes.Length); writer.Write(offset); writer.Write((ushort)length);
-                    writer.Write(blob.Bytes, offset, length); count++;
+                    WriteBlobPart(writer, blob, offset, length); count++;
                     offset += length;
                 } while (offset < blob.Bytes.Length);
                 if (seat == 0) s_known[Key(blob.Scene, blob.Id)] = blob.Hash;
             }
             FlushBatch(batch, writer, count, seat);
             writer.Close(); batch.Close();
+        }
+
+        static void WriteBlobPart(BinaryWriter writer, Blob blob, int offset, int length)
+        {
+            writer.Write(blob.Scene.ToByteArray()); writer.Write(blob.Id.ToByteArray());
+            writer.Write((byte)blob.Schema); writer.Write(blob.Type);
+            writer.Write(blob.Bytes.Length); writer.Write(offset); writer.Write((ushort)length);
+            writer.Write(blob.Bytes, offset, length);
+        }
+
+        internal static bool TestCinematicPoseCapture()
+        {
+            MoonGuid scene = new MoonGuid(-1289149174, 680822595, 558787450, 1729667918);
+            MoonGuid mesh = new MoonGuid(-1517079076, 1077808971, 1966622865, 680266200);
+            MoonGuid other = new MoonGuid(1, 2, 3, 4);
+            GameObject go = new GameObject("OriCoop transform archive test");
+            try
+            {
+                TransformSaveSerialize transform = go.AddComponent<TransformSaveSerialize>();
+                Blob before = CaptureRecord(scene, mesh, transform);
+                Blob otherBefore = CaptureRecord(scene, other, transform);
+                go.transform.localPosition = new Vector3(5f, 7f, 11f);
+                go.transform.localRotation = Quaternion.Euler(0f, 0f, 45f);
+                go.transform.localScale = new Vector3(2f, 3f, 4f);
+                Blob after = CaptureRecord(scene, mesh, transform);
+                Blob otherAfter = CaptureRecord(scene, other, transform);
+                string key = Key(scene, mesh), otherKey = Key(scene, other);
+                if (before.Hash == after.Hash || SharedHash(key, before) != SharedHash(key, after)
+                    || SharedHash(otherKey, otherBefore) == SharedHash(otherKey, otherAfter)) return false;
+                using (MemoryStream part = new MemoryStream())
+                {
+                    BinaryWriter writer = new BinaryWriter(part);
+                    WriteBlobPart(writer, after, 0, after.Bytes.Length); writer.Flush(); part.Position = 0;
+                    BinaryReader reader = new BinaryReader(part);
+                    if (new MoonGuid(reader.ReadBytes(16)) != scene || new MoonGuid(reader.ReadBytes(16)) != mesh
+                        || reader.ReadByte() != (byte)Meaning.Raw || reader.ReadString() != "TransformSaveSerialize"
+                        || reader.ReadInt32() != 40 || reader.ReadInt32() != 0 || reader.ReadUInt16() != 40) return false;
+                    Vector3 p = go.transform.localPosition, s = go.transform.localScale;
+                    Quaternion r = go.transform.localRotation;
+                    foreach (float value in new float[] { p.x, p.y, p.z, r.x, r.y, r.z, r.w, s.x, s.y, s.z })
+                        if (reader.ReadSingle() != value) return false;
+                    return part.Position == part.Length;
+                }
+            }
+            finally { UnityEngine.Object.Destroy(go); }
         }
 
         static void FlushBatch(MemoryStream batch, BinaryWriter writer, int count, int seat)
@@ -1345,6 +1387,7 @@ namespace OriCoop
         // Held objects are story script state (Raw schema), whose digest hash equals the canonical hash in s_known.
         static ulong SharedHash(string key, Blob blob)
         {
+            if (DigestRepair.ComparesPosePresence(key, blob.Type)) return 0UL;
             ulong known;
             if (s_mirrorHold.IsHeld(key) && blob.Schema == Meaning.Raw && s_known.TryGetValue(key, out known)) return known;
             return DigestHash(blob);
