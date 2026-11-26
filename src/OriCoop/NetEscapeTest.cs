@@ -196,16 +196,20 @@ namespace OriCoop
         {
             Immortal = false;
             Own.Mortality.Health.RestoreAllHealth();
-            float end = Time.realtimeSinceStartup + 6f;
+            // Water and collision damage advance on the physics clock. A busy frame can consume wall time
+            // without running those steps. Keep a wall-clock stop for a genuinely stalled game.
+            float physicsStart = Time.fixedTime, wallStart = Time.realtimeSinceStartup;
             int restores = TestHarness.RestoreCheckpointCalls;
-            while (Own != null && !Revive.IsDowned(Own) && TestHarness.RestoreCheckpointCalls == restores && Time.realtimeSinceStartup < end)
+            while (Own != null && !Revive.IsDowned(Own) && TestHarness.RestoreCheckpointCalls == restores
+                && Time.fixedTime - physicsStart < 6f && Time.realtimeSinceStartup - wallStart < 30f)
             {
                 if (Own.Position.y > s_waterY - 4f) Place(new Vector3(522.5f, s_waterY - 8f, 0f));
                 HoldWater();
                 yield return null;
             }
             if (lastStanding) { h.Check(TestHarness.RestoreCheckpointCalls > restores || Revive.IsDowned(Own), label + ": died in the rising water"); yield break; }
-            h.Check(Own != null && Revive.IsDowned(Own), label + ": died in the rising water and is downed, not dead (at " + (Own == null ? "?" : Own.Position.ToString()) + ", water y " + F(s_waterY) + ")");
+            h.Check(Own != null && Revive.IsDowned(Own), label + ": died in the rising water and is downed, not dead (at " + (Own == null ? "?" : Own.Position.ToString()) + ", water y " + F(s_waterY)
+                + ", physics seconds " + F(Time.fixedTime - physicsStart) + ", wall seconds " + F(Time.realtimeSinceStartup - wallStart) + ")");
         }
 
         static IEnumerator WaitFor(Func<bool> done, float seconds)
