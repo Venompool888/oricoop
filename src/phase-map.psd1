@@ -34,7 +34,7 @@
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
-        'WorldObjSync' = 'WO,R'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
+        'WorldObjSync' = 'WO,R'; 'TriggerTrails' = 'WO'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
         'OnlineCamera' = 'CAM'; 'CoopCamera' = 'MOVE,CAM'; 'CutsceneGuard' = 'INTRO,S4,CAM,CUT'
         'EnemySync.Swarm' = 'E3,E5'; 'SwarmFamily' = 'E5'   # T-195: the splitting Swarm (E5s checks; ids: unit tests)
         'EnemySync.Leftovers' = 'E3,E5'; 'EnemySyncTest.Leftovers' = 'E5'; 'HitIds' = 'E3,E5'   # T-208: enemy-sync leftovers (E5k checks; rules: unit tests)

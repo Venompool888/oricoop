@@ -67,31 +67,27 @@ namespace OriCoop
         static readonly Dictionary<int, Component> s_byId = new Dictionary<int, Component>();
         static readonly Dictionary<int, bool> s_triggerReplicable = new Dictionary<int, bool>();
         static readonly World.OneShotTriggers s_firedOnce = new World.OneShotTriggers();
-        // What this PC did with each replicable hazard trigger (sent, skipped and why, received, deferred, ran), the last
-        // few steps per id, so a test that misses a rock (WO8L) can say where the event stopped. Hazard triggers fire
-        // a handful of times per scene, so this stays small.
-        static readonly Dictionary<int, TriggerTrailEntry> s_trail = new Dictionary<int, TriggerTrailEntry>();
-        sealed class TriggerTrailEntry { public readonly Queue<string> Steps = new Queue<string>(); public float SentAt = -1f, StartedAt = -1f; }
-        static TriggerTrailEntry TrailOf(int id)
-        {
-            TriggerTrailEntry e;
-            if (!s_trail.TryGetValue(id, out e)) { e = new TriggerTrailEntry(); s_trail[id] = e; }
-            return e;
-        }
+        static readonly World.TriggerTrails s_trail = new World.TriggerTrails();
         static void Trail(int id, string step)
         {
-            TriggerTrailEntry e = TrailOf(id);
-            e.Steps.Enqueue(Time.realtimeSinceStartup.ToString("F2") + " " + step);
-            while (e.Steps.Count > 8) e.Steps.Dequeue();
+            s_trail.Record(id).Add(Time.realtimeSinceStartup.ToString("F2") + " " + step);
             CoopTrace.Event("phys", "wobj.trigger", "id", id, "step", step);
         }
         public static string TriggerTrail(int id)
         {
-            TriggerTrailEntry e; return s_trail.TryGetValue(id, out e) ? string.Join(" | ", e.Steps.ToArray()) : "(none)";
+            World.TriggerTrails.Entry entry = s_trail.Find(id);
+            return entry != null ? entry.Describe() : "(none)";
         }
-        // Realtime of this PC's last send of the trigger's event / of the partner's event starting it here; -1 = none.
-        public static float TriggerSentAt(int id) { TriggerTrailEntry e; return s_trail.TryGetValue(id, out e) ? e.SentAt : -1f; }
-        public static float TriggerStartedAt(int id) { TriggerTrailEntry e; return s_trail.TryGetValue(id, out e) ? e.StartedAt : -1f; }
+        public static float TriggerSentAt(int id)
+        {
+            World.TriggerTrails.Entry entry = s_trail.Find(id);
+            return entry != null ? entry.SentAt : -1f;
+        }
+        public static float TriggerStartedAt(int id)
+        {
+            World.TriggerTrails.Entry entry = s_trail.Find(id);
+            return entry != null ? entry.StartedAt : -1f;
+        }
         static readonly World.SeenEvents s_seen = new World.SeenEvents(4096);
         static uint s_seq;
         // Rising water follower state (guest).
@@ -284,7 +280,7 @@ namespace OriCoop
                             t.DoTrigger(false);
                             ActionWithDuration run = t.ActionToRun as ActionWithDuration;
                             bool started = run == null || run.IsPerforming;
-                            if (started) TrailOf(id).StartedAt = Time.realtimeSinceStartup;
+                            if (started) s_trail.Record(id).StartedAt = Time.realtimeSinceStartup;
                             Trail(id, "recv" + (replay ? " (replay)" : "") + ": ran" + (started ? "" : ", action not performing after DoTrigger"));
                         }
                         break;
@@ -774,7 +770,7 @@ namespace OriCoop
                 if (t.Condition != null && !t.Condition.Validate(null)) { Trail(id, "pass: not sent, condition refused"); return true; }
                 if (t.TriggerOnce) { if (!s_firedOnce.TryFire(id)) { Trail(id, "pass: not sent, already fired here"); return true; } }
                 SendEvent(KTrigger, id, null, "trigger " + t.name);
-                TrailOf(id).SentAt = Time.realtimeSinceStartup; Trail(id, "pass: sent");
+                s_trail.Record(id).SentAt = Time.realtimeSinceStartup; Trail(id, "pass: sent");
                 return true;
             }
         }
