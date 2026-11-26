@@ -456,6 +456,11 @@ namespace OriCoop
         // Scan captures that kept the previous blob because the Archive bytes were unchanged (no copy, no rehash).
         public static int CapturesReused;
 
+        static Blob CaptureRecord(MoonGuid scene, MoonGuid id, ISerializable save)
+        {
+            return CaptureRecord(scene, id, save, null);
+        }
+
         // old: this key's blob from the previous scan, or null. When the object serializes to exactly old's bytes
         // (same schema and type), old is returned as it is: its hash is already the hash of these bytes.
         static Blob CaptureRecord(MoonGuid scene, MoonGuid id, ISerializable save, Blob old)
