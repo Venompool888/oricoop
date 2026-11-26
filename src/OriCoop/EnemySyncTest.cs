@@ -700,7 +700,7 @@ namespace OriCoop
                 if (cls == "FishEnemy") { h.Note(s_tag + " " + cls + " skipped: only engages a player in the water, which is poisoned in the test save"); yield break; }
                 chosen.Origin = NetPlay.IsHost ? found[cls].Origin : Part[step].Origin;
                 // Only the guest moves (avoiding host checkpoint reloads). Ownership is independent in server mode.
-                int deathsAtPlace = EnemySync.DeathEffects; bool suicidal = cls == "DropSlugEnemy" || cls == "KamikazeSootEnemy";
+                int deathsAtPlace = EnemySync.DeathEffects, unresolvedAtPlace = EnemySync.UnresolvedFx; bool suicidal = cls == "DropSlugEnemy" || cls == "KamikazeSootEnemy";
                 bool placed = true; if (!NetPlay.IsHost) { EnemySync.LoadTestArea(chosen.Origin); Plugin.Teleport(Own, chosen.Origin + new Vector3(1.5f, 1f, 0)); yield return Wait(1.5f); Vector3 spot; placed = SafeSpot(chosen.Origin, out spot); if (placed) Plugin.Teleport(Own, spot); else h.Note(s_tag + " " + cls + " no safe ground beside it; staying at the spawn point"); }
                 if (P2Context.P2 == null) { float back = Now + 15f; while (P2Context.P2 == null && Now < back) yield return null; }
                 if (P2Context.P2 == null) { h.Note(s_tag + " " + cls + " skipped: partner puppet missing (checkpoint reload)"); yield break; }
@@ -720,6 +720,8 @@ namespace OriCoop
                     while (!EnemySync.Inspect(chosen.Key).Dead && Now < deathWait) yield return null;
                     if (owner) h.Check(agreed, s_tag + " " + cls + " agreed owner AI self-destructed beside a player");
                     else h.Check(agreed && EnemySync.DeathEffects > deathsAtPlace, s_tag + " " + cls + " self-destruct death burst played on the mirror");
+                    if (!owner) h.Check(EnemySync.UnresolvedFx == unresolvedAtPlace, s_tag + " " + cls + " every self-destruct effect prefab resolved on the mirror (unresolved="
+                        + (EnemySync.UnresolvedFx - unresolvedAtPlace) + ")");
                     yield return Barrier(h, step + 5, chosen.Key, true); yield break;
                 }
                 h.Check(ready, s_tag + " " + cls + (NetRoute.ServerMode

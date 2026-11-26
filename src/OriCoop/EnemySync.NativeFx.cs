@@ -36,6 +36,50 @@ namespace OriCoop
             if (armoured != null) yield return SpawnerPrefab(armoured.ShatterEffect);
         }
 
+        // T-233: effects a family list above doesn't name (the DropSlug's dropSlugEnemyExplosion, 6th playtest) are still
+        // referenced by the enemy's own scripts or by its death action, as a GameObject field or a PrefabSpawner, so the
+        // receiver can find them on its copy of the enemy, or on any loaded enemy of the same class (including prefabs).
+        static readonly Dictionary<Type, FieldInfo[]> s_effectFields = new Dictionary<Type, FieldInfo[]>();
+
+        static FieldInfo[] EffectFields(Type type)
+        {
+            FieldInfo[] fields;
+            if (s_effectFields.TryGetValue(type, out fields)) return fields;
+            var list = new List<FieldInfo>();
+            for (Type t = type; t != null && t != typeof(MonoBehaviour); t = t.BaseType)
+                foreach (FieldInfo f in t.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.DeclaredOnly))
+                    if (f.FieldType == typeof(GameObject) || f.FieldType == typeof(PrefabSpawner)) list.Add(f);
+            return s_effectFields[type] = list.ToArray();
+        }
+
+        static IEnumerable<GameObject> ReferencedEffects(Component root)
+        {
+            if (root == null) yield break;
+            foreach (PrefabSpawner spawner in root.GetComponentsInChildren<PrefabSpawner>(true)) yield return SpawnerPrefab(spawner);
+            foreach (MonoBehaviour behaviour in root.GetComponentsInChildren<MonoBehaviour>(true))
+            {
+                if (behaviour == null) continue;
+                foreach (FieldInfo f in EffectFields(behaviour.GetType()))
+                {
+                    object value;
+                    try { value = f.GetValue(behaviour); } catch (Exception) { continue; }
+                    GameObject go = value as GameObject;
+                    if (go != null) { yield return go; continue; }
+                    PrefabSpawner spawner = value as PrefabSpawner;
+                    if (spawner != null) yield return SpawnerPrefab(spawner);
+                }
+            }
+        }
+
+        static IEnumerable<GameObject> EnemyAndDeathEffects(Enemy enemy)
+        {
+            if (enemy == null) yield break;
+            foreach (GameObject go in ReferencedEffects(enemy)) yield return go;
+            var receiver = enemy.DamageReciever;
+            if (receiver != null && receiver.DeathAction != null)
+                foreach (GameObject go in ReferencedEffects(receiver.DeathAction as Component)) yield return go;
+        }
+
         static GameObject FloorEffect(Vector3 position, out bool useNativeBreak)
         {
             useNativeBreak = false;
@@ -72,6 +116,14 @@ namespace OriCoop
             foreach (Enemy enemy in Resources.FindObjectsOfTypeAll<Enemy>())
             {
                 prefab = EnemyVisuals.FindByName(name, EnemyEffects(enemy), s_fxName);
+                if (prefab != null) return s_fxPrefabs[name] = prefab;
+            }
+            prefab = EnemyVisuals.FindByName(name, EnemyAndDeathEffects(actor.Entity), s_fxName);
+            if (prefab != null) return s_fxPrefabs[name] = prefab;
+            foreach (Enemy enemy in Resources.FindObjectsOfTypeAll<Enemy>())
+            {
+                if (enemy == null || enemy.GetType().Name != actor.ClassName) continue;
+                prefab = EnemyVisuals.FindByName(name, EnemyAndDeathEffects(enemy), s_fxName);
                 if (prefab != null) return s_fxPrefabs[name] = prefab;
             }
             foreach (GameObject go in Resources.FindObjectsOfTypeAll<GameObject>())
