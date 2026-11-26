@@ -665,6 +665,7 @@ namespace OriCoop
                 t => t.ActionToRun is PerformingAction && !((PerformingAction)t.ActionToRun).IsPerforming && WorldObjSync.IsReplicableTrigger(t));
             // One rock trigger per scene and it fires once: re-arm it on both PCs (the 200 ms round reuses it).
             if (s_found != null) foreach (Component c in s_found) WorldObjSync.ForgetTrigger((PlayerCollisionTrigger)c);
+            float rearmed = Time.realtimeSinceStartup;
             yield return Agree<PlayerCollisionTrigger>(h, tag, step);
             PlayerCollisionTrigger trigger = s_pick as PlayerCollisionTrigger; if (trigger == null) yield break;
             PerformingAction action = (PerformingAction)trigger.ActionToRun;
@@ -686,10 +687,22 @@ namespace OriCoop
             }
             else
             {
-                // Wait well past the window, so a late rock is measured instead of only missed (WO8L failed once with
-                // nothing after 3.5 s; the trail below shows where the event stopped).
+                // The event can be here before this PC leaves the barrier: its unreliable copy overtakes the reliable
+                // barrier message, which waits behind slower reliable traffic on a busy PC (the WO8L miss: the guest waited
+                // 0.9 s at the barrier, then saw nothing for 3.5 s). A short rock sequence is then over before the loop
+                // below looks, so the start the event caused here counts too.
+                float applied = WorldObjSync.TriggerStartedAt(id);
+                if (applied >= rearmed) { ran = true; ranAt = applied; }
+                // Wait well past the window, so a late rock is measured instead of only missed.
                 float until = Time.realtimeSinceStartup + Mathf.Max(s_win, 10f);
-                while (Time.realtimeSinceStartup < until && !ran) { ran = action.IsPerforming; if (ran) ranAt = Time.realtimeSinceStartup; yield return null; }
+                while (Time.realtimeSinceStartup < until && !ran)
+                {
+                    applied = WorldObjSync.TriggerStartedAt(id);
+                    if (applied >= rearmed) { ran = true; ranAt = applied; }
+                    else if (action.IsPerforming) { ran = true; ranAt = Time.realtimeSinceStartup; }
+                    if (!ran) yield return null;
+                }
+                if (ran && ranAt < exit) h.Note(tag + " the partner's event started the rock " + F(exit - ranAt) + " s before this PC left the barrier");
             }
             yield return Barrier(h, step + 5, ran ? 1 : 0, passRel, wasRunning ? 1f : 0f);
             Sample pr = Partner(step + 5);
