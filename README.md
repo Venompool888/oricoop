@@ -62,7 +62,7 @@ OriCoop 给单人游戏《奥日与黑暗森林：终极版》加上合作模式
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1            # 或 -Game "D:\Games\Ori"、-NoInstall
    ```
-3. 生成给别的电脑用的套件：`powershell -File src\make-online-kit.ps1`，输出在 `dist\`。
+3. 运行 `powershell -File src\make-online-kit.ps1` 生成给别的电脑用的套件，输出在 `dist\`。如果游戏装在仓库外，请在命令末尾加上 `-Game "D:\Games\Ori"` 并换成实际游戏目录。
 
 可选资源（缺少时照样能编译和运行）：
 
@@ -129,7 +129,7 @@ ships with Windows (`C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe`; n
    ```powershell
    powershell -NoProfile -ExecutionPolicy Bypass -File src\build.ps1            # or -Game "D:\Games\Ori", -NoInstall
    ```
-3. Make a kit for other PCs: `powershell -File src\make-online-kit.ps1` (output in `dist\`).
+3. Run `powershell -File src\make-online-kit.ps1` to create a kit for other PCs in `dist\`. For a game installed outside the repository, append `-Game "D:\Games\Ori"` using your installation path.
 
 Optional resources (the plugin builds and runs without them):
 

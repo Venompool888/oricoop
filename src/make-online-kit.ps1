@@ -20,15 +20,19 @@ Copy-Item "$game\BepInEx\core\*" "$stage\BepInEx\core" -Recurse
 Copy-Item "$game\BepInEx\config\BepInEx.cfg" "$stage\BepInEx\config"
 # T-091: the DLL is a clean build of THIS commit (build-commit.ps1), never the test copy's plugins folder: any test
 # session installs its own branch build there (a kit named 077a18d once carried be474be, an older menu).
-$dll = (& (Join-Path $PSScriptRoot 'build-commit.ps1') $commit | Select-Object -Last 1)
+$kitBuild = Join-Path $stage 'build'
+$dll = (& (Join-Path $PSScriptRoot 'build-commit.ps1') $commit -Game $game -OutDir $kitBuild | Select-Object -Last 1)
 if (-not (Test-Path -LiteralPath $dll)) { throw "build of $commit failed: no DLL at '$dll'" }
 Copy-Item -LiteralPath $dll "$stage\BepInEx\plugins\OriCoop.dll"
+Remove-Item -LiteralPath $kitBuild -Recurse -Force
 # T-178: PlayStation icons are built into OriCoop.dll now; the old stand-alone OriPSGlyphs.dll is no longer shipped.
 Copy-Item (Join-Path $root 'TWO-PC-TEST.md') "$stage\OriCoop-README-online.md"
 # Licence notices for the bundled BepInEx / HarmonyX / MonoMod / Mono.Cecil (LGPL-2.1 and MIT require them).
 Copy-Item (Join-Path $PSScriptRoot 'assets\kit\THIRD-PARTY-LICENSES.txt') "$stage\THIRD-PARTY-LICENSES.txt"
 # The DLL embeds a few game-derived items (marker image, zh text); this notice says whose they are.
-Copy-Item (Join-Path (Split-Path -Parent $PSScriptRoot) 'public\GAME-ASSETS-NOTICE.md') "$stage\GAME-ASSETS-NOTICE.md"
+$notice = Join-Path $root 'GAME-ASSETS-NOTICE.md'
+if (-not (Test-Path -LiteralPath $notice)) { $notice = Join-Path $root 'public\GAME-ASSETS-NOTICE.md' }
+Copy-Item -LiteralPath $notice -Destination "$stage\GAME-ASSETS-NOTICE.md"
 Remove-Item $zip -Force -ErrorAction SilentlyContinue
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 [System.IO.Compression.ZipFile]::CreateFromDirectory($stage, $zip)
