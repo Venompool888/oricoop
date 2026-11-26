@@ -135,6 +135,13 @@ namespace OriCoop
                     gameplayCamera.Target = temporaryTarget.transform;
                 }
                 yield return NetCutsceneTest.Wait(0.5f);
+                // Ginso registers the same native timeline through two different actions, sometimes twice on the mirror.
+                if (host)
+                {
+                    var repeated = scene.AddComponent<RegisterSkipCutsceneAction>();
+                    repeated.MasterTimelineSequence = timeline; repeated.Perform(null); register.Perform(null);
+                }
+                yield return NetCutsceneTest.Wait(0.2f);
                 int shown = StorySync.RequestsShown, sent = StorySync.RequestsSent;
                 yield return NetCutsceneTest.Barrier(h, 896);
                 if (!host) { SkipCutsceneController.Instance.SkipCutscene(); SkipCutsceneController.Instance.SkipCutscene(); }

@@ -16,7 +16,7 @@ namespace OriCoop
         static ConfigEntry<bool> hostControls;
         static readonly StoryControls controlStates = new StoryControls();
         static readonly Dictionary<MessageBox, SharedControl> boxes = new Dictionary<MessageBox, SharedControl>();
-        static readonly Dictionary<ulong, Dictionary<ActionMethod, int>> runs = new Dictionary<ulong, Dictionary<ActionMethod, int>>();
+        static readonly Dictionary<ulong, Dictionary<Component, int>> runs = new Dictionary<ulong, Dictionary<Component, int>>();
         static readonly List<ulong> oldRuns = new List<ulong>();
         static readonly List<MessageBox> openBoxes = new List<MessageBox>();
         static SharedControl skipControl;
@@ -29,6 +29,7 @@ namespace OriCoop
         sealed class SharedControl
         {
             internal ActionMethod Action;
+            internal MasterTimelineSequence Timeline;
             internal ActionSequence Sequence;
             internal string Key;
             internal Story Run;
@@ -112,12 +113,14 @@ namespace OriCoop
                 if (story.Started && Belongs(target, story)) { if (match != null) return false; match = story; }
             if (match == null || LocalOnlyScoped(match)) return false;
             ulong token = TokenKey(match.Sender, match.Token);
-            Dictionary<ActionMethod, int> visits;
-            if (!runs.TryGetValue(token, out visits)) runs.Add(token, visits = new Dictionary<ActionMethod, int>());
-            int visit; visits.TryGetValue(target.Action, out visit); visits[target.Action] = ++visit;
+            // Multiple registration actions can point to one native skip callback, as in the Ginso ending.
+            Component control = target.Timeline != null ? (Component)target.Timeline : target.Action;
+            Dictionary<Component, int> visits;
+            if (!runs.TryGetValue(token, out visits)) runs.Add(token, visits = new Dictionary<Component, int>());
+            int visit; visits.TryGetValue(control, out visit); visits[control] = ++visit;
             // Same-type components can share a transform. The component ordinal disambiguates them.
-            Component[] siblings = target.Action.GetComponents(target.Action.GetType());
-            string identity = target.Action.GetType().Name + "/" + ComponentKey(target.Action) + "/" + Array.IndexOf(siblings, target.Action);
+            Component[] siblings = control.GetComponents(control.GetType());
+            string identity = control.GetType().Name + "/" + ComponentKey(control) + "/" + Array.IndexOf(siblings, control);
             target.Run = match; target.MatchedAt = Time.realtimeSinceStartup;
             target.Key = StoryControls.Key(match.Sender, match.Token, identity, visit);
             return target.Key.Length <= StoryControls.MaxActionKey;
@@ -259,18 +262,31 @@ namespace OriCoop
 
         static bool CurrentSkip(SharedControl target)
         {
-            RegisterSkipCutsceneAction register = target.Action as RegisterSkipCutsceneAction;
-            if (register == null || register.MasterTimelineSequence == null || SkipCutsceneController.Instance == null) return false;
+            if (target.Timeline == null || SkipCutsceneController.Instance == null) return false;
             Action callback = registeredSkip.GetValue(SkipCutsceneController.Instance) as Action;
-            return callback != null && object.ReferenceEquals(callback.Target, register.MasterTimelineSequence);
+            return callback != null && object.ReferenceEquals(callback.Target, target.Timeline);
         }
 
         [HarmonyPatch(typeof(RegisterSkipCutsceneAction), "Perform")]
         static class RegisterSharedSkip
         {
-            static void Postfix(RegisterSkipCutsceneAction __instance)
+            static void Prefix(RegisterSkipCutsceneAction __instance, out bool __state)
             {
-                skipControl = Online && !PuppetCall ? new SharedControl { Action = __instance, Sequence = s_inputSequence } : null;
+                // Check before the native registration replaces the callback. A clear followed by the same
+                // timeline is a new occurrence, while re-registering a live callback preserves pending requests.
+                __state = Online && skipControl != null && skipControl.Timeline == __instance.MasterTimelineSequence
+                    && CurrentSkip(skipControl) && (skipControl.Run == null || Match(skipControl));
+            }
+
+            static void Postfix(RegisterSkipCutsceneAction __instance, bool __state)
+            {
+                if (__state)
+                {
+                    if (skipControl.Run == null && !PuppetCall) { skipControl.Action = __instance; skipControl.Sequence = s_inputSequence; }
+                    return;
+                }
+                skipControl = Online && !PuppetCall ? new SharedControl { Action = __instance, Sequence = s_inputSequence,
+                    Timeline = __instance.MasterTimelineSequence } : null;
             }
         }
 
