@@ -7,6 +7,12 @@ namespace OriCoop
     {
         static IEnumerator OpenKeystoneMenu(TestHarness h, bool permitted)
         {
+            // After host migration the checkpoint handshake finishes before the native scene load.
+            // Open F8 as soon as gameplay accepts input; the menu deliberately refuses during loads.
+            float readyBy = Time.realtimeSinceStartup + 20f;
+            while (!NetPlay.LocalInGameplay() && Time.realtimeSinceStartup < readyBy) yield return null;
+            h.Check(NetPlay.LocalInGameplay(), "T-259 F8 has an active gameplay screen on seat " + Players.LocalSeat
+                + " (" + (NetPlay.NotInGameplayReason() ?? "ready") + ")");
             CoopMenu.Open();
             const string action = "OriCoopNativeGui_coop.settings.action.";
             float by = Time.realtimeSinceStartup + 4f;
