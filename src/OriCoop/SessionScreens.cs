@@ -37,6 +37,11 @@ namespace OriCoop
                 Services.Log.Info("net: save screen " + Phase + " -> " + next);
                 Phase = next; s_phaseSince = Time.realtimeSinceStartup;
             }
+            if (CanCancelWait && (Core.Input.Cancel.OnPressedNotUsed || Input.GetKeyDown(KeyCode.Escape)))
+            {
+                Core.Input.Cancel.Used = true;
+                NativeModeMenu.CancelGuestSaveWait();
+            }
         }
 
         static SavePhase ComputeSavePhase()
@@ -231,6 +236,13 @@ namespace OriCoop
             Text(new Rect(0, 24f * scale, Screen.width, 28f * scale), Host.Text("session.both_paused"), s_small, new Color(Ink.r, Ink.g, Ink.b, 0.85f));
         }
 
+        static readonly bool s_mutateNoWaitCancel = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_SAVE_WAIT_CANCEL") == "1";
+        static bool CanCancelWait
+        {
+            get { return !s_mutateNoWaitCancel && Phase == SavePhase.Waiting && GuestJoin.Waiting && !GuestJoin.NeedSlotChoice
+                && !GuestJoin.Loading && !SaveSync.HavePendingCheckpoint && !SharedPrologue.Busy; }
+        }
+
         static void DrawSaveScreen(float scale)
         {
             float t = Time.realtimeSinceStartup;
@@ -279,6 +291,12 @@ namespace OriCoop
                 : Phase == SavePhase.Waiting ? Host.Text("session.waiting_help") : Host.Text("session.loading_help");
             WaitingText = text;
             Text(new Rect(0, Screen.height - 110f * scale, Screen.width, 28f * scale), help, s_bodyZh, ink);
+            if (CanCancelWait)
+            {
+                Rect cancel = new Rect((Screen.width - 360f * scale) * 0.5f, Screen.height - 72f * scale, 360f * scale, 40f * scale);
+                if (NativeGui.Button("session.save.cancel", cancel, Host.Text("session.wait_cancel"), s_small.fontSize, true, ink))
+                    NativeModeMenu.CancelGuestSaveWait();
+            }
         }
 
         static void DrawSpinner(float cx, float cy, float scale, float alpha)

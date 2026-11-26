@@ -158,7 +158,7 @@ namespace OriCoop.Rooms
                     p.FinishRefresh();
                     p.OpenRoom(room);
                 }
-                else p.RefreshNext(0);
+                else p.RefreshNext(p.rooms, 0);
             });
         }
 
@@ -204,18 +204,17 @@ namespace OriCoop.Rooms
             if (pending && Session != null && Session.Active) Session.Cancel();
         }
 
-        void RefreshNext(int index)
+        void RefreshNext(List<RoomBackupInfo> batch, int index)
         {
-            if (index >= rooms.Count) { FinishRefresh(); return; }
-            RoomBackupInfo room = rooms[index];
-            if (room.Server != server) { RefreshNext(index + 1); return; }
+            if (index >= batch.Count) { FinishRefresh(); return; }
+            RoomBackupInfo room = batch[index];
+            if (room.Server != server) { RefreshNext(batch, index + 1); return; }
             SetRoom(room.Id);
             RoomAuth current = auth;
             RequestAuth(delegate { return client.Info(current); }, delegate(RoomReply r)
             {
-                if (r.Ok) SaveInfo(r);
-                else message = ErrorText(r.Error);
-                RefreshNext(index + 1);
+                ApplyRoomInfo(current, r);
+                RefreshNext(batch, index + 1);
             });
         }
 
@@ -233,6 +232,7 @@ namespace OriCoop.Rooms
             RoomSession session = Session;
             session.Error = delegate(string error)
             {
+                if (session != Session) return;
                 busy = false;
                 message = ErrorText(error);
                 // A 我的房间 action still waiting for the session to start: its page shows the error, the hidden native
@@ -240,8 +240,12 @@ namespace OriCoop.Rooms
                 // it can neither enter the room after the error was shown nor stay active as a slotless holder.
                 // Only the current session may fail the waiting action: a replaced session's late reply (an upload or
                 // live call still in flight) must not report the new room's enter as failed.
-                if (session == Session && MyRoomsRules.FailBeforeStart(action, session, message)) return;
-                if (session != Session) return;
+                if (MyRoomsRules.FailBeforeStart(action, session, message)) return;
+                if (!RoomSession.MutateRoomFailures && session.Active && Game.InGameplay)
+                {
+                    Game.Message(L10n.F("rooms.sync_failed", message));
+                    return;
+                }
                 visible = true;
                 NativeModeMenu.ShowRoomError();
             };
@@ -293,6 +297,17 @@ namespace OriCoop.Rooms
             busy = false;
             if (!online) { message = L10n.T("rooms.offline"); offlineRetry = true; }
             FinishRefresh();
+        }
+
+        void ApplyRoomInfo(RoomAuth queried, RoomReply reply)
+        {
+            if (reply.Ok) { SaveInfo(reply); return; }
+            if (!RoomSession.MutateRoomFailures && reply.Error == "no_room")
+            {
+                ForgetRoom(queried.Room, true);
+                if (screen == "room") Show("list");
+            }
+            message = ErrorText(reply.Error);
         }
 
         void SaveInfo(RoomReply reply)
@@ -371,8 +386,7 @@ namespace OriCoop.Rooms
             RoomAuth current = auth;
             RequestAuth(delegate { return client.Info(current); }, delegate(RoomReply r)
             {
-                if (r.Ok) SaveInfo(r);
-                else message = ErrorText(r.Error);
+                ApplyRoomInfo(current, r);
                 if (done != null) done(r.Ok ? null : message);
             });
         }
@@ -495,17 +509,17 @@ namespace OriCoop.Rooms
             });
         }
 
-        void ForgetRoom(string room)
+        void ForgetRoom(string room, bool keepBackups = false)
         {
-            store.DeleteRoom(room);
+            if (keepBackups) store.RemoveListing(room);
+            else store.DeleteRoom(room);
             refreshed.Remove(room);
             if (confirm != null) confirm.Forget(room);
             rooms = store.ListRooms();
             if (auth != null && auth.Room == room)
             {
                 info = null;
-                auth = null;
-                Session = null;
+                if (!keepBackups || Session == null || !Session.Active) { auth = null; Session = null; }
             }
             message = "";
         }
@@ -530,8 +544,7 @@ namespace OriCoop.Rooms
             {
                 if (auth == null || auth.Room != current.Room) return;
                 // SaveInfo also resends a confirm that 开始 here did not get through (review F24).
-                if (r.Ok) SaveInfo(r);
-                else message = ErrorText(r.Error);
+                ApplyRoomInfo(current, r);
             });
         }
 

@@ -3,6 +3,8 @@
 # or room code and connects. Checks: the guest never sees a save slot, loads the host's save, ends beside the host,
 # and keeps a co-op copy in a slot. -Transport direct (default, LAN) | cserver (remote test server) |
 # steam (fake Steam on loopback; the guest accepts an automatic invite).
+# -RoomExit: exercise the rendered room cancel, disconnect reasons, and keyboard backspace (direct or fake Steam).
+# -WaitCancel: stay in the host lobby, cancel the real guest save wait and check recovery from a failed room-list refresh.
 # -FullSlots: the guest has 10 unrelated saves (every slot full): it is asked which slot keeps the co-op copy.
 # -Prologue skip|late|hostquit (T-203, T-205, TitlePrologueTest.cs): the host starts a NEW game on an empty slot; the
 #   prologue plays on both. skip (LAN or -Transport cserver): the guest waits when the host starts; in step, only the
@@ -22,8 +24,13 @@
 #   copy takes to catch up from there).
 param([ValidateSet('direct', 'cserver', 'steam')][string]$Transport = 'direct', [int]$TimeoutSec = 300, [switch]$Force, [switch]$FullSlots, [int]$Width = 800, [int]$Height = 450,
     [ValidateSet('', 'skip', 'late', 'hostquit', 'deep', 'probe')][string]$Prologue = '', [int]$FastForward = 0, [switch]$GuestSlot, [int]$ProbeJoin = 0,
-    [ValidateSet('', 'drop-create')][string]$SteamFault = '')   # T-216: -Transport steam only; the host's first CreateLobby result never comes
+    [ValidateSet('', 'drop-create')][string]$SteamFault = '', [switch]$RoomExit, [switch]$WaitCancel, [switch]$LobbyRecovery)
 $ErrorActionPreference = 'Stop'
+if ($RoomExit -and ($Transport -eq 'cserver' -or $WaitCancel -or $LobbyRecovery -or $Prologue -or $FullSlots -or $SteamFault)) {
+    throw '-RoomExit needs a direct or Steam title join without another scenario'
+}
+if ($LobbyRecovery) { $Transport = 'steam' }   # isolates both players with FakeSteamApi
+if ($WaitCancel -and ($Transport -ne 'direct' -or $Prologue -or $FullSlots -or $SteamFault)) { throw '-WaitCancel needs a direct title join without another scenario' }
 if ($Transport -eq 'steam' -and ($Prologue -or $FullSlots)) { throw '-Transport steam does not support -Prologue or -FullSlots' }
 if ($SteamFault) {
     if ($Transport -ne 'steam') { throw '-SteamFault needs -Transport steam' }
@@ -83,6 +90,9 @@ function Client-Spec([string]$role, [string]$appData, [string]$resultPath) {
         $vars['ORICOOP_FAKE_STEAM_AUTOINVITE'] = if ($role -eq 'join') { '1' } else { '0' }
         if ($SteamFault) { $vars['ORICOOP_TITLEJOIN_STEAMFAULT'] = $SteamFault; if ($role -eq 'host') { $vars['ORICOOP_FAKE_STEAM_FAULT'] = $SteamFault } }
     }
+    if ($RoomExit) { $vars['ORICOOP_TITLEJOIN_ROOM_EXIT'] = '1' }
+    if ($WaitCancel) { $vars['ORICOOP_TITLEJOIN_WAIT_CANCEL'] = '1' }
+    if ($LobbyRecovery) { $vars['ORICOOP_TITLEJOIN_RECOVERY'] = '1' }
     if ($FullSlots) { $vars['ORICOOP_TITLEJOIN_FULL'] = '1' }
     if ($Prologue) { $vars['ORICOOP_TITLEJOIN_PROLOGUE'] = $Prologue }
     if ($FastForward -gt 0) { $vars['ORICOOP_TITLEJOIN_FF'] = "$FastForward" }
@@ -115,5 +125,6 @@ foreach ($r in @($hostOut, $guestOut)) {
     else { 'no result file: ' + (Get-NoResultReason); $passed = $false }
 }
 $what = $(if ($Prologue) { "${Transport}_prologue_$Prologue" + $(if ($GuestSlot) { '_slot' } else { '' }) } else { $Transport })   # one word: run-affected reads "TITLEJOIN <word> PASS"
+if ($LobbyRecovery) { $what = 'recovery' }
 if ($passed) { "TITLEJOIN $what PASS" } else { "TITLEJOIN $what FAIL" }
 Exit-TestRun   # release the test copy only now, after the results were read

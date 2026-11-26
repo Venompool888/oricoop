@@ -89,20 +89,23 @@ Expect ($r.Out -match '(?m)^net: FAIL \(twice\)') 'net that fails the rerun too 
 Expect ($r.Out -match 'AFFECTED FAIL' -and $r.Code -eq 1) 'a suite failing twice fails the run (exit 1)'
 Expect (@($r.Flaky | Where-Object { $_ -like "*`tlocal`tvisual self-check: no P2 visual problems" }).Count -eq 1) 'the flaky check is logged with its suite'
 
+# EscapeProbe selects only local. The run-test script also drives the roomfailures suite.
+$localOnly = 'src/OriCoop/EscapeProbe.cs'
+
 # 2. only a flaky failure: the run passes, marked flaky.
-$r = Invoke-Fake @{ FAKE_LOCAL = 'flaky' } 'src/run-test.ps1'
+$r = Invoke-Fake @{ FAKE_LOCAL = 'flaky' } $localOnly
 Expect ($r.Out -match 'AFFECTED PASS \(flaky, passed on the rerun: local\)' -and $r.Code -eq 0) 'a flaky suite alone: AFFECTED PASS, named as flaky'
 
 # 2b. a suite that changed the owner's settings (exit 7): FAIL at once, never rerun, never FLAKY.
-$r = Invoke-Fake @{ FAKE_LOCAL = 'leak' } 'src/run-test.ps1'
+$r = Invoke-Fake @{ FAKE_LOCAL = 'leak' } $localOnly
 Expect (@($r.Calls).Count -eq 1 -and $r.Out -match '(?m)^local: FAIL' -and $r.Out -match 'AFFECTED FAIL' -and $r.Code -eq 1) 'owner settings changed (exit 7): no rerun, the run fails'
 
 # 2c. T-117: the owner-settings failure text alone fails the suite, even when its script exits 0 (run-rooms used to).
-$r = Invoke-Fake @{ FAKE_LOCAL = 'leak0' } 'src/run-test.ps1'
+$r = Invoke-Fake @{ FAKE_LOCAL = 'leak0' } $localOnly
 Expect (@($r.Calls).Count -eq 1 -and $r.Out -match '(?m)^local: FAIL' -and $r.Code -eq 1) 'OWNER SETTINGS CHANGED with exit 0: FAIL, no rerun'
 
 # 3. reruns off.
-$r = Invoke-Fake @{ FAKE_LOCAL = 'flaky'; ORICOOP_RERUN = '0' } 'src/run-test.ps1'
+$r = Invoke-Fake @{ FAKE_LOCAL = 'flaky'; ORICOOP_RERUN = '0' } $localOnly
 Expect (@($r.Calls).Count -eq 1 -and $r.Out -match 'AFFECTED FAIL') 'ORICOOP_RERUN=0: no rerun, the failure stands'
 
 # 4. a failure outside any phase (start-up) reruns the suite with the same phases.

@@ -35,7 +35,8 @@ namespace OriCoop.TestQuiet
         public static int X_XInputGetCapabilities(int pad, int flags, ref XInputCapabilities caps) { caps = new XInputCapabilities(); return ERROR_DEVICE_NOT_CONNECTED; }
         public static bool U_GetKey(KeyCode k) { return false; }
         public static bool U_GetKey(string k) { return false; }
-        public static bool U_GetKeyDown(KeyCode k) { return false; }
+        public static KeyCode FakeKeyDown;
+        public static bool U_GetKeyDown(KeyCode k) { return k != KeyCode.None && k == FakeKeyDown; }
         public static bool U_GetKeyDown(string k) { return false; }
         public static bool U_GetKeyUp(KeyCode k) { return false; }
         public static bool U_GetKeyUp(string k) { return false; }

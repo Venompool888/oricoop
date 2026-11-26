@@ -268,6 +268,16 @@ namespace OriCoop.Rooms
             }
         }
 
+        // The server no longer lists this room. A local save may be the player's only remaining copy.
+        public void RemoveListing(string roomId)
+        {
+            string directory = Path.Combine(root, Id(roomId));
+            if (!Directory.Exists(directory)) return;
+            File.Delete(Path.Combine(directory, "room.dat"));
+            File.Delete(Path.Combine(directory, "token"));
+            File.Delete(Path.Combine(directory, "confirm"));
+        }
+
         // T-173 (review F24): the creator pressed 开始 in this pending open room; confirm is retried until the server
         // says the room is confirmed (file "confirm" in the room's folder, so it survives a restart).
         public bool ConfirmWanted(string roomId)

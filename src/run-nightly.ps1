@@ -1,4 +1,4 @@
-# Nightly full regression (layer 3 of docs\testing-rules.md): every game suite in normal windowed mode, fail-fast OFF
+﻿# Nightly full regression (layer 3 of docs\testing-rules.md): every game suite in normal windowed mode, fail-fast OFF
 # (full diagnostics), DLL built from a clean worktree of HEAD, suites spread over the test copies by testcopy*.lock.
 # Exits at once (code 0, "skipped") if the owner's game is running; a suite that sees the owner start playing stops
 # itself (exit 3) and is reported as STOPPED. One summary file: C:\OriCoop\logs\nightly\<yyyyMMdd-HHmm>.txt.
@@ -59,6 +59,14 @@ $Mutations = @(
     @{ Name = 'MUTATE_SIGNPOST';        Env = @{ ORICOOP_MUTATE_SIGNPOST = '1'; ORICOOP_FORCE_ZH = '1' }; Script = @('run-test.ps1', '-Scenarios', 'signpost'); Expect = '^signpost: ' }
     @{ Name = 'MUTATE_NO_COMPANION_RETRY'; Env = @{ ORICOOP_MUTATE_NO_COMPANION_RETRY = '1' }; Script = @('run-test.ps1', '-Scenarios', 'companion'); Expect = '^companion: a return that threw' }   # T-213
     @{ Name = 'MUTATE_NO_POST_SESSION_FADE'; Env = @{ ORICOOP_MUTATE_NO_POST_SESSION_FADE = '1' }; Script = @('run-test.ps1', '-Scenarios', 'afterblack'); Expect = '^afterblack: a screen left black' }   # T-212 (1)
+    @{ Name = 'MUTATE_STALE_CS_ROOMS'; Env = @{ ORICOOP_MUTATE_STALE_CS_ROOMS = '1' }; Script = @('run-titlejoin.ps1', '-WaitCancel'); Expect = 'an unreachable server removes its old selectable room' }
+    @{ Name = 'MUTATE_NO_SAVE_WAIT_CANCEL'; Env = @{ ORICOOP_MUTATE_NO_SAVE_WAIT_CANCEL = '1' }; Script = @('run-titlejoin.ps1', '-WaitCancel'); Expect = 'Cancel on the wait screen ends the session' }
+    @{ Name = 'MUTATE_LOBBY_RECOVERY host'; Env = @{ ORICOOP_MUTATE_LOBBY_RECOVERY = 'host' }; Script = @('run-titlejoin.ps1', '-LobbyRecovery'); Expect = '^T211 host creation refusal offers retry' }
+    @{ Name = 'MUTATE_LOBBY_RECOVERY invite'; Env = @{ ORICOOP_MUTATE_LOBBY_RECOVERY = 'invite' }; Script = @('run-titlejoin.ps1', '-LobbyRecovery'); Expect = '^T211 the timed-out Steam invite offers retry' }
+    @{ Name = 'MUTATE_LOBBY_RECOVERY list'; Env = @{ ORICOOP_MUTATE_LOBBY_RECOVERY = 'list' }; Script = @('run-titlejoin.ps1', '-LobbyRecovery'); Expect = '^T211 Back from a refused listed room returns directly to its room list' }
+    @{ Name = 'MUTATE_HUB_LEAVE_TRACE'; Env = @{ ORICOOP_MUTATE_HUB_LEAVE_TRACE = '1' }; Script = @('run-titlejoin.ps1', '-RoomExit'); Expect = '^T211 local host close' }
+    @{ Name = 'MUTATE_ROOM_CANCEL_NAV'; Env = @{ ORICOOP_MUTATE_ROOM_CANCEL_NAV = '1' }; Script = @('run-titlejoin.ps1', '-RoomExit'); Expect = '^T211 one room cancel' }
+    @{ Name = 'MUTATE_DOUBLE_BACKSPACE'; Env = @{ ORICOOP_MUTATE_DOUBLE_BACKSPACE = '1' }; Script = @('run-titlejoin.ps1', '-RoomExit'); Expect = '^T211 one physical backspace' }
     @{ Name = 'MUTATE_KEEP_MODAL';      Env = @{ ORICOOP_MUTATE_KEEP_MODAL = '1'; ORICOOP_TITLEJOIN_LEAVE = 'host' }; Script = @('run-titlejoin.ps1'); Expect = 'no disconnect dialog left on the title|doesn''t restart the game' }
     @{ Name = 'MUTATE_HIDE_ICONS';      Env = @{ ORICOOP_MUTATE_HIDE_ICONS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = "shows the game's own button icon" }   # T-173
     @{ Name = 'MUTATE_ORB_MENUS';       Env = @{ ORICOOP_MUTATE_ORB_MENUS = '1' }; Script = @('run-titlejoin.ps1', '-Transport', 'cserver'); Expect = 'room page orb shows only the save' }   # T-173
@@ -76,6 +84,8 @@ $Mutations = @(
     @{ Name = 'MUTATE_ROOMS_NATIVE_OFF'; Env = @{ ORICOOP_MUTATE_ROOMS_NATIVE_OFF = '1' }; Script = @('run-rooms.ps1'); Expect = '^fresh \S+ menu is exactly' }   # T-173 rewrote run-rooms: check 7 (the fresh my-rooms menu rows) is the first to see the page's rows
     @{ Name = 'MUTATE_ROOM_NAME_HASH';  Env = @{ ORICOOP_MUTATE_ROOM_NAME_HASH = '1' };  Script = @('run-rooms.ps1'); Expect = '^room name (is two English|has no MessageBox markup)' }   # T-173's create flow: run-rooms checks 18 / 19
     @{ Name = 'MUTATE_TOAST_NO_FALLBACK'; Env = @{ ORICOOP_MUTATE_TOAST_NO_FALLBACK = '1' }; Script = @('run-test.ps1', '-Scenarios', 'move'); Expect = '^toast: English falls back' }
+    @{ Name = 'MUTATE_ROOM_FAILURES'; Env = @{ ORICOOP_MUTATE_ROOM_FAILURES = '1' }; Script = @('run-test.ps1', '-Scenarios', 'roomfailures');
+       Expect = '^ROOMFAIL (expired detail reply leaves|refreshing removes both deleted rooms|failed download releases|failed checkpoint upload shows)'; RequiredHits = 4 }
     @{ Name = 'MUTATE_MENU_STALE_LOCK (S4)'; Env = @{ ORICOOP_MUTATE_MENU_STALE_LOCK = '1'; ORICOOP_PHASES = 'S4' }; Script = @('run-nettest.ps1'); Expect = '^S4 F8 online: a story lock' }
     @{ Name = 'MUTATE_OVERLAY_UNLOCK';  Env = @{ ORICOOP_MUTATE_OVERLAY_UNLOCK = '1' };  Script = @('run-test.ps1'); Expect = '^title menu: overlay lobby: (starting|ending) online play keeps' }
     @{ Name = 'MUTATE_REMOVE_GLOW';     Env = @{ ORICOOP_MUTATE_REMOVE_GLOW = '1' };     Script = @('run-test.ps1'); Expect = '^title menu: remove page glow is red' }
@@ -177,7 +187,8 @@ if (-not $NoMutations) {
             $hit = @($fails | Where-Object { $_ -match $r.M.Expect })
             $other = @($fails | Where-Object { $_ -notmatch $r.M.Expect })
             $complete = $text -match '(?m)(\] RESULT |NETTEST (PASS|FAIL)|TITLEJOIN \w+ (PASS|FAIL)|ROOMS RESULT (PASS|FAIL))'
-            $status = $(if ($text -cmatch 'OWNER IS PLAYING') { 'STOPPED (owner playing)' } elseif ($hit.Count -gt 0) { 'caught' }
+            $required = $(if ($r.M.RequiredHits) { $r.M.RequiredHits } else { 1 })
+            $status = $(if ($text -cmatch 'OWNER IS PLAYING') { 'STOPPED (owner playing)' } elseif ($hit.Count -ge $required) { 'caught' }
                 elseif ($err -match '\S' -and -not $complete) { 'ERROR' } elseif (-not $complete -or $text -match 'no result file') { 'BLOCKED' } else { 'MISSED' })
             $detail = $(if ($hit.Count -gt 0) { $hit[0] } elseif ($status -eq 'ERROR') { ($err -split "`n")[0].Trim() } elseif ($other.Count -gt 0) { 'other failures: ' + (($other | Select-Object -First 2) -join ' | ') } else { '' })
             if ($detail.Length -gt 160) { $detail = $detail.Substring(0, 160) + '...' }

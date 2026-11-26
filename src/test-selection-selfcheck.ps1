@@ -61,6 +61,10 @@ foreach ($file in @('Net\NetPeer.cs', 'InviteRules.cs')) {
     $got = @((Get-Selection @('src\OriCoop\' + $file)).Suites)
     Ok ($got -notcontains 'titlejoin-steam') ('a change to ' + $file + ' does not run titlejoin-steam')
 }
+foreach ($name in @('NativeLobby', 'NativeCsRooms', 'NativeModeMenu', 'TitleMenu', 'SteamInviteHook', 'SteamTransport', 'NetPlay', 'TitleJoinTest', 'TitleLobbyRecoveryTest')) {
+    $got = (Get-Selection @("src/OriCoop/$name.cs")).Suites
+    Ok ($got -contains 'titlejoin-recovery') ("a change to $name runs titlejoin-recovery")
+}
 # A shared-core file (every phase, phase-map.psd1 Full) runs the direct 'net' suite, the one 2-player suite that is never
 # limited to a few phases (T-096): selecting only net-relay / net-newgame would run just INTRO,MOVE,W (T-165 found
 # SaveSync and GuestJoin like that).
@@ -69,6 +73,15 @@ foreach ($leaf in $map.Full) {
     Ok ($got -contains 'net') ("shared-core file $leaf runs the direct 'net' suite (every phase)" + $(if ($got -notcontains 'net') { ' (selected: ' + ($got -join ',') + ')' } else { '' }))
 }
 # Rooms files (M7) do not drag in the multi-seat suites: their code never runs there.
+foreach ($fixture in 'TitleRoomExitTest','TitleRoomOverlayExitTest') {
+    $exitSuites = @((Get-Selection @(('src\OriCoop\' + $fixture + '.cs'))).Suites)
+    Ok (($exitSuites -join ',') -eq 'titlejoin-room-exit,titlejoin-steam-exit') ($fixture + ' selects direct and Steam menu checks')
+}
+$faultOnly = @((Get-Selection @('src\OriCoop\RoomFailureTest.cs')).Suites)
+Ok (($faultOnly -join ',') -eq 'roomfailures') 'the isolated room-service fault test runs its own local scenario'
+foreach ($leaf in @('RoomSession', 'RoomsPanel', 'RoomLocalStore', 'RoomClient')) {
+    Ok ((Get-Selection @('src\OriCoop\Rooms\' + $leaf + '.cs')).Suites -contains 'roomfailures') ($leaf + ' selects the room-service fault scenario')
+}
 $rooms = @((Get-Selection @('src\OriCoop\Rooms\RoomsPanel.cs')).Suites)
 Ok (@($rooms | Where-Object { @('net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3') -contains $_ }).Count -eq 0) ('a rooms UI change does not run the multi-seat suites (selected: ' + ($rooms -join ',') + ')')
 

@@ -85,18 +85,25 @@ namespace OriCoop
         // T-201: the partner is told "partner quit the game"; this side's own trace and status say that the local player
         // left and why (OwnDisconnectReason), instead of repeating the text meant for the partner. The connection code
         // (NetPeer, shared with the server) is not involved: NetPlay remembers which connection it closed itself.
-        static NetPeer s_leftPeer;
-        static string s_leftWhy = "";
+        static readonly bool MutateHubLeaveTrace = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_HUB_LEAVE_TRACE") == "1";
+        static readonly Dictionary<NetPeer, string> s_leftPeers = new Dictionary<NetPeer, string>();
         public static string OwnDisconnectReason(NetPeer peer, string reason)
         {
-            return SessionMachine.OwnDisconnectReason(reason, peer != null && peer == s_leftPeer, s_leftWhy);
+            string why = null;
+            bool local = peer != null && s_leftPeers.TryGetValue(peer, out why);
+            return SessionMachine.OwnDisconnectReason(reason, local, why);
         }
         static void Shutdown(string why)
         {
-            if (s_hub != null) { try { s_hub.Disconnect(SessionMachine.PartnerGoodbye); } catch { } return; }
+            if (s_hub != null)
+            {
+                try { s_hub.Disconnect(SessionMachine.PartnerGoodbye, delegate(NetPeer peer) { if (!MutateHubLeaveTrace) s_leftPeers[peer] = why; }); }
+                catch { }
+                return;
+            }
             if (Peer != null && Peer.State == PeerState.Connected)
             {
-                s_leftPeer = Peer; s_leftWhy = why;
+                s_leftPeers[Peer] = why;
                 try { Peer.Disconnect(SessionMachine.PartnerGoodbye); Peer.Flush(); } catch { }
             }
         }
@@ -379,9 +386,10 @@ namespace OriCoop
         public static bool EndingByChoice;
 
         // host: true = create a room / listen. transport: direct | steam | a TransportFactory name (cserver).
-        // target: direct join = "ip[:port]"; factory transports get it as is; ignored otherwise.
+        // target: direct join = "ip[:port]"; Steam invite = its lobby id; factory transports get it as is.
         public static void Begin(bool host, string transport, string target)
         {
+            s_leftPeers.Clear();
             transport = SessionMachine.NormalizeTransport(transport);
             // Steam guest: a join started by an accepted invite (SteamInviteHook) may already be running when the
             // player opens Online -> Steam -> Join. Restarting it would leave the lobby and lose the invite.
@@ -392,6 +400,8 @@ namespace OriCoop
             }
             // Retry on the Steam join page: the invite was consumed by the first attempt; rejoin the same lobby.
             ulong rejoin = !host && transport == "steam" && Enabled && !IsHost && UsesSteam ? s_steamLobby : 0;
+            ulong invite;
+            if (!host && transport == "steam" && ulong.TryParse(target, out invite) && invite != 0) rejoin = invite;
             End("restarting online play");
             s_steamLobby = rejoin;
             if (rejoin != 0) Plugin.Log.LogInfo("online co-op: retrying the Steam lobby " + rejoin);

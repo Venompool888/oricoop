@@ -173,6 +173,17 @@ namespace OriCoop
                 if (m_fails != 0) { Finish(); yield break; }
                 yield return StartCoroutine(TWait(1.5f));
                 yield return StartCoroutine(PressCoop());
+                if (Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_ROOM_EXIT") == "1")
+                {
+                    yield return StartCoroutine(RoomExitChecks());
+                    if (m_role == "host") yield return StartCoroutine(TitleHostSlotExit());
+                    Finish(); yield break;
+                }
+                if (Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_RECOVERY") == "1")
+                {
+                    yield return StartCoroutine(LobbyRecovery());
+                    Finish(); yield break;
+                }
                 yield return StartCoroutine(Row(TitleEntryRow(m_tr, m_role == "host"), 1f));   // 创建房间 / 加入房间, or 自建服务器
                 if (m_tr == "cserver")
                 {
@@ -192,6 +203,11 @@ namespace OriCoop
                 if (!roleReady || m_fails != 0) { Finish(); yield break; }
                 if (PrologueMode.Length > 0)   // T-203: the shared new-game prologue (TitlePrologueTest.cs)
                 { yield return StartCoroutine(m_role == "host" ? PrologueHostRun() : PrologueJoinRun(savesAtStart)); Finish(); yield break; }
+                if (WaitCancelTest && m_role == "join")
+                {
+                    yield return StartCoroutine(WaitCancelAndRoomList());
+                    Finish(); yield break;
+                }
                 if (m_role == "host") yield return StartCoroutine(Host());
                 else yield return StartCoroutine(Join(savesAtStart));
                 if (SignMode && m_fails == 0) yield return StartCoroutine(SignOnline());          // TitleInputTest.cs
@@ -419,6 +435,13 @@ namespace OriCoop
                     try { File.WriteAllText(RoomFile, NetPlay.RoomCode); } catch (Exception e) { Note("room file: " + e.Message); }
                 }
                 if (m_fails != 0) yield break;
+                if (WaitCancelTest)
+                {
+                    // Keep this real room open without starting the game or sending a checkpoint.
+                    yield return StartCoroutine(WaitFor(() => File.Exists(GuestDoneFile), 100f));
+                    Check(File.Exists(GuestDoneFile) && !NetPlay.LocalInGameplay(), "T-211 host stayed on the hosting page through guest cancellation");
+                    yield break;
+                }
                 if (m_tr == "steam")
                 {
                     yield return StartCoroutine(SteamHostRoom());
@@ -542,16 +565,36 @@ namespace OriCoop
             // once, 加入房间 opens the code page, Back returns to the server list. Starts and ends on the server list.
             IEnumerator DeadServerList()
             {
-                int deadPort;
-                using (OriCoop.Net.UdpTransport unused = new OriCoop.Net.UdpTransport(0)) deadPort = unused.LocalPort;
-                string dead = "127.0.0.1:" + deadPort;
-                if (!OriCoop.Authority.CServerConfig.AddServer(dead)) { Check(false, "cserver: a second server can be saved"); yield break; }
-                RefreshTexts(true);
-                yield return StartCoroutine(TWait(0.4f));
-                yield return StartCoroutine(Row(OriCoop.Authority.CServerConfig.Servers.IndexOf(dead), 0.5f));
-                Check(LastPage == "role" && OriCoop.Authority.CServerConfig.Address == dead && LastLabels.Count == 3 && HasKey(LastLabels, "csroom.list.loading"),
-                    "cserver: a server's room list opens with 'loading' (" + Labels + ")");
-                yield return StartCoroutine(WaitFor(delegate { return HasKey(LastLabels, "csroom.list.failed"); }, 8f));
+                string dead;
+                using (UdpTransport local = new UdpTransport(0))
+                {
+                    dead = "127.0.0.1:" + local.LocalPort;
+                    if (!OriCoop.Authority.CServerConfig.AddServer(dead)) { Check(false, "cserver: a second server can be saved"); yield break; }
+                    NetPeer server = new NetPeer(local); server.Listen();
+                    RefreshTexts(true);
+                    yield return StartCoroutine(TWait(0.4f));
+                    yield return StartCoroutine(Row(OriCoop.Authority.CServerConfig.Servers.IndexOf(dead), 0.5f));
+                    Check(LastPage == "role" && OriCoop.Authority.CServerConfig.Address == dead && LastLabels.Count == 3 && HasKey(LastLabels, "csroom.list.loading"),
+                        "cserver: a server's room list opens with 'loading' (" + Labels + ")");
+                    float until = Time.realtimeSinceStartup + 4f;
+                    while (Time.realtimeSinceStartup < until && !LastLabels.Exists(row => row.Contains("614230")))
+                    {
+                        server.Poll();
+                        byte[] packet; bool reliable;
+                        while (server.TryReceive(out packet, out reliable))
+                        {
+                            if (OriCoop.Authority.CsWire.Decode(packet).Type != OriCoop.Authority.CsWire.CsList) continue;
+                            OriCoop.Authority.CsMessage response = new OriCoop.Authority.CsMessage { Type = OriCoop.Authority.CsWire.CsRoomList };
+                            response.Rooms.Add(new OriCoop.Authority.CsRoomListEntry { Code = "614230", Online = 1, Capacity = 4 });
+                            byte[] wire = OriCoop.Authority.CsWire.Encode(response); server.SendReliable(wire, 0, wire.Length);
+                        }
+                        yield return null;
+                    }
+                    Check(LastLabels.Exists(row => row.Contains("614230")), "T-211 the native room list showed the local server's live room");
+                }
+                yield return StartCoroutine(WaitFor(delegate { return HasKey(LastLabels, "csroom.list.failed"); }, 12f));
+                Check(!LastLabels.Exists(row => row.Contains("614230")) && HasKey(LastLabels, "csroom.list.failed"),
+                    "T-211 an unreachable server removes its old selectable room and offers retry (" + Labels + ")");
                 s_mgr.SetCurrentItem(2);
                 yield return StartCoroutine(TWait(0.5f));
                 Check(LastLabels.Count == 3 && HasKey(LastLabels, "csroom.list.failed")

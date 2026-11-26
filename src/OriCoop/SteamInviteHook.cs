@@ -30,6 +30,14 @@ namespace OriCoop
 
         static bool s_startedByInvite;
         static float s_startedAt;
+        static ulong s_retryLobby;
+        internal static bool CanRetry { get { return s_retryLobby != 0; } }
+        internal static void ForgetRetry() { s_retryLobby = 0; s_failUntil = 0f; }
+        internal static void Retry()
+        {
+            if (!CanRetry) return;
+            StartJoin(s_retryLobby.ToString(System.Globalization.CultureInfo.InvariantCulture));
+        }
         static string s_inviter = "";
         static float s_partnerSince;
         static ulong s_announced;          // lobby whose "can't join now" state was logged
@@ -79,11 +87,17 @@ namespace OriCoop
             Plugin.Log.LogInfo("net: Steam: invite: starting the Steam join by itself (lobby " + lobby +
                 (s_inviter.Length > 0 ? " from " + s_inviter : "") + ")");
             s_announced = 0;
-            NetPlay.Begin(false, "steam", "");      // NetPlay.OpenSteam takes the invite on its next update
+            StartJoin("");   // OpenSteam consumes the new invitation on the next update.
+            if (s_startedByInvite) NativeModeMenu.ShowSteamJoinPage();
+        }
+
+        static void StartJoin(string target)
+        {
+            ForgetRetry();
+            NetPlay.Begin(false, "steam", target);
             s_startedByInvite = NetPlay.Enabled && !NetPlay.IsHost && NetPlay.UsesSteam;
             s_startedAt = Time.realtimeSinceStartup;
             s_partnerSince = 0f;
-            if (s_startedByInvite) NativeModeMenu.ShowSteamJoinPage();
         }
 
         static void Announce(ulong lobby, string why)
@@ -137,6 +151,8 @@ namespace OriCoop
                 Plugin.Log.LogWarning("net: Steam: invite: gave up joining after " + (int)GiveUpSeconds + " s" +
                     (string.IsNullOrEmpty(problem) ? "" : " (" + problem + ")"));
                 s_startedByInvite = false;
+                if (NativeModeMenu.OnSteamJoinPage)
+                    s_retryLobby = NetPlay.SteamLobby != 0 ? NetPlay.SteamLobby : SteamTransport.PendingInviteRaw;
                 NetPlay.End("Steam invite join gave up");
                 s_failUntil = Time.realtimeSinceStartup + 10f;
             }

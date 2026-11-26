@@ -67,9 +67,14 @@ namespace OriCoop.Net
         }
 
         public void Flush() { foreach (NetPeer peer in peers.Values) peer.Flush(); }
-        public void Disconnect(string reason)
+        public void Disconnect(string reason, Action<NetPeer> beforeDisconnect = null)
         {
-            foreach (NetPeer peer in peers.Values) { peer.Disconnect(reason); peer.Flush(); }
+            foreach (NetPeer peer in peers.Values)
+            {
+                if (peer.State != PeerState.Connected && peer.State != PeerState.Connecting) continue;
+                if (beforeDisconnect != null) beforeDisconnect(peer);
+                peer.Disconnect(reason); peer.Flush();
+            }
         }
         public void Dispose()
         {

@@ -1,4 +1,4 @@
-# Change -> tests selection, shared by run-affected.ps1, test-selection-selfcheck.ps1 and run-nightly.ps1 (T-078).
+﻿# Change -> tests selection, shared by run-affected.ps1, test-selection-selfcheck.ps1 and run-nightly.ps1 (T-078).
 # Dot-source it: . (Join-Path $PSScriptRoot 'test-selection.ps1'). Needs $TS_Root (repo root); defaults to the parent of
 # this script's folder.
 #   Get-Selection <files>  -> @{ Suites = [ordered] suite -> why; Phases = 'FULL' or a sorted list; PhaseWhy = file -> phases }
@@ -19,6 +19,10 @@ $TS_Suites = [ordered]@{
     'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
+    'titlejoin-room-exit' = @('run-titlejoin.ps1', '-RoomExit')
+    'titlejoin-steam-exit' = @('run-titlejoin.ps1', '-RoomExit', '-Transport', 'steam')
+    'titlejoin-wait-cancel' = @('run-titlejoin.ps1', '-WaitCancel')
+    'titlejoin-recovery' = @('run-titlejoin.ps1', '-LobbyRecovery')
     'titlejoin-steam' = @('run-titlejoin.ps1', '-Transport', 'steam')
     'titlejoin-steam-retry' = @('run-titlejoin.ps1', '-Transport', 'steam', '-SteamFault', 'drop-create')   # T-216: the host's first lobby result is lost
     'titlejoin-cs' = @('run-titlejoin.ps1', '-Transport', 'cserver')   # T-171/T-173: the C-server room pages (房间管理页) run only here
@@ -29,6 +33,7 @@ $TS_Suites = [ordered]@{
     'titlejoin-prologue-hostquit-slot' = @('run-titlejoin.ps1', '-Prologue', 'hostquit', '-GuestSlot')   # T-209 (2): the same for a guest that joined through an empty save slot
     'titlejoin-prologue-deep' = @('run-titlejoin.ps1', '-Prologue', 'deep')   # T-205: the whole prologue to its own end; the guest joins in the last scene (about 7 min)
     'rooms'       = @('run-rooms.ps1')
+    'roomfailures' = @('run-test.ps1', '-Scenarios', 'roomfailures')
 }
 $TS_AllSuites = @($TS_Suites.Keys)
 # The 2-player net suites: they run NetTestHarness's phase list and take ORICOOP_PHASES.
@@ -67,10 +72,14 @@ $TS_ModuleSuites = @{
 $TS_SteamFiles = @('SteamTransport', 'SteamApi', 'RealSteamApi', 'FakeSteamApi', 'SteamInviteHook', 'NetPlay', 'JoinErrorText')   # NetPlay: PumpSteam / OpenSteam drive the Steam session
 # Harness / test files -> the suite that runs them (checked before the module table).
 $TS_FileSuites = [ordered]@{
-    'TestHarness'      = @('local');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
+    'TestHarness'      = @('local', 'roomfailures');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
+    'RoomFailureTest'  = @('roomfailures')
     'NetIntroTest'     = @('net', 'net-3p', 'net-3p-cs', 'net-4p');   # T-165: the multi-seat INTRO runs in 3p / 3p-cs too
     'NetEscapeTest'    = @('net', 'net-3p', 'net-3p-cs');   # T-169: 2P phase ESC and the 3P escape check
-    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-cs')
+    'NetTestHarness'   = @('net', 'net-3p', 'net-3p-cs', 'net-4p', 'net-lp2', 'net-lp3'); 'TitleJoinTest' = @('titlejoin', 'titlejoin-cs', 'titlejoin-wait-cancel')
+    'TitleMenu' = $TS_ModuleSuites['M8'] + @('titlejoin-wait-cancel')
+    'TitleWaitCancelTest' = @('titlejoin-wait-cancel')
+    'TitleLobbyRecoveryTest' = @('titlejoin-recovery')
     # T-203: the shared new-game prologue. Its own code and test run the two prologue suites, the existing-save join
     # (titlejoin: nothing of it may start there) and, for the input hook and the intro hold it stands next to, net + local.
     'SharedPrologue'   = @('titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-deep', 'titlejoin-prologue-cs', 'titlejoin-prologue-hostquit', 'titlejoin-prologue-hostquit-slot', 'titlejoin', 'net', 'local')
@@ -79,7 +88,7 @@ $TS_FileSuites = [ordered]@{
     'TitlePrologueProbe' = @('titlejoin-prologue-deep')                                                 # T-205: the investigation tool; its driver walks the host through the whole prologue in the deep suite
     'GameIntroHost'    = $TS_ModuleSuites['M5'] + @('titlejoin-prologue', 'titlejoin-prologue-deep')    # its module + the intro hold stands back for the prologue (input; T-205: the last scene's Ori is not held or hidden)
     'StorySync'        = $TS_ModuleSuites['M5'] + @('titlejoin-prologue-deep')                          # its module + T-205: IntroHeld leaves the prologue's own character alone
-    'SessionScreens'   = $TS_ModuleSuites['M6'] + @('titlejoin-prologue', 'titlejoin-prologue-late')    # its module + the transfer screen during / after the prologue, the "catching up" cover (T-205)
+    'SessionScreens'   = $TS_ModuleSuites['M6'] + @('titlejoin-wait-cancel', 'titlejoin-prologue', 'titlejoin-prologue-late')    # its module + the transfer screen during / after the prologue, the "catching up" cover (T-205)
     'TitleReturn'      = $TS_ModuleSuites['M2'] + @('titlejoin-prologue', 'titlejoin-prologue-late')    # its module + a guest's own return to the title / leaving mid-prologue
     'KeyboardOnlyP1'   = $TS_ModuleSuites['M2'] + @('titlejoin-prologue')                               # its module + T-209 (1): only P1's device reaches the game during the prologue
     # T-165: the co-op save lineage (phase L) runs after every net suite: the late guest's commit and the promoted host's
@@ -87,7 +96,7 @@ $TS_FileSuites = [ordered]@{
     # and the direct 'net' suite: SaveSync / GuestJoin are shared core (every phase, src\phase-map.psd1), but M7's only
     # 2-player suite is net-newgame, which runs just INTRO,MOVE,W before a merge (T-096), so R, S4, P, WO, CAM, CUT never ran.
     'CoopSaveTest'     = @('coopsave') + $TS_MultiSeat; 'SaveSync' = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
-    'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('net', 'coopsave', 'titlejoin', 'titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-hostquit', 'titlejoin-prologue-hostquit-slot', 'net-newgame', 'rooms') + $TS_MultiSeat
+    'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('titlejoin-wait-cancel', 'net', 'coopsave', 'titlejoin', 'titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-hostquit', 'titlejoin-prologue-hostquit-slot', 'net-newgame', 'rooms') + $TS_MultiSeat
     'LoadRestart'      = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
     # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
     'NetSaveHandoverTest' = @('net-save-handover')
@@ -96,11 +105,13 @@ $TS_FileSuites = [ordered]@{
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-cs', 'rooms'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')
-    'NativeRooms'      = @('rooms', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'CoopMenuFlow' = @('local', 'titlejoin', 'titlejoin-cs'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
+    'NativeRooms'      = @('rooms', 'roomfailures', 'local', 'titlejoin'); 'NativeGlowTint' = @('local'); 'ModeSelectLayout' = @('local'); 'CoopMenuFlow' = @('local', 'titlejoin', 'titlejoin-cs'); 'OsFonts' = @('local'); 'RoomsHookTest' = @('rooms');
     'RoomLeaveFlow'    = @('titlejoin', 'titlejoin-cs', 'rooms')   # T-176: the leave flow's real-game checks run in titlejoin cserver
-    'CServerRoomList'  = @('titlejoin', 'titlejoin-cs'); 'NativeCsRooms' = @('local', 'titlejoin', 'titlejoin-cs')   # T-201: a room list that cannot be read (the server list's room page): titlejoin cserver
+    'CServerRoomList'  = @('titlejoin-wait-cancel', 'titlejoin', 'titlejoin-cs'); 'NativeCsRooms' = @('local', 'titlejoin', 'titlejoin-cs')   # T-201: a room list that cannot be read (the server list's room page): titlejoin cserver
     'MenuSoulFlameGuard' = @('net'); 'MenuSoulFlameTest' = @('net')   # T-179 skill tree B: net phase S4
     'TitleAnyKey'      = @('local', 'titlejoin'); 'TitleAnyKeyTest' = @('local')   # T-180 stuck key on press-any-key: run-test's title scenario
+    'TitleRoomExitTest' = @('titlejoin-room-exit', 'titlejoin-steam-exit')
+    'TitleRoomOverlayExitTest' = @('titlejoin-room-exit', 'titlejoin-steam-exit')
     'ImeGuard'         = @('local')   # T-181 IME off: checked in run-test's lifecycle scenario
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local'); 'EscapeProbe' = @('local')   # T-169 run-test.ps1 -Scenarios escapeprobe
 }
@@ -152,9 +163,11 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -like 'src\assets\*') { return @{ Suites = @('local'); Why = 'assets' } }
     if ($p -like 'src\OriCoop\*') {
         foreach ($k in $TS_FileSuites.Keys) { if ($leaf -eq $k) { return @{ Suites = $TS_FileSuites[$k]; Why = 'harness ' + $k } } }
+        if ($p -like 'src\OriCoop\Rooms\*') { return @{ Suites = $TS_ModuleSuites['M7'] + @('roomfailures'); Why = 'room service and its failure paths' } }
         if ($leaf -like 'Net*Test' -or $leaf -like '*SyncTest' -or $leaf -like 'NetStory*') { return @{ Suites = @('net'); Why = 'net harness' } }
         if ($moduleMap.ContainsKey($leaf)) {
             $m = $moduleMap[$leaf]; $s = $TS_ModuleSuites[$m]
+            if ($leaf -in @('L10n', 'NetHud')) { $s = $s + @('roomfailures') }
             if ($TS_SteamFiles -contains $leaf) { $s = $s + @('titlejoin-steam', 'titlejoin-steam-retry') }
             return @{ Suites = $s; Why = $m }
         }
@@ -183,7 +196,13 @@ function Get-Selection([string[]]$files) {
     $suites = [ordered]@{}; $phases = @{}; $full = $false; $why = [ordered]@{}; $phaseWhy = [ordered]@{}
     foreach ($f in $files) {
         $r = Get-SuitesFor $f $moduleMap
+        if ($f -match '^src[/\\]OriCoop[/\\](?:Ui[/\\])?(NetPlay|PeerHub|OnlineLobby|OnlineRoomScreen|NativeModeMenu|TitleMenu|TitleJoinTest|RoomLeaveFlow)\.cs$') {
+            $r.Suites += @('titlejoin-room-exit', 'titlejoin-steam-exit')
+        }
         $why[$f] = $r
+        if ($f -match '^src[\\/]OriCoop[\\/](NativeLobby|NativeCsRooms|NativeModeMenu|TitleMenu|SteamInviteHook|SteamTransport|NetPlay|TitleJoinTest)\.cs$' -and $r.Suites -notcontains 'titlejoin-recovery') {
+            $r.Suites = @($r.Suites) + 'titlejoin-recovery'
+        }
         foreach ($s in $r.Suites) { $suites[$s] = $true }
         $ph = Get-PhasesFor $f $moduleMap $phaseMap
         if ($f -match '^src[/\\]OriCoop[/\\](?:Saves[/\\])?(SaveSync|SaveWire|SeatReadiness|NetTestHarness)\.cs$') {

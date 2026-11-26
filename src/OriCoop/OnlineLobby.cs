@@ -34,6 +34,11 @@ namespace OriCoop
             Plugin.Log.LogInfo("online lobby opened (" + Transport + ")");
         }
 
+        internal static void ReturnFromRoom()
+        {
+            if (s_open && s_overlayObject != null) s_overlayObject.GetComponent<OnlineLobbyOverlay>().ReturnFromRoom();
+        }
+
         public static void Close()
         {
             s_open = false;
@@ -49,6 +54,7 @@ namespace OriCoop
     internal class OnlineLobbyOverlay : MonoBehaviour
     {
         const int PageRole = 0;
+        static readonly bool MutateDoubleBackspace = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_DOUBLE_BACKSPACE") == "1";
         const int PageJoinInput = 1;
         const int PageHosting = 2;
         const int PageJoining = 3;
@@ -192,6 +198,7 @@ namespace OriCoop
 
         void GoTo(int page)
         {
+            int previous = m_page;
             m_page = page;
             m_ignoreInputUntil = Time.unscaledTime + 0.3f;
             m_inputError = "";
@@ -208,8 +215,8 @@ namespace OriCoop
                 m_gridCol = 0;
                 if (OnlineLobby.Transport == "direct")
                 {
-                    m_directAddressInput = NetPlay.ConfigAddress ?? "";
-                    if (NetPlay.ConfigPort > 0 && NetPlay.ConfigPort != 47011)
+                    m_directAddressInput = previous == PageJoining ? m_lastJoinTarget : NetPlay.ConfigAddress ?? "";
+                    if (previous != PageJoining && m_directAddressInput.IndexOf(':') < 0 && NetPlay.ConfigPort > 0 && NetPlay.ConfigPort != 47011)
                         m_directAddressInput += ":" + NetPlay.ConfigPort;
                 }
             }
@@ -271,7 +278,7 @@ namespace OriCoop
         {
             if (OnlineRoomScreen.Visible) return;
             if (m_page == PageHosting && !OnlineRoomScreen.Confirmed && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected))
-            { OnlineRoomScreen.Show(delegate { OnlineLobby.Close(); NativeModeMenu.OnlineProceed(); }); return; }
+            { ShowRoom(); return; }
             PollPads();
             if (Time.unscaledTime < m_ignoreInputUntil) return;
 
@@ -366,7 +373,8 @@ namespace OriCoop
                     else m_gridCol = (m_gridCol + 1) % 6;
                 }
 
-                if (AnyPadPressed(X) || Input.GetKeyDown(KeyCode.Backspace))
+                // Keyboard backspace is consumed by HandleTypingEvents, including OS key repeat.
+                if (AnyPadPressed(X) || (MutateDoubleBackspace && Input.GetKeyDown(KeyCode.Backspace)))
                 {
                     if (m_directAddressInput.Length > 0)
                         m_directAddressInput = m_directAddressInput.Substring(0, m_directAddressInput.Length - 1);
@@ -409,6 +417,21 @@ namespace OriCoop
             m_lastJoinTarget = addr;
             GoTo(PageJoining);
             NetPlay.Begin(false, "direct", addr);
+        }
+
+        internal void ReturnFromRoom()
+        {
+            if (m_page == PageHosting) GoTo(PageRole);
+            else if (m_page == PageJoining)
+            {
+                if (OnlineLobby.Transport == "steam") { GoTo(PageRole); m_roleFocus = 1; }
+                else GoTo(PageJoinInput);
+            }
+        }
+
+        static void ShowRoom()
+        {
+            OnlineRoomScreen.Show(delegate { OnlineLobby.Close(); NativeModeMenu.OnlineProceed(); });
         }
 
         void UpdateHostingInput()
@@ -458,8 +481,7 @@ namespace OriCoop
             {
                 if (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected)
                 {
-                    OnlineLobby.Close();
-                    NativeModeMenu.OnlineProceed();
+                    ShowRoom();
                 }
             }
             else if (idx == 2) // Cancel
@@ -479,8 +501,7 @@ namespace OriCoop
                 if (m_connectedAt <= 0f) m_connectedAt = Time.realtimeSinceStartup;
                 if (Time.realtimeSinceStartup - m_connectedAt >= 0.6f)
                 {
-                    OnlineLobby.Close();
-                    NativeModeMenu.OnlineProceed();
+                    ShowRoom();
                     return;
                 }
             }
@@ -588,6 +609,7 @@ namespace OriCoop
 
         void OnGUI()
         {
+            if (OnlineRoomScreen.Visible) return;
             try
             {
                 float scale = Screen.height / 1080f;
@@ -598,7 +620,7 @@ namespace OriCoop
                 GUI.DrawTexture(new Rect(0, 0, Screen.width, Screen.height), s_vignetteTex, ScaleMode.StretchToFill);
 
                 // Handle keyboard typing when appropriate
-                HandleTypingEvents();
+                HandleTypingEvents(Event.current);
 
                 // Draw active page
                 if (m_page == PageRole)
@@ -627,9 +649,8 @@ namespace OriCoop
             }
         }
 
-        void HandleTypingEvents()
+        internal void HandleTypingEvents(Event e)
         {
-            Event e = Event.current;
             if (e == null || e.type != EventType.KeyDown) return;
 
             if (m_page == PageJoinInput)

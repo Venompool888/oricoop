@@ -36,6 +36,7 @@ namespace OriCoop.Rooms
 
     public sealed class RoomSession
     {
+        internal static readonly bool MutateRoomFailures = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_ROOM_FAILURES") == "1";
         readonly RoomClient client;
         readonly RoomJobs jobs;
         readonly RoomLocalStore store;
@@ -72,8 +73,9 @@ namespace OriCoop.Rooms
             private set;
         }
         public double BeatSeconds = 30, BackupSeconds = 60, WaitSeconds = 2;
-        int generation, slot = -1;
-        bool liveSent, waiting, polling, uploading, leaving, leaveQueued;
+        volatile int generation;
+        int slot = -1;
+        bool started, liveSent, waiting, polling, uploading, leaving, leaveQueued;
         double now, nextBeat, nextBackup, waitUntil, nextLive;
         long lastPlayed;
         byte[] queued;
@@ -102,10 +104,12 @@ namespace OriCoop.Rooms
         {
             jobs.Add(work, delegate(RoomReply reply)
             {
-                if (reply.Error == "bad_token" && Password != null)
+                if (!MutateRoomFailures && wanted != null && !wanted()) return;
+                if (reply.Error == "bad_token" && Password != null && !(started && game.InGameplay))
                 {
                     Password(delegate(string password)
                     {
+                        if (!MutateRoomFailures && wanted != null && !wanted()) return;
                         if (password == null)
                         {
                             done(new RoomReply
@@ -120,6 +124,7 @@ namespace OriCoop.Rooms
                         },
                             delegate(RoomReply rebound)
                             {
+                                if (!MutateRoomFailures && wanted != null && !wanted()) return;
                                 if (!rebound.Ok)
                                 {
                                     done(rebound);
@@ -128,7 +133,7 @@ namespace OriCoop.Rooms
                                 auth.Token = rebound.Fields.GetString("token");
                                 store.SaveToken(auth.Room, auth.Token);
                                 Call(work, done, wanted);
-                            });
+                            }, wanted);
                     });
                     return;
                 }
@@ -188,7 +193,7 @@ namespace OriCoop.Rooms
                     return;
                 }
                 Mode(r);
-            });
+            }, delegate { return generation == entered; });
         }
 
         void Mode(RoomReply r)
@@ -213,14 +218,16 @@ namespace OriCoop.Rooms
                     nextLive = 0;
                     nextBeat = now + BeatSeconds;
                     game.Host(slot, server);
+                    started = true;
                     lastPlayed = game.PlayedSeconds;
-                });
+                }, true);
             }
             else if (mode == "join" && r.Fields.GetString("live").Length > 0)
             {
                 waiting = false;
                 nextBackup = now + BackupSeconds;
                 game.Join(server + "|" + r.Fields.GetString("live"));
+                started = true;
             }
             else
             {
@@ -230,7 +237,7 @@ namespace OriCoop.Rooms
             }
         }
 
-        void Download(Action<byte[]> done)
+        void Download(Action<byte[]> done, bool entering = false)
         {
             long have;
             string summary;
@@ -246,6 +253,13 @@ namespace OriCoop.Rooms
                 polling = false;
                 if (!r.Ok)
                 {
+                    if (entering && !MutateRoomFailures)
+                    {
+                        // Leave the server lease before exposing Retry, even from the native room-detail page.
+                        leaving = true;
+                        FinishLeave(r.Error);
+                        return;
+                    }
                     Fail(r.Error);
                     return;
                 }
@@ -254,7 +268,7 @@ namespace OriCoop.Rooms
                 if (r.Fields.GetString("same") != "1")
                     store.StoreVersion(auth.Room, save, Version, bytes, r.Fields.GetString("summary"));
                 if (done != null) done(bytes);
-            });
+            }, delegate { return generation == entered; });
         }
 
         public void Tick(double seconds)
@@ -403,11 +417,12 @@ namespace OriCoop.Rooms
             if (Active) FinishLeave();
         }
 
-        void FinishLeave()
+        void FinishLeave(string entryError = null)
         {
             if (leaveQueued) return;
             leaveQueued = true;
             string save = Save;
+            int entered = generation;
             jobs.Add(delegate
             {
                 return client.Leave(auth, save);
@@ -415,9 +430,12 @@ namespace OriCoop.Rooms
             {
                 Active = false;
                 Holder = false;
+                started = false;
                 waiting = false;
                 slot = -1;
+                bool report = entryError != null && entered == generation;
                 generation++;
+                if (report) Fail(entryError);
             });
         }
 

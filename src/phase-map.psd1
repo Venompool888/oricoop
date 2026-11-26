@@ -1,4 +1,4 @@
-# Which net phases cover which source file (T-078). Read by src\test-selection.ps1 (run-affected, the selfcheck, nightly).
+﻿# Which net phases cover which source file (T-078). Read by src\test-selection.ps1 (run-affected, the selfcheck, nightly).
 # Phases (NetTestHarness.AllPhases): INTRO MOVE W E3 E5 R S4 P WO CAM CUT ESC. Start-up and the closing G checks always run.
 # Rules, in order: a file in Full -> every phase; a file in Files -> those phases; its module (docs\modules.md) in
 # Modules -> those phases; any other file under src\OriCoop -> every phase (unknown = full). Changing THIS file -> every
@@ -28,6 +28,7 @@
     }
     # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
     Files = @{
+        'RoomFailureTest' = ''
         'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
         'WorldSync.Bodies' = 'W,WO'
         'NetPickupCheckpointTest' = 'W'; 'SavedPickupCopies' = 'W'; 'NetCellAuthorityTest' = 'W'
@@ -43,6 +44,10 @@
         'NetSaveHandoverTest' = ''; 'MovementEpochs' = 'MOVE,S4'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
+        'TitleRoomExitTest' = ''
+        'TitleRoomOverlayExitTest' = ''
+        'TitleWaitCancelTest' = ''
+        'TitleLobbyRecoveryTest' = ''
         'SharedPrologue' = 'INTRO,MOVE,W'; 'PrologueCore' = ''; 'TitlePrologueTest' = ''; 'TitlePrologueProbe' = ''   # T-203 / T-205: its own checks run in the titlejoin-prologue suites; the input hook and the join wait touch INTRO / MOVE / W
         'VirtualPads' = 'MOVE'; 'VirtualPadPatch' = 'MOVE'; 'PsHid' = 'MOVE'; 'PadDetector' = ''; 'PadGlyphs' = ''; 'GlyphProbe' = ''   # T-178 (PsReport/MirrorJudge/PadTypes: unit tests only)
         'PsReport' = ''; 'MirrorJudge' = ''; 'PadTypes' = ''
@@ -87,8 +92,12 @@
         @{ Switch = 'ORICOOP_MUTATE_STEAM_NO_ACCEPT'; File = 'src\OriCoop\SteamTransport.cs'; Suite = 'titlejoin-steam'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PENDING'; File = 'src\OriCoop\SteamTransport.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 a given-up lobby operation blocks every retry
         @{ Switch = 'ORICOOP_MUTATE_STEAM_KEEP_PROBLEM'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'titlejoin-steam-retry'; Phase = '' }   # T-216 the host's Problem stays after its lobby is up again
+        @{ Switch = 'ORICOOP_MUTATE_LOBBY_RECOVERY'; File = 'src\OriCoop\NativeLobby.cs'; Suite = 'titlejoin-recovery'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_COMPANION_RETRY'; File = 'src\OriCoop\P2Extras.cs';   Suite = 'local';     Phase = '' }   # T-213 a companion return that threw is tried again (scenario companion)
         @{ Switch = 'ORICOOP_MUTATE_COMPANION_RETURN_INACTIVE'; File = 'src\OriCoop\P2Extras.cs'; Suite = 'net'; Phase = 'INTRO' }
+        @{ Switch = 'ORICOOP_MUTATE_HUB_LEAVE_TRACE'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'titlejoin-room-exit'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_ROOM_CANCEL_NAV'; File = 'src\OriCoop\OnlineRoomScreen.cs'; Suite = 'titlejoin-room-exit'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_DOUBLE_BACKSPACE'; File = 'src\OriCoop\OnlineLobby.cs'; Suite = 'titlejoin-room-exit'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_KEEP_MODAL';     File = 'src\OriCoop\NetHud.cs';         Suite = 'titlejoin'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_ORB_MENUS';      File = 'src\OriCoop\CsRoomPage.cs';     Suite = 'titlejoin-cs'; Phase = '' }   # T-173 room page orb copy keeps the difficulty picker
         @{ Switch = 'ORICOOP_MUTATE_HIDE_ICONS';     File = 'src\OriCoop\NativeGui.cs';      Suite = 'titlejoin-cs'; Phase = '' }   # T-173 game button icons in native labels stay hidden
@@ -104,6 +113,7 @@
         @{ Switch = 'ORICOOP_MUTATE_PROLOGUE_GUEST_STAYS_ONLINE'; File = 'src\OriCoop\GuestJoin.cs'; Suite = 'titlejoin-prologue-hostquit-slot'; Phase = '' }   # T-209 (2) a slot-path guest stays online after its host left the prologue
         @{ Switch = 'ORICOOP_MUTATE_TOAST_NO_FALLBACK'; File = 'src\OriCoop\NetHud.cs';      Suite = 'local';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_ROOM_NAME_HASH'; File = 'src\OriCoop\NativeRooms.cs';     Suite = 'rooms';   Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_ROOM_FAILURES'; File = 'src\OriCoop\Rooms\RoomSession.cs'; Suite = 'roomfailures'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_MENU_STALE_LOCK'; File = 'src\OriCoop\CoopMenu.cs';      Suite = 'net';       Phase = 'S4' }
         @{ Switch = 'ORICOOP_MUTATE_ROOMS_NATIVE_OFF'; File = 'src\OriCoop\NativeRooms.cs';   Suite = 'rooms';     Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_OVERLAY_UNLOCK';  File = 'src\OriCoop\TitleMenu.cs';      Suite = 'local';     Phase = '' }
@@ -125,6 +135,8 @@
         @{ Switch = 'ORICOOP_WORLDOBJ_OFF';          File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
         @{ Switch = 'ORICOOP_WOBJ_NO_DEFER';         File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
         @{ Switch = 'ORICOOP_MUTATE_WOBJ_KEEP_FIRED'; File = 'src\OriCoop\WorldObjSync.cs'; Suite = 'net';       Phase = 'R' }   # T-144 R3 reload re-arms one-shots
+        @{ Switch = 'ORICOOP_MUTATE_STALE_CS_ROOMS'; File = 'src\OriCoop\Authority\CServerRoomList.cs'; Suite = 'titlejoin-wait-cancel'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_NO_SAVE_WAIT_CANCEL'; File = 'src\OriCoop\SessionScreens.cs'; Suite = 'titlejoin-wait-cancel'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_NO_COOP_FOLDER'; File = 'src\OriCoop\Saves\CoopSaveFolder.cs'; Suite = 'titlejoin'; Phase = '' }   # T-043 online saves stay in OriCoop-coop
         @{ Switch = 'ORICOOP_MUTATE_NO_SAVEOFFER';   File = 'src\OriCoop\SaveSync.cs'; Suite = 'net';       Phase = 'R' }   # T-043 a guest's save point becomes the room's save
         @{ Switch = 'ORICOOP_MUTATE_PREVIOUS_MOVEMENT'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'net'; Phase = 'S4' }
