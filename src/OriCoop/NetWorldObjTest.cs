@@ -669,27 +669,57 @@ namespace OriCoop
             PlayerCollisionTrigger trigger = s_pick as PlayerCollisionTrigger; if (trigger == null) yield break;
             PerformingAction action = (PerformingAction)trigger.ActionToRun;
             h.Note(tag + " trigger " + trigger.name + " action " + action.name + " once=" + trigger.TriggerOnce);
+            int id = WorldObjSync.IdOf(trigger);
+            int sent0 = WorldObjSync.EventsSent, applied0 = WorldObjSync.EventsApplied, deferred0 = WorldObjSync.EventsDeferred, missing0 = WorldObjSync.EventsMissing;
             yield return Barrier(h, step + 1, 0, 0f, 0f);
-            bool ran = false;
+            // Times from leaving this barrier. The guest's window is measured from the host's pass (the host sends how
+            // long after its own barrier it passed); the two barrier exits differ by about one trip (100 ms + load).
+            float exit = Time.realtimeSinceStartup, ranAt = -1f, passRel = -1f;
+            bool ran = false, wasRunning = action.IsPerforming;
             if (host)
             {
                 trigger.DoTrigger();
+                float sentAt = WorldObjSync.TriggerSentAt(id);
+                if (sentAt >= exit) passRel = sentAt - exit;
                 float until = Time.realtimeSinceStartup + 1f;
                 while (Time.realtimeSinceStartup < until && !ran) { ran = action.IsPerforming; yield return null; }
             }
             else
             {
-                float until = Time.realtimeSinceStartup + s_win;
-                while (Time.realtimeSinceStartup < until && !ran) { ran = action.IsPerforming; yield return null; }
+                // Wait well past the window, so a late rock is measured instead of only missed (WO8L failed once with
+                // nothing after 3.5 s; the trail below shows where the event stopped).
+                float until = Time.realtimeSinceStartup + Mathf.Max(s_win, 10f);
+                while (Time.realtimeSinceStartup < until && !ran) { ran = action.IsPerforming; if (ran) ranAt = Time.realtimeSinceStartup; yield return null; }
             }
-            yield return Barrier(h, step + 5, ran ? 1 : 0, 0f, 0f);
+            yield return Barrier(h, step + 5, ran ? 1 : 0, passRel, wasRunning ? 1f : 0f);
             Sample pr = Partner(step + 5);
             bool hostRan = host ? ran : (pr != null && pr.Id == 1);
+            bool ok;
             // The 200 ms round re-arms the same one-shot rock; its scene condition sometimes refuses a second run on the
             // host's own call (seen on relay). Without a host run there is nothing to replicate: skip, don't fail.
-            if (tag.EndsWith("L") && !hostRan) h.Note(tag + " the re-armed rock did not start on the host (scene condition): skipped");
-            else if (host) h.Check(ran, tag + " host's own pass started the rock sequence");
-            else h.Check(ran, tag + " guest's rock sequence started within " + s_win + " s of the host's pass");
+            if (tag.EndsWith("L") && !hostRan) { h.Note(tag + " the re-armed rock did not start on the host (scene condition): skipped"); ok = true; }
+            else if (host)
+            {
+                ok = ran && !wasRunning && passRel >= 0f;
+                h.Check(ran, tag + " host's own pass started the rock sequence");
+                // A rock still running from before, or a pass that sent nothing, leaves the partner with nothing to run.
+                h.Check(!wasRunning, tag + " the rock was not already running before the host's pass");
+                h.Check(passRel >= 0f, tag + " host's pass sent the rock event");
+            }
+            else
+            {
+                float hostPass = pr != null ? pr.A : -1f;
+                float lag = ran && hostPass >= 0f ? ranAt - exit - hostPass : float.NaN;
+                ok = ran && !float.IsNaN(lag) && lag <= s_win;
+                h.Check(ok, tag + " guest's rock sequence started within " + s_win + " s of the host's pass ("
+                    + (ran ? (float.IsNaN(lag) ? "host sent no pass time" : "after " + F(lag) + " s") : "not within " + F(Mathf.Max(s_win, 10f)) + " s") + ")");
+            }
+            if (!ok)
+                h.Note(tag + " diag id=" + id + " trail: " + WorldObjSync.TriggerTrail(id) + " | since re-arm sent=" + (WorldObjSync.EventsSent - sent0)
+                    + " applied=" + (WorldObjSync.EventsApplied - applied0) + " deferred=" + (WorldObjSync.EventsDeferred - deferred0)
+                    + " missing=" + (WorldObjSync.EventsMissing - missing0) + " active=" + trigger.Active + " fired=" + WorldObjSync.TestHasFired(id)
+                    + " sceneStarted=" + WorldObjSync.SceneStarted(trigger) + " story=" + StorySync.Watching + " mask=" + StorySync.TakeoverMaskPublic()
+                    + " exit=" + F(exit) + " ranAt=" + F(ranAt) + " partnerPass=" + (pr != null ? F(pr.A) : "none"));
             yield return Wait(1f);
             yield return Barrier(h, step + 2, 0, 0f, 0f);
         }
