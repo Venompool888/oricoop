@@ -34,7 +34,10 @@ $dirty = (git -C $root status --porcelain -- src/OriCoop 2>$null); if ($dirty) {
 $buildTxt = Join-Path $out 'build.txt'
 [IO.File]::WriteAllText($buildTxt, "commit=$sha`n")
 $res += "/resource:$buildTxt,OriCoop.build.txt"
-& $csc /nologo /noconfig /nostdlib+ /target:library /optimize+ /langversion:5 /out:"$out\OriCoop.dll" @refs @res @srcs
+# T-261: the arguments go in a response file (~300 full source paths passed Windows' 32767-char command-line limit); /noconfig only works on the command line.
+$rsp = Join-Path $out 'csc-args.rsp'
+[IO.File]::WriteAllLines($rsp, [string[]](@('/nologo', '/nostdlib+', '/target:library', '/optimize+', '/langversion:5', "/out:$out\OriCoop.dll") + $refs + $res + $srcs | ForEach-Object { '"' + $_ + '"' }))
+& $csc /noconfig "@$rsp"
 if ($LASTEXITCODE -ne 0) { throw "csc failed" }
 if ($NoInstall) { "BUILD OK (not installed)"; return }
 New-Item -ItemType Directory -Force "$game\BepInEx\plugins" | Out-Null
