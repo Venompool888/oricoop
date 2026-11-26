@@ -104,6 +104,7 @@ $TS_FileSuites = [ordered]@{
     'NetSaveHandoverTest' = @('net-save-handover')
     'MovementEpochs' = @('net', 'net-3p', 'net-4p', 'net-3p-cs', 'net-lp2', 'net-lp3')
     'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')
+    'KeystoneRecovery' = @('net', 'net-3p-cs'); 'NetKeystoneRecoveryTest' = @('net', 'net-3p-cs')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-cs', 'rooms'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
     'NetLocalSeats'    = @('net', 'net-lp2', 'net-lp3'); 'LocalEdgeWall' = @('local', 'net-lp2', 'net-lp3')

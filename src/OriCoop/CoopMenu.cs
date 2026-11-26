@@ -78,7 +78,7 @@ namespace OriCoop
                 if (Page == PageModeSelect) return 2;
                 if (Page == PageSetup) return 5;
                 int count = s_seats.LocalSeats.Length;
-                return NetPlay.Enabled ? count + 2 : count + (HasExtraJoinRow(count) ? 6 : 5);
+                return NetPlay.Enabled ? count + (KeystoneRecovery.CanGrant(OpeningSeat) ? 3 : 2) : count + (HasExtraJoinRow(count) ? 6 : 5);
             }
         }
 
@@ -373,6 +373,8 @@ namespace OriCoop
                 if (row >= 0 && row < local.Length) WaitForDevice(local[row]);
                 else if (row == local.Length) OpenLogFolder();
                 else if (row == local.Length + 1) Close();
+                else if (row == local.Length + 2 && KeystoneRecovery.TryGrant(OpeningSeat))
+                    s_message = L10n.F("coop.recovered_keystone", Characters.Sein.Inventory.Keystones);
                 return;
             }
             int[] seats = s_seats.LocalSeats;
@@ -592,6 +594,11 @@ namespace OriCoop
                 Array.Resize(ref actions, actions.Length + 1);
                 actions[actions.Length - 1] = L10n.T(s_waitFor < 0 ? "coop.choose_extra_join_device" : "coop.add_local");
             }
+            if (online && KeystoneRecovery.CanGrant(OpeningSeat))
+            {
+                Array.Resize(ref actions, actions.Length + 1);
+                actions[actions.Length - 1] = L10n.T("coop.recover_keystone");
+            }
             string build = BuildLabel();
             float w = Mathf.Min(Screen.width - 40f, 760f), inner = w - 40f, lineH = s_text.fontSize * 1.9f;
             string title = L10n.T(!online && seats.Length > 2 ? "pause.multiplayer_settings" : "coop.settings");
@@ -633,7 +640,8 @@ namespace OriCoop
 
         // ---- build info and logs (T-032) ----------------------------------------------------------------------
         // Settings page rows (local play: seats, cutscenes, add/remove, mode, log folder, close; online: local seats, log folder, close).
-        public static int SettingsCloseRow { get { return NetPlay.Enabled ? 1 : s_seats.LocalSeats.Length + 4; } }
+        internal static int KeystoneRow { get { return KeystoneRecovery.CanGrant(OpeningSeat) ? s_seats.LocalSeats.Length + 2 : -1; } }
+        public static int SettingsCloseRow { get { return s_seats.LocalSeats.Length + (NetPlay.Enabled ? 1 : 4); } }
         public static int SettingsLogsRow { get { return SettingsCloseRow - 1; } }
 
         public static string BuildLabel() { return L10n.F("build.version", BuildInfo.Short(Plugin.Version, BuildInfo.Commit)); }
