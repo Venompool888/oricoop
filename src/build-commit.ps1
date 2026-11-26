@@ -26,6 +26,12 @@ try {
     $names = [ordered]@{ 'dead-marker\dead_marker.png' = 'OriCoop.dead_marker.png'; 'zh-glyphs\zh_glyphs.png' = 'OriCoop.zh_glyphs.png'
         'zh-glyphs\zh_glyphs.txt' = 'OriCoop.zh_glyphs.txt'; 'zh-text\zh_terms.txt' = 'OriCoop.zh_terms.txt'; 'zh-text\zh_extra.txt' = 'OriCoop.zh_extra.txt' }
     $res = @($names.Keys | Where-Object { Test-Path (Join-Path $a $_) } | ForEach-Object { '/resource:' + (Join-Path $a $_) + ',' + $names[$_] })
+    $roomUi = Join-Path $a 'room-ui'
+    if (Test-Path -LiteralPath $roomUi) {
+        foreach ($png in Get-ChildItem -LiteralPath $roomUi -Filter '*.png' -File) {
+            if ($png.Name -ne 'preview.png') { $res += "/resource:$($png.FullName),OriCoop.roomui.$($png.Name)" }
+        }
+    }
     foreach ($g in @('ps', 'xbox')) { foreach ($f in @(Get-ChildItem (Join-Path $a "$g-glyphs") -Filter *.png -ErrorAction SilentlyContinue)) { $res += "/resource:$($f.FullName),OriCoop.$($g)_$($f.Name)" } }   # T-178
     New-Item -ItemType Directory -Force $OutDir | Out-Null
     $buildTxt = Join-Path $OutDir 'build.txt'   # build info (T-032, Ui\BuildInfo.cs): a clean commit, no "+local"
