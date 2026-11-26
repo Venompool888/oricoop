@@ -37,6 +37,7 @@ namespace OriCoop
         static LineageReply s_reply;
         static int s_focus;
         static bool s_partnerChanged, s_hostChanged;
+        static string s_roomRound = "";
 
         // Guest side
         static string s_offerCoop = "", s_offerHostId = "", s_offerHostName = "";
@@ -67,6 +68,7 @@ namespace OriCoop
 
         static void Reset()
         {
+            s_roomRound = "";
             s_reply = null; s_hostLink = null; s_hostSlot = -1;
             s_offerCoop = s_offerHostId = s_offerHostName = ""; s_guestMatch = -1;
             s_lastWrittenHash = null; s_noSlotToldOnce = s_savedToldOnce = false;
@@ -176,6 +178,7 @@ namespace OriCoop
         public sealed class CoopLink
         {
             public string Coop = "", SaveId = "", Partner = "", PartnerId = "", Synced = "", SyncedAt = "";
+            public string RoomRound = "", LastPlayer = "";
 
             public static CoopLink Read(int slot)
             {
@@ -191,6 +194,8 @@ namespace OriCoop
                         if (k == "coop") l.Coop = v; else if (k == "saveId") l.SaveId = v;
                         else if (k == "partner") l.Partner = v; else if (k == "partnerId") l.PartnerId = v;
                         else if (k == "synced") l.Synced = v; else if (k == "syncedAt") l.SyncedAt = v;
+                        else if (k == "round" && v.Length == 32 && Array.TrueForAll(v.ToCharArray(), Uri.IsHexDigit)) l.RoomRound = v;
+                        else if (k == "lastPlayer") l.LastPlayer = v;
                     }
                     return l.Coop.Length > 0 ? l : null;
                 }
@@ -201,11 +206,26 @@ namespace OriCoop
             {
                 string text = "# OriCoop co-op save link: this slot shares progress with a co-op partner.\n"
                     + "coop=" + Coop + "\nsaveId=" + SaveId + "\npartner=" + Partner + "\npartnerId=" + PartnerId
-                    + "\nsynced=" + Synced + "\nsyncedAt=" + SyncedAt + "\n";
+                    + "\nsynced=" + Synced + "\nsyncedAt=" + SyncedAt + "\nround=" + RoomRound + "\nlastPlayer=" + LastPlayer + "\n";
                 string p = LinkPath(slot), tmp = p + ".tmp";
                 File.WriteAllText(tmp, text, new UTF8Encoding(false));
                 CoopSaveFolder.ReplaceWith(tmp, p);
             }
+        }
+
+        internal static void RecordLastRoomPlayer()
+        {
+            int slot = s_hostSlot >= 0 ? s_hostSlot : SessionSlot;
+            if (slot < 0 || s_roomRound.Length == 0) return;
+            try
+            {
+                CoopLink link = ValidLink(slot, null);
+                if (link == null || link.Coop != CoopId || link.RoomRound != s_roomRound) return;
+                link.LastPlayer = PlayerId;
+                link.Write(slot);
+                if (slot == s_hostSlot && s_hostLink != null) s_hostLink.LastPlayer = PlayerId;
+            }
+            catch (Exception e) { Services.Log.Warn("coop save: could not record the last room player: " + e.Message); }
         }
 
         // A link only counts while the slot file is the same playthrough (same save Identifier).
@@ -386,6 +406,7 @@ namespace OriCoop
                 else RefreshSlotInfo(slot, bytes);
                 CoopLink l = new CoopLink();
                 l.Coop = coop; l.SaveId = saveId; l.Partner = hostName; l.PartnerId = hostId;
+                l.RoomRound = s_roomRound;
                 l.Synced = hash; l.SyncedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
                 l.Write(slot);
                 s_lastWrittenHash = hash; s_guestMatch = slot; GuestSlot = SessionSlot = slot; GuestWrites++; LastCommitHash = hash;
@@ -434,12 +455,13 @@ namespace OriCoop
             if (TestChoice.Length > 0 && TestReady && Services.Clock.RealTime - s_machine.StageAt > 1f)
             {
                 Services.Log.Info("coop save: test choice " + TestChoice);
-                Choose(TestChoice == "partner" ? 1 : TestChoice == "cancel" ? 2 : 0);
+                Choose(TestChoice == "partner" ? 1 : TestChoice == "cancel" ? s_machine.ForkCount + 1 : 0);
                 return;
             }
-            if (Core.Input.Up.OnPressed || UnityEngine.Input.GetKeyDown(KeyCode.UpArrow)) { s_focus = (s_focus + 2) % 3; Core.Input.Up.Used = true; }
-            if (Core.Input.Down.OnPressed || UnityEngine.Input.GetKeyDown(KeyCode.DownArrow)) { s_focus = (s_focus + 1) % 3; Core.Input.Down.Used = true; }
-            if (Core.Input.Cancel.OnPressed || UnityEngine.Input.GetKeyDown(KeyCode.Escape)) { s_focus = 2; Core.Input.Cancel.Used = true; }
+            int count = s_machine.ForkCount + 2;
+            if (Core.Input.Up.OnPressed || UnityEngine.Input.GetKeyDown(KeyCode.UpArrow)) { s_focus = (s_focus + count - 1) % count; Core.Input.Up.Used = true; }
+            if (Core.Input.Down.OnPressed || UnityEngine.Input.GetKeyDown(KeyCode.DownArrow)) { s_focus = (s_focus + 1) % count; Core.Input.Down.Used = true; }
+            if (Core.Input.Cancel.OnPressed || UnityEngine.Input.GetKeyDown(KeyCode.Escape)) { s_focus = count - 1; Core.Input.Cancel.Used = true; }
             if (Core.Input.ActionButtonA.OnPressed || UnityEngine.Input.GetKeyDown(KeyCode.Return) || UnityEngine.Input.GetKeyDown(KeyCode.Space))
             {
                 Core.Input.ActionButtonA.Used = true;
@@ -451,7 +473,12 @@ namespace OriCoop
         {
             if (s_machine.Stage != LineageStage.Choosing) return;
             if (option == 0) s_machine.Decide(false);
-            else if (option == 1) s_machine.Decide(true);
+            else if (option <= s_machine.ForkCount)
+            {
+                s_reply = s_machine.Fork(option - 1);
+                s_hostLink.Partner = PartnerName(s_reply.Name); s_hostLink.PartnerId = s_reply.PlayerId;
+                s_machine.ChooseFork(option - 1);
+            }
             else s_machine.Cancel();
         }
 
@@ -516,7 +543,13 @@ namespace OriCoop
                 float y = Screen.height * 0.12f, w = Screen.width;
                 Text(new Rect(0, y, w, 56f * scale), SavesHost.Current.Translate("saves.diverged"), s_title, Warm);
                 y += 110f * scale;
-                string partner = SavesHost.Current.LocalizationProbeOn && TestShow ? SavesHost.Current.Translate("steam.friend") : s_hostLink != null ? s_hostLink.Partner : "?";
+                int forks = DialogOpen ? s_machine.ForkCount : 1;
+                if (DialogOpen && s_focus > 0 && s_focus <= forks)
+                {
+                    s_reply = s_machine.Fork(s_focus - 1);
+                    s_partnerChanged = s_reply.LastSync.Length == 0 || s_reply.Hash != s_reply.LastSync;
+                }
+                string partner = SavesHost.Current.LocalizationProbeOn && TestShow ? SavesHost.Current.Translate("steam.friend") : s_reply != null ? PartnerName(s_reply.Name) : "?";
                 Text(new Rect(0, y, w, 32f * scale), Who(), s_body, Zh);
                 y += 76f * scale;
                 float colW = Mathf.Min(560f * scale, w * 0.44f);
@@ -525,8 +558,13 @@ namespace OriCoop
                 Column(rx, y, colW, scale, SavesHost.Current.Format("saves.partner", partner), SavesHost.Current.LocalizationProbeOn && TestShow ? SavesHost.Current.Translate("saves.new_game") : s_reply != null ? s_reply.Summary : "?", s_partnerChanged);
                 y += 140f * scale;
                 Option(0, y, scale, SavesHost.Current.Translate("saves.use_host")); y += 84f * scale;
-                Option(1, y, scale, SavesHost.Current.Translate("saves.use_partner")); y += 84f * scale;
-                Option(2, y, scale, SavesHost.Current.Translate("saves.cancel")); y += 96f * scale;
+                for (int i = 0; i < forks; i++)
+                {
+                    string label = forks == 1 ? SavesHost.Current.Translate("saves.use_partner")
+                        : SavesHost.Current.Format("saves.use_seat", s_machine.ForkSeat(i), Clean(s_machine.Fork(i).Name));
+                    Option(i + 1, y, scale, label); y += 84f * scale;
+                }
+                Option(forks + 1, y, scale, SavesHost.Current.Translate("saves.cancel")); y += 96f * scale;
                 Text(new Rect(0, y, w, 28f * scale), SavesHost.Current.Translate("saves.backup_note"), s_bodyEn, Zh);
                 Text(new Rect(0, Screen.height - 56f * scale, w - 60f * scale, 30f * scale),
                     SavesHost.Current.Translate("saves.prompts"), s_bodyEn, Zh);
@@ -555,6 +593,8 @@ namespace OriCoop
 
         static void Option(int idx, float y, float scale, string text)
         {
+            if (DialogOpen && idx == s_machine.Suggested)
+                text = SavesHost.Current.Format("saves.last_in_room", text);
             float w = 520f * scale, h = 76f * scale;
             Rect r = new Rect((Screen.width - w) * 0.5f, y, w, h);
             Event e = Event.current;

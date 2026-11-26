@@ -44,7 +44,22 @@ namespace OriCoop
                         yield return StartCoroutine(WaitFor(() => File.Exists(SteamWaitingFile), 40f));
                         AccessTools.Method(typeof(OnlineLobbyOverlay), "ActivateRole").Invoke(overlay, new object[] { 0 });
                         yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Visible, 20f));
-                        if (steam) yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.invite"), 8f));
+                        if (steam)
+                        {
+                            OverlayPaint.Expect(L10n.T("lobby.host"));
+                            yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.leave"), 8f));
+                            yield return StartCoroutine(WaitFor(() => OverlayPaint.Seen, 5f));
+                            Check(OverlayPaint.Seen && OnlineLobby.IsOpen && !NetPlay.Enabled,
+                                "T211 Steam host leaves the room and sees the overlay role chooser");
+                            AccessTools.Method(typeof(OnlineLobbyOverlay), "ActivateRole").Invoke(overlay, new object[] { 0 });
+                            yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.invite"), 20f));
+                            yield return StartCoroutine(WaitFor(() => File.Exists(GuestDoneFile + ".rejoined"), 65f));
+                            Check(File.Exists(GuestDoneFile + ".rejoined"), "Steam guest rejoined the waiting host");
+                            yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.continue"), 10f));
+                            yield return StartCoroutine(WaitFor(() => File.Exists(GuestDoneFile), 40f));
+                            Check(File.Exists(GuestDoneFile), "Steam guest followed the host start");
+                            yield break;
+                        }
                         yield return StartCoroutine(WaitFor(() => File.Exists(GuestDoneFile), 80f));
                         OverlayPaint.Expect(L10n.T("lobby.host"));
                         yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.leave"), 5f));
@@ -75,9 +90,18 @@ namespace OriCoop
 
                     if (steam)
                     {
+                        overlay = UnityEngine.Object.FindObjectOfType<OnlineLobbyOverlay>();
                         AccessTools.Method(typeof(OnlineLobbyOverlay), "ActivateRole").Invoke(overlay, new object[] { 1 });
                         // The test backend automatically delivers its first invitation only. Accept the same host again.
                         AccessTools.Method(typeof(SteamTransport), "OnInvite").Invoke(null, new object[] { lobby, (ulong)1001 });
+                        yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Visible && NetPlay.PartnerHere, 35f));
+                        Check(OnlineRoomScreen.Visible && NetPlay.PartnerHere && !OnlineRoomScreen.HasButton("room.continue"),
+                            "Steam guest waits for its host without a manual Continue button");
+                        File.WriteAllText(GuestDoneFile + ".rejoined", "ready");
+                        yield return StartCoroutine(WaitFor(() => GuestFromTitle && !OnlineRoomScreen.Visible, 30f));
+                        Check(OnlineRoomScreen.Confirmed && !OnlineRoomScreen.Visible && !OnlineLobby.IsOpen && GuestFromTitle,
+                            "Steam host start advances the guest and closes the lobby");
+                        yield break;
                     }
                     else AccessTools.Method(typeof(OnlineLobbyOverlay), "TryConnectDirect").Invoke(overlay, null);
                     yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.continue"), 30f));

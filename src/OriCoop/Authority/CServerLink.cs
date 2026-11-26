@@ -156,6 +156,7 @@ namespace OriCoop.Authority
                 Plugin.Log.LogInfo("cserver: legacy arbiter is now P" + seat);
             };
             c.SeatOffline += delegate(int seat) { if (seat != c.Seat) NetPlay.RemoteLeft(seat); };
+            c.LastDeviceInRoom += delegate { if (c == s_client) CoopSaves.RecordLastRoomPlayer(); };
             // A seat that came online after my Hello never saw it: introduce myself (Hello + Status) to it.
             c.SeatOnline += delegate(int seat) { if (seat != c.Seat && c.Seat != 0) NetPlay.IntroduceTo(seat); };
             c.JoinFailed += delegate(string key)

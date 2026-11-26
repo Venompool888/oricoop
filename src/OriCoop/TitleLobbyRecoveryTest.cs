@@ -64,7 +64,18 @@ namespace OriCoop
             {
                 Check(SteamApi.Current is FakeSteamApi, "recovery: isolated Steam backend");
                 if (!(SteamApi.Current is FakeSteamApi)) yield break;
-                const ulong lobby = 88888001;
+                yield return StartCoroutine(RecoverInvite(88888001));
+                if (m_fails != 0) yield break;
+                yield return StartCoroutine(Row(TitleStartRow("steam", false), 0.3f));
+                AccessTools.Field(typeof(SteamInviteHook), "s_startedAt").SetValue(null, Time.realtimeSinceStartup - 61f);
+                SteamInviteHook.Tick();
+                Check(OnSteamJoinPage && SteamBrowsing && NetPlay.Enabled && !SteamInviteHook.CanRetry,
+                    "recovery: the idle Steam friend browser waits without timing out");
+                yield return StartCoroutine(RecoverInvite(88888002));
+            }
+
+            IEnumerator RecoverInvite(ulong lobby)
+            {
                 AccessTools.Method(typeof(SteamTransport), "OnInvite").Invoke(null, new object[] { lobby, (ulong)1001 });
                 SteamInviteHook.Tick();
                 yield return StartCoroutine(WaitFor(() => NetPlay.SteamLobby == lobby && SteamTransport.PendingInviteRaw == 0, 4f));
@@ -74,13 +85,20 @@ namespace OriCoop
                 SteamInviteHook.Tick();
                 AccessTools.Field(typeof(SteamInviteHook), "s_failUntil").SetValue(null, Time.realtimeSinceStartup - 1f);
                 RefreshTexts(true);
-                Check(!NetPlay.Enabled && LastPage == "joining" && HasKey(LastLabels, "common.retry") && HasKey(LastLabels, "common.back"),
+                Check(!NetPlay.Enabled && SteamInviteHook.CanRetry && LastPage == "joining"
+                    && HasKey(LastLabels, "common.retry") && HasKey(LastLabels, "common.back"),
                     "T211 the timed-out Steam invite offers retry and Back after its banner expires");
                 LobbyPressed(0);
                 yield return StartCoroutine(WaitFor(() => NetPlay.SteamLobby == lobby, 2f));
-                Check(NetPlay.Enabled && NetPlay.SteamLobby == lobby, "T211 retry rejoins the lobby of the consumed Steam invite");
-                LobbyBack();
-                Check(!NetPlay.Enabled && LastPage == "joinmethod", "T211 Back from a Steam invite returns to title join methods");
+                Check(NetPlay.Enabled && !SteamInviteHook.CanRetry && NetPlay.SteamLobby == lobby,
+                    "T211 retry rejoins the lobby of the consumed Steam invite");
+                AccessTools.Field(typeof(SteamInviteHook), "s_startedAt").SetValue(null, Time.realtimeSinceStartup - 61f);
+                SteamInviteHook.Tick();
+                RefreshTexts(true);
+                Check(SteamInviteHook.CanRetry && HasKey(LastLabels, "common.back"), "recovery: Back is available after the retry times out");
+                LobbyPressed(1);
+                Check(!NetPlay.Enabled && !SteamInviteHook.CanRetry && LastPage == "joinmethod",
+                    "T211 Back from a Steam invite returns to title join methods");
             }
         }
     }

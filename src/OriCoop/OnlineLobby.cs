@@ -277,7 +277,7 @@ namespace OriCoop
         void Update()
         {
             if (OnlineRoomScreen.Visible) return;
-            if (m_page == PageHosting && !OnlineRoomScreen.Confirmed && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected))
+            if (m_page == PageHosting && !OnlineRoomScreen.Confirmed && (NetPlay.UsesSteam && NetPlay.Enabled || NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected))
             { ShowRoom(); return; }
             PollPads();
             if (Time.unscaledTime < m_ignoreInputUntil) return;
@@ -335,6 +335,7 @@ namespace OriCoop
             {
                 if (OnlineLobby.Transport == "steam")
                 {
+                    if (NativeModeMenu.OpenSteamBrowserFromOverlay()) return;
                     m_lastJoinTarget = "";
                     GoTo(PageJoining);
                     NetPlay.Begin(false, "steam", "");

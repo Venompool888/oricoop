@@ -155,7 +155,7 @@ namespace OriCoop
         {
             string notPlaying = s_testPage == "" ? NetPlay.NotInGameplayReason() : null;
             if (notPlaying != null) { Refused("not opened, not in gameplay: " + notPlaying + " (" + GameplayDetail() + ")"); return; }
-            if (CsRoomPage.InGame) { Refused("not opened over the in-game room page"); return; }   // T-189: one pause hold, see Tick
+            if (CsRoomPage.InGame || OnlineRoomScreen.SteamInGame) { Refused("not opened over the in-game room page"); return; }   // T-189: one pause hold, see Tick
             if (IsOpen) { GoTo(page); return; }
             s_refused = "";
             IsOpen = true;
@@ -231,7 +231,7 @@ namespace OriCoop
             {
                 // T-189: not over the in-game room page: its View is 踢出, and opening here would take the page's pause hold
                 // (PauseMenuEntry has one), leaving the native pause menu live under the page.
-                if (!inGame || CsRoomPage.InGame) { Array.Clear(s_backHeld, 0, s_backHeld.Length); return; }
+                if (!inGame || CsRoomPage.InGame || OnlineRoomScreen.SteamInGame) { Array.Clear(s_backHeld, 0, s_backHeld.Length); return; }
                 PollPads();
                 if (Input.GetKeyDown(KeyCode.F8))
                 {
@@ -459,7 +459,7 @@ namespace OriCoop
             if (!IsOpen)
             {
                 // T-189: not over the in-game room page (the panel does not open there).
-                if (s_testPage == "coop.hint" || (UI.MainMenuVisible && Characters.Sein != null && !CsRoomPage.InGame))
+                if (s_testPage == "coop.hint" || (UI.MainMenuVisible && Characters.Sein != null && !CsRoomPage.InGame && !OnlineRoomScreen.SteamInGame))
                 {
                     Styles();
                     NativeGui.BeginPage("coop.hint");

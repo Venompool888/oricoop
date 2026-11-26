@@ -174,7 +174,7 @@ namespace OriCoop.Saves
                 using (BinaryReader r = new BinaryReader(new MemoryStream(File.ReadAllBytes(path))))
                 {
                     string saved = r.ReadString();
-                    SkillRecord record = SkillRecord.Read(r);
+                    SkillRecord record = SkillRecord.Read(r, true);
                     if (hash != null && saved != hash) { Services.Log.Info("saves: skill record of slot " + slot + " is for another save; not used"); return null; }
                     return record;
                 }

@@ -26,6 +26,14 @@ namespace OriCoop.World
 
         public static bool Includes(string type) { return type != "AchievementsLogic" && type != "BaseAnimatorSerializer"; }
 
+        // The Gumo mesh in thornfeltSwampActTwoStart's gumoSavesSein timeline
+        // follows sprite animation metadata on each PC. Keep the object in the digest with a stable pose hash.
+        public static bool ComparesPosePresence(string key, string type)
+        {
+            return type == "TransformSaveSerialize"
+                && key == "-1289149174 680822595 558787450 1729667918:-1517079076 1077808971 1966622865 680266200";
+        }
+
         public static Dictionary<string, DigestDifference> Differences(Dictionary<string, DigestObject> local, Dictionary<string, DigestObject> remote)
         {
             var differences = new Dictionary<string, DigestDifference>();

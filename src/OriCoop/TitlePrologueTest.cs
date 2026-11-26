@@ -304,6 +304,7 @@ namespace OriCoop
                 // ---- only P1 skips: the pause menu's skip item performs SkipCutsceneController.SkipCutscene
                 yield return StartCoroutine(Together("skip.ready", 120f));
                 Check(SkipCutsceneController.Instance != null && SkipCutsceneController.Instance.SkippingAvailable, "host: P1 can skip the prologue");
+                Check(SharedPrologue.RequestsShown == 1, "host: two member prologue skips produced one request");
                 Put("skip", Utc());
                 SkipCutsceneController.Instance.SkipCutscene();
                 yield return StartCoroutine(PrologueHostInGame(slot, "its skip"));
@@ -635,11 +636,12 @@ namespace OriCoop
                 }
 
                 // ---- P2 cannot skip; its own pause menu opens and the prologue goes on behind it
-                Check(SkipCutsceneController.Instance != null && !SkipCutsceneController.Instance.SkippingAvailable, "guest: skipping is not available to P2");
+                Check(SkipCutsceneController.Instance != null && SkipCutsceneController.Instance.SkippingAvailable, "guest: the prologue skip request is available");
                 int refused = SharedPrologue.SkipsRefused, stops = SharedPrologue.LocalStops;
                 SkipCutsceneController.Instance.SkipCutscene();                    // what the pause menu's skip item performs
+                SkipCutsceneController.Instance.SkipCutscene();                    // repeated request
                 yield return StartCoroutine(TWait(1.5f));
-                Check(SharedPrologue.SkipsRefused == refused + 1 && SharedPrologue.Watching && InPrologueState && SharedPrologue.LocalStops == stops,
+                Check(SharedPrologue.SkipsRefused == refused + 2 && SharedPrologue.Watching && InPrologueState && SharedPrologue.LocalStops == stops,
                     "guest: its skip is refused, the prologue plays on (refused " + (SharedPrologue.SkipsRefused - refused) + ", watching " + SharedPrologue.Watching + ")");
                 UI.Menu.ShowMenuScreen(true);
                 yield return StartCoroutine(TWait(1.5f));

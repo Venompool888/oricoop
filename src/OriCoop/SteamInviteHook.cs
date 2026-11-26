@@ -32,7 +32,7 @@ namespace OriCoop
         static float s_startedAt;
         static ulong s_retryLobby;
         internal static bool CanRetry { get { return s_retryLobby != 0; } }
-        internal static void ForgetRetry() { s_retryLobby = 0; s_failUntil = 0f; }
+        internal static void ForgetRetry() { s_retryLobby = 0; s_failUntil = 0f; s_startedByInvite = false; }
         internal static void Retry()
         {
             if (!CanRetry) return;
@@ -66,7 +66,15 @@ namespace OriCoop
             if (NetPlay.Enabled)
             {
                 // A Steam join page that is already waiting picks the invite up itself (NetPlay.PumpSteam).
-                if (!NetPlay.IsHost && NetPlay.UsesSteam) return;
+                if (!NetPlay.IsHost && NetPlay.UsesSteam)
+                {
+                    if (NetPlay.SteamLobby == 0 && !NetPlay.LocalInGameplay() && NativeModeMenu.OnSteamJoinPage)
+                    {
+                        NativeModeMenu.RememberSteamInvite(lobby);
+                        if (!s_startedByInvite) TrackJoin();
+                    }
+                    return;
+                }
                 if (!InviteReplacesSession)
                 {
                     Announce(lobby, "online play is already running (" + (NetPlay.IsHost ? "host" : "guest") + " via " + NetPlay.TransportName + ")");
@@ -88,13 +96,18 @@ namespace OriCoop
                 (s_inviter.Length > 0 ? " from " + s_inviter : "") + ")");
             s_announced = 0;
             StartJoin("");   // OpenSteam consumes the new invitation on the next update.
-            if (s_startedByInvite) NativeModeMenu.ShowSteamJoinPage();
+            if (s_startedByInvite) NativeModeMenu.ShowSteamJoinPage(lobby);
         }
 
         static void StartJoin(string target)
         {
             ForgetRetry();
             NetPlay.Begin(false, "steam", target);
+            TrackJoin();
+        }
+
+        static void TrackJoin()
+        {
             s_startedByInvite = NetPlay.Enabled && !NetPlay.IsHost && NetPlay.UsesSteam;
             s_startedAt = Time.realtimeSinceStartup;
             s_partnerSince = 0f;

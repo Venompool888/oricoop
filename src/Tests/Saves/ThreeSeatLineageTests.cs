@@ -28,6 +28,56 @@ partial class SaveTests
         return n;
     }
 
+    static ThreeSeats ForksWithEvidence(bool hostLast, bool firstLast, bool secondLast, bool matched)
+    {
+        ThreeSeats t = new ThreeSeats(true);
+        string round = Guid.NewGuid().ToString("N");
+        t.S.Host.PreviousRound = round; t.S.Host.WasLast = hostLast;
+        t.B.Reply.Found = true; t.B.Reply.Hash = "fork-b";
+        t.B.Reply.PreviousRound = round; t.B.Reply.WasLast = firstLast;
+        t.A.Reply.PreviousRound = matched ? round : ""; t.A.Reply.WasLast = secondLast;
+        t.S.Offer();
+        Check(t.S.HostMachine.ForkCount == 2 && t.S.Host.Commits == 0 && t.S.Host.Adoptions == 0,
+            "the three-party choice must wait for the host to confirm");
+        return t;
+    }
+
+    static void LastRoomMember()
+    {
+        ThreeSeats t = ForksWithEvidence(false, false, true, true);
+        Check(t.S.HostMachine.Suggested == 2 && t.S.HostMachine.ForkSeat(1) == 3, "later guest's copy not focused");
+        t.B.UploadBytes = new byte[] { 42 };
+        t.S.HostMachine.ChooseFork(0); t.S.Network.Pump();
+        Check(RequestsTo(t.S.Network, 2, LineageWire.UploadRequest) == 1 && t.S.Host.StoredBytes[0] == 42,
+            "the host could not override the suggested member");
+        Check(ForksWithEvidence(true, false, false, true).S.HostMachine.Suggested == 0, "host was last");
+        Check(ForksWithEvidence(false, true, true, true).S.HostMachine.Suggested == -1, "conflicting evidence");
+        Check(ForksWithEvidence(false, true, false, false).S.HostMachine.Suggested == -1, "legacy copy with no round");
+        Check(ForksWithEvidence(false, false, false, true).S.HostMachine.Suggested == -1, "no last member observed");
+    }
+
+    static void LastRoomWire()
+    {
+        string round = Guid.NewGuid().ToString("N");
+        var commit = new LineageCommit { Coop = "room", Bytes = new byte[] { 1, 2 } };
+        byte[] old = Encode(w => LineageWire.WriteCommit(w, commit));
+        Check(LineageWire.ReadCommit(Read(old)).Round == "", "legacy commit invented a marker");
+        commit.Round = round;
+        byte[] newer = Encode(w => LineageWire.WriteCommit(w, commit));
+        byte[] prefix = new byte[old.Length]; Array.Copy(newer, prefix, old.Length); EqualBytes(prefix, old);
+        Check(LineageWire.ReadCommit(Read(newer)).Round == round, "shared commit marker changed on the wire");
+        var reply = new LineageReply { Found = true, Hash = "fork" };
+        old = Encode(w => LineageWire.WriteReply(w, reply));
+        Check(!LineageWire.ReadReply(Read(old)).WasLast, "legacy reply invented evidence");
+        reply.PreviousRound = round; reply.WasLast = true;
+        newer = Encode(w => LineageWire.WriteReply(w, reply));
+        prefix = new byte[old.Length]; Array.Copy(newer, prefix, old.Length); EqualBytes(prefix, old);
+        LineageReply read = LineageWire.ReadReply(Read(newer));
+        Check(read.PreviousRound == round && read.WasLast, "last member's evidence lost");
+        Array.Resize(ref newer, newer.Length - 1);
+        Check(LineageWire.ReadReply(Read(newer)).PreviousRound == "", "partial extension used as evidence");
+    }
+
     static void NoCopyFirstStillChooses()
     {
         ThreeSeats t = new ThreeSeats(true);
@@ -61,6 +111,21 @@ partial class SaveTests
         Check(t.S.Host.InvalidUploads == 0 && t.S.Host.Adoptions == 1 && t.S.HostMachine.Stage == LineageStage.Adopting,
             "B's empty upload voided the host's choice of A's progress (stage " + t.S.HostMachine.Stage + ", invalid " + t.S.Host.InvalidUploads + ")");
         EqualBytes(t.S.Host.StoredBytes, 31, 32);
+    }
+
+    static void ChosenGuestLeaves(bool uploading)
+    {
+        ThreeSeats t = new ThreeSeats(true);
+        t.S.Offer();
+        if (uploading) t.S.HostMachine.Decide(true);
+        t.B.Reply.Found = true;
+        t.B.Reply.Hash = "other-fork";
+        t.S.Network.Remove(3);
+        t.S.Network.Pump();
+        Check(t.S.HostMachine.Stage == LineageStage.Choosing && t.S.Host.Choosing == 2 && t.S.Host.Commits == 0,
+            "the remaining guest's fork was lost or the missing guest was still offered");
+        t.S.Network.Remove(2);
+        Check(t.S.HostMachine.HostGate() && t.S.Host.Commits == 1, "the last guest left and blocked the host");
     }
 
     static void WaitsForEveryReply()

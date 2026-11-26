@@ -24,6 +24,7 @@ namespace OriCoop
 
         static readonly WorldDeltaPeer s_delta = new WorldDeltaPeer(delegate { return AuthoritySource.Current; }, new DeltaGame());
         static bool s_versionLogged;
+        static uint s_reportedWorldWatermark;
         // Test only (the T-168 same-RTT checks, TestHarness.Enabled): batches committed before this time are applied only
         // then, as if the network took that long. Test copies on one PC have an RTT of a few ms, far below the 250 ms
         // scan, so without it every PC would already have the others' changes when it scans and proposes.
@@ -53,7 +54,7 @@ namespace OriCoop
 
         static void ResetDelta()
         {
-            s_delta.Reset(); s_versionLogged = false; s_itemsOff.Clear(); s_testHeld.Clear(); TestHoldBatchesUntil = 0;
+            s_delta.Reset(); s_reportedWorldWatermark = 0; s_versionLogged = false; s_itemsOff.Clear(); s_testHeld.Clear(); TestHoldBatchesUntil = 0;
             // A guest waits for the host's snapshot (s_awaitSnapshot). The host's own save is the snapshot: batches that
             // reach it before it can take world state (a C-server room replays up to 4096 old ones when this PC rejoins)
             // are older than that save and are dropped once it is ready (HostReady).
@@ -69,6 +70,17 @@ namespace OriCoop
             foreach (CommittedEvent e in held)
                 try { s_delta.OnCommitted(e, SaveSync.Ready); }
                 catch (Exception ex) { Plugin.Log.LogWarning("net: world item batch " + e.Id + " from P" + e.From + " failed: " + ex.Message); }
+        }
+
+        // Ride the existing digest cadence. An older arbiter treats this optional receipt as an
+        // ordinary, unused event kind. Peers that do not report still get the full replay.
+        static void ReportAppliedWorld()
+        {
+            uint watermark = s_delta.CoveredWatermark;
+            IAuthority authority = AuthoritySource.Current;
+            if (watermark <= s_reportedWorldWatermark || authority == null || authority.Mode == AuthorityMode.None) return;
+            authority.Propose(Arbiter.WorldWatermarkKind, "w:applied", BitConverter.GetBytes(watermark), false, false);
+            s_reportedWorldWatermark = watermark;
         }
 
         static bool ItemsOff(string key, string type, Exception e)
@@ -136,10 +148,20 @@ namespace OriCoop
         static bool ReadAggregate(MoonGuid scene, MoonGuid id, out byte[] bytes)
         {
             string key = Key(scene, id); bytes = null;
+            Blob queued;
+            if (s_deferred.TryGetValue(key, out queued)) { bytes = queued.Bytes; return true; }
             ISerializable live = Find(scene, id);
             if (live != null && !s_bad.Contains(key) && !Excluded(live))
             {
-                try { bytes = CaptureBytes(live); return true; }
+                try
+                {
+                    GameWorld map = live as GameWorld;
+                    Blob previous;
+                    if (map != null && s_blobs.TryGetValue(key, out previous) && previous.Schema == Meaning.Map &&
+                        MapMatches(map, previous.Bytes)) bytes = previous.Bytes;
+                    else bytes = CaptureBytes(live);
+                    return true;
+                }
                 catch (Exception e) { Disable(key, live, e); return false; }
             }
             Blob known;
@@ -161,12 +183,65 @@ namespace OriCoop
             string key = Key(scene, id);
             StoreCheckpoint(scene, id, bytes);
             ISerializable live = Find(scene, id);
-            if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay()) ApplyLive(scene, id, bytes);
-            else if (live != null && !s_bad.Contains(key)) s_deferred[key] = MakeBlob(scene, id, bytes, schema, type);
+            ApplyOrDeferLive(scene, id, bytes, schema, type, key, live);
             if (!s_bad.Contains(key)) s_blobs[key] = MakeBlob(scene, id, bytes, schema, type);
             // Not "known": the next scan measures this object again, so a change of mine an incoming batch did not
             // overwrite (DeltaObject keeps it) is still proposed.
             s_known.Remove(key);
+        }
+
+        // Use the real loaded GameController plus the same deferred queue used during its native load.
+        // Stage and restore all temporary in-memory changes within one frame of the isolated game.
+        internal static bool TestDeferredRollback(out string result)
+        {
+            result = "GameController not registered";
+            MoonGuid id = null;
+            foreach (var entry in SaveSceneManager.Master.SaveData)
+                if (entry != null && object.ReferenceEquals(entry.Save, GameController.Instance)) { id = entry.Id; break; }
+            if (id == null) return false;
+            MoonGuid scene = MoonGuid.Empty;
+            string key = Key(scene, id), type = typeof(GameController).FullName;
+            const string item = "e:0d340000123456789abcdef000000001";
+            const byte schema = WorldItems.SchemaController;
+            byte[] native = CaptureBytes(GameController.Instance);
+            var items = WorldItems.Decompose(schema, native);
+            if (items.ContainsKey(item)) { result = "fixture event already exists"; return false; }
+            items[item] = BitConverter.GetBytes(1);
+            byte[] snapshot = WorldItems.Compose(schema, native, items);
+            var saved = Game.Checkpoint.SaveGameData.Master.SaveObjects.ToArray();
+            Blob deferred, knownBlob; ulong knownHash;
+            bool hadDeferred = s_deferred.TryGetValue(key, out deferred), hadBlob = s_blobs.TryGetValue(key, out knownBlob);
+            bool hadHash = s_known.TryGetValue(key, out knownHash), defer = TestDeferApply;
+            try
+            {
+                TestDeferApply = true;
+                s_deferred[key] = MakeBlob(scene, id, snapshot, Meaning.Controller, type);
+                byte[] current;
+                bool readQueue = ReadAggregate(scene, id, out current) && DeltaObject.Same(current, snapshot);
+                var peer = new WorldDeltaPeer(delegate { return AuthoritySource.Current; }, new DeltaGame());
+                var batch = new DeltaBatch { Id = 2, Object = id.ToByteArray(), Scene = scene.ToByteArray(), Type = type, Schema = schema };
+                batch.Ops.Add(new ItemOp(item, BitConverter.GetBytes(2)));
+                peer.OnCommitted(new CommittedEvent { Id = 2, From = 1, Kind = DeltaBatch.Kind, Data = batch.Encode() }, true);
+                peer.BeginSnapshot();
+                byte[] rolled = peer.SnapshotObject(batch.Scene, batch.Object, schema, snapshot);
+                s_deferred[key] = MakeBlob(scene, id, rolled, Meaning.Controller, type);
+                peer.EndSnapshot(1);
+                byte[] value;
+                int queuedValue = WorldItems.Decompose(schema, s_deferred[key].Bytes).TryGetValue(item, out value) ? BitConverter.ToInt32(value, 0) : -1;
+                bool liveChanged = WorldItems.Decompose(schema, CaptureBytes(GameController.Instance)).ContainsKey(item);
+                result = "read pending snapshot=" + readQueue + ", queued event=" + queuedValue + " after batch 2 / watermark 1, native scene modified=" + liveChanged;
+                return readQueue && queuedValue == 2 && !liveChanged;
+            }
+            finally
+            {
+                TestDeferApply = defer;
+                if (hadDeferred) s_deferred[key] = deferred; else s_deferred.Remove(key);
+                if (hadBlob) s_blobs[key] = knownBlob; else s_blobs.Remove(key);
+                if (hadHash) s_known[key] = knownHash; else s_known.Remove(key);
+                Game.Checkpoint.SaveGameData.Master.SaveObjects.Clear();
+                Game.Checkpoint.SaveGameData.Master.SaveObjects.AddRange(saved);
+                if (WorldItems.Decompose(schema, CaptureBytes(GameController.Instance)).ContainsKey(item)) ApplyLive(scene, id, native);
+            }
         }
     }
 }

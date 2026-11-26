@@ -65,7 +65,7 @@ static class CoopMenuFlowTests
 
         run("co-op menu: both method pages list Steam, room code, LAN in the same order", delegate {
             Equal("Steam 好友 / 房间码（自建服务器） / 局域网（IP 地址）", Labels(CoopMenuFlow.PageHostMethod), "创建房间 rows");
-            Equal("Steam 邀请 / 房间码（自建服务器） / 局域网（输入 IP）", Labels(CoopMenuFlow.PageJoinMethod), "加入房间 rows");
+            Equal("Steam 好友房间 / 房间码（自建服务器） / 局域网（输入 IP）", Labels(CoopMenuFlow.PageJoinMethod), "加入房间 rows");
             Equal(3, CoopMenuFlow.Methods.Length, "methods");
             for (int i = 0; i < CoopMenuFlow.Methods.Length; i++)
             {

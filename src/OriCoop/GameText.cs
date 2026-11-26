@@ -23,6 +23,7 @@ namespace OriCoop
         int m_layer = -1;
         public bool Ok { get { return Go != null && m_box != null; } }
         public bool NoBacking;    // hide the hint's dark backing strip (for small labels drawn over pictures)
+        public bool LightGateBacking;
         readonly System.Collections.Generic.Dictionary<Renderer, Material> m_own = new System.Collections.Generic.Dictionary<Renderer, Material>();
         bool m_loggedBright;
         internal string BrightDebug = "";
@@ -208,6 +209,9 @@ namespace OriCoop
                     {
                         backBefore = c.a;
                         if (!full.TryGetValue(r, out target) || target <= 0f) target = c.a;
+                        // Three dark strips can stack at a gate. Let the world show through their private
+                        // materials while preserving the prefab's textured edges and bright lettering.
+                        if (LightGateBacking) target = Mathf.Min(target, 0.26f);
                         backAfter = target;
                     }
                     if (c.a != target) { c.a = target; own.SetColor("_Color", c); }
@@ -258,6 +262,20 @@ namespace OriCoop
                 }
             }
             return a;
+        }
+
+        // Highest alpha of a visible backing renderer, excluding all glyph and button-icon renderers.
+        internal float BackingAlpha()
+        {
+            if (!Shown) return -1f;
+            float alpha = -1f;
+            foreach (Renderer r in Go.GetComponentsInChildren<Renderer>())
+            {
+                if (!r.enabled || !r.isVisible || Array.IndexOf(m_renderers, r) >= 0) continue;
+                Material m = r.sharedMaterial;
+                if (m != null && m.HasProperty("_Color")) alpha = Mathf.Max(alpha, m.GetColor("_Color").a);
+            }
+            return alpha;
         }
 
         bool Measure(out Bounds b)

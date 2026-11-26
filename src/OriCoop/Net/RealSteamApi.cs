@@ -6,7 +6,7 @@ using ManagedSteam.SteamTypes;
 
 namespace OriCoop.Net
 {
-    internal sealed class RealSteamApi : ISteamApi
+    internal sealed class RealSteamApi : ISteamApi, ISteamFriends
     {
         private static RealSteamApi current;
         private readonly Steam steam;
@@ -42,6 +42,26 @@ namespace OriCoop.Net
             get { try { return steam.Utils.IsOverlayEnabled(); } catch (Exception) { return true; } }
         }
         public void OpenInviteDialog(ulong lobby) { steam.Friends.ActivateGameOverlayInviteDialog(new SteamID(lobby)); }
+        public ulong[] FriendIds()
+        {
+            int count = Math.Max(0, steam.Friends.GetFriendCount(FriendFlags.Immediate));
+            var ids = new ulong[count];
+            for (int i = 0; i < count; i++) ids[i] = steam.Friends.GetFriendByIndex(i, FriendFlags.Immediate).AsUInt64;
+            return ids;
+        }
+
+        public ulong FriendLobby(ulong user)
+        {
+            FriendGameInfo info;
+            return steam.Friends.GetFriendGamePlayed(new SteamID(user), out info) &&
+                info.GameID.AsUInt64 == global::Steamworks.FullDEAppID.AsUInt64 ? info.SteamIDLobby.AsUInt64 : 0;
+        }
+
+        public void RequestDetails(ulong lobby) { steam.Matchmaking.RequestLobbyData(new SteamID(lobby)); }
+        public int MemberLimit(ulong lobby) { return steam.Matchmaking.GetLobbyMemberLimit(new SteamID(lobby)); }
+        public bool Invite(ulong lobby, ulong friend) { return steam.Matchmaking.InviteUserToLobby(new SteamID(lobby), new SteamID(friend)); }
+        public string MemberState(ulong lobby, ulong user) { return steam.Matchmaking.GetLobbyMemberData(new SteamID(lobby), new SteamID(user), "stage"); }
+        public void SetMemberState(ulong lobby, string state) { steam.Matchmaking.SetLobbyMemberData(new SteamID(lobby), "stage", state); }
         public bool AllowP2PPacketRelay(bool allow) { return steam.Networking.AllowP2PPacketRelay(allow); }
         public bool AcceptP2PSession(ulong user) { return steam.Networking.AcceptP2PSessionWithUser(new SteamID(user)); }
         public bool CloseP2PSession(ulong user) { return steam.Networking.CloseP2PSessionWithUser(new SteamID(user)); }

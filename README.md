@@ -5,10 +5,10 @@ Fan-made co-op mod for *Ori and the Blind Forest: Definitive Edition* (BepInEx 5
 
 | | |
 |---|---|
-| Version / 版本 | **0.2.0** |
+| Plugin version / 插件版本 | **0.2.5** |
 | Local co-op / 同屏双人 | Works: second Ori on a second controller, shared camera, revive. 可用 |
 | Online, 2 players / 双人联机 | Works (experimental): LAN play (host mode), your own server (C-server, room code), Steam friends. 可用（实验性） |
-| Online, 4 players / 四人联机 | **In progress.** 开发中 |
+| Online, up to 4 players / 最多四人联机 | Experimental, including Steam friend rooms. 实验性支持，包含 Steam 好友房间。 |
 | C-server (authority server) / 权威服务器 | Used by server mode (experimental, still in development). 服务器模式在用（实验性，仍在开发） |
 | Servers / 服务端 | [oricoop-server](https://github.com/Venompool888/oricoop-server) (C-server). The old tunnel relay was removed in T-159. |
 | Chinese patch only / 只要中文补丁 | [ori-de-zh-patch](https://github.com/Venompool888/ori-de-zh-patch): standalone Simplified Chinese patch, no co-op, Definitive Edition only. 独立的简体中文补丁，不含联机，仅适用于终极版 |
@@ -28,9 +28,9 @@ Release kits embed a few game-derived items (a marker image, some game text); se
 OriCoop 给单人游戏《奥日与黑暗森林：终极版》加上合作模式：
 
 - **同屏双人**：第二个手柄控制第二个奥日（颜色不同），镜头跟随两人，倒下后可以被队友救起。
-- **双人联机**：主机的存档为准，访客加入后自动收到存档、出现在主机身边。同步位置、动画、能力、敌人、机关、剧情过场和进度。
+- **联机合作**可容纳最多四名玩家。成员加入后自动收到房主选定的存档，出现在房主身边。同步位置、动画、能力、敌人、机关、剧情过场和进度。
   连接方式：局域网联机（主机模式，输入主机 IP）、自建服务器（C-server，房间码）、Steam 好友邀请。
-- **四人联机** 正在开发，还不能玩；C-server（权威服务器）仍在开发中。
+- 双方单独推进过同一份联机存档时，房主可以比较并选择进度。成员可请求跳过共享对话或过场，由房主按确认键或「跳过」推进。个人教学提示可以自行关闭。
 
 ### 安装（玩家）
 
@@ -42,11 +42,11 @@ OriCoop 给单人游戏《奥日与黑暗森林：终极版》加上合作模式
 ### 联机服务器
 
 - **局域网联机（主机模式）**：不需要服务器。一人当主机（开放 UDP 47011），其他人输入主机的 IP 和端口加入。
-  面向同一局域网；不在同一网络的玩家可以自己搭隧道 / VPN（例如 Tailscale）。
+  同一局域网内可直接连接，跨网络可使用 Tailscale 等 VPN。需要启用配对时，在每台电脑的 `[Net]` 配置中填写相同的 `LanPairingKey`（32 个随机十六进制数字）。
 - **自建服务器（服务器模式）**：需要一台 C-server。本仓库**不附带任何公共服务器地址**，请自己部署
   （见 [oricoop-server](https://github.com/Venompool888/oricoop-server)，默认 UDP 47022），在游戏里「自建服务器」→「服务器管理」添加地址，
   然后用房间码创建或加入。
-- **Steam 好友**：两边都要通过 Steam 启动游戏。
+- **Steam 好友**需要从 Steam 启动游戏。成员可从标题页选择好友的房间，也可接受邀请。房主能在开局前更换存档，进入游戏后仍可从暂停菜单邀请好友。Steam 浮层关闭时可使用游戏内好友列表。
 
 自建服务器可接收用于兼容性排查的环境报告。玩家可以在「自建服务器 → 服务器管理 → 环境诊断」选择一个地址，查看字段并选择「允许上报」，随时可以在同处关闭。首次使用时默认关闭。成功加入已授权且支持诊断的服务器后，客户端通过 HTTPS 发送一份报告，包含系统版本与架构、系统和游戏语言、时区、游戏与存档所在卷的格式与剩余空间区间，以及公网出口 IP 探测结果。探测先访问 ipify，必要时再访问 icanhazip。探测站点会看到请求的来源 IP。探测失败时，报告记录失败状态，玩家照常加入。
 
@@ -92,10 +92,10 @@ OriCoop 给单人游戏《奥日与黑暗森林：终极版》加上合作模式
 OriCoop adds co-op to the single-player game *Ori and the Blind Forest: Definitive Edition*:
 
 - **Local co-op**: a second controller drives a second, recoloured Ori; shared camera; downed players can be revived.
-- **Online, 2 players**: the host's save is the truth. A guest who joins receives the save and appears next to the host.
+- **Online co-op** supports up to four players. Each guest receives the save chosen by the host and appears beside them.
   Positions, animation, abilities, enemies, world objects, cutscenes and progress are synced. Transports: LAN play
   (host mode, join by IP), your own server (C-server, room code), Steam friend invites.
-- **4-player online** is **in progress** and not playable yet; the C-server (authority server) is still in development.
+- If players continued a co-op save independently, the host can compare their progress and choose a copy. Members can request to advance shared dialogue or skip a cutscene. The host confirms with the usual dialogue or Skip button. Each player can dismiss personal tutorials.
 
 ### Install (players)
 
@@ -108,11 +108,11 @@ OriCoop adds co-op to the single-player game *Ori and the Blind Forest: Definiti
 ### Servers
 
 - **LAN play (host mode)**: no server; one player hosts (opens UDP 47011), the others join its IP address and port.
-  Meant for one LAN; players on different networks can set up their own tunnel or VPN (e.g. Tailscale).
+  Computers on the same LAN connect directly. Players on different networks can use a tunnel or VPN such as Tailscale. To enable pairing, set `LanPairingKey` under `[Net]` to the same 32 random hexadecimal digits on every computer.
 - **Server mode (C-server, room codes)**: **no public server address ships with this repo**: run your own C-server (see
   [oricoop-server](https://github.com/Venompool888/oricoop-server), UDP 47022 by default), add it in the game under
   Your Own Server → Manage servers, then host or join with a room code.
-- **Steam friends**: both players start the game through Steam.
+- **Steam friends** launch Ori through Steam. Join a friend’s room from the title screen or accept an invitation. The host can change the save before starting and invite more players from the pause menu. The in-game friends list works when the Steam overlay is off.
 
 Self-hosted servers can receive optional compatibility reports. Under **Manage servers → Environment reports**, choose a saved address to review the fields and allow or turn off reporting. Permission starts off for each server. After a successful join to an enabled, supported server, the client sends one HTTPS report containing OS version and architecture, system and game language, time zone, game/save volume formats and free-space bands, and the public IP probe result. The probe contacts ipify first and icanhazip as a fallback. Each contacted provider sees the request's source IP. A failed probe is recorded as a status and joining continues normally.
 

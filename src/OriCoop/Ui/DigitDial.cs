@@ -53,7 +53,14 @@ namespace OriCoop.Ui
         }
         public void Back()
         {
-            if (m_password && Focus >= m_length) Left();
+            if (m_password && (Focus == m_length || (m_length == m_digits.Length && Focus == m_length - 1)))
+            {
+                // Typing advances to the next wheel. Backspace replaces the last typed digit on the next keypress.
+                Focus = m_length - 1;
+                m_digits[Focus] = 0;
+                if (m_length > 4) m_length--;
+                return;
+            }
             m_digits[Focus] = 0;
             if (m_password && Focus == m_length - 1 && m_length > 4) m_length--;
             Left();

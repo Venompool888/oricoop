@@ -112,6 +112,8 @@ sealed class FakeLineage : ILineageActions
 {
     readonly INetBus m_bus;
     public string Hash = "host", Outcome = "";
+    public string PreviousRound = "";
+    public bool WasLast;
     public LineageReply Reply = new LineageReply();
     public LineageCommit ReceivedCommit;
     public byte[] StoredBytes = new byte[] { 7, 8 }, UploadBytes;
@@ -121,7 +123,7 @@ sealed class FakeLineage : ILineageActions
     public string PlayerId { get { return m_bus.IsHost ? "host-id" : "guest-id"; } }
     public string LocalName { get { return m_bus.IsHost ? "host-name" : "guest-name"; } }
     public string HostHash { get { return Hash; } }
-    public LineageOffer PrepareOffer() { if (FailOffer) throw new IOException("offer failed"); return new LineageOffer { Coop = "lineage", Hash = Hash, Summary = "host summary" }; }
+    public LineageOffer PrepareOffer() { if (FailOffer) throw new IOException("offer failed"); return new LineageOffer { Coop = "lineage", Hash = Hash, Summary = "host summary", PreviousRound = PreviousRound, WasLast = WasLast }; }
     public void OfferSent(LineageOffer offer) { }
     public void OfferFailed(Exception error) { OfferFailures++; }
     public LineageReply PrepareReply(LineageOffer offer) { return Reply; }

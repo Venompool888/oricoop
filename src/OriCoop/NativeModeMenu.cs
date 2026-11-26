@@ -271,6 +271,7 @@ namespace OriCoop
 
         static void Destroy()
         {
+            s_returnSteamOverlay = false;
             RestoreGlows();
             if (s_root != null)
             {
@@ -499,7 +500,7 @@ namespace OriCoop
             {
                 Rooms.RoomsPanel panel = Rooms.RoomsPanel.Instance;
                 bool linked = panel != null && panel.Session != null && panel.Session.Active;
-                return Saves.RoomSaveSelection.CanSelect(NetPlay.IsHost, NetPlay.LocalInGameplay(), NetPlay.Connected, linked);
+                return Saves.RoomSaveSelection.CanSelect(NetPlay.IsHost, NetPlay.LocalInGameplay(), NetPlay.Connected && !(NetPlay.UsesSteam && !OnlineRoomScreen.Confirmed), linked);
             }
         }
         internal static void SelectRoomSave(int slot)

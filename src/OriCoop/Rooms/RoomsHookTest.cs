@@ -520,11 +520,21 @@ namespace OriCoop.Rooms
         {
             yield return Wait(() => Shared().GetString("released") == "1", 150);
             if (!Check(Shared().GetString("released") == "1", "host returned to the title, lease released")) yield break;
-            if (NetPlay.LocalInGameplay()) GameController.Instance.RestartGame();
-            yield return Wait(() => (panel.Session == null || !panel.Session.Active)
-                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, 60);
-            if (!Check((panel.Session == null || !panel.Session.Active)
-                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, "guest back on the title, room session ended")) yield break;
+            Func<bool> backOnTitle = () => (panel.Session == null || !panel.Session.Active)
+                && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu;
+            // The host may release its lease while the guest is still loading its last checkpoint.
+            // Issue the guest's return only once that load can no longer consume the restart.
+            yield return Wait(() => backOnTitle() || (!SaveSync.RestartingForLoad && NetPlay.LocalInGameplay()), 60);
+            if (!backOnTitle())
+            {
+                if (!Check(!SaveSync.RestartingForLoad && NetPlay.LocalInGameplay(),
+                    "guest ready to leave after the final checkpoint (" + NetPlay.NotInGameplayReason()
+                    + ", checkpoint restart=" + SaveSync.RestartingForLoad + ")")) yield break;
+                GameController.Instance.RestartGame();
+            }
+            yield return Wait(backOnTitle, 60);
+            if (!Check(backOnTitle(), "guest back on the title, room session ended (screen="
+                + TitleScreenManager.CurrentScreen + ", room active=" + (panel.Session != null && panel.Session.Active) + ")")) yield break;
             yield return OpenMyRooms("after playing");
             if (done) yield break;
             string[] menuRows = NativeModeMenu.TestRoomRows();

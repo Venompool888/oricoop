@@ -25,7 +25,7 @@ namespace OriCoop.Net
 
     public sealed class MessageBus
     {
-        const byte MsgHello = 1, MsgStatus = 2, MsgFrames = 3, MsgSeat = 4, MsgLeft = 5, MsgTest = 99;
+        const byte MsgHello = 1, MsgStatus = 2, MsgFrames = 3, MsgSeat = 4, MsgLeft = 5, MsgSeatTable = 8, MsgTest = 99;
         readonly IMessageContext context;
         readonly SessionMachine session;
         readonly Action<byte, Exception> earlyError;
@@ -173,15 +173,16 @@ namespace OriCoop.Net
                 }
                 if (type == MsgSeat)
                 {
-                    if (context.IsHost || context.UsesSteam || Sender != 1) return;
+                    if (context.IsHost || Sender != 1) return;
                     context.AssignSeat(r.ReadByte());
                     return;
                 }
-                if (session.WaitingForSeat) return;
+                // Older two-player Steam hosts assign the guest through their targeted seat table.
+                if (session.WaitingForSeat && !(context.UsesSteam && !context.IsHost && type == MsgSeatTable && Sender == 1)) return;
                 if (!context.FactorySession && sourceSeat != 0 && Sender != sourceSeat) return;
                 if (type == MsgLeft)
                 {
-                    if (context.IsHost && !context.FactorySession || context.UsesSteam || Sender != 1) return;
+                    if (context.IsHost && !context.FactorySession || Sender != 1) return;
                     session.RemoteLeft(r.ReadByte());
                     return;
                 }

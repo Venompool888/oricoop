@@ -37,6 +37,15 @@ namespace OriCoop
 
         // Disconnect dialog & chip state
         static bool s_disconnectModalOpen;
+        internal static bool SteamHostLeft { get; private set; }
+        static void ObserveSteamDeparture()
+        {
+            if (SteamHostLeft || !NetPlay.UsesSteam || NetPlay.IsHost) return;
+            string reason = NetPlay.Problem ?? "";
+            if (reason != Net.SessionMachine.PartnerGoodbye && reason.IndexOf("left the lobby", StringComparison.OrdinalIgnoreCase) < 0) return;
+            SteamHostLeft = true;
+            NetPlay.HoldRetry(reason);
+        }
         static bool s_collapsedChip;
         static float s_disconnectWaitSec;
         static int s_modalFocus; // 0: 继续单人, 1: 回到标题
@@ -175,6 +184,7 @@ namespace OriCoop
 
         public static void OnSessionStarted()
         {
+            SteamHostLeft = false;
             if (s_disconnectModalOpen || s_collapsedChip || s_hadPreviousDrop)
             {
                 s_disconnectModalOpen = false;
@@ -213,6 +223,7 @@ namespace OriCoop
             {
                 s_hadPreviousDrop = true;
                 s_disconnectModalOpen = true;
+                ObserveSteamDeparture();
                 s_disconnectWaitSec = 0f;
                 s_modalFocus = 0;
                 s_collapsedChip = false;
@@ -303,6 +314,7 @@ namespace OriCoop
             // Disconnect dialog & reconnect tracking
             if (s_disconnectModalOpen || s_collapsedChip)
             {
+                ObserveSteamDeparture();
                 s_disconnectWaitSec += Time.unscaledDeltaTime;
 
                 // Auto-close when partner reconnects
@@ -352,7 +364,8 @@ namespace OriCoop
             if (opt == 0) // 继续单人 Keep playing alone
             {
                 s_disconnectModalOpen = false;
-                s_collapsedChip = true;
+                if (SteamHostLeft) NetPlay.End("Steam host left; continuing alone");
+                else s_collapsedChip = true;
             }
             else // 回到标题 Back to title
             {
@@ -786,14 +799,17 @@ namespace OriCoop
                 float topY = 180f * scale;
 
                 // Title
-                DrawText("hud.disconnect.title", new Rect(0, topY, Screen.width, 64f * scale), L10n.SessionText("hud.disconnect.title"), s_modalTitleZh, new Color(0.95f, 0.65f, 0.55f));
+                DrawText("hud.disconnect.title", new Rect(0, topY, Screen.width, 64f * scale), (SteamHostLeft && !sample ? L10n.T("steam.host.left") : L10n.SessionText("hud.disconnect.title")), s_modalTitleZh, new Color(0.95f, 0.65f, 0.55f));
 
                 // Spinner & Reconnecting counter
                 float spinY = topY + 90f * scale;
-                DrawSpinner(cx - 150f * scale, spinY + 20f * scale, scale);
-                int sec = sample ? 10 : Mathf.FloorToInt(s_disconnectWaitSec);
-                string reconnecting = L10n.F("hud.disconnect.reconnecting", sec);
-                DrawText("hud.disconnect.countdown", new Rect(cx - 100f * scale, spinY, 300f * scale, 40f * scale), reconnecting, s_modalHelperZh, new Color(0.867f, 0.918f, 0.898f));
+                if (!SteamHostLeft || sample)
+                {
+                    DrawSpinner(cx - 150f * scale, spinY + 20f * scale, scale);
+                    int sec = sample ? 10 : Mathf.FloorToInt(s_disconnectWaitSec);
+                    string reconnecting = L10n.F("hud.disconnect.reconnecting", sec);
+                    DrawText("hud.disconnect.countdown", new Rect(cx - 100f * scale, spinY, 300f * scale, 40f * scale), reconnecting, s_modalHelperZh, new Color(0.867f, 0.918f, 0.898f));
+                }
 
                 // Options: [0: 继续单人] [1: 回到标题]
                 float optY = spinY + 70f * scale;

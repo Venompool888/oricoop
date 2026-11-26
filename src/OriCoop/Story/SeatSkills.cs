@@ -21,15 +21,23 @@ namespace OriCoop.Story
             tree = 0;
             return !string.IsNullOrEmpty(player) && m_trees.TryGetValue(player, out tree);
         }
-        public void Set(string player, ulong tree) { if (!string.IsNullOrEmpty(player)) m_trees[player] = tree; }
+        public void Set(string player, ulong tree)
+        {
+            if (!string.IsNullOrEmpty(player) && (m_trees.Count < MaximumPlayers || m_trees.ContainsKey(player)))
+                m_trees[player] = tree;
+        }
         public IEnumerable<string> Players { get { return m_trees.Keys; } }
 
         // A new checkpoint: the seats present now (player -> live tree bits) replace their entries; the rest stay.
         public SkillRecord Checkpoint(IDictionary<string, ulong> present)
         {
             SkillRecord next = new SkillRecord();
-            foreach (KeyValuePair<string, ulong> e in m_trees) next.Set(e.Key, e.Value);
             if (present != null) foreach (KeyValuePair<string, ulong> e in present) next.Set(e.Key, e.Value);
+            // Keep every active seat. At the wire limit use a stable order for the remaining historical entries.
+            List<string> previous = new List<string>(m_trees.Keys);
+            previous.Sort(StringComparer.Ordinal);
+            foreach (string id in previous)
+                if (!next.m_trees.ContainsKey(id)) next.Set(id, m_trees[id]);
             return next;
         }
 
@@ -41,10 +49,14 @@ namespace OriCoop.Story
             foreach (string p in players) { w.Write(p); w.Write(m_trees[p]); }
         }
 
-        public static SkillRecord Read(BinaryReader r)
+        public static SkillRecord Read(BinaryReader r, bool saved = false)
         {
             int count = r.ReadUInt16();
-            if (count > MaximumPlayers) throw new InvalidDataException("skill record: " + count + " players");
+            // Older builds wrote sorted records with more players than the network reader allows.
+            // Consume the entire persisted record while keeping at most MaximumPlayers entries.
+            if (count > MaximumPlayers && (!saved || !r.BaseStream.CanSeek ||
+                r.BaseStream.Length - r.BaseStream.Position < (long)count * 9))
+                throw new InvalidDataException("skill record: " + count + " players");
             SkillRecord record = new SkillRecord();
             for (int i = 0; i < count; i++) { string p = r.ReadString(); record.Set(p, r.ReadUInt64()); }
             return record;
@@ -58,7 +70,7 @@ namespace OriCoop.Story
         public static SkillRecord FromBytes(byte[] bytes)
         {
             if (bytes == null) return null;
-            using (BinaryReader r = new BinaryReader(new MemoryStream(bytes))) return Read(r);
+            using (BinaryReader r = new BinaryReader(new MemoryStream(bytes))) return Read(r, true);
         }
     }
 
