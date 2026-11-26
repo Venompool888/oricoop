@@ -9,7 +9,7 @@ using System.Threading;
 
 namespace OriCoop.Net
 {
-    public sealed class FakeSteamApi : ISteamApi, IDisposable
+    public sealed class FakeSteamApi : ISteamApi, ISteamFriends, IDisposable
     {
         private const int MaxPayload = 1200;
         private const int HeaderSize = 13;
@@ -187,7 +187,17 @@ namespace OriCoop.Net
             if (!force && clock.ElapsedMilliseconds < cache.NextRead) return cache;
             cache.NextRead = clock.ElapsedMilliseconds + 100;
             Lobby lobby;
-            try { lobby = ReadLobby(id); }
+            // Unity's Mono implementation of File.Replace can briefly remove the destination. Read under
+            // the same cross-process lock as roster and metadata writers so a busy lobby never appears empty.
+            try
+            {
+                using (var mutex = new Mutex(false, "OriCoop-FakeLobby-" + id.ToString(Invariant)))
+                {
+                    if (!mutex.WaitOne(0, false)) return cache;
+                    try { lobby = ReadLobby(id); }
+                    finally { mutex.ReleaseMutex(); }
+                }
+            }
             catch (IOException) { return cache; }
             var before = cache.Visible;
             var visible = new List<ulong>();
@@ -357,12 +367,44 @@ namespace OriCoop.Net
                 ulong id;
                 if (!ulong.TryParse(Path.GetFileNameWithoutExtension(file).Substring("lobby-".Length), NumberStyles.None, Invariant, out id)) continue;
                 Lobby lobby = GetLobby(id).Snapshot;
-                if (lobby == null || lobby.Owner == LocalId || !lobby.Invited) continue;
+                if (lobby == null || lobby.Owner == LocalId || (!lobby.Invited && !lobby.Data.ContainsKey("invite." + LocalId))) continue;
                 invited = true;
                 JoinRequested(id, lobby.Owner);
                 return;
             }
         }
+
+        public ulong[] FriendIds()
+        {
+            var ids = new List<ulong>();
+            foreach (string file in Directory.GetFiles(dir, "peer-*.txt"))
+            {
+                ulong id;
+                if (ulong.TryParse(Path.GetFileNameWithoutExtension(file).Substring(5), out id) && id != LocalId) ids.Add(id);
+            }
+            return ids.ToArray();
+        }
+
+        public ulong FriendLobby(ulong friend)
+        {
+            foreach (string file in Directory.GetFiles(dir, "lobby-*.txt"))
+            {
+                ulong lobby;
+                if (ulong.TryParse(Path.GetFileNameWithoutExtension(file).Substring(6), out lobby) && GetLobby(lobby).Visible.Contains(friend)) return lobby;
+            }
+            return 0;
+        }
+        public void RequestDetails(ulong lobby) { GetLobby(lobby); }
+        public int MemberLimit(ulong lobby) { Lobby value = GetLobby(lobby).Snapshot; return value == null ? 0 : value.Limit; }
+        public bool Invite(ulong lobby, ulong friend)
+        {
+            return EditLobby(lobby, delegate(Lobby value) {
+                if (value == null || value.Owner != LocalId || !File.Exists(PeerPath(friend))) return false;
+                value.Data["invite." + friend] = "1"; return true;
+            });
+        }
+        public string MemberState(ulong lobby, ulong user) { return GetLobbyData(lobby, "stage." + user); }
+        public void SetMemberState(ulong lobby, string state) { SetLobbyData(lobby, "stage." + LocalId, state); }
 
         public bool AllowP2PPacketRelay(bool allow) { return true; }
 

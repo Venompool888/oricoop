@@ -387,6 +387,19 @@ namespace OriCoop
             try { return s.PlatformBehaviour.PlatformMovement.IsOnGround; } catch (Exception) { return false; }
         }
 
+        // The Ginso portals enumerate visitors independently of their colliders and suspension.
+        // Teleporting a pinned Ori hides it and then puts it right back into the same portal.
+        [HarmonyPatch(typeof(Portal), "PerformPortalTeleportation")]
+        static class DownedPortal
+        {
+            static bool Prefix(IPortalVisitor portalVisitor)
+            {
+                if (!AnyDowned) return true;
+                PlatformMovementPortalVisitor visitor = portalVisitor as PlatformMovementPortalVisitor;
+                return visitor == null || !IsDowned(visitor.GetComponentInParent<SeinCharacter>());
+            }
+        }
+
         static void KeepPinned(Downed d)
         {
             SeinCharacter s = d.Sein;

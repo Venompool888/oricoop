@@ -1,6 +1,7 @@
 # Two to four isolated Ori clients; none uses the owner's real LOCALAPPDATA save location.
 # -Clients 3|4: processes start together; only the LAST guest connects after LateJoinSec (default 20) and after the host settled the save lineage (T-129 marker file).
 # -CServer: all games share one room on the remote test C-server instead of direct UDP (LAN host mode).
+# -Steam: use a private fake Steam lobby and one fake account per client, through the normal Steam transport.
 #   Works with -Clients 2..4. See src\test-servers\README.md for configuration.
 # -TimeoutSec: whole run (default HarnessSec + 120). -HarnessSec: the in-game suite limit (ORICOOP_HARNESS_SEC, default 1500; the
 #   harness needed ~360 s at HEAD 2026-11-16 and phase WO adds ~120 s, more under load; main reached ~655 s on 2026-11-18 and T-059's local-player checks need more; TestHarness defaults to 420).
@@ -11,8 +12,9 @@
 #   the prologue, load the host's save from the title and join the host (GuestJoin.cs; "W empty slot" checks).
 # -GuestNoSlot: same empty guest, but it never picks a slot (title 加入 path): GuestJoin.BeginNoSlot once connected.
 param([int]$TimeoutSec = 0, [int]$HarnessSec = 1500, [string]$Sim = '', [switch]$Force, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
-    [switch]$LocalPlayers, [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0, [switch]$SaveHandover)
+    [switch]$LocalPlayers, [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0, [switch]$SaveHandover, [switch]$Steam)
 $script:ExtraEnv = @{}
+if ($CServer -and $Steam) { throw 'Choose either -CServer or -Steam.' }
 if ($TimeoutSec -le 0) { $TimeoutSec = $HarnessSec + 120 }   # the watchdog stays behind the in-game limit, which writes the result file
 if ($LocalPlayers) {
     if ($Clients -eq 4) { throw 'LocalPlayers requires 2 or 3 devices (four seats maximum).' }
@@ -53,7 +55,11 @@ foreach ($resultPath in $results) {
 # (same as run-test.ps1), so positions and world state do not drift between runs.
 $pristine = 'C:\OriCoop\save-backup\20261114-150138'
 $appDataDirs = @($TL_AppData[0], $TL_AppData[1])
-if ($Clients -ge 3 -and -not $CServer) { $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'direct' }
+if ($Steam) {
+    $fakeDir = Join-Path $testDir ('fake-steam-net-' + [guid]::NewGuid().ToString('N'))
+    $script:ExtraEnv['ORICOOP_FAKE_STEAM_DIR'] = $fakeDir
+    $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'steam'
+} elseif ($Clients -ge 3 -and -not $CServer) { $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'direct' }
 for ($i = 2; $i -lt $Clients; $i++) {
     # Players 3 and 4 get their settings from player 2's folder the first time (saves come from the backup below).
     $saves = Join-Path $TL_AppData[$i] 'Ori and the Blind Forest DE'
@@ -93,6 +99,10 @@ function Net-Spec([string]$role, [string]$appData, [string]$resultPath, [string]
         ORICOOP_NET_ADDR = '127.0.0.1'; ORICOOP_NET_PORT = [string](47011 + $TL_PortOffset); ORICOOP_NET_SIM = $Sim
         ORICOOP_NET_CLIENTS = [string]$Clients; ORICOOP_NET_CONNECT_AT = [string]$connectAt; ORICOOP_HARNESS_SEC = [string]$HarnessSec }
     foreach ($k in $script:ExtraEnv.Keys) { $v[$k] = $script:ExtraEnv[$k] }
+    if ($Steam) {
+        $v['ORICOOP_FAKE_STEAM_ID'] = [string](1001 + [array]::IndexOf($appDataDirs, $appData))
+        $v['ORICOOP_FAKE_STEAM_AUTOINVITE'] = if ($role -eq 'join') { '1' } else { '0' }
+    }
     if ($GuestNewGame -and $role -eq 'join') { $v['ORICOOP_NEWGAME'] = '1' }
     if ($GuestNoSlot -and $role -eq 'join') { $v['ORICOOP_NEWGAME'] = 'noslot' }
     Add-Content -LiteralPath $launchLog -Value ('SPEC ' + [DateTime]::UtcNow.ToString('o') + ' tag=' + $tag + ' role=' + $role + ' appdata=' + $appData + ' result=' + $resultPath + ' connectAtTicks=' + $connectAt + ' bepinex=' + (Join-Path $TL_RuntimeDir ($tag + '\BepInEx')))
@@ -188,6 +198,11 @@ try {
         Add-Content -LiteralPath $launchLog -Value ('EXIT ' + [DateTime]::UtcNow.ToString('o') + ' pid=' + $client.Id + ' exitCode=' + $client.ExitCode)
     }
     Complete-TestRun   # kills only this run's PIDs and unlinks the client junctions
+    if ($Steam -and (Test-Path -LiteralPath $fakeDir)) {
+        $parent = Split-Path -Parent ([IO.Path]::GetFullPath($fakeDir))
+        if ($parent -ne [IO.Path]::GetFullPath($testDir)) { throw 'Fake Steam folder outside this test run.' }
+        Remove-Item -LiteralPath $fakeDir -Recurse -Force
+    }
 }
 $passed = $true
 foreach ($resultPath in $results) {

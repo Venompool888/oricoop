@@ -12,7 +12,7 @@ using UnityEngine;
 namespace OriCoop
 {
     // 50 Start, 51 End, 52 Skip. Object identity never depends on Unity instance IDs.
-    public static class StorySync
+    public static partial class StorySync
     {
         const byte StartMessage = 50, EndMessage = 51, SkipMessage = 52;
         const byte ContinuationMessage = 101;
@@ -395,6 +395,7 @@ namespace OriCoop
             CutsceneGuard.Init();
             ForcedSync.Init();
             CutsceneAnimSync.Init();
+            InitControls();
             Services.Net.On(StartMessage, ReceiveStart);
             Services.Net.On(EndMessage, ReceiveEnd);
             Services.Net.On(SkipMessage, ReceiveSkip);
@@ -406,6 +407,7 @@ namespace OriCoop
         }
         public static void Reset()
         {
+            ResetControls();
             CleanupNative();
             RestoreVisible(); Seen.Clear(); Performed.Clear(); Local.Clear(); Remote.Clear(); Accepted.Clear(); Mirrored.Clear(); Starting.Clear();
             StoryTexts.Clear(); ForgetInputLocks();
@@ -1046,6 +1048,7 @@ namespace OriCoop
         {
             ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r)); Story story;
             if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story)) return;
+            if (HostControlsEnabled && skipControl != null && CurrentSkip(skipControl) && Belongs(skipControl, story)) return;
             StoryHost.Current.Rebroadcast(r);
             if (!Remote.ContainsKey(token) || PlayingLocally(story)) return;
             Ledger.Skip(story); if (story.Resolved && !story.Watch) SkipRemote(story);
@@ -1077,6 +1080,7 @@ namespace OriCoop
                     + " mirrored=" + StartsMirrored + " cachedIds=" + Classification.Count + " watching=" + Watching);
             }
             if (!Online) { if (StoryActive) Reset(); return; }
+            TickControls();
             float now = Time.realtimeSinceStartup; bool locked = NativeLocked();
             List<ulong> expiredAccepted = new List<ulong>();
             foreach (KeyValuePair<ulong, Story> pair in Accepted) if (now - pair.Value.Began >= 60f) expiredAccepted.Add(pair.Key);
@@ -1338,12 +1342,13 @@ namespace OriCoop
                 if (!Online || PuppetCall || !__instance.IsPerforming) return;
                 StoryTexts[__instance] = s_native != null && (s_mirroring || s_replayActionDepth > 0);
                 if (StoryTexts[__instance]) RecordMirrorOwner(__instance);
+                WatchBox(__instance);
             }
         }
         [HarmonyPatch(typeof(ShowStoryTextAction), "OnMessageScreenHide")]
         static class StoryTextEnded
         {
-            static void Prefix(ShowStoryTextAction __instance) { StoryTexts.Remove(__instance); }
+            static void Prefix(ShowStoryTextAction __instance) { CloseBox(__instance); StoryTexts.Remove(__instance); }
         }
         // Inspect accepted, newest owner frames. Puppet movement and interpolated/missing frames
         // cannot prove that the partner has regained control; the neutral flag (4) comes from its owner.
@@ -1520,16 +1525,19 @@ namespace OriCoop
         [HarmonyPatch(typeof(SkipCutsceneController), "SkipCutscene")]
         static class Skip
         {
-            static void Prefix()
+            static bool Prefix()
             {
+                bool allowed;
+                if (ControlledSkip(out allowed)) return allowed;
                 if (!Online || s_mirroring || PuppetCall
-                    || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return;
+                    || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return true;
                 foreach (Story story in Local.Values)
                 {
                     if (LocalOnlyStory(story)) continue;
                     uint token = story.Token;
                     Services.Net.Send(SkipMessage, true, delegate(BinaryWriter w) { StoryWire.WriteToken(w, token); });
                 }
+                return true;
             }
         }
     }

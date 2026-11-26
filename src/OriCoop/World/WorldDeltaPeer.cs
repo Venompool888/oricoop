@@ -32,7 +32,14 @@ namespace OriCoop.World
         // Objects the snapshot on its way has replaced so far (SnapshotObject): my pending batches are shown on top there.
         readonly HashSet<string> m_snapshotObjects = new HashSet<string>();
         readonly List<CommittedEvent> m_held = new List<CommittedEvent>();
+        // Batches this PC received before the host's snapshot start can be newer than its end watermark.
+        // Keep wire bytes only, bounded by both count and size; a larger gap requests a fresh snapshot.
+        const int MaxHistoryBytes = 1024 * 1024, MaxHistoryBatches = 256;
+        readonly Queue<CommittedEvent> m_history = new Queue<CommittedEvent>();
+        int m_historyBytes;
+        uint m_historyFloor;
         uint m_nextBatch, m_applied;
+        uint m_reportLimit = uint.MaxValue;
         // Newest batch id dropped from a full held queue while a snapshot was on its way (0 = none). The snapshot already
         // holds every batch up to its watermark, so only a dropped batch newer than that needs another full resync.
         uint m_droppedHeld;
@@ -43,6 +50,8 @@ namespace OriCoop.World
 
         // Newest committed batch id applied here (sent in the snapshot end marker).
         public uint Watermark { get { return m_applied; } }
+        // A missing local aggregate cannot be promised to a fresh joiner's future snapshot.
+        public uint CoveredWatermark { get { return Math.Min(m_applied, m_reportLimit); } }
         public bool InSnapshot { get { return m_snapshot; } }
         public int HeldCount { get { return m_held.Count; } }
 
@@ -54,8 +63,24 @@ namespace OriCoop.World
         }
         static string Key(byte[] scene, byte[] id) { return Hex(scene) + ":" + Hex(id); }
 
+        byte[] m_lastMapBytes;
+        SortedDictionary<string, byte[]> m_lastMapItems;
+
+        SortedDictionary<string, byte[]> Items(byte schema, byte[] bytes)
+        {
+            if (schema != WorldItems.SchemaMap) return WorldItems.Decompose(schema, bytes);
+            if (m_lastMapItems == null || !DeltaObject.Same(bytes, m_lastMapBytes))
+            {
+                m_lastMapItems = WorldItems.Decompose(schema, bytes);
+                m_lastMapBytes = (byte[])bytes.Clone();
+            }
+            return m_lastMapItems;
+        }
+
         public void Reset()
         {
+            m_lastMapBytes = null; m_lastMapItems = null;
+            m_history.Clear(); m_historyBytes = 0; m_historyFloor = 0; m_reportLimit = uint.MaxValue; m_snapshotObjects.Clear();
             m_objects.Clear(); m_held.Clear(); m_nextBatch = 0; m_applied = 0; m_droppedHeld = 0; m_snapshot = false;
         }
 
@@ -65,7 +90,7 @@ namespace OriCoop.World
             if (!m_objects.TryGetValue(key, out o))
             {
                 // First sight with no snapshot: what this PC has now is its best guess of the agreed state.
-                o = new DeltaObject(WorldItems.Decompose(schema, currentBytes)); m_objects[key] = o;
+                o = new DeltaObject(Items(schema, currentBytes)); m_objects[key] = o;
             }
             return o;
         }
@@ -84,7 +109,7 @@ namespace OriCoop.World
             IAuthority authority = m_authority();
             if (authority == null || authority.Mode == AuthorityMode.None) return 0;
             DeltaObject o = Object(scene, id, schema, previous ?? bytes);
-            List<ItemOp> ops = o.LocalChanges(WorldItems.Decompose(schema, bytes));
+            List<ItemOp> ops = o.LocalChanges(Items(schema, bytes));
             if (ops.Count == 0) return 0;
             int sent = 0;
             foreach (List<ItemOp> part in DeltaBatch.Split(ops, Encoding.UTF8.GetByteCount(type)))
@@ -116,6 +141,9 @@ namespace OriCoop.World
                 }
                 return;
             }
+            // Readiness can change between two commits before the next gameplay tick.
+            // A newer live batch must not advance the cursor ahead of the older held batches.
+            Flush();
             Apply(e);
         }
 
@@ -127,18 +155,38 @@ namespace OriCoop.World
             foreach (CommittedEvent e in held) Apply(e);
         }
 
-        void Apply(CommittedEvent e)
+        void Apply(CommittedEvent e, bool replay = false)
         {
             DeltaBatch batch;
             try { batch = DeltaBatch.Decode(e.Data); }
             catch (Exception) { BadBatches++; return; }
-            if (e.Id > m_applied) m_applied = e.Id;
+            if (replay)
+            {
+                if (!m_snapshotObjects.Contains(Key(batch.Scene, batch.Object))) return;
+            }
+            else
+            {
+                if (e.Id <= m_applied) return;
+                m_applied = e.Id;
+                m_history.Enqueue(e);
+                m_historyBytes += e.Data.Length;
+                while (m_history.Count > MaxHistoryBatches || m_historyBytes > MaxHistoryBytes)
+                {
+                    CommittedEvent oldest = m_history.Dequeue();
+                    m_historyFloor = Math.Max(m_historyFloor, oldest.Id);
+                    m_historyBytes -= oldest.Data.Length;
+                }
+            }
             byte[] current;
-            if (!m_game.TryRead(batch.Scene, batch.Object, out current)) return;
+            if (!m_game.TryRead(batch.Scene, batch.Object, out current))
+            {
+                if (e.Id > 0) m_reportLimit = Math.Min(m_reportLimit, e.Id - 1);
+                return;
+            }
             DeltaObject o = Object(batch.Scene, batch.Object, batch.Schema, current);
             IAuthority authority = m_authority();
             bool mine = authority != null && e.From == authority.LocalSeat && o.IsPending(batch.Id);
-            SortedDictionary<string, byte[]> visible = o.OnCommitted(mine, batch.Id, batch.Ops, WorldItems.Decompose(batch.Schema, current));
+            SortedDictionary<string, byte[]> visible = o.OnCommitted(mine, batch.Id, batch.Ops, Items(batch.Schema, current));
             BatchesApplied++;
             if (visible != null) m_game.Write(batch.Scene, batch.Object, batch.Schema, batch.Type, WorldItems.Compose(batch.Schema, current, visible));
         }
@@ -149,10 +197,10 @@ namespace OriCoop.World
         // A snapshot blob of an aggregate object arrived: returns the bytes to show (snapshot + my pending batches).
         public byte[] SnapshotObject(byte[] scene, byte[] id, byte schema, byte[] bytes)
         {
-            SortedDictionary<string, byte[]> snapshot = WorldItems.Decompose(schema, bytes);
+            SortedDictionary<string, byte[]> snapshot = Items(schema, bytes);
             // T-214: the map as this PC has it now; what it explored and has not proposed yet stays (DeltaObject.Reset).
             IDictionary<string, byte[]> current = null; byte[] live;
-            if (WorldItems.HasGrowing(schema) && m_game.TryRead(scene, id, out live) && live != null) current = WorldItems.Decompose(schema, live);
+            if (WorldItems.HasGrowing(schema) && m_game.TryRead(scene, id, out live) && live != null) current = Items(schema, live);
             DeltaObject o;
             m_snapshotObjects.Add(Key(scene, id));
             if (!m_objects.TryGetValue(Key(scene, id), out o))
@@ -176,10 +224,17 @@ namespace OriCoop.World
             m_snapshot = false;
             uint dropped = m_droppedHeld; m_droppedHeld = 0;
             CommittedEvent[] held = m_held.ToArray(); m_held.Clear();
+            bool missingHistory = watermark < m_historyFloor;
+            // The host uses MaxValue at startup to discard batches superseded by its loaded save.
+            if (watermark != uint.MaxValue)
+            {
+                m_applied = Math.Max(m_applied, watermark);
+                m_historyFloor = Math.Max(m_historyFloor, watermark);
+            }
             IAuthority authority = m_authority();
             foreach (CommittedEvent e in held)
             {
-                if (e.Id > watermark) { Apply(e); continue; }
+                if (e.Id > watermark) continue;
                 if (e.Id > m_applied) m_applied = e.Id;
                 if (authority == null || e.From != authority.LocalSeat) continue;
                 try
@@ -191,12 +246,16 @@ namespace OriCoop.World
                     // later change of the same item: show the agreed value again.
                     byte[] current;
                     if (!m_snapshotObjects.Contains(key) || !m_game.TryRead(batch.Scene, batch.Object, out current)) continue;
-                    SortedDictionary<string, byte[]> visible = o.Superseded(batch.Ops, WorldItems.Decompose(batch.Schema, current));
+                    SortedDictionary<string, byte[]> visible = o.Superseded(batch.Ops, Items(batch.Schema, current));
                     if (visible != null) m_game.Write(batch.Scene, batch.Object, batch.Schema, batch.Type, WorldItems.Compose(batch.Schema, current, visible));
                 }
                 catch (Exception) { BadBatches++; }
             }
-            if (dropped > watermark) m_game.NeedResync("world delta queue overflow");
+            foreach (CommittedEvent e in m_history)
+                if (e.Id > watermark) Apply(e, true);
+            foreach (CommittedEvent e in held)
+                if (e.Id > watermark) Apply(e);
+            if (dropped > watermark || missingHistory) m_game.NeedResync("world snapshot behind retained batches");
         }
     }
 }

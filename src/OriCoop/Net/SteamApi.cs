@@ -70,6 +70,62 @@ namespace OriCoop.Net
         void Pump();
     }
 
+    // Optional on transports used only for protocol tests. Real Steam and the loopback fake implement it.
+    internal interface ISteamFriends
+    {
+        ulong[] FriendIds();
+        ulong FriendLobby(ulong friend);
+        void RequestDetails(ulong lobby);
+        int MemberLimit(ulong lobby);
+        bool Invite(ulong lobby, ulong friend);
+        string MemberState(ulong lobby, ulong user);
+        void SetMemberState(ulong lobby, string state);
+    }
+
+    internal sealed class SteamFriendRow
+    {
+        internal ulong User, Lobby;
+        internal string Name, Reason;
+    }
+
+    internal static class SteamDirectory
+    {
+        internal static SteamFriendRow[] List(ISteamApi api, bool rooms, string version)
+        {
+            var rows = new System.Collections.Generic.List<SteamFriendRow>();
+            var seen = new System.Collections.Generic.HashSet<ulong>();
+            ISteamFriends friends = api as ISteamFriends;
+            if (friends == null || !api.LoggedOn) return rows.ToArray();
+            foreach (ulong user in friends.FriendIds())
+            {
+                if (user == 0 || user == api.LocalId) continue;
+                ulong lobby = rooms ? friends.FriendLobby(user) : 0;
+                string reason = "";
+                if (rooms)
+                {
+                    if (lobby == 0 || !seen.Add(lobby)) continue;
+                    friends.RequestDetails(lobby);
+                    string tag = api.GetLobbyData(lobby, "oricoop");
+                    string build = api.GetLobbyData(lobby, "build");
+                    int used, limit;
+                    if (string.IsNullOrEmpty(tag)) reason = "steam.details";
+                    else if (tag != "1" || (!string.IsNullOrEmpty(build) && build != version)) reason = "server.err.version";
+                    else if (int.TryParse(api.GetLobbyData(lobby, "capacity"), out limit) &&
+                             int.TryParse(api.GetLobbyData(lobby, "occupied"), out used) && limit > 0 && used >= limit)
+                        reason = "lobby.error.full";
+                    else if (friends.MemberLimit(lobby) > 0 && api.GetNumLobbyMembers(lobby) >= friends.MemberLimit(lobby))
+                        reason = "lobby.error.full";
+                }
+                rows.Add(new SteamFriendRow { User = user, Lobby = lobby, Name = api.FriendName(user), Reason = reason });
+            }
+            rows.Sort(delegate(SteamFriendRow a, SteamFriendRow b) {
+                int cmp = string.Compare(a.Name, b.Name, StringComparison.OrdinalIgnoreCase);
+                return cmp != 0 ? cmp : a.User.CompareTo(b.User);
+            });
+            return rows.ToArray();
+        }
+    }
+
     public static class SteamApi
     {
         // Read once: Current and Fake are asked several times per frame, and a kit never sets it.

@@ -452,23 +452,120 @@ namespace OriCoop
             }
         }
 
+        // ActionMethod has an empty write archive; ActionSequence only runs its extra logic on read.
+        // Other overrides, including ActionSequenceSerializer, always go through their actual serializer.
+        static readonly Dictionary<Type, bool> s_emptyActionArchive = new Dictionary<Type, bool>();
+        static bool EmptyActionArchive(ISerializable save)
+        {
+            if (!(save is ActionMethod)) return false;
+            Type type = save.GetType();
+            bool empty;
+            if (!s_emptyActionArchive.TryGetValue(type, out empty))
+            {
+                var serialize = type.GetMethod("Serialize", new Type[] { typeof(Archive) });
+                empty = serialize != null && (serialize.DeclaringType == typeof(ActionMethod) || serialize.DeclaringType == typeof(ActionSequence));
+                s_emptyActionArchive.Add(type, empty);
+            }
+            return empty;
+        }
+
+        // Test the native map against the last exact archive in its normal enumeration order. A change
+        // of area, face, icon, revealed set or objective falls through to the native serializer.
+        static readonly System.Reflection.FieldInfo s_mapStates = AccessTools.Field(typeof(RuntimeGameWorldArea), "m_worldAreaStates");
+        static readonly System.Reflection.FieldInfo s_revealedIcons = AccessTools.Field(typeof(GameWorld), "m_revealedIcons");
+        struct MapArchiveIndex
+        {
+            public byte[] Bytes;
+            public int Offset;
+            public bool Match(int value)
+            {
+                if (Offset + 4 > Bytes.Length || BitConverter.ToInt32(Bytes, Offset) != value) return false;
+                Offset += 4; return true;
+            }
+            public bool Match(MoonGuid id)
+            {
+                return id != null && Match(id.A) && Match(id.B) && Match(id.C) && Match(id.D);
+            }
+        }
+        static bool MapMatches(GameWorld map, byte[] bytes)
+        {
+            if (map.GetType() != typeof(GameWorld) || s_mapStates == null || s_revealedIcons == null) return false;
+            MapArchiveIndex old = new MapArchiveIndex { Bytes = bytes };
+            if (!old.Match(map.Areas.Count)) return false;
+            foreach (RuntimeGameWorldArea area in map.RuntimeAreas)
+            {
+                var states = s_mapStates.GetValue(area) as Dictionary<int, WorldMapAreaState>;
+                if (states == null || !old.Match(states.Count)) return false;
+                foreach (KeyValuePair<int, WorldMapAreaState> cell in states)
+                    if (!old.Match(cell.Key) || !old.Match((int)cell.Value)) return false;
+                if (!old.Match(area.Icons.Count)) return false;
+                foreach (RuntimeWorldMapIcon icon in area.Icons)
+                    if (!old.Match(icon.Guid) || !old.Match((int)icon.Icon)) return false;
+            }
+            var revealed = s_revealedIcons.GetValue(map) as HashSet<MoonGuid>;
+            if (revealed == null || !old.Match(revealed.Count)) return false;
+            foreach (MoonGuid id in revealed) if (!old.Match(id)) return false;
+            return old.Match(map.ObjectiveTextProviders.IndexOf(map.ObjectiveText)) && old.Offset == bytes.Length;
+        }
+
+        static bool SameArchive(MemoryStream stream, byte[] previous)
+        {
+            if (stream.Length != previous.Length) return false;
+            byte[] buffer = stream.GetBuffer();
+            for (int i = 0; i < previous.Length; i++) if (buffer[i] != previous[i]) return false;
+            return true;
+        }
+
         static Blob CaptureRecord(MoonGuid scene, MoonGuid id, ISerializable save)
         {
-            byte[] bytes = CaptureBytes(save);
-            if (bytes.Length > MaxBlob) throw new InvalidDataException("Archive exceeds 4 MB limit");
+            Archive scratch = new Archive();
+            using (scratch.MemoryStream) return CaptureRecord(scene, id, save, scratch, null);
+        }
+
+        internal static bool TestMapCapture()
+        {
+            GameWorld map = GameWorld.Instance;
+            if (map == null) return false;
+            byte[] native = CaptureBytes(map);
+            if (!MapMatches(map, native)) return false;
+            // A changed area count, first area, middle byte (icon/cell) and objective each force a fresh capture.
+            foreach (int position in new int[] { 0, 4, native.Length / 2, native.Length - 1 })
+            {
+                native[position] ^= 1;
+                if (MapMatches(map, native)) return false;
+                native[position] ^= 1;
+            }
+            return true;
+        }
+
+        static Blob CaptureRecord(MoonGuid scene, MoonGuid id, ISerializable save, Archive scratch, Blob old)
+        {
             string type = save.GetType().FullName;
             if (StorySequenceOf(save) != null)
             {
                 s_storyProgress.Remember(Key(scene, id));
                 if (!s_untypedStoryProgress) type = World.StoryProgressKeys.StoryType;
             }
-            return MakeBlob(scene, id, bytes, Describe(save), type);
+            if (old != null && old.Type == type)
+            {
+                if (old.Bytes.Length == 0 && EmptyActionArchive(save)) return old;
+                GameWorld map = save as GameWorld;
+                if (map != null && MapMatches(map, old.Bytes)) return old;
+            }
+            scratch.MemoryStream.SetLength(0);
+            scratch.WriteMode();
+            save.Serialize(scratch);
+            if (scratch.MemoryStream.Length > MaxBlob) throw new InvalidDataException("Archive exceeds 4 MB limit");
+            if (old != null && old.Type == type && SameArchive(scratch.MemoryStream, old.Bytes)) return old;
+            return MakeBlob(scene, id, scratch.MemoryStream.ToArray(), Describe(save), type);
         }
 
         static List<Blob> Capture(bool full)
         {
             List<Blob> changed = new List<Blob>();
             s_mirrorKeys.Clear();
+            Archive scratch = new Archive();
+            using (scratch.MemoryStream)
             Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
                 SaveSceneManager.SaveId[] entries = manager.SaveData.ToArray();
                 foreach (SaveSceneManager.SaveId entry in entries)
@@ -488,9 +585,10 @@ namespace OriCoop
                     if (StorySync.MirrorOwns(save as Component)) s_mirrorKeys.Add(key);
                     try
                     {
-                        Blob blob = CaptureRecord(scene, entry.Id, save);
                         Blob old;
                         bool seen = s_blobs.TryGetValue(key, out old);
+                        Blob blob = CaptureRecord(scene, entry.Id, save, scratch, old);
+                        if (object.ReferenceEquals(old, blob)) continue;
                         if (seen && old.Hash != blob.Hash)
                             s_changed[key] = Time.realtimeSinceStartup;
                         else if (!seen) ObserveAggregate(blob);
@@ -726,6 +824,19 @@ namespace OriCoop
             s_changed[key] = Time.realtimeSinceStartup;
         }
 
+        static void ApplyOrDeferLive(MoonGuid scene, MoonGuid id, byte[] bytes, Meaning schema, string type, string key, ISerializable live)
+        {
+            if (live != null && !s_bad.Contains(key) && (!NetPlay.LocalInGameplay() || TestDeferApply))
+            {
+                s_deferred[key] = MakeBlob(scene, id, bytes, schema, type);
+                return;
+            }
+            // An immediate update supersedes a pending one. If the object unloaded, it will
+            // read the already-updated checkpoint when its scene comes back.
+            s_deferred.Remove(key);
+            if (live != null && !s_bad.Contains(key)) ApplyLive(scene, id, bytes);
+        }
+
         static void Apply(MoonGuid scene, MoonGuid id, byte[] bytes, Meaning schema, string type)
         {
             // Rigidbody poses travel through the lease owner. A general world snapshot cannot supersede them.
@@ -795,11 +906,7 @@ namespace OriCoop
             else if (s_storyProgress.StoreInCheckpoint(key, live != null, StorySequenceOf(live) != null,
                 schema == Meaning.Raw && type == World.StoryProgressKeys.StoryType)) StoreCheckpoint(scene, id, bytes);
             else { StoryProgressNotStored++; CoopTrace.Event("story", "sequence.progress.not-stored", "key", key); }
-            if (live != null && !s_bad.Contains(key) && NetPlay.LocalInGameplay() && !TestDeferApply) ApplyLive(scene, id, bytes);
-            else if (live != null && !s_bad.Contains(key))
-            {
-                s_deferred[key] = MakeBlob(scene, id, bytes, schema, type);
-            }
+            ApplyOrDeferLive(scene, id, bytes, schema, type, key, live);
             ulong incoming = CanonicalHash(schema, bytes);
             if (!s_bad.Contains(key)) s_blobs[key] = MakeBlob(scene, id, bytes, schema, type);
             else s_blobs.Remove(key);
@@ -1289,6 +1396,7 @@ namespace OriCoop
         public static void SendDigest()
         {
             if (!NetPlay.Connected || !SaveSync.Ready || !ProgressSync.Ready || !NetPlay.LocalInGameplay() || s_awaitSnapshot) return;
+            ReportAppliedWorld();
             int count; ulong hash = Digest(out count), progress = ProgressSync.Hash();
             uint sequence = ++s_digestSequence;
             NetPlay.Send(MsgDigest, true, delegate(BinaryWriter w) { w.Write(sequence); w.Write(count); w.Write(hash); w.Write(progress); });

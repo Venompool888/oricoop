@@ -102,9 +102,9 @@ namespace OriCoop
         {
             if (Plugin.Instance == null) return null;
             if (host && s_lastHostMethod == null)
-                s_lastHostMethod = Plugin.Instance.Config.Bind("Start", "LastHostMethod", "", "Title 多人游玩 -> 创建房间: the connection method chosen last time (steam / cserver / direct); the cursor starts there.");
+                s_lastHostMethod = Plugin.Instance.Config.Bind("Start", "LastHostMethod", "", "Title Co-op -> Host a Game: the connection method chosen last time (steam / cserver / direct); the cursor starts there.");
             if (!host && s_lastJoinMethod == null)
-                s_lastJoinMethod = Plugin.Instance.Config.Bind("Start", "LastJoinMethod", "", "Title 多人游玩 -> 加入房间: the connection method chosen last time (steam / cserver / direct); the cursor starts there.");
+                s_lastJoinMethod = Plugin.Instance.Config.Bind("Start", "LastJoinMethod", "", "Title Co-op -> Join a Game: the connection method chosen last time (steam / cserver / direct); the cursor starts there.");
             return host ? s_lastHostMethod : s_lastJoinMethod;
         }
 
@@ -1138,12 +1138,12 @@ namespace OriCoop
         // the cursor on the row that was pressed; the method pressed last is where the cursor starts next time.
         static IEnumerator FlowChecks(Action<bool, string> check, Action<string> note, int slot)
         {
-            note("--- title menu: 多人游玩 -> 创建房间 / 加入房间 -> connection method");
+            note("--- title menu: Co-op -> Host a Game / Join a Game -> connection method");
             yield return s_tHost.StartCoroutine(PressCoop());
             if (!TitleOrbOpen) { check(false, "title menu: Co-op page opens (redesign)"); yield break; }
             check(LastPage == "coop" && LastLabels.Count == 4 && HasKey(LastLabels.GetRange(0, 1), "title.local") && HasKey(LastLabels.GetRange(1, 1), "title.coop.host")
                 && HasKey(LastLabels.GetRange(2, 1), "title.coop.join") && HasKey(LastLabels.GetRange(3, 1), "server.title"),
-                "title menu: 多人游玩 lists 本地同屏 / 创建房间 / 加入房间 / 自建服务器 (" + Labels + ")");
+                "title menu: Co-op lists Local Co-op / Host a Game / Join a Game / Custom Server (" + Labels + ")");
             bool first = true;
             foreach (string tr in new[] { Ui.CoopMenuFlow.Steam, Ui.CoopMenuFlow.Lan })
             {
@@ -1156,14 +1156,14 @@ namespace OriCoop
                 first = false;
                 check(TitleOrbOpen && LastPage == "joinmethod" && LastLabels.Count == 3 && HasKey(LastLabels.GetRange(0, 1), "title.method.steam.join")
                     && HasKey(LastLabels.GetRange(1, 1), "title.method.code") && HasKey(LastLabels.GetRange(2, 1), "title.method.lan.join") && !SlotsReady,
-                    "title menu: 加入房间 lists Steam 邀请 / 房间码 / 局域网, no save slot (" + Labels + ")");
-                check(s_mgr.Index == Ui.CoopMenuFlow.RowOf(LastMethod(false)), "title menu: 加入房间 starts on the method used last (" + s_mgr.Index + ", last '" + LastMethod(false) + "')");
+                    "title menu: Join a Game lists Steam Invite / Room Code / LAN, no save slot (" + Labels + ")");
+                check(s_mgr.Index == Ui.CoopMenuFlow.RowOf(LastMethod(false)), "title menu: Join a Game starts on the method used last (" + s_mgr.Index + ", last '" + LastMethod(false) + "')");
                 TShot("title_join_methods");
                 yield return s_tHost.StartCoroutine(TWait(0.5f));
                 yield return s_tHost.StartCoroutine(Row(Ui.CoopMenuFlow.RowOf(tr), 1.2f));
                 bool joinPage = tr == "steam" ? LastPage == "joining" && OnSteamJoinPage : LastPage == "entry" && IpMode;
-                check(TitleOrbOpen && joinPage && !SlotsReady, "title menu: 加入房间 -> " + tr + " opens its join page on the title, no save slot (" + Labels + ")");
-                check(LastMethod(false) == tr, "title menu: 加入房间 remembers " + tr + " (" + LastMethod(false) + ")");
+                check(TitleOrbOpen && joinPage && !SlotsReady, "title menu: Join a Game -> " + tr + " opens its join page on the title, no save slot (" + Labels + ")");
+                check(LastMethod(false) == tr, "title menu: Join a Game remembers " + tr + " (" + LastMethod(false) + ")");
                 if (tr != "steam")
                 {
                     s_mgr.SetCurrentItem(LastLabels.Count - 1);   // Connect row: its description
@@ -1175,25 +1175,25 @@ namespace OriCoop
                 yield return s_tHost.StartCoroutine(TWait(0.5f));
                 yield return s_tHost.StartCoroutine(Back(1f));
                 check(TitleOrbOpen && LastPage == "joinmethod" && s_mgr.Index == Ui.CoopMenuFlow.RowOf(tr) && !NetPlay.Enabled,
-                    "title menu: Back on the " + tr + " join page returns to 加入房间, cursor on " + tr + " (" + Labels + " @" + s_mgr.Index + ", net=" + NetPlay.CurrentPhase + ")");
+                    "title menu: Back on the " + tr + " join page returns to Join a Game, cursor on " + tr + " (" + Labels + " @" + s_mgr.Index + ", net=" + NetPlay.CurrentPhase + ")");
                 yield return s_tHost.StartCoroutine(Back(1f));
-                check(TitleOrbOpen && LastPage == "coop" && s_mgr.Index == Ui.CoopMenuFlow.RowJoin, "title menu: Back on 加入房间 returns to 多人游玩, cursor on 加入房间 (" + Labels + " @" + s_mgr.Index + ")");
+                check(TitleOrbOpen && LastPage == "coop" && s_mgr.Index == Ui.CoopMenuFlow.RowJoin, "title menu: Back on Join a Game returns to Co-op, cursor on Join a Game (" + Labels + " @" + s_mgr.Index + ")");
 
                 // 创建房间 -> the method -> the save slots -> the slot orb on the host page.
                 yield return s_tHost.StartCoroutine(Row(Ui.CoopMenuFlow.RowHost, 1f));
                 check(TitleOrbOpen && LastPage == "hostmethod" && LastLabels.Count == 3 && HasKey(LastLabels.GetRange(0, 1), "title.method.steam")
                     && HasKey(LastLabels.GetRange(1, 1), "title.method.code") && HasKey(LastLabels.GetRange(2, 1), "title.method.lan") && !SlotsReady,
-                    "title menu: 创建房间 lists Steam 好友 / 房间码 / 局域网 before any save slot (" + Labels + ")");
+                    "title menu: Host a Game lists Steam Friends / Room Code / LAN before any save slot (" + Labels + ")");
                 TShot("title_host_methods");
                 yield return s_tHost.StartCoroutine(TWait(0.3f));
                 yield return s_tHost.StartCoroutine(Back(1f));
-                check(TitleOrbOpen && LastPage == "coop" && s_mgr.Index == Ui.CoopMenuFlow.RowHost, "title menu: Back on 创建房间 returns to 多人游玩, cursor on 创建房间 (" + Labels + " @" + s_mgr.Index + ")");
+                check(TitleOrbOpen && LastPage == "coop" && s_mgr.Index == Ui.CoopMenuFlow.RowHost, "title menu: Back on Host a Game returns to Co-op, cursor on Host a Game (" + Labels + " @" + s_mgr.Index + ")");
                 yield return s_tHost.StartCoroutine(Row(Ui.CoopMenuFlow.RowHost, 1f));
                 yield return s_tHost.StartCoroutine(Row(Ui.CoopMenuFlow.RowOf(tr), 0.2f));
                 yield return s_tHost.StartCoroutine(WaitFor(() => SlotsReady, 6f));
                 yield return s_tHost.StartCoroutine(TWait(0.6f));
                 check(SlotsReady && TitleChoice == TitleOnline && TitleTransport == tr && SlotPickPlan == "host:" + tr && LastMethod(true) == tr,
-                    "title menu: 创建房间 -> " + tr + " -> save slots (" + SlotPickPlan + ", remembered '" + LastMethod(true) + "')");
+                    "title menu: Host a Game -> " + tr + " -> save slots (" + SlotPickPlan + ", remembered '" + LastMethod(true) + "')");
                 SaveSlotsUI ui = SaveSlotsUI.Instance;
                 if (ui == null || !SlotsReady) yield break;
                 ui.SetCurrentItem(slot);
@@ -1222,22 +1222,22 @@ namespace OriCoop
             if (pick == Ui.CoopMenuFlow.ServerPick.None)
             {
                 check(TitleOrbOpen && LastPage == "servermanage" && s_mgr.Index == 0 && LastTooltip.Contains(L10n.T("title.code.noserver")),
-                    "title menu: 房间码 without a server opens 服务器管理 on 添加服务器 with a note (" + Labels + ", " + LastTooltip + ")");
+                    "title menu: Room Code without a server opens Server Management on Add Server with a note (" + Labels + ", " + LastTooltip + ")");
                 yield return s_tHost.StartCoroutine(Back(1f));
                 yield return s_tHost.StartCoroutine(Back(1f));
             }
             else
             {
                 check(TitleOrbOpen && LastPage == "entry" && s_entryKind == 0 && s_transport == "cserver" && OriCoop.Authority.CServerConfig.Address == address,
-                    "title menu: 加入房间 -> 房间码 opens the code dial on " + address + " (" + Labels + ")");
+                    "title menu: Join a Game -> Room Code opens the code dial on " + address + " (" + Labels + ")");
                 yield return s_tHost.StartCoroutine(Back(1f));
                 check(TitleOrbOpen && LastPage == "joinmethod" && s_mgr.Index == Ui.CoopMenuFlow.RowOf(Ui.CoopMenuFlow.Code),
-                    "title menu: Back on the room-code page returns to 加入房间 (" + Labels + " @" + s_mgr.Index + ")");
+                    "title menu: Back on the room-code page returns to Join a Game (" + Labels + " @" + s_mgr.Index + ")");
                 yield return s_tHost.StartCoroutine(Back(1f));
             }
-            check(TitleOrbOpen && LastPage == "coop", "title menu: back on 多人游玩 after the room-code checks (" + Labels + ")");
+            check(TitleOrbOpen && LastPage == "coop", "title menu: back on Co-op after the room-code checks (" + Labels + ")");
             yield return s_tHost.StartCoroutine(Back(1f));
-            check(!IsOpen && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, "title menu: Back on 多人游玩 returns to the title items (redesign)");
+            check(!IsOpen && TitleScreenManager.CurrentScreen == TitleScreenManager.Screen.MainMenu, "title menu: Back on Co-op returns to the title items (redesign)");
             yield return s_tHost.StartCoroutine(TWait(0.5f));
         }
 

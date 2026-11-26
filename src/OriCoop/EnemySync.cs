@@ -1545,9 +1545,10 @@ namespace OriCoop
             }
             float dt = Mathf.Max(0, Now - s_tokenTime); s_tokenTime = Now; s_tokens = Mathf.Min(Budget / 4f, s_tokens + dt * Budget);
             List<Actor> candidates = s_candidates; candidates.Clear();   // one list for every frame
+            bool traceStates = CoopTrace.On("enemy", CoopTrace.Samples);
             foreach (Actor a in s_actors.Values)
             {
-                if (a.Entity != null && Now >= a.NextTrace && (Vector3.Distance(a.Entity.Position, Local.Position) <= 30f
+                if (traceStates && a.Entity != null && Now >= a.NextTrace && (Vector3.Distance(a.Entity.Position, Local.Position) <= 30f
                     || RemoteDistance(a.Entity.Position) <= 30f))
                 {
                     a.NextTrace = Now + 1f;

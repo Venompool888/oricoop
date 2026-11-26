@@ -57,6 +57,18 @@ static partial class StoryTests
             Equal(true, first.TryGet("host", out t)); Equal(a, t);      // the old record is not changed
             Equal(false, second.TryGet("g3", out t)); Equal(false, second.TryGet(null, out t));
         });
+        Check("full skill records remain readable when a new player joins", delegate {
+            SkillRecord old = new SkillRecord();
+            for (int i = 0; i < SkillRecord.MaximumPlayers; i++) old.Set("past-" + i, a);
+            Dictionary<string, ulong> present = new Dictionary<string, ulong>();
+            present["new"] = b; present["past-0"] = c;
+            SkillRecord record = SkillRecord.FromBytes(old.Checkpoint(present).ToBytes());
+            Equal(SkillRecord.MaximumPlayers, record.Count);
+            ulong t;
+            Equal(true, record.TryGet("new", out t)); Equal(b, t);
+            Equal(true, record.TryGet("past-0", out t)); Equal(c, t);
+            Equal(true, old.TryGet("past-0", out t)); Equal(a, t);
+        });
         Check("seat skills: guest hold without a record (T-142 absent seat; T-047 join)", delegate {
             ulong hold;
             Equal(true, SkillRestore.GuestHold(false, 0, true, c | d, out hold)); Equal(c | d, hold);
@@ -73,6 +85,18 @@ static partial class StoryTests
             bool threw = false;
             try { SkillRecord.FromBytes(m.ToArray()); } catch (InvalidDataException) { threw = true; }
             Equal(true, threw);
+        });
+        Check("seat skills: legacy saves over the wire limit retain their first 64 sorted entries", delegate {
+            MemoryStream stream = new MemoryStream(); BinaryWriter writer = new BinaryWriter(stream);
+            writer.Write((ushort)65);
+            for (int i = 0; i < 65; i++) { writer.Write("past-" + i.ToString("D2")); writer.Write((ulong)i); }
+            writer.Flush();
+            SkillRecord record = SkillRecord.FromBytes(stream.ToArray());
+            ulong skills; Equal(64, record.Count); Equal(true, record.TryGet("past-63", out skills)); Equal(63UL, skills);
+            stream.Position = 0;
+            bool refused = false;
+            try { SkillRecord.Read(new BinaryReader(stream)); } catch (InvalidDataException) { refused = true; }
+            Equal(true, refused);
         });
         Check("seat skills: the stripped save is byte-identical to what the game wrote; no trailer or a broken one is left alone", delegate {
             byte[] save = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13 };

@@ -1776,6 +1776,10 @@ namespace OriCoop
                     && Connected && Time.realtimeSinceStartup - start < 20f) yield return null;
                 h.Check(SaveSync.Ready, "W save transfer ready");
                 h.Check(WorldSync.CanonicalSelfTest(), "W canonical world hash self-test " + WorldSync.CanonicalSelfTestFailure);
+                h.Check(WorldSync.TestMapCapture(), "W unchanged live map matches native archive and detects edits across the archive");
+                string rollback;
+                bool kept = WorldSync.TestDeferredRollback(out rollback);
+                h.Check(kept, "W rollback while a native scene load defers the snapshot: " + rollback);
                 h.Check(ProgressSync.Ready && ProgressSync.Hash() != 0, "W real progress fields ready; hash=" + ProgressSync.Hash().ToString("X16"));
                 h.Check(ProgressSync.PickupCollector(Own) != null, "W native pickup processor bound to local Sein");
                 if (!host)
@@ -2564,6 +2568,14 @@ namespace OriCoop
             s_enemyPackets.Clear(); s_ownEnemyReports.Clear(); s_ownEnemyHealth.Clear(); s_enemyOwnerTrace.Clear(); NetPlay.On(49, ReadEnemyTest); NetPlay.On(48, ReadEnemyTrace);
             s_harness = h; BotActive = true; Bot(0, 0);
             h.Note("net role=" + (host ? "host" : "guest"));
+            if (host && NetPlay.UsesSteam && SteamApi.Fake)
+            {
+                float inviteBy = Time.realtimeSinceStartup + 15f;
+                while (!NetPlay.SteamReady && Time.realtimeSinceStartup < inviteBy) yield return null;
+                h.Check(NetPlay.SteamReady, "Steam host created its friends lobby");
+                if (!NetPlay.SteamReady) yield break;
+                NetPlay.OpenSteamInvite();
+            }
             if (Environment.GetEnvironmentVariable("ORICOOP_NET_LOCAL_PLAYERS") == "1")
             { yield return LocalPlayersChecks(h); yield break; }
             if (ClientCount != 2 || (PhaseOn("INTRO") && Mark(h, "INTRO"))) yield return NetIntroTest.Run(h, ClientCount);

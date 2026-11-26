@@ -74,7 +74,7 @@ namespace OriCoop.Net
 
         public bool WaitingForSeat
         {
-            get { return (context.FactorySession || !context.IsHost && !context.UsesSteam) && context.AssignedSeat == 0; }
+            get { return (context.FactorySession || !context.IsHost) && context.AssignedSeat == 0; }
         }
 
         public Phase CurrentPhase

@@ -71,7 +71,7 @@ $TS_ModuleSuites = @{
     'M8' = @('local', 'titlejoin', 'titlejoin-cs', 'rooms')   # T-173: 我的房间 新建 / join dispatch in TitleMenu is checked only by run-rooms
     'M9' = @()            # harness files map to their own suite below
 }
-$TS_SteamFiles = @('SteamTransport', 'SteamApi', 'RealSteamApi', 'FakeSteamApi', 'SteamInviteHook', 'NetPlay', 'JoinErrorText')   # NetPlay: PumpSteam / OpenSteam drive the Steam session
+$TS_SteamFiles = @('SteamRoomMenu', 'SteamTransport', 'SteamApi', 'RealSteamApi', 'FakeSteamApi', 'SteamInviteHook', 'NetPlay', 'JoinErrorText')   # NetPlay: PumpSteam / OpenSteam drive the Steam session
 # Harness / test files -> the suite that runs them (checked before the module table).
 $TS_FileSuites = [ordered]@{
     'TestHarness'      = @('local', 'roomfailures');   'TitleInputTest' = @('local');   'SignpostTest' = @('local')
@@ -128,7 +128,11 @@ function Get-TSModuleMap {
     # Parses the "| M<n> | name | Files | ..." rows of docs\modules.md into file base name -> module.
     $map = @{}
     $doc = Join-Path $TS_Root 'docs\modules.md'
-    if (-not (Test-Path $doc)) { return $map }
+    if (-not (Test-Path $doc)) {
+        # The public checkout has no module inventory. The generic net peer and invite rules
+        # have defined suite boundaries; unclassified changes still select every suite.
+        return @{ NetPeer = 'M1'; InviteRules = 'M2' }
+    }
     foreach ($line in Get-Content $doc) {
         if ($line -notmatch '^\|\s*(M\d)\s*\|[^|]*\|([^|]*)\|') { continue }
         $module = $Matches[1]; $files = $Matches[2]

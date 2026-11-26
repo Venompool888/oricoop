@@ -29,7 +29,7 @@
     # Single files (checked before the module): test phases and files whose reach is narrower or wider than their module.
     Files = @{
         'RoomFailureTest' = ''
-        'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
+        'NetIntroTest' = 'INTRO'; 'NetReviveTest' = 'R'; 'NetReviveTest.Replay' = 'R'; 'NetStoryTest' = 'S4'; 'NetPhysTest' = 'P'; 'NetWorldObjTest' = 'WO'
         'WorldSync.Bodies' = 'W,WO'
         'NetPickupCheckpointTest' = 'W'; 'SavedPickupCopies' = 'W'; 'NetCellAuthorityTest' = 'W'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
@@ -46,6 +46,7 @@
         'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = 'INTRO'
         'NetSaveHandoverTest' = ''; 'MovementEpochs' = 'MOVE,S4'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
+        'NetSharedSkipTest' = 'CUT'; 'StorySync.HostControls' = 'CUT'; 'StoryControls' = 'CUT'
         'NetStoryWindowTest' = 'CUT'; 'NetExternalStoryTest' = 'CUT'; 'NetStoryArchiveTest' = 'W'
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
         'TitleRoomExitTest' = ''

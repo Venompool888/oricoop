@@ -87,7 +87,8 @@ partial class SaveTests
     }
     static void UploadTimeout()
     {
-        Scenario s = new Scenario(); s.Diverge("guest"); s.HostMachine.Decide(true); s.Network.Remove(2);
+        Scenario s = new Scenario(); s.Diverge("guest"); s.HostMachine.Decide(true);
+        // The guest stays connected but does not deliver its upload.
         s.Clock.Now = 15f; Check(!s.HostMachine.HostGate() && s.Host.UploadTimeouts == 0, "upload timed out at boundary");
         s.Clock.Now = 15.01f; Check(!s.HostMachine.HostGate(), "upload timeout opened gate in same call");
         Check(s.Host.UploadTimeouts == 1 && s.Host.DivergedHost && s.Host.Commits == 1, "upload fallback failed");

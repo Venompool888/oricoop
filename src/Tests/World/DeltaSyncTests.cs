@@ -299,6 +299,29 @@ static class DeltaSyncTests
             SortedDictionary<string, byte[]> after = o.OnCommitted(false, 1, new List<ItemOp> { new ItemOp("r:" + Hex(Guid(31)), null) }, WorldItems.Decompose(WorldItems.SchemaMap, m));
             Check(after == null && o.Confirmed.ContainsKey("r:" + Hex(Guid(31))), "a removal of a revealed icon was applied");
         });
+        Run("map rebuild keeps native area and icon order and appends only keys belonging to each area", delegate {
+            byte[] original;
+            using (MemoryStream stream = new MemoryStream())
+            using (BinaryWriter w = new BinaryWriter(stream))
+            {
+                w.Write(12);
+                for (int area = 0; area < 12; area++)
+                {
+                    w.Write(2); w.Write(5); w.Write(2); w.Write(1); w.Write(1);
+                    w.Write(1); w.Write(Guid(area)); w.Write(area);
+                }
+                w.Write(1); w.Write(Guid(100)); w.Write(-1); w.Flush();
+                original = stream.ToArray();
+            }
+            var items = WorldItems.Decompose(WorldItems.SchemaMap, original);
+            Check(DeltaObject.Same(original, WorldItems.Compose(WorldItems.SchemaMap, original, items)), "native order changed");
+            items.Remove("a1.s5"); items["a10.s7"] = BitConverter.GetBytes(2);
+            items["a10.i" + Hex(Guid(80))] = BitConverter.GetBytes(8);
+            items["r:" + Hex(Guid(101))] = BitConverter.GetBytes(1);
+            var result = WorldItems.Decompose(WorldItems.SchemaMap, WorldItems.Compose(WorldItems.SchemaMap, original, items));
+            Check(result.Count == items.Count, "wrong number of keys");
+            foreach (var pair in items) Check(result.ContainsKey(pair.Key) && DeltaObject.Same(result[pair.Key], pair.Value), "wrong " + pair.Key);
+        });
         // ----- T-214: map exploration (area states "a<i>.s<face>": Hidden 0 < Discovered 1 < Visited 2) only grows -----
         Run("T-214 map: a late batch with a lower level, or a removal, does not take an explored cell back", delegate {
             DeltaObject o = new DeltaObject(Cells(5, 2));
@@ -482,6 +505,19 @@ static class DeltaSyncTests
                 for (int n = 1; n <= 3; n++) Check(EventOf(late, n) == 10 + n, "joiner misses event " + n + ": " + EventOf(late, n));
             });
         }
+        Run("C-server rollback replays changes the guest saw before the snapshot start", delegate {
+            Room room = new Room(3, true, Start());
+            room.Net.Delay = (from, to) => from == 0 && to == 1 ? 300 : 10;
+            room[3].Edit(SetEvent(3, 17), true);
+            room.Net.RunUntil(room.Net.Now + 30);
+            Check(EventOf(room[2], 3) == 17 && EventOf(room[1], 3) == 0, "fixture must put the guest ahead");
+            room[2].Delta.BeginSnapshot();
+            room.Snapshot(2);
+            room[3].Edit(SetEvent(4, 19), true);
+            room.Net.Drain();
+            room.AssertConverged("snapshot sent behind the guest");
+            Check(EventOf(room[2], 3) == 17 && EventOf(room[2], 4) == 19, "lost changes across the watermark");
+        });
         Run("seeded fuzz: 4P P2P and C-server, random edits and link delays: own items keep their last write, all converge", delegate {
             Random rng = new Random(168);
             for (int round = 0; round < 12; round++)

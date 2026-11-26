@@ -16,7 +16,7 @@ namespace OriCoop
     //          state (skip, or played to the end) ends it for everyone.
     //   guest  a guest that waits on the title for the host's save (GuestJoin) runs the same new-game action: the
     //          same prologue plays here. The playable parts take the host's input, never this PC's; skipping is
-    //          refused. The guest's own pause menu still opens (online menus do not pause), so the player can leave.
+    //          requested from the host. The guest's own pause menu still opens (online menus do not pause), so the player can leave.
     //          When the host's prologue ends, this copy is put away (back to the title, the session stays) and the
     //          join goes on exactly as before: the host's save loads from the title.
     // T-205: the copy follows the host's story, so it can start at any time ("sitting down on the sofa half-way").
@@ -174,6 +174,7 @@ namespace OriCoop
             float run = Services.Net.Enabled ? NetPlay.StartedAt : -1f;
             if (run == s_run) return;
             s_run = run;
+            requestedGeneration = shownGeneration = 0;
             s_guest.Reset();
             s_haveHost = s_hostLeft = false; s_remote = new PrologueState(); s_remoteSeat = 0;
             s_follow.Reset(); s_hostClock.Reset(); s_followGeneration = 0;
@@ -842,14 +843,25 @@ namespace OriCoop
                 "to", newest.X.ToString("F2") + "," + newest.Y.ToString("F2"));
         }
 
-        // ---------------------------------------------------------------- guests cannot skip; their copy never becomes a game
+        // The guest can request the current prologue. Only the host's native skip ends it.
+        static uint requestedGeneration, shownGeneration;
+        internal static int RequestsShown;
+        internal static void ReceiveSkipRequest(uint generation)
+        {
+            if (!OwnStory || !InPrologue || generation == 0 || generation != s_host.State.Generation || shownGeneration == generation) return;
+            shownGeneration = generation; RequestsShown++;
+            NetHud.Toast(L10n.T("story.request.cutscene"));
+        }
 
         static bool GuestHolds { get { return s_local == Local.Playing && !s_mutateControl; } }
 
         [HarmonyPatch(typeof(SkipCutsceneController), "get_SkippingAvailable")]
-        static class GuestSkipUnavailable
+        static class GuestSkipAvailable
         {
-            static void Postfix(ref bool __result) { if (GuestHolds) __result = false; }
+            static void Postfix(ref bool __result)
+            {
+                if (GuestHolds) __result = !CatchingUp && InPrologue && s_haveHost && !s_hostLeft && Services.Net.Connected;
+            }
         }
 
         [HarmonyPatch(typeof(SkipCutsceneController), "SkipCutscene")]
@@ -859,8 +871,14 @@ namespace OriCoop
             {
                 if (!GuestHolds) return true;
                 SkipsRefused++;
-                Services.Log.Info("prologue: skip refused on this PC (only P1 skips the prologue)");
-                if (UI.MainMenuVisible) NetHud.Toast(L10n.SessionText("prologue.skip_p1_only"));
+                uint generation = s_remote.Generation;
+                if (!CatchingUp && InPrologue && s_haveHost && !s_hostLeft && Services.Net.Connected &&
+                    Services.Net.HostSeat == s_remoteSeat && s_remote.Phase == ProloguePhase.Playing && generation != requestedGeneration)
+                {
+                    requestedGeneration = generation;
+                    StorySync.SendRequestToHost(delegate(BinaryWriter w) { w.Write((byte)2); w.Write(generation); });
+                    NetHud.Toast(L10n.T("story.request.sent"));
+                }
                 return false;
             }
         }

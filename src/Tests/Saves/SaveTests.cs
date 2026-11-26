@@ -74,8 +74,12 @@ partial class SaveTests
         Run("upload timeout boundary", UploadTimeout);
         Run("cancel request and delay", CancelDelay);
         Run("every reply counts with four seats", EveryReplyCountsFourSeats);
+        Run("T-256 room survivor recommendation, conflicting evidence and manual override", LastRoomMember);
+        Run("T-256 shared save evidence preserves legacy wire prefixes", LastRoomWire);
         Run("T-128 guest without a copy answering first does not skip the choice", NoCopyFirstStillChooses);
         Run("T-128 partner choice uploads from the diverged guest only", UploadFromChosenGuest);
+        Run("selected guest leaves while choosing", delegate { ChosenGuestLeaves(false); });
+        Run("selected guest leaves while uploading", delegate { ChosenGuestLeaves(true); });
         Run("T-128 another guest's upload is ignored", OtherGuestUploadIgnored);
         Run("T-128 host waits for every guest's reply", WaitsForEveryReply);
         Run("T-128 reply timeout decides on the replies that came", PartialRepliesTimeout);

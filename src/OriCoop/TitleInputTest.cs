@@ -96,6 +96,7 @@ namespace OriCoop
                     Check(NetHud.ModalOpen, "leave " + mode + ": guest shows the disconnect dialog (net=" + NetPlay.CurrentPhase + ")");
                     Shot("leave_dialog");
                     yield return StartCoroutine(TWait(6f));                       // reconnect tries run meanwhile
+                    if (m_tr == "steam") Check(NetHud.SteamHostLeft && NetPlay.RetryHeld, "steam: host departure is shown and reconnects have stopped");
                     MethodInfo pick = AccessTools.Method(typeof(NetHud), "ActivateModalOption");
                     if (mode == "drop")
                     {
@@ -103,7 +104,12 @@ namespace OriCoop
                         yield return StartCoroutine(CheckTitleInput("guest picked 回到标题"));
                         yield break;
                     }
-                    if (mode == "alone") { pick.Invoke(null, new object[] { 0 }); yield return StartCoroutine(TWait(2f)); }  // 继续单人
+                    if (mode == "alone")
+                    {
+                        pick.Invoke(null, new object[] { 0 }); // 继续单人
+                        yield return StartCoroutine(TWait(2f));
+                        Check(!NetHud.ModalOpen && !NetPlay.Connected && (m_tr != "steam" || !NetPlay.Enabled) && NetPlay.LocalInGameplay(), "guest continued playing alone after the host left");
+                    }
                     yield return StartCoroutine(QuitFromPause());
                     yield return StartCoroutine(CheckTitleInput("guest quit after the host left (" + mode + ")"));
                 }

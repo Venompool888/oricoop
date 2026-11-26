@@ -39,6 +39,7 @@ namespace OriCoop
             string m_cserverAddress;
             int m_reports, m_cancelledReports;
             bool m_restoreReportChoice, m_originalReportChoice;
+            string m_steamEntry = Environment.GetEnvironmentVariable("ORICOOP_TITLEJOIN_STEAMENTRY") ?? "invite";
             string m_steamFault = "";   // T-216: "drop-create" = the host's first Steam lobby result never comes
 
             void Note(string s) { string l = string.Format("[{0,7:F2}] {1}", Time.realtimeSinceStartup - m_t0, s); m_lines.Add(l); Plugin.Log.LogInfo("TITLEJOIN " + s); }
@@ -458,6 +459,8 @@ namespace OriCoop
                 end = Time.realtimeSinceStartup + 90f;
                 while (Time.realtimeSinceStartup < end && !NetPlay.LocalInGameplay()) { DismissResume(); yield return null; }
                 Check(NetPlay.LocalInGameplay(), "host: in game after 开始游戏");
+                if (m_tr == "steam") Check(SaveSlotsManager.CurrentSlotIndex == m_pickedSlot,
+                    "steam: the room started from the newly selected save slot " + (m_pickedSlot + 1));
                 Check(m_roomSeen, "host: room screen shown before the game starts");
                 yield return StartCoroutine(TWait(1f));                             // KeyboardOnlyP1.Refresh runs in FixedUpdate
                 CheckPrimaryInput("host", HostMenuPad, "T-188 the controller used on the menus still drives P1 in game");
@@ -508,12 +511,28 @@ namespace OriCoop
                     "steam: lobby is ready before anyone joined (fake Steam, lobby " + lobby + ")");
                 if (m_fails != 0) yield break;
                 int before = api.InviteDialogsOpened;
-                yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.invite"), 5f));
-                Check(api.InviteDialogsOpened == before + 1, "steam: 邀请好友 opens one fake Steam invite dialog");
+                if (m_steamEntry != "browse")
+                {
+                    yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.invite"), 5f));
+                    if (m_steamEntry == "fallback")
+                    {
+                        bool sent = false;
+                        yield return StartCoroutine(WaitFor(() => sent = OnlineRoomScreen.Click("room.invite.1002"), 5f));
+                        Check(sent && api.InviteDialogsOpened == before, "steam: disabled overlay uses the selected friend's in-game invite");
+                        OnlineRoomScreen.Click("room.back");
+                    }
+                    else Check(api.InviteDialogsOpened == before + 1, "steam: invite opens one fake Steam dialog");
+                }
                 if (m_fails != 0) yield break;
                 yield return StartCoroutine(WaitFor(() => api.GetNumLobbyMembers(lobby) == 2, 15f));
                 Check(api.GetNumLobbyMembers(lobby) == 2, "steam: lobby has two members before 开始游戏");
                 if (m_fails != 0) yield break;
+                int alternate = m_pickedSlot == 0 ? 1 : 0;
+                bool changed = false;
+                yield return StartCoroutine(WaitFor(() => changed = OnlineRoomScreen.Click("room.save." + alternate), 5f));
+                Check(changed && NativeModeMenu.CanSelectRoomSave && CsRoomPage.PickedSlot == alternate,
+                    "steam: host changed the save after the friend joined and before starting");
+                m_pickedSlot = alternate;
                 Shot("host_page");
                 yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.continue"), 5f));
                 m_roomSeen = OnlineRoomScreen.Confirmed;
@@ -527,24 +546,32 @@ namespace OriCoop
                 // row's text, so the explanation must be there without the player moving the cursor.
                 RefreshTexts(true);
                 Check(TitleOrbOpen && OnSteamJoinPage && !SlotsReady && LastTooltip.Contains(L10n.T("lobby.steam.accept")) &&
-                    LastLabels.Count > 0 && LastLabels[0].StartsWith(L10n.T("lobby.steam.waiting"), StringComparison.Ordinal) &&
+                    LastLabels.Count > 0 && LastLabels[0] == L10n.T("steam.empty.rooms") &&
                     SteamTransport.PendingInviteRaw == 0 && NetPlay.UsesSteam && NetPlay.Peer == null && NetPlay.CurrentPhase == NetPlay.Phase.Starting,
                     "steam: waiting page says to accept a Steam invite and is not connecting (net=" + NetPlay.CurrentPhase + ")");
                 if (m_fails != 0) yield break;
                 Check(LastTooltip.Contains(L10n.T("lobby.save.note")), "guest: join page says the co-op copy is saved automatically");
                 Shot("join_page");
                 File.WriteAllText(SteamWaitingFile, "waiting");
+                if (m_steamEntry == "browse")
+                {
+                    yield return StartCoroutine(WaitFor(() => s_shownFriends.Length == 1 && s_shownFriends[0].Reason == "", 20f));
+                    Check(s_shownFriends.Length == 1 && s_shownFriends[0].User == 1001 && s_shownFriends[0].Reason == "",
+                        "steam: host's open lobby appears in the native friend list");
+                    if (m_fails != 0) yield break;
+                    yield return StartCoroutine(Row(0, 0.4f));
+                }
                 yield return StartCoroutine(WaitFor(() => NetPlay.SteamLobby != 0, m_steamFault.Length > 0 ? 90f : 20f));
-                Check(NetPlay.SteamLobby != 0 && NetPlay.UsesSteam, "steam: automatic invite started the Steam join");
+                Check(NetPlay.SteamLobby != 0 && NetPlay.UsesSteam, "steam: selected friend room or accepted invitation started the Steam join");
                 if (m_fails != 0) yield break;
-                yield return StartCoroutine(WaitFor(() => NetPlay.PartnerHere && OnlineRoomScreen.Visible, 12f));
+                yield return StartCoroutine(WaitFor(() => NetPlay.PartnerHere, 12f));
                 SteamTransport link = SteamLink;
                 Check(NetPlay.UsesSteam && NetPlay.PartnerHere && link != null && link.RemoteSteamId == 1001,
                     "steam: guest connected to host 1001 after the invite (net=" + NetPlay.CurrentPhase + ")");
                 if (m_fails != 0) yield break;
-                yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Click("room.continue"), 5f));
+                yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.Confirmed, 15f));
                 m_roomSeen = OnlineRoomScreen.Confirmed;
-                Check(m_roomSeen, "steam: 继续 pressed on the guest room screen");
+                Check(m_roomSeen, "steam: guest proceeds automatically when the host starts, without pressing Continue");
             }
 
             // Digit keys on the focused dial row, then Enter, through the lobby's own key handling (NativeLobby test hooks).
@@ -804,6 +831,21 @@ namespace OriCoop
                 yield return StartCoroutine(TWait(1f));
                 int index, quit; string selected;
                 bool shown = PauseMenuEntry.RoomEntryShown(out index, out quit, out selected);
+                if (m_tr == "steam")
+                {
+                    Check(shown && index == quit - 1 && PauseMenuEntry.PressRoomEntry(), m_role + ": Steam pause room entry opens");
+                    yield return StartCoroutine(WaitFor(() => OnlineRoomScreen.SteamInGame && OnlineRoomScreen.HasButton("room.back"), 4f));
+                    Check(OnlineRoomScreen.SteamInGame && SteamRoomMenu.Members.Count == 2 &&
+                        OnlineRoomScreen.HasButton("room.leave") && !OnlineRoomScreen.HasButton("room.continue") &&
+                        OnlineRoomScreen.HasButton("room.invite") == NetPlay.IsHost,
+                        m_role + ": Steam pause room shows both members, Leave, and only the host can invite");
+                    OnlineRoomScreen.Click("room.back");
+                    yield return StartCoroutine(TWait(0.5f));
+                    Check(!OnlineRoomScreen.SteamInGame && PauseMenuEntry.RoomEntrySelected && NetPlay.Enabled,
+                        m_role + ": Back returns to the pause room entry with the session intact");
+                    UI.Menu.HideMenuScreen(true);
+                    yield break;
+                }
                 if (m_tr != "cserver")
                 {
                     Check(!shown && index < 0, m_role + ": LAN: the pause menu has no room entry (房间管理) (index " + index + ", quit " + quit + ")");
