@@ -80,7 +80,7 @@ namespace OriCoop
         static readonly List<Vector3> s_pinPositions = new List<Vector3>();
         public static long BytesSent, BytesReceived, EstimatedWireBytesSent;
         public static int Unmirrored, KeptScenes, UnresolvedProjectiles;
-        public static int DeathEffects, OwnerDeathEffects, FxSent, FxReceived;
+        public static int DeathEffects, OwnerDeathEffects, FxSent, FxReceived, UnresolvedFx;
         public static float StreamMilliseconds;
         static bool Active { get { return Services.Net.Enabled && Services.Net.Connected && s_host.RemoteHello && s_session; } }
         static bool Mine(Actor a) { RefreshOwnership(a); return a.Mine(s_host.LocalSeat); }
@@ -154,7 +154,7 @@ namespace OriCoop
             ReleasePins(); s_actors.Clear(); s_placeholderKeys.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
             s_symbols.Clear(); s_remoteSymbols.Clear(); s_pendingHits.Clear(); s_shots.Clear(); s_victimHits.Clear(); s_copies.Clear();
             s_session = false; s_active = null; s_attackDepth = 0; s_spawning = s_applying = s_puppetDeath = false;
-            s_fxPrefabs.Clear(); s_animationMisses.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
+            s_fxPrefabs.Clear(); s_animationMisses.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = UnresolvedFx = 0;
             s_scanAt = s_streamAt = s_logAt = 0; BytesSent = BytesReceived = EstimatedWireBytesSent = 0; Unmirrored = KeptScenes = UnresolvedProjectiles = 0;
         }
         static void Send(byte type, bool reliable, Action<BinaryWriter> body, int seat = 0)
@@ -1275,6 +1275,7 @@ namespace OriCoop
             GameObject prefab = FindEffect(a, name, position, out useNativeBreak);
             if (prefab == null)
             {
+                UnresolvedFx++;
                 string key = "fx prefab unresolved " + name, scene = a.SceneName;
                 if (scene == "" && Scenes.Manager != null)
                     foreach (RuntimeSceneMetaData meta in Scenes.Manager.AllScenes)
