@@ -60,6 +60,8 @@ namespace OriCoop
         public static readonly List<int> TestFakeSeats = new List<int>(); // test: extra copies for layout checks (values set by the test)
         public static int VitalsSent, VitalsReceived;
 
+        static readonly string s_mutateLayout = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_BOTTOMHUD_LAYOUT");
+
         // ---------------------------------------------------------------- per frame (Plugin.DoLateUpdate)
         public static void Update()
         {
@@ -80,6 +82,9 @@ namespace OriCoop
             List<int> gone = new List<int>();
             foreach (int seat in s_copies.Keys) if (!seats.Contains(seat)) gone.Add(seat);
             foreach (int seat in gone) DestroyCopy(seat);
+            // No teammate bar to show or remove (single player, alone online): skip the HUD scan below, which walks
+            // every renderer of the game's HUD and reads each name, every frame.
+            if (seats.Count == 0 && s_copies.Count == 0) return;
 
             SeinUI ui = UI.SeinUI;
             float hud = P2Hud.GameHudOpacity();
@@ -403,7 +408,7 @@ namespace OriCoop
             SlotRect s = StatusBarLayout.Place(order, (native.xMin - left) / w, (native.xMax - left) / w,
                 (native.yMin - bottom) / h, native.height / h, nativeEnergyCells, copyEnergyCells, copyHealthCells);
             // Mutation switches (docs/DEVELOPMENT-PROCESS.md): the layout checks must fail with the old size or the wrong side.
-            string mutate = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_BOTTOMHUD_LAYOUT");
+            string mutate = s_mutateLayout;
             if (mutate == "small") { s.Scale *= 0.4f; s.Width *= 0.4f; s.Height *= 0.4f; }
             else if (mutate == "right") { s.CenterX += 0.5f; s.VisLeft += 0.5f; s.VisRight += 0.5f; s.LabelRight += 0.5f; }
             c.Slot = s;

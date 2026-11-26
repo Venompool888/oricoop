@@ -1,4 +1,5 @@
 using System;
+using System.Reflection;
 using Game;
 using UnityEngine;
 
@@ -17,12 +18,83 @@ namespace OriCoop
         float m_baseH, m_baseW;   // text size in world units at scale 1 (measured after each text change)
         Vector3 m_scale0;
         readonly string m_name;
+        internal string Name { get { return m_name; } }
         bool m_warnedCreate, m_warnedPlace, m_warnedText;
         int m_layer = -1;
         public bool Ok { get { return Go != null && m_box != null; } }
         public bool NoBacking;    // hide the hint's dark backing strip (for small labels drawn over pictures)
+        readonly System.Collections.Generic.Dictionary<Renderer, Material> m_own = new System.Collections.Generic.Dictionary<Renderer, Material>();
+        bool m_loggedBright;
+        internal string BrightDebug = "";
 
-        public GameText(string name) { m_name = name; Create(); }
+        // T-255: every copy made, so a test can ask whether any prompt on screen draws faint (one oracle for all of them).
+        static readonly System.Collections.Generic.List<GameText> s_all = new System.Collections.Generic.List<GameText>();
+
+        public GameText(string name) { m_name = name; s_all.Add(this); Create(); }
+
+        bool Shown { get { return Ok && Go.activeInHierarchy && !string.IsNullOrEmpty(m_text) && m_renderers != null && m_renderers.Length > 0; } }
+
+        // The mod's prompts on screen now, each with its text's material alpha and its text colour's alpha
+        // ("name a=1.00 colour a=1.00; ..."), and the ones whose material alpha is below `floor` (empty when none).
+        internal static string ShownAlphas()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (GameText g in s_all)
+                if (g.Shown) sb.Append(sb.Length > 0 ? "; " : "").Append(g.m_name).Append(" a=").Append(g.TextAlpha().ToString("0.00"))
+                    .Append(" colour a=").Append(g.m_box.TextBox.color.a.ToString("0.00"));
+            return sb.Length > 0 ? sb.ToString() : "none";
+        }
+        // T-255: how tall a mod prompt draws, as a fraction of the screen height. The native hint box measured 0.061 on the
+        // test PC (PR #438); prompts at 0.030-0.035 read as half its size. Every gameplay prompt uses this one height.
+        internal static readonly float PromptHeight = NativeGui.MutationOn("ORICOOP_MUTATE_SMALL_PROMPTS") ? 0.03f : 0.06f;   // test: the old half size
+        // How tall this text draws on screen, as a fraction of the screen height (HUD camera); -1 when not shown.
+        internal float ScreenHeight()
+        {
+            Bounds b;
+            Camera gui = P2Hud.GuiCamera();
+            if (!Shown || gui == null || !Measure(out b)) return -1f;
+            return gui.WorldToViewportPoint(b.max).y - gui.WorldToViewportPoint(b.min).y;
+        }
+        internal static string ShownHeights()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (GameText g in s_all)
+            {
+                float h = g.ScreenHeight();
+                if (h < 0f) continue;
+                sb.Append(sb.Length > 0 ? "; " : "").Append(g.m_name).Append(" h=").Append(h.ToString("0.000"));
+            }
+            return sb.Length > 0 ? sb.ToString() : "none";
+        }
+        internal static float HeightOfNative(MessageBox box)
+        {
+            Camera gui = P2Hud.GuiCamera();
+            if (box == null || box.TextBox == null || box.TextBox.textRenderers == null || gui == null) return -1f;
+            bool any = false; Bounds b = new Bounds();
+            foreach (var tr in box.TextBox.textRenderers)
+            {
+                if (tr == null || tr.renderedCharCount == 0) continue;
+                foreach (Renderer r in tr.GetComponentsInChildren<Renderer>())
+                { if (!r.enabled) continue; if (!any) { b = r.bounds; any = true; } else b.Encapsulate(r.bounds); }
+            }
+            return any ? gui.WorldToViewportPoint(b.max).y - gui.WorldToViewportPoint(b.min).y : -1f;
+        }
+        internal static string HeightOf(MessageBox box) { float h = HeightOfNative(box); return h >= 0f ? h.ToString("0.000") : "?"; }
+        // The check: a prompt counts as native size at 80% of the native hint's height or more (or of PromptHeight when
+        // the native hint could not be measured).
+        internal static bool NativeSized(float h, float native) { return h >= 0.8f * (native > 0f ? native : 0.06f); }
+        internal static int ShownCount() { int n = 0; foreach (GameText g in s_all) if (g.Shown) n++; return n; }
+        internal static string FaintShown(float floor)
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (GameText g in s_all)
+            {
+                if (!g.Shown) continue;
+                float a = g.TextAlpha();
+                if (a >= 0f && a < floor) sb.Append(sb.Length > 0 ? ", " : "").Append(g.m_name).Append(" a=").Append(a.ToString("0.00"));
+            }
+            return sb.ToString();
+        }
 
         void WarnOnce(ref bool warned, string reason)
         {
@@ -38,6 +110,7 @@ namespace OriCoop
                 MessageControllerB mc = UI.MessageController;
                 if (mc == null || mc.HintMessage == null)
                 { WarnOnce(ref m_warnedCreate, "hint prefab unavailable"); return false; }
+                DropOwnMaterials();   // a copy the game destroyed (checkpoint restore) left its materials behind
                 Go = (GameObject)UnityEngine.Object.Instantiate(mc.HintMessage);
                 Go.name = m_name;
                 UnityEngine.Object.DontDestroyOnLoad(Go);
@@ -82,12 +155,109 @@ namespace OriCoop
             m_renderers = rs.ToArray();
             if (NoBacking && rs.Count > 0)
                 foreach (Renderer r in Go.GetComponentsInChildren<Renderer>(true)) if (!rs.Contains(r)) r.enabled = false;
+            Brighten(rs);
             Bounds b;
             if (!Measure(out b)) return CannotPlace("no glyph geometry");
             m_baseH = b.size.y / m_scale0.y; m_baseW = b.size.x / m_scale0.x;
             if (!was) Hide();
             m_text = text;
             return true;
+        }
+
+        // T-255 (playtest 6: the force-start and leave prompts, and the new hint boxes, looked dim next to the game's own
+        // hints). Measured on the test PC (PR #428): the copy's text materials read alpha 0.50 and drew grey; at 1.0 they
+        // draw as white as the native hint beside them. The likely reason: the copy's renderers share the game's hint materials, and the
+        // game's fades write the alpha of shared materials (TitleMenu.FixClonedGlows found that on the title menu). With
+        // our copy's MessageBoxVisibility gone nothing drives that alpha for us, so the copy drew at whatever alpha the last
+        // native hint had faded the shared materials to. The first SetText logs the alphas it found. Every renderer of the copy now gets its own material: the text and its
+        // button icons at full alpha, as a native hint draws when fully shown, the backing strip at the alpha its own fade
+        // recorded for it. Our copy never writes the game's materials, and the game's fades no longer dim our copy.
+        static readonly FieldInfo s_taData = typeof(TransparencyAnimator).GetField("m_rendererData", BindingFlags.Instance | BindingFlags.NonPublic);
+        static readonly bool s_mutateDim = NativeGui.MutationOn("ORICOOP_MUTATE_DIM_PROMPTS");   // test: the old, shared materials
+        void Brighten(System.Collections.Generic.List<Renderer> glyphs)
+        {
+            if (s_mutateDim) return;
+            try
+            {
+                System.Collections.Generic.Dictionary<Renderer, float> full = FullAlphas();
+                float textBefore = -1f, backBefore = -1f, backAfter = -1f; int owned = 0;
+                foreach (Renderer r in Go.GetComponentsInChildren<Renderer>(true))
+                {
+                    if (r == null) continue;
+                    Material shared = r.sharedMaterial;
+                    if (shared == null || !shared.HasProperty("_Color")) continue;
+                    Material own;
+                    if (!m_own.TryGetValue(r, out own) || own == null)
+                    {
+                        own = new Material(shared); own.hideFlags = HideFlags.HideAndDontSave; m_own[r] = own;
+                    }
+                    else if (shared != own)
+                    {
+                        // RenderText can put the game's font material back: keep our instance, take its new properties.
+                        own.shader = shared.shader; own.CopyPropertiesFromMaterial(shared);
+                    }
+                    r.sharedMaterial = own; owned++;
+                    Color c = own.GetColor("_Color");
+                    float target;
+                    if (glyphs.Contains(r))
+                    {
+                        textBefore = textBefore < 0f ? c.a : Mathf.Min(textBefore, c.a);
+                        target = 1f;
+                    }
+                    else
+                    {
+                        backBefore = c.a;
+                        if (!full.TryGetValue(r, out target) || target <= 0f) target = c.a;
+                        backAfter = target;
+                    }
+                    if (c.a != target) { c.a = target; own.SetColor("_Color", c); }
+                }
+                Color tc = m_box.TextBox.color;
+                BrightDebug = "text a " + textBefore.ToString("0.00") + "->1, backing a " + backBefore.ToString("0.00") + "->" + backAfter.ToString("0.00")
+                    + ", text colour " + tc + ", " + owned + " own materials";
+                if (!m_loggedBright) { m_loggedBright = true; Plugin.Log.LogInfo("game text '" + m_name + "': " + BrightDebug); }
+            }
+            catch (Exception e) { WarnOnce(ref m_warnedText, "cannot brighten hint: " + e.Message); }
+        }
+
+        // The alpha each renderer of the copy has when its hint is fully shown, as the copy's own fades recorded it.
+        System.Collections.Generic.Dictionary<Renderer, float> FullAlphas()
+        {
+            System.Collections.Generic.Dictionary<Renderer, float> full = new System.Collections.Generic.Dictionary<Renderer, float>();
+            if (s_taData == null) return full;
+            foreach (TransparencyAnimator ta in Go.GetComponentsInChildren<TransparencyAnimator>(true))
+            {
+                System.Collections.IList data = s_taData.GetValue(ta) as System.Collections.IList;
+                if (data == null) continue;
+                foreach (object d in data)
+                {
+                    if (d == null) continue;
+                    Type t = d.GetType();
+                    FieldInfo rf = t.GetField("Renderer"), af = t.GetField("OriginalAlpha");
+                    Renderer r = rf != null ? rf.GetValue(d) as Renderer : null;
+                    if (r != null && af != null) full[r] = (float)af.GetValue(d);
+                }
+            }
+            return full;
+        }
+
+        // Lowest material alpha of the visible text and icon renderers (-1 when none is drawn): the test's brightness oracle.
+        internal float TextAlpha() { return Ok ? TextAlphaOf(m_box) : -1f; }
+        internal static float TextAlphaOf(MessageBox box)
+        {
+            float a = -1f;
+            if (box == null || box.TextBox == null || box.TextBox.textRenderers == null) return a;
+            foreach (var tr in box.TextBox.textRenderers)
+            {
+                if (tr == null || tr.renderedCharCount == 0) continue;
+                foreach (Renderer r in tr.GetComponentsInChildren<Renderer>())
+                {
+                    if (!r.enabled || r.sharedMaterial == null || !r.sharedMaterial.HasProperty("_Color")) continue;
+                    float x = r.sharedMaterial.GetColor("_Color").a;
+                    a = a < 0f ? x : Mathf.Min(a, x);
+                }
+            }
+            return a;
         }
 
         bool Measure(out Bounds b)
@@ -168,7 +338,17 @@ namespace OriCoop
         }
 
         public void Hide() { if (Go != null && Go.activeSelf) Go.SetActive(false); }
-        public void Destroy() { if (Go != null) UnityEngine.Object.Destroy(Go); Go = null; m_box = null; }
+        public void Destroy()
+        {
+            if (Go != null) UnityEngine.Object.Destroy(Go);
+            DropOwnMaterials();
+            Go = null; m_box = null;
+        }
+        void DropOwnMaterials()
+        {
+            foreach (Material m in m_own.Values) if (m != null) UnityEngine.Object.Destroy(m);
+            m_own.Clear();
+        }
     }
 
     // A soft glowing ring around a point that fills clockwise from the top, like the game's own charge/fill rings.

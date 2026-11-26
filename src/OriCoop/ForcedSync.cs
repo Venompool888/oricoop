@@ -687,8 +687,8 @@ namespace OriCoop
                 : L10n.F("gate.wait", MissingPlayers(gate.Missing), LastCount, LastTotal);
             Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null;
             Vector3 view = game != null ? game.WorldToViewportPoint(point + new Vector3(0f, 2f, 0f)) : new Vector3(0.5f, 0.5f, 0f);
-            float x = Mathf.Clamp(view.x, 0.31f, 0.69f), y = Mathf.Clamp(view.y, 0.15f, 0.89f);
-            if (s_bottom.SetText(BottomText)) s_bottom.PlaceViewport(x, y, 0.03f, 0.6f);
+            float x = Mathf.Clamp(view.x, 0.31f, 0.69f), y = Mathf.Clamp(view.y, 0.15f, 0.85f);   // T-255: room for the force line above at native size
+            if (s_bottom.SetText(BottomText)) s_bottom.PlaceViewport(x, y, GameText.PromptHeight, 0.6f);
             if (Waits[seat] == null || Waits[seat].State.Key != gate.Key) { HideKeys(); return; }
 
             if (s_top == null) s_top = new GameText("OriCoop_GateForce");
@@ -698,13 +698,46 @@ namespace OriCoop
             bool keyboard = !primary && ExtraUsesKeyboard(seat);
             TopText = L10n.F("gate.force", primary ? ButtonIconUtility.GetButtonString(PlayerInput.Instance.Bash) : keyboard ? "<icon>p</>" : "<icon>i</>");
             LeaveText = L10n.F("gate.leave", primary ? ButtonIconUtility.GetButtonString(PlayerInput.Instance.SoulFlame) : keyboard ? "<icon>H</>" : "<icon>f</>");
-            if (s_top.SetText(TopText)) s_top.PlaceViewport(x, y + 0.05f, 0.028f, 0.36f);
-            if (s_leave.SetText(LeaveText)) s_leave.PlaceViewport(x, y - 0.05f, 0.028f, 0.36f);
+            if (s_top.SetText(TopText)) s_top.PlaceViewport(x, y + 0.08f, GameText.PromptHeight, 0.6f);   // T-255: native size (was 0.028, half the native hint)
+            if (s_leave.SetText(LeaveText)) s_leave.PlaceViewport(x, y - 0.08f, GameText.PromptHeight, 0.6f);
             s_ring.Place(point + new Vector3(3.3f, 2.2f, 0f), 0.08f, HoldProgress, 1f);
         }
         internal static bool WaitPromptOnScreen() { return s_bottom != null && s_bottom.OnScreen(false); }
         internal static bool ForcePromptOnScreen() { return s_top != null && s_top.OnScreen(false) && s_top.OnScreen(true); }
         internal static bool LeavePromptOnScreen() { return s_leave != null && s_leave.OnScreen(false) && s_leave.OnScreen(true); }
+        // T-255 test oracle: every gate prompt shown draws its text at full material alpha. Not "as the native hint": on the
+        // test PC the native hint's material reads 0.50 and still draws full white (its own fade path), while our copy at
+        // 0.50 drew grey (screenshot pixels 160 against the native 222; at 1.0: 255). Comparing with it let the dim
+        // mutation pass (PR #428, first run).
+        internal static bool PromptsFullyOpaque()
+        {
+            const float floor = 0.98f;
+            if (BottomText.Length > 0 && (s_bottom == null || s_bottom.TextAlpha() < floor)) return false;
+            if (TopText.Length > 0 && (s_top == null || s_top.TextAlpha() < floor)) return false;
+            if (LeaveText.Length > 0 && (s_leave == null || s_leave.TextAlpha() < floor)) return false;
+            return true;
+        }
+        // T-255 test oracle: every gate prompt shown draws at native size. Lists the ones that don't, "" when all do.
+        internal static string SmallPrompts(float native)
+        {
+            string small = "";
+            GameText[] all = { s_bottom, s_top, s_leave };
+            foreach (GameText g in all)
+            {
+                if (g == null) continue;
+                float hh = g.ScreenHeight();
+                if (hh >= 0f && !GameText.NativeSized(hh, native)) small += (small.Length > 0 ? ", " : "") + g.Name + " h=" + hh.ToString("0.000");
+            }
+            return small;
+        }
+        internal static string BrightnessDebug(MessageBox native)
+        {
+            return "native text a=" + GameText.TextAlphaOf(native).ToString("0.00")
+                + (native != null && native.TextBox != null ? " colour " + native.TextBox.color : " (no native hint)")
+                + "; wait a=" + (s_bottom == null ? "none" : s_bottom.TextAlpha().ToString("0.00") + " [" + s_bottom.BrightDebug + "]")
+                + "; force a=" + (s_top == null ? "none" : s_top.TextAlpha().ToString("0.00") + " [" + s_top.BrightDebug + "]")
+                + "; leave a=" + (s_leave == null ? "none" : s_leave.TextAlpha().ToString("0.00"));
+        }
         static void HideKeys()
         {
             TopText = LeaveText = "";

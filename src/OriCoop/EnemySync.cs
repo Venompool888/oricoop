@@ -151,7 +151,7 @@ namespace OriCoop
             DropCopies();   // T-208 (2): before the index of the pieces is cleared
             EnemyAuthority.Policy = null;
             foreach (ProjectileIdentity p in s_copies) if (p != null) InstantiateUtility.Destroy(p.gameObject);
-            ReleasePins(); s_actors.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
+            ReleasePins(); s_actors.Clear(); s_placeholderKeys.Clear(); s_entities.Clear(); s_machines.Clear(); s_damage.Clear(); s_damageOrder.Clear(); s_pieces.Clear();
             s_symbols.Clear(); s_remoteSymbols.Clear(); s_pendingHits.Clear(); s_shots.Clear(); s_victimHits.Clear(); s_copies.Clear();
             s_session = false; s_active = null; s_attackDepth = 0; s_spawning = s_applying = s_puppetDeath = false;
             s_fxPrefabs.Clear(); s_animationMisses.Clear(); s_fxWindow = 0; s_fxCount = 0; DeathEffects = OwnerDeathEffects = FxSent = FxReceived = 0;
@@ -238,11 +238,19 @@ namespace OriCoop
                 && !(s_mutateSwarmLocal && p is SwarmEnemyPlaceholder);
             s_placeholderTypes.Add(t, enemy); return enemy;
         }
+        static readonly PlaceholderKeys<RespawningPlaceholder, SceneRoot> s_placeholderKeys = new PlaceholderKeys<RespawningPlaceholder, SceneRoot>();
         static Actor Track(RespawningPlaceholder p, bool sameLife = false)
         {
             if (p == null || p.MoonGuid == null || !EnemyPlaceholder(p)) return null;
-            SceneRoot root = SceneRoot.FindFromTransform(p.transform); if (root == null || root.MetaData == null) return null;
-            string key = Key(root.MetaData.SceneMoonGuid, p.MoonGuid); Actor a;
+            // #406 (4): the root and key never change while the placeholder lives (Enemies/PlaceholderKeys.cs).
+            int placeholderId = p.GetInstanceID(); SceneRoot root; string key;
+            if (!s_placeholderKeys.TryGet(placeholderId, p, out root, out key) || root == null || root.MetaData == null)
+            {
+                root = SceneRoot.FindFromTransform(p.transform); if (root == null || root.MetaData == null) return null;
+                key = Key(root.MetaData.SceneMoonGuid, p.MoonGuid);
+                s_placeholderKeys.Set(placeholderId, p, root, key);
+            }
+            Actor a;
             if (s_testHidden.Count > 0 && s_testHidden.Contains(key)) return null;   // tests: as if its scene were not loaded here
             if (!s_actors.TryGetValue(key, out a))
             {
@@ -1195,6 +1203,8 @@ namespace OriCoop
                 a.Loaded = false; a.Placeholder = null; Announce(a);
                 if (Services.Net.IsHost) Decide(a);
             }
+            // Runs even when Track found nothing or the session is off, so unloaded scenes leave no entries behind.
+            static void Postfix(RespawningPlaceholder __instance) { if (__instance != null) s_placeholderKeys.Remove(__instance.GetInstanceID()); }
         }
 
         static string PrefabKey(GameObject prefab) { Projectile p = prefab == null ? null : prefab.GetComponent<Projectile>(); return p == null ? "" : prefab.name + "|" + p.GetType().FullName; }
@@ -1472,7 +1482,13 @@ namespace OriCoop
                 // scene before this PC's own 03 registered "spiritTreeWorldMap" (run G-1: host loaded it in the frame the
                 // guest reported worldMapSpiritTree, 1.3 s before its own 03 got there).
                 if (Active && Services.Net.IsHost && (Local != null || CutsceneRespawn.Off) && (s_mutateStreamInStory || StorySync.RealStories == 0))   // no local Ori (cutscene): stream like single player
-                    foreach (KeyValuePair<int, Vector3> remote in s_host.RemotePositions) ___m_cameraPositions.Add(remote.Value);
+                {
+                    // #406 (3): every scene update. Asking each seat gives the same positions as the RemotePositions
+                    // iterator without a new iterator per call (see NearPartner); the camera list's order does not matter.
+                    Vector3 remote;
+                    for (int seat = 1; seat <= Players.MaxSeats; seat++)
+                        if (s_host.RemotePos(seat, out remote)) ___m_cameraPositions.Add(remote);
+                }
             }
         }
         [HarmonyPatch(typeof(ScenesManager), "UnloadScene")]

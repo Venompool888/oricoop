@@ -18,6 +18,8 @@ static class PlayersTests
         bool primaryContext = !Players.RemoteContext;
         bool passed = components && localContext && remoteContext && primaryContext;
         Console.WriteLine("PLAYERS local/remote component and context ownership " + (passed ? "PASS" : "FAIL"));
-        return passed ? 0 : 1;
+        Players.Remotes.Clear();
+        bool seats = LocalSeatsTests.Run();
+        return passed && seats ? 0 : 1;
     }
 }

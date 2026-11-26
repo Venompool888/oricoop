@@ -65,6 +65,34 @@ namespace OriCoop
             Patch(failed, typeof(Projectile), "OnPoolSpawned", null, null, "PoolSpawned", null);
         }
 
+        // #436 follow-up: the Ginso puzzle shooters are not OnTimerPerformAction (WorldSync's timer census found none
+        // there, only TimedDoor, TimedTrigger, ProjectileSpawner, SpawnProjectileAction). Once per object, from that
+        // census (the host's first resend after a scene loads, so it does not need Ori near the shooter):
+        //   phys shooter.save type path scene active archive_len archive_f0 parent_seq f_<field>...
+        // archive_f0: the first 4 bytes of its Archive as a float (its saved timer, if it has one).
+        const int MaxInventory = 60;
+        static readonly HashSet<int> s_inventoried = new HashSet<int>();
+        internal static void Inventory(Component c, byte[] archive)
+        {
+            try
+            {
+                if (c == null || s_inventoried.Count >= MaxInventory || !s_inventoried.Add(c.GetInstanceID())) return;
+                List<object> kv = new List<object> { "type", c.GetType().Name, "path", PathOf(c.transform), "scene", SceneName(c),
+                    "active", c.gameObject.activeInHierarchy, "archive_len", archive == null ? -1 : archive.Length,
+                    "archive_f0", archive != null && archive.Length >= 4 ? Num(BitConverter.ToSingle(archive, 0)) : "-" };
+                ActionSequence parent = c.GetComponentInParent<ActionSequence>();
+                kv.Add("parent_seq"); kv.Add(parent == null ? "none" : parent.name);
+                int n = 0;
+                foreach (KeyValuePair<string, string> f in Dump(c))
+                {
+                    if (n++ >= MaxFields) break;
+                    kv.Add("f_" + f.Key); kv.Add(f.Value);
+                }
+                Emit("shooter.save", kv);
+            }
+            catch { }
+        }
+
         // From CoopTraceHooks.SceneLoaded: a new visit of the scene logs its shooters' first starts again.
         internal static void SceneLoaded(string scene) { s_starts.SceneLoaded(scene); s_spawns.SceneLoaded(scene); }
 
@@ -171,6 +199,7 @@ namespace OriCoop
             try
             {
                 if (__instance == null || !CoopTrace.On(Sub, 1) || !IsShooter(__instance)) return;
+                if (WorldObjSync.DroppedNow(__instance)) return;   // a guest's own shot dropped for the host's (#444): did not run
                 string scene = SceneName(__instance); int id = WorldObjSync.IdOf(__instance);
                 int n = s_starts.Next(scene, id.ToString(CultureInfo.InvariantCulture));
                 if (n == 0) return;

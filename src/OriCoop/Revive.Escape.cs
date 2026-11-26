@@ -265,7 +265,7 @@ namespace OriCoop
             if (s_mashRing[seat] == null) s_mashRing[seat] = new GlowRing("OriCoop_EscapeMashRing_P" + seat);
             if (s_mashRing[seat].Ok) s_mashRing[seat].Place(at, 0.1f, progress, 1f);
             if (s_mashHint[seat] == null) s_mashHint[seat] = new GameText("OriCoop_EscapeMashHint_P" + seat);
-            if (s_mashHint[seat].Ok) { s_mashHint[seat].SetText(text); s_mashHint[seat].Place(at + new Vector3(0f, -2.2f, 0f), 0.032f, 0.4f, 1f); }
+            if (s_mashHint[seat].Ok) { s_mashHint[seat].SetText(text); s_mashHint[seat].Place(at + new Vector3(0f, -2.2f, 0f), GameText.PromptHeight, 0.9f, 1f); }   // T-255: native size
         }
 
         static void HideMash(int seat)

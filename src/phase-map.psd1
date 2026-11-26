@@ -48,6 +48,8 @@
         'PsReport' = ''; 'MirrorJudge' = ''; 'PadTypes' = ''
         'NetEscapeTest' = 'ESC'; 'EscapeRules' = 'ESC'; 'Revive.Escape' = 'R,ESC'; 'EscapeProbe' = ''   # T-169 escapes (3P part: net-3p suites)
         'EnemySync' = 'E3,E5,CUT'   # T-183: partner scene streaming is paused during stories (KURO, phase CUT)
+        'CoopTraceAudio' = ''; 'AudioWatch' = ''   # T-252: audio trace lines only, nothing in play changes (rules: AudioWatch unit tests)
+        'GameText' = 'R,CUT'   # T-255: full-alpha text is checked in GATE G1 (CUT, ORICOOP_P3_GATE=1) and R6 (the self-revive hint); its module M8 selects no net phase
     }
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
     # Suite 'net' means the 2-player net suites (net, net-newgame), which take ORICOOP_PHASES.
@@ -172,6 +174,7 @@
         @{ Switch = 'ORICOOP_MUTATE_ESCAPE_MASH_NEAREST'; File = 'src\OriCoop\Revive.Escape.cs'; Suite = 'net-3p'; Phase = '' }   # T-169 mash revive: a random teammate in the escape
         @{ Switch = 'ORICOOP_MUTATE_WORLD_WHOLE_BLOB'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net-3p'; Phase = '' }   # T-168 same-RTT world events (net W5, net-4p and net-3p-cs check it too)
         @{ Switch = 'ORICOOP_MUTATE_TIMER_PHASE_ONCE'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = '' }   # T-250 the host resends its level timers' phase (no game check yet: World TimerPhaseTests)
+        @{ Switch = 'ORICOOP_MUTATE_SHOT_FOLLOW_OFF'; File = 'src\OriCoop\WorldObjSync.cs'; Suite = 'net'; Phase = 'WO' }   # #444 the Ginso shooter fires with the host's shots (WO2 / WO2L check it)
         @{ Switch = 'ORICOOP_MUTATE_SHARE_TRIGGERS'; File = 'src\OriCoop\WorldSync.Delta.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 string triggers stay per PC (KURO post-story checks; World unit tests)
         @{ Switch = 'ORICOOP_MUTATE_MIRROR_TRIGGER_RUNS'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 a mirror's start consumes the string trigger (KURO: 03 and 04 ran once)
         @{ Switch = 'ORICOOP_MUTATE_START_IN_SCENE_TRIP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-185 a mirrored start waits for this PC's scene trip (KURO=1 over 90 ms: stories ended only once 04 finished, own Ori back at the tree)
@@ -179,6 +182,8 @@
         @{ Switch = 'ORICOOP_MUTATE_STREAM_IN_STORY'; File = 'src\OriCoop\EnemySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-183 the host does not stream the partner's scenes during a story (KURO: 03 and 04 ran once, Ori back at the tree)
         @{ Switch = 'ORICOOP_MUTATE_GATE_FIRE_BUTTON'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 the gate's fire does not re-check the pickup key (SEIN: story starts when the partner arrives)
         @{ Switch = 'ORICOOP_MUTATE_GATE_NO_ADOPT'; File = 'src\OriCoop\ForcedSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a player standing in a waited-at area counts as present (SEIN: story starts when the partner arrives)
+        @{ Switch = 'ORICOOP_MUTATE_SMALL_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'R' }   # T-255 the self-revive hint draws as large as the native hint (R6)
+        @{ Switch = 'ORICOOP_MUTATE_DIM_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'CUT' }   # T-255 the gate prompts draw their text at full alpha (GATE G1, ORICOOP_P3_GATE=1)
         @{ Switch = 'ORICOOP_MUTATE_STORY_ENDS_ON_GAP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running script with a takeover step ahead is not over (SEIN: a story announced as long as the script ran)
         @{ Switch = 'ORICOOP_MUTATE_SEQ_PROGRESS_SHARED'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running story script keeps its own step (SEIN with STORY_ENDS_ON_GAP: the host's Ori walks after the story)
     )
