@@ -418,15 +418,15 @@ namespace OriCoop
 
         // #444 (the maintainer's choice): the Ginso puzzle shooter waits for its last projectile, so it fires with the
         // host's shots (WorldObjSync kind 7, World/ShooterFollow.cs). The guest first pushes its own timer half a period
-        // off; for 14 s every shot the host's shooter fires must run on the guest, and the guest's own timer none.
+        // off; observe both peers during the same 14 seconds of the host's native shooter clock.
         static IEnumerator ShooterSkew(TestHarness h, string tag, int step, bool host)
         {
             yield return Barrier(h, step, 0, 0f, 0f);
             int sent0 = WorldObjSync.ShotsSent, followed0 = WorldObjSync.ShotsFollowed, dropped0 = WorldObjSync.ShotsDropped;
             int own0 = WorldObjSync.ShotsOwn, ownAtFirst = -1;
             if (!host) yield return GuestSkew(h, tag);
-            float until = Time.realtimeSinceStartup + 14f;
-            while (Time.realtimeSinceStartup < until)
+            TestClock.Window hostWindow = new TestClock.Window(14f);
+            while (host ? hostWindow.Open : Partner(step + 1) == null && hostWindow.RealElapsed < TestClock.RealCap(14f) + 5f)
             {
                 if (!host && ownAtFirst < 0 && WorldObjSync.ShotsFollowed > followed0) ownAtFirst = WorldObjSync.ShotsOwn;
                 KeepAlive(); yield return null;
@@ -434,10 +434,11 @@ namespace OriCoop
             int mine = host ? WorldObjSync.ShotsSent - sent0 : WorldObjSync.ShotsFollowed - followed0;
             yield return Barrier(h, step + 1, mine, 0f, 0f);
             Sample p = Partner(step + 1);
-            if (host) h.Check(mine >= 2, tag + " #444 host sent its Ginso shooter's shots (" + mine + " in 14 s)");
+            if (host) h.Check(mine >= 2, tag + " #444 host sent its Ginso shooter's shots (" + mine + " in "
+                + hostWindow.GameElapsed.ToString("F1") + " game s, " + hostWindow.RealElapsed.ToString("F1") + " real s)");
             else
             {
-                h.Check(mine >= 2, tag + " #444 guest's Ginso shooter fired the host's shots (" + mine + " in 14 s, dropped own "
+                h.Check(mine >= 2, tag + " #444 guest's Ginso shooter fired the host's shots (" + mine + " during the host window, dropped own "
                     + (WorldObjSync.ShotsDropped - dropped0) + ", own before the first " + (ownAtFirst < 0 ? -1 : ownAtFirst - own0) + ")");
                 h.Check(ownAtFirst >= 0 && WorldObjSync.ShotsOwn == ownAtFirst, tag + " #444 guest's own timer fired no shot once it followed the host's ("
                     + (ownAtFirst < 0 ? "never followed" : (WorldObjSync.ShotsOwn - ownAtFirst) + " own") + ")");
