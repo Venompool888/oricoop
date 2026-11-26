@@ -33,7 +33,8 @@ event, then `key=value` fields (values with spaces are quoted with `\"` escapes)
   same stamps. Unity errors/exceptions become `log unity.exception msg=... at=<top stack frame>`.
 
 ## Levels (BepInEx config `local.oricoop.cfg`, section `[Trace]`)
-- `Level` = 0 off, 1 events (state changes), **2 (default)** + periodic samples, 3 + verbose.
+- `Level` = 0 off, **1 (default)** events (state changes), 2 + periodic samples, 3 + verbose. Before #423 the default was 2;
+  a config still holding that old 2 is moved to 1 once (`DefaultLowered`). Set 2 again to get the periodic samples.
 - `SubsystemLevels` = e.g. `phys=3,enemy=1`. `SampleFrames` = 30 (samples every N frames).
 - Env overrides for tests: `ORICOOP_TRACE_LEVEL`, `ORICOOP_TRACE_DIR`.
 
@@ -48,7 +49,7 @@ if (CoopTrace.On("phys", CoopTrace.Samples)) { /* build expensive fields only th
 ```
 Fields are name/value pairs; `Vector3`, `float`, `bool`, Unity objects (`name#instanceId`) are formatted for you.
 Thread-safe (stamps come from a clock cached on the main thread). Subsystems in use:
-`player phys enemy story cam hud save scene net log`.
+`player phys enemy story cam hud save scene net audio log`.
 **When you fix a bug, emit the events that would have explained it** (e.g. enemy-sync: `enemy owner.change`,
 `enemy snapshot.apply`; world-physics: `phys owner.change`, `phys push.start who=`; story-cutscene: `story skip
 reason=`). Use the object's net id in `id=` on both ends, so the merge tool can pair them.
@@ -71,10 +72,22 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `shooter.action` / `shooter.holder` / `shooter.projectile` (fields read by reflection, once each), `shooter.holders`
   (count), `shooter.spawn` (each projectile's pos, vel, gravity, life, angle to own Ori / to the partner).
 - world, T-250 timer phase (`src\OriCoop\WorldSync.cs`, rules in `World\TimerPhase.cs`): the host sends the phase of
-  every `OnTimerPerformAction` / `TimedTrigger` in its loaded scenes every 0.7-1.3 s (world message 12). A guest takes it
-  only when its own is more than 0.25 s off and neither side is within 0.25 s of a restart: `timer.phase` (key, type,
-  path, local, host, verdict), first 200 per process. The 5 s `net: world bytes/sec` log line adds
-  `timers sent= taken= in_step= near_restart=`.
+  every `OnTimerPerformAction` and every running repeating `TimedTrigger` (the Moon Grotto / Forlorn shooters, #443)
+  in its loaded scenes every 0.7-1.3 s (world message 12). A one-shot `TimedTrigger` is left out (#436), and so is a
+  repeating one while `Paused`, on either PC. A repeating one whose `ProjectileSpawner` waits for its last projectile
+  (the Ginso Tree puzzle shooter) has no phase sync: it fires with the host's shots (#444, below). A guest takes it only
+  when its own is more than 0.25 s off and neither side is within 0.25 s of a restart (or of the trigger's `Duration`):
+  `timer.phase` (key, type, path, local, host, period, verdict), first 200 per process. The 5 s
+  `net: world bytes/sec` log line adds `timers sent= taken= in_step= near_restart= paused=` and
+  `shots followed= dropped= own=`; the once-per-scene `net: world timers scene=` line adds
+  `repeating_triggers= paused= follows_host_shots=`.
+- phys, #444 shots that follow the host (`src\OriCoop\WorldObjSync.cs`, rule in `World\ShooterFollow.cs`): the host
+  sends each shot of the Ginso shooter (message 75 kind 7, BepInEx log `[wobj] send shot`); a guest runs it
+  (`wobj.apply kind=shot`) and drops its own timer's shots while the host's keep coming (`wobj.shot.drop`, 15 s
+  window); with none for 15 s its own run again (`wobj.shot.own`). A dropped shot logs no `shooter.start`. The
+  BepInEx log names each repeating trigger once: `[wobj] shooter <name> id= waits_for_projectile= follows_host=`.
+  NetWorldObjTest WO2 pushes the guest's own timer half a period off (`timer.skew`) and checks for 14 s that the
+  guest fires every host shot and none of its own.
 - save / scene: save, load, pause/resume, difficulty (with the enemy health multiplier actually in effect),
   scene load/unload, current scene.
 - net: every 1 s RTT, loss, reliable pending/resends, remote scene; connect/disconnect with reason.
@@ -85,6 +98,22 @@ Patched one by one; a missing target is logged once (`trace hooks: could not pat
   `accept (hello answer) received ... after N ms` or `no answer after 10 s: N connect request(s) sent, M packet(s)
   received`; the Steam side logs `P2P session request from`, `held` / `accepted` / `refused`, and the first packet sent /
   received with its channel.
+
+- audio, T-252 (`src\OriCoop\CoopTraceAudio.cs`, rules in `Diagnostics\AudioWatch.cs`), observe only, checked once a
+  second. Level 1: `watch.init` (which game volume settings were found), `listener` (which AudioListener, enabled,
+  how many, its distance `to_view` from the camera's target), `pause` / `volume` (AudioListener), `settings` (the
+  game's own volume settings), `focus`, `device.changed` (Windows changed the output device or format), and
+  `snapshot why=` at spectate start / end / another teammate, own player down / up, a new scene and a device change.
+  **`audio lost.suspect reasons=`** when the sound looks lost, with the full state (listener and its position, pause,
+  volumes, focus, time scale, scene, camera target, playing / quiet / out-of-range sources, the 4 playing sounds
+  nearest to the view as `name@dist/volume/maxDistance/rolloff/blend`, blend 0 = 2D, every player's position and downed state); the same
+  moment as a warning `audio: sound may be lost (...)` in `LogOutput.log`. Then `lost.change`, `lost.still` (every
+  30 s) and `lost.clear for_s=`. Reasons: `no_listener`, `many_listeners` (both only in a level: while the game starts there is no camera yet), `listener_paused`, `listener_volume`,
+  `settings_zero`, `listener_off_view` (listener more than 15 units from what the camera shows),
+  `listener_far_from_watched` (while down, from the teammate you watch), `view_sounds_quiet` (2+ sounds next to the
+  view play but none can be heard), `silent` (nothing plays for 5 s in a running level), `dsp_stalled` (the audio
+  clock stopped). Also `heartbeat` every 120 s. Level 2: `sample` (the full state) every 5 s. At most 40 audio lines a
+  minute (`budget.dropped lines=`), 100 suspect episodes per process.
 
 ## Merge tool: `tools\merge-coop-logs.py`
 ```

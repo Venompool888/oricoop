@@ -1373,7 +1373,7 @@ namespace OriCoop
             CheckKeyCheckpoint(h, save.SaveToBytes(), keysBeforeExit, false, "native rollback leaves key available");
         }
 
-        static void CollectTestKeystones(int amount, MoonGuid id = null)
+        static void CollectTestKeystones(int amount)
         {
             SeinCharacter own = Own;
             SeinPickupProcessor collector = ProgressSync.PickupCollector(own);
@@ -1386,7 +1386,7 @@ namespace OriCoop
                 KeystonePickup pickup = go.AddComponent<KeystonePickup>();
                 // Runtime orbs may have no stable world GUID. This still exercises the production
                 // pickup collector prefix, reliable event, host effect, and progress replication.
-                pickup.MoonGuid = id ?? MoonGuid.Empty; pickup.Amount = amount;
+                pickup.MoonGuid = MoonGuid.Empty; pickup.Amount = amount;
                 pickup.OnValidate();
                 collector.OnCollectKeystonePickup(pickup);
             }
@@ -1709,6 +1709,8 @@ namespace OriCoop
                     if (step == 5) yield return Safely(h, "W map late", MapKeep(h, true));
                     if (step == 5) yield return Safely(h, "W pickups", PickupCopies(h));
                     if (step == 5) yield return Safely(h, "W cells", CellRefill(h));
+                    if (step == 5) yield return Safely(h, "W cell ownership", NetCellAuthorityTest.Run(h, n => { PublishWorldBarrier(h, n, false); return WorldBarrier(h, n); }, () => ClosePopups()));
+                    if (step == 5) yield return Safely(h, "W clone checkpoint", CloneCheckpoint(h));
                 }
             }
             finally
@@ -2726,7 +2728,8 @@ namespace OriCoop
                 if (PhaseOn("WO") && Mark(h, "WO")) yield return Safely(h, "WO", NetWorldObjTest.Run(h));   // dynamic world objects (NetWorldObjTest.cs, world-physics)
                 if (PhaseOn("CAM") && Mark(h, "CAM")) yield return Safely(h, "CAM", NetCameraTest.Run(h, phaseAStart));   // online influence camera (NetCameraTest.cs, T-058)
                 if (PhaseOn("CUT") && Mark(h, "CUT")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 64); yield return Safely(h, "P3", NetCutsceneTest.Run(h)); }
-                if (PhaseOn("ESC") && Mark(h, "ESC")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 66); yield return Safely(h, "ESC", NetEscapeTest.Run(h)); yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 68); }   // escape rules (NetEscapeTest.cs, T-169)
+                if (PhaseOn("ESC") && Mark(h, "ESC")) { yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 66); yield return Safely(h, "ESC", NetEscapeTest.Run(h)); yield return NetStoryTest.PlaceAtStart(h, phaseAStart, 68);
+                    h.Check(NetPlay.NotInGameplayReason() == null, "ESC end: back in gameplay at the start spot (" + (NetPlay.NotInGameplayReason() ?? "yes") + "; " + CoopMenu.GameplayDetail() + ")"); }   // escape rules (NetEscapeTest.cs, T-169); #431
                 h.Note("=== phase END");
                 // With selected phases the last one is followed by G at once: the end that finished first left the
                 // session while the other still waited for that phase's last barrier (E5 alone: "E5L barrier 44").
@@ -2764,7 +2767,11 @@ namespace OriCoop
                     {
                         yield return WorldBarrier(h, 24900);
                         keysBeforeExit = PartnerWorld(24900).Keys;
-                        CollectTestKeystones(1, WKey);
+                        // The fixture above is a registered object in a scene absent on the host. Its wire
+                        // claim must identify that record; detached test GameObjects have no native registration.
+                        Story.ProgressAction claim = new Story.ProgressAction { Sequence = 0x72490001, Kind = Story.ActionKind.Keystone,
+                            Amount = 1, Guid = WKey.ToByteArray(), Scene = WKeyScene.ToByteArray(), HasSpot = true, Registered = true };
+                        NetPlay.Send(21, true, claim.Write);
                     }
                     float by = Time.realtimeSinceStartup + 6f;
                     while (Own.Inventory.Keystones != keysBeforeExit + 1 && Time.realtimeSinceStartup < by) yield return null;
@@ -2811,8 +2818,14 @@ namespace OriCoop
                         menu.ShowMenuScreen();
                         help = NetStoryTest.TryOpenHelp();
                         CoopMenu.Open();
+                        bool openedAtOnce = CoopMenu.IsOpen;
                         yield return null;
-                        h.Check(CoopMenu.IsOpen && SessionRules.LiveScreen && !ori.IsSuspended, "G screens: the guest is live with its screens open");
+                        bool liveOpen = CoopMenu.IsOpen && SessionRules.LiveScreen && !ori.IsSuspended;
+                        h.Check(liveOpen, "G screens: the guest is live with its screens open");
+                        if (!liveOpen)   // #431: after the ESC phase this failed on the guest; say why
+                            h.Note("G screens: open at once=" + openedAtOnce + ", after a frame=" + CoopMenu.IsOpen + ", live=" + SessionRules.LiveScreen
+                                + ", suspended=" + ori.IsSuspended + ", gameplay=" + (NetPlay.NotInGameplayReason() ?? "yes") + ", room page=" + CsRoomPage.InGame
+                                + ", menu said: " + (CoopMenu.LastRefusal.Length > 0 ? CoopMenu.LastRefusal : "nothing") + "; " + CoopMenu.GameplayDetail());
                     }
                     NetPlay.TestTransportFailure("test: the transport failed");
                     if (checkMenu)
@@ -2828,8 +2841,13 @@ namespace OriCoop
                         CoopMenu.Close();
                         PauseMenuEntry.Release();
                         menu.HideMenuScreen(true);
-                        h.Check(!menu.MainMenuVisible && !ori.IsSuspended && !GameController.Instance.InputLocked,
-                            "G screens: closing the offline screens releases their suspends and input lock");
+                        bool released = !menu.MainMenuVisible && !ori.IsSuspended && !GameController.Instance.InputLocked;
+                        h.Check(released, "G screens: closing the offline screens releases their suspends and input lock");
+                        if (!released)   // #431 round 5: failed with no word on which part stayed
+                            h.Note("G screens close: menu visible=" + menu.MainMenuVisible + ", suspended=" + ori.IsSuspended
+                                + ", input locked=" + GameController.Instance.InputLocked + ", co-op menu open=" + CoopMenu.IsOpen
+                                + ", popup=" + SessionRules.PopupOpen + ", story=" + StorySync.StoryActive + ", takeover mask=" + StorySync.TakeoverMaskPublic()
+                                + ", letterbox=" + Letterbox.ShowLetterboxes + "; " + CoopMenu.GameplayDetail());
                     }
                     float failGoneBy = Time.realtimeSinceStartup + 1f;
                     while (P2Context.P2 != null && Time.realtimeSinceStartup < failGoneBy) yield return null;

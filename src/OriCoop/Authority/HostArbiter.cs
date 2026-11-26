@@ -27,7 +27,8 @@ namespace OriCoop.Authority
         {
             // AuthoritySource is lazy: a guest may have joined before the host first touched it (no PlayerJoined seen).
             if (!arbiter.IsOnline(seat, nowMs())) SeatJoined(seat);
-            Route(arbiter.Handle(seat, CsWire.Decode(csMessage), nowMs()));
+            CsMessage request = CsWire.Decode(csMessage);
+            Route(arbiter.Handle(seat, request, nowMs()), request.Type == CsWire.CsState && AuthorityClient.ReliableState(request.Key));
         }
 
         public void SeatJoined(int seat) { Route(arbiter.JoinAt(seat, 0, "", nowMs())); }
@@ -39,12 +40,12 @@ namespace OriCoop.Authority
             client.ResetSession();
         }
 
-        void Route(List<Outgoing> output)
+        void Route(List<Outgoing> output, bool reliableState = false)
         {
             int mine = localSeat();
             foreach (Outgoing item in output)
             {
-                bool reliable = item.Message[0] != CsWire.CsState;
+                bool reliable = reliableState || item.Message[0] != CsWire.CsState;
                 for (int seat = 1; seat <= 4; seat++)
                     if (seat != mine && arbiter.IsOnline(seat, nowMs()) &&
                         (item.To == seat || item.To == 0 || (item.To < 0 && -item.To != seat)))

@@ -135,7 +135,7 @@ namespace OriCoop
                 if (s_gameHint[player].Ok)
                 {
                     s_gameHint[player].SetText(text);
-                    s_gameHint[player].Place(d.Marker + new Vector3(0f, -0.9f, 0f), 0.032f, 0.4f, a);
+                    s_gameHint[player].Place(d.Marker + new Vector3(0f, -0.9f, 0f), GameText.PromptHeight, 0.9f, a);   // T-255: native size (was 0.032)
                     s_hint[player].Hide();
                     LastHintText = text;
                 }

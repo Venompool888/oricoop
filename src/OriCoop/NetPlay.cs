@@ -858,6 +858,7 @@ namespace OriCoop
         static readonly Action s_extraTick = OnlineLocalPlayers.Tick, s_extraSample = OnlineLocalPlayers.SampleExtras;
 
         // ---------------------------------------------------------------- per frame (Runner.Update)
+        static bool s_readFlushed = true;   // the last Update reached its flush after reading (see the Poll below)
         public static void Update()
         {
             // Before the Enabled check: Steam invites must be caught (and acted on) while online play is off.
@@ -875,12 +876,25 @@ namespace OriCoop
             SubsystemGuard.Run("OnlineLocalPlayers.Tick", s_extraTick);
             if (HasHub)
             {
-                s_hub.Poll();
+                // One packet per guest: the acks wait for the forwards queued while reading (was ack, then forwards).
+                // No try/finally here: the test build's input-block transpiler rewrites this method (it calls
+                // Input.GetKeyDown), and with an extra exception block the rewritten method threw every frame (#421).
+                // Instead, if the last read threw before its flush, this poll flushes as it used to.
+                bool defer = s_readFlushed; s_readFlushed = false;
+                s_hub.Poll(!defer);
                 foreach (RemoteState remote in new List<SessionMachine.Remote>(s_remotes.Values))
                     if (remote.Peer != null) ReadPeer(remote.Peer, remote, true);
-                s_hub.Flush();
+                if (s_hub != null) s_hub.Flush();
+                s_readFlushed = true;
             }
-            else { Peer.Poll(); if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null); }
+            else
+            {
+                bool defer = s_readFlushed; s_readFlushed = false;
+                Peer.Poll(!defer);
+                if (Peer != null) ReadPeer(Peer, IsHost && !s_factorySession ? Primary : null);
+                if (Peer != null) Peer.Flush();
+                s_readFlushed = true;
+            }
             if (s_factorySession) Authority.CServerLink.TickOwnerNotice();
             if (!Connected || WaitingForSeat) return;
 
@@ -944,16 +958,22 @@ namespace OriCoop
         internal static bool RemoteLoading(int seat)
         { RemoteState remote; return TryGetRemote(seat, out remote) && remote.Hello && !remote.InGameplay; }
 
-        public static bool LocalInGameplay()
+        public static bool LocalInGameplay() { return NotInGameplayReason() == null; }
+
+        // Why this PC is not in co-op gameplay, or null when it is (constant strings: called every frame).
+        public static string NotInGameplayReason()
         {
             SeinCharacter s = Characters.Sein;
-            if (s == null || !s.gameObject.activeInHierarchy || (P2Context.P2 != null && s == P2Context.P2)) return false;
+            if (s == null) return "no Sein";
+            if (!s.gameObject.activeInHierarchy) return "Sein inactive";
+            if (P2Context.P2 != null && s == P2Context.P2) return "Sein is P2";
             GameController gc = GameController.Instance;
-            if (gc == null || gc.IsLoadingGame) return false;
-            if (GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen()) return false;
+            if (gc == null) return "no game controller";
+            if (gc.IsLoadingGame) return "loading a game";
+            if (GameStateMachine.Instance != null && GameStateMachine.Instance.IsInExtendedTitleScreen()) return "title screen";
             // T-203: the new-game prologue is not co-op gameplay: no checkpoint leaves a host in the middle of it.
-            if (GameStateMachine.Instance != null && GameStateMachine.Instance.CurrentState == GameStateMachine.State.Prologue) return false;
-            return true;
+            if (GameStateMachine.Instance != null && GameStateMachine.Instance.CurrentState == GameStateMachine.State.Prologue) return "prologue";
+            return null;
         }
 
         static void Handle(byte[] m, bool reliable, RemoteState source)
@@ -1060,6 +1080,9 @@ namespace OriCoop
                 try { SendSeatFrame(puppet.Seat, puppet.Sein, tick); }
                 finally { puppet.Input.Swap(); }
             }
+            // One flush for every local seat's frame, so split-screen sends one packet per step, not one per seat.
+            // (If a seat's frame threw, Update's flush after reading sends what was queued, the same frame.)
+            if (s_hub != null) s_hub.Flush(); else if (Peer != null) Peer.Flush();
         }
 
         static void SendSeatFrame(int seat, SeinCharacter p1, uint tick)
@@ -1128,7 +1151,6 @@ namespace OriCoop
                 byte[] packet = Seats.FrameStreams.Encode(Players.LocalSeat, new int[] { seat }, new byte[][] { body });
                 Broadcast(packet, packet.Length, false);
             }
-            if (s_hub != null) s_hub.Flush(); else Peer.Flush();
         }
 
         static void PlayRemote()

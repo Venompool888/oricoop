@@ -15,3 +15,4 @@ OriCoop\World\StoryProgressKeys.cs
 OriCoop\World\DigestRepair.cs
 OriCoop\World\TimerPhase.cs
 OriCoop\World\SnapshotRequests.cs
+OriCoop\World\ShooterFollow.cs

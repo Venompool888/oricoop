@@ -563,10 +563,15 @@ namespace OriCoop
             GameText hint = s_selfHint[seat];
             // The online camera may follow a teammate, not the downed Ori. Keep the primary hint in the viewport.
             bool shown = hint.SetText(text) && (Services.Net.Enabled && primary
-                ? hint.PlaceViewport(0.5f, 0.24f, 0.032f, 0.4f)
-                : hint.Place(d.Marker + new Vector3(0f, -1.6f, 0f), 0.032f, 0.4f, 1f));
+                ? hint.PlaceViewport(0.5f, 0.24f, GameText.PromptHeight, 0.9f)   // T-255: native size (was 0.032, half the native hint)
+                : hint.Place(d.Marker + new Vector3(0f, -1.6f, 0f), GameText.PromptHeight, 0.9f, 1f));
             LastSelfHint = shown ? text : null;
         }
+
+        // T-255 (playtest screenshot: this hint drew faint grey): its text alpha and what GameText found, for the R6 check.
+        internal static float SelfHintHeight(int seat) { GameText hint = s_selfHint[seat]; return hint != null ? hint.ScreenHeight() : -1f; }
+        internal static float SelfHintAlpha(int seat) { GameText hint = s_selfHint[seat]; return hint != null ? hint.TextAlpha() : -1f; }
+        internal static string SelfHintBrightness(int seat) { GameText hint = s_selfHint[seat]; return hint != null ? hint.BrightDebug ?? "" : "no hint"; }
 
         internal static bool SelfHintOnScreen(int seat)
         {

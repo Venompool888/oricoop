@@ -54,6 +54,7 @@ static class EnemyOwnerPolicyTests
         public uint EpochOf(string key) { LastKey = key; return Epoch; }
         public bool Owns(string key) { return OwnerOf(key) == LocalSeat; }
         public StateUpdate LatestState(string key) { return null; }
+        public System.Collections.Generic.IEnumerable<StateUpdate> CachedStates { get { yield break; } }
         public void RequestLease(string key, float score, bool active)
         { LastKey = key; Score = score; Active = active; Requests++; }
         public void ReleaseLease(string key)

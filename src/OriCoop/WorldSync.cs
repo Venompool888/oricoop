@@ -67,6 +67,7 @@ namespace OriCoop
         static long s_deltaBytes, s_snapshotBytes, s_digestBytes;
         static bool s_sendingSnapshot;
         static uint s_digestSequence, s_receivedDigest;
+        static bool s_digestWorldMatched;   // #422: the received digest's world part matched, so its manifest is not compared
         static int s_digestSender;
         static bool s_digestProgressDiffers;
         static float s_digestResyncAt, s_digestBackoff = DigestBackoffMin;
@@ -104,6 +105,7 @@ namespace OriCoop
 
         static void Reset()
         {
+            ResetBodies();
             s_blobs.Clear(); s_known.Clear(); s_changed.Clear(); s_bad.Clear();
             s_excluded.Clear(); s_parts.Clear(); s_deferred.Clear();
             s_remoteManifest.Clear(); s_compareManifest.Clear(); s_loggedLocalTypes.Clear();
@@ -115,10 +117,10 @@ namespace OriCoop
             s_snapshotRequests.Clear(); s_snapshotNumber = 0;
             s_mirrorHold.Clear(); s_mirrorKeys.Clear(); s_storyProgress.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
-            s_digestSequence = s_receivedDigest = 0;
+            s_digestSequence = s_receivedDigest = 0; s_digestWorldMatched = false;
             ResetDigestRepair();
             ResetDelta();
-            s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear();
+            s_timerPhase.Reset(); s_timerTraces = 0; s_timerCensus.Clear(); s_timerTakeAt.Clear();
         }
 
         public static void Tick()
@@ -146,7 +148,9 @@ namespace OriCoop
                 if (all) { SendSnapshot(0, "queued"); ProgressSync.SendSnapshot(); }
                 foreach (int seat in seats) { SendSnapshot(seat, "queued"); ProgressSync.SendSnapshot(seat); }
             }
-            if (!NetPlay.AnyRemoteInGameplay || s_awaitSnapshot) return;
+            if (s_awaitSnapshot) return;
+            if (!s_mutateUnsyncedBodies) TickBodies();
+            if (!NetPlay.AnyRemoteInGameplay) return;
             float now = Time.realtimeSinceStartup;
             if (now >= s_scanAt) { s_scanAt = now + 0.25f; SendBlobs(RouteAggregates(Capture(false))); }
             if (NetPlay.IsHost && !s_mutateTimerPhaseOnce && s_timerPhase.Due(now)) SendTimerPhases();
@@ -158,7 +162,8 @@ namespace OriCoop
                     + " snapshot=" + (s_snapshotBytes / elapsed).ToString("F1")
                     + " digest=" + (s_digestBytes / elapsed).ToString("F1")
                     + " timers sent=" + TimerPhasesSent + " taken=" + TimerPhasesTaken + " in_step=" + TimerPhasesInStep
-                    + " near_restart=" + TimerPhasesNearRestart);
+                    + " near_restart=" + TimerPhasesNearRestart + " paused=" + TimerPhasesPaused
+                    + " shots followed=" + WorldObjSync.ShotsFollowed + " dropped=" + WorldObjSync.ShotsDropped + " own=" + WorldObjSync.ShotsOwn);
                 s_bandwidthAt = now; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             }
         }
@@ -227,6 +232,11 @@ namespace OriCoop
                 if (scene != null && scene.HasStartBeenCalled && scene.SceneRoot != null
                     && scene.MetaData != null && scene.SceneRoot.SaveSceneManager != null)
                     visitor(scene.MetaData.SceneMoonGuid, scene.SceneRoot.SaveSceneManager);
+        }
+
+        static byte[] CaptureBytesOrNull(ISerializable serializable)
+        {
+            try { return CaptureBytes(serializable); } catch { return null; }
         }
 
         public static byte[] CaptureBytes(ISerializable serializable)
@@ -388,12 +398,6 @@ namespace OriCoop
                 }
                 else if (schema == Meaning.RespawnPickup) { w.Write(r.ReadBoolean()); r.ReadSingle(); }
                 else if (schema == Meaning.Respawner) { r.ReadInt32(); r.ReadInt32(); w.Write(r.ReadBoolean()); r.ReadSingle(); }
-                else if (schema == Meaning.Body)
-                {
-                    // RigidbodySerialize.Serialize: pose / velocities of a simulated body. Both games simulate it, so the
-                    // floats never agree exactly; only the layout counts for the digest (the bytes still sync).
-                    w.Write(bytes.Length); input.Position = input.Length;
-                }
                 else { w.Write(bytes); input.Position = input.Length; }
                 if (input.Position != input.Length) throw new InvalidDataException("unrecognized canonical Archive suffix");
                 w.Flush(); return HashBytes(output.ToArray());
@@ -461,6 +465,12 @@ namespace OriCoop
                     ISerializable save = entry.Save;
                     if (Excluded(save)) { s_excluded.Add(key); s_blobs.Remove(key); continue; }
                     s_excluded.Remove(key);
+                    RigidbodySerialize body = save as RigidbodySerialize;
+                    if (body != null)
+                    {
+                        RegisterBody(scene, entry.Id, body);
+                        continue;
+                    }
                     if (s_bad.Contains(key)) continue;
                     if (StorySync.MirrorOwns(save as Component)) s_mirrorKeys.Add(key);
                     if (save is ActionSequenceSerializer && StorySequenceOf(save) != null) s_storyProgress.Remember(key);   // T-207 review 7
@@ -635,7 +645,7 @@ namespace OriCoop
             return found;
         }
 
-        static ISerializable Find(MoonGuid scene, MoonGuid id)
+        internal static ISerializable Find(MoonGuid scene, MoonGuid id)
         {
             ISerializable found = null;
             Visit(delegate(MoonGuid sceneId, SaveSceneManager manager) {
@@ -672,7 +682,7 @@ namespace OriCoop
         // Native inventory only enters the checkpoint in CreateCheckpoint. Keep the corresponding scene
         // changes in PendingScenes until that same save. Scene streaming reads pending first and a death
         // discards pending. Applying a guest pickup directly to Scenes used to roll back only the inventory.
-        static void StoreSceneProgress(MoonGuid scene, MoonGuid id, byte[] bytes)
+        internal static void StoreSceneProgress(MoonGuid scene, MoonGuid id, byte[] bytes)
         {
             if (scene == MoonGuid.Empty) { StoreCheckpoint(scene, id, bytes); return; }
             SaveGameData data = Game.Checkpoint.SaveGameData;
@@ -708,15 +718,32 @@ namespace OriCoop
 
         static void Apply(MoonGuid scene, MoonGuid id, byte[] bytes, Meaning schema, string type)
         {
+            // Rigidbody poses travel through the lease owner. A general world snapshot cannot supersede them.
+            if (schema == Meaning.Body) return;
             string key = Key(scene, id);
             ISerializable live = Find(scene, id);
             if (s_excluded.Contains(key) || (live != null && Excluded(live))) return;
             if (live != null && Describe(live) != schema) throw new InvalidDataException("world schema differs for " + key);
-            // T-250: the host's timer phase (SendTimerPhases) is only taken when this PC's own is out of step.
-            // Outside a snapshot a timer's canonical hash never changes, so its blob is only ever that resend: for a
-            // timer this PC has not loaded there is nothing to keep in step (and nothing to write into the checkpoint).
-            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.IsTimer(type)
-                && (live == null || s_bad.Contains(key) || !TakeTimerPhase(key, live, bytes))) return;
+            // T-250: the host's timer phase (SendTimerPhases) is only taken when this PC's own is out of step. A timer
+            // this PC does not know yet still goes the ordinary way (#436: TimerPhase.GuestRoute). A live TimedTrigger
+            // is a level timer only with Repeat on (the shooters); a one-shot one goes the ordinary way as before, and a
+            // repeating one that is Paused here (its spawner waits for its last projectile) is left alone.
+            if (!NetPlay.IsHost && !s_awaitSnapshot && schema == Meaning.AmbientPhase && TimerPhase.MayBeTimer(type))
+            {
+                bool oneShot = false, paused = false; float period = 0f;
+                if (live != null && TimerPhase.IsTimedTrigger(type)) oneShot = !RepeatingTrigger(live, out paused, out period);
+                // #444: a shooter that fires with the host's shots (WorldObjSync) has no phase to keep. A first sighting
+                // still goes the ordinary way, so the digests keep agreeing (#436).
+                bool follows = !oneShot && WorldObjSync.IsFollowedShooter(live as TimedTrigger);
+                if (follows && s_blobs.ContainsKey(key)) { TimerPhasesFollowed++; return; }
+                if (!oneShot && !follows)
+                {
+                    TimerPhase.Route route = TimerPhase.GuestRoute(live != null, s_bad.Contains(key), s_blobs.ContainsKey(key));
+                    if (route == TimerPhase.Route.Skip) return;
+                    if (route == TimerPhase.Route.Judge && paused) { TimerPhasesPaused++; return; }
+                    if (route == TimerPhase.Route.Judge && !TakeTimerPhase(key, live, bytes, period)) return;
+                }
+            }
             int[] forwardTo = null;
             if (NetPlay.IsHost)
             {
@@ -781,20 +808,50 @@ namespace OriCoop
 
         // Test-only mutation (net-3p world check): the host keeps an accepted guest blob to itself again (pre-T-141).
         static readonly bool s_mutateNoRebroadcast = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WORLD_NO_REBROADCAST") == "1";
+        static readonly bool s_mutateUnsyncedBodies = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_UNSYNCED_BODIES") == "1";
 
         // T-250 (#338, choice B): the host's level timers set the pace (World/TimerPhase.cs). Every ResendMin..ResendMax
-        // seconds the host sends the phase of every OnTimerPerformAction / TimedTrigger in its loaded scenes, as ordinary
+        // seconds the host sends the phase of every OnTimerPerformAction and every running repeating TimedTrigger (the
+        // Moon Grotto / Forlorn shooters, #443) in its loaded scenes, as ordinary
         // world blobs (message 12): no new message, no protocol change. A guest takes one only when it is out of step.
         // Test-only mutation ORICOOP_MUTATE_TIMER_PHASE_ONCE: the host does not resend (the phase crosses only in the
         // first snapshot again, as before T-250).
         static readonly bool s_mutateTimerPhaseOnce = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_TIMER_PHASE_ONCE") == "1";
         static readonly TimerPhaseSchedule s_timerPhase = new TimerPhaseSchedule(250u);
-        public static int TimerPhasesSent, TimerPhasesTaken, TimerPhasesInStep, TimerPhasesNearRestart;
+        public static int TimerPhasesSent, TimerPhasesTaken, TimerPhasesInStep, TimerPhasesNearRestart, TimerPhasesPaused, TimerPhasesFollowed;
         public static int LastSendableTimers;   // timers the host's latest resend found (0: none in its loaded scenes)
         static int s_timerTraces;
         const int MaxTimerTraces = 200;
         static readonly HashSet<string> s_timerCensus = new HashSet<string>();
+        // Guest: when it last took the host's phase for a timer in each scene (key prefix). A digest diff in that scene
+        // shortly after says whether writing the phase made other objects differ (#357 follow-up).
+        static readonly Dictionary<string, float> s_timerTakeAt = new Dictionary<string, float>();
+        static string SceneOfKey(string key) { int i = key.IndexOf(':'); return i < 0 ? key : key.Substring(0, i); }
         const int MaxTimerCensus = 400;
+
+        // TimedTrigger's own fields (#443 probe: Duration, Repeat, Paused, m_time). Missing on a game build: no
+        // TimedTrigger is treated as a level timer (the #436 rule).
+        static readonly System.Reflection.FieldInfo s_ttRepeat = AccessTools.Field(typeof(TimedTrigger), "Repeat");
+        static readonly System.Reflection.FieldInfo s_ttPaused = AccessTools.Field(typeof(TimedTrigger), "Paused");
+        static readonly System.Reflection.FieldInfo s_ttDuration = AccessTools.Field(typeof(TimedTrigger), "Duration");
+        internal static readonly System.Reflection.FieldInfo TimedTriggerTime = AccessTools.Field(typeof(TimedTrigger), "m_time");
+
+        // True: a TimedTrigger with Repeat on (a level timer). paused: it is Paused right now. period: its Duration (0
+        // when unreadable).
+        internal static bool RepeatingTrigger(object value, out bool paused, out float period)
+        {
+            paused = false; period = 0f;
+            TimedTrigger trigger = value as TimedTrigger;
+            if (trigger == null || s_ttRepeat == null || s_ttPaused == null) return false;
+            try
+            {
+                if (!(bool)s_ttRepeat.GetValue(trigger)) return false;
+                paused = (bool)s_ttPaused.GetValue(trigger);
+                if (s_ttDuration != null) period = Convert.ToSingle(s_ttDuration.GetValue(trigger));
+                return true;
+            }
+            catch { return false; }
+        }
 
         static void SendTimerPhases()
         {
@@ -802,14 +859,22 @@ namespace OriCoop
             Visit(delegate(MoonGuid scene, SaveSceneManager manager) {
                 if (scene == MoonGuid.Empty) return;
                 bool census = s_timerCensus.Add(scene.ToString()) && s_timerCensus.Count <= MaxTimerCensus;
-                int found = 0, sent = 0, excluded = 0, layout = 0, bad = 0;
+                int found = 0, sent = 0, excluded = 0, layout = 0, bad = 0, repeating = 0, paused = 0, followed = 0;
                 HashSet<string> others = census ? new HashSet<string>() : null;
                 SaveSceneManager.SaveId[] entries = manager.SaveData.ToArray();
                 foreach (SaveSceneManager.SaveId entry in entries)
                 {
                     if (entry == null || entry.Id == null || entry.SaveObject == null) continue;
                     ISerializable save = entry.Save;
-                    if (!(save is OnTimerPerformAction) && !(save is TimedTrigger))
+                    bool triggerPaused, levelTimer = save is OnTimerPerformAction; float period;
+                    if (!levelTimer && RepeatingTrigger(save, out triggerPaused, out period))
+                    {
+                        repeating++;
+                        if (WorldObjSync.IsFollowedShooter(save as TimedTrigger)) { followed++; continue; }   // fires with the host's shots (#444)
+                        if (!TimerPhase.Keeps(true, triggerPaused)) { paused++; continue; }   // not moving: nothing to pace
+                        levelTimer = true;
+                    }
+                    if (!levelTimer)
                     {
                         // Census only: a timer-like save type this rule does not know (a shooter run by another class).
                         if (others != null && save != null && others.Count < 8)
@@ -818,7 +883,11 @@ namespace OriCoop
                             if (name.IndexOf("Timer", StringComparison.OrdinalIgnoreCase) >= 0
                                 || name.IndexOf("Timed", StringComparison.OrdinalIgnoreCase) >= 0
                                 || name.IndexOf("Shoot", StringComparison.OrdinalIgnoreCase) >= 0
-                                || name.IndexOf("Projectile", StringComparison.OrdinalIgnoreCase) >= 0) others.Add(name);
+                                || name.IndexOf("Projectile", StringComparison.OrdinalIgnoreCase) >= 0)
+                            {
+                                others.Add(name);
+                                ShooterProbe.Inventory(save as Component, CaptureBytesOrNull(save));   // trace only
+                            }
                         }
                         continue;
                     }
@@ -839,7 +908,7 @@ namespace OriCoop
                 if (census)
                     Plugin.Log.LogInfo("net: world timers scene=" + (manager.transform.root != null ? manager.transform.root.name : "?")
                         + " found=" + found + " sendable=" + sent + " excluded=" + excluded + " other_layout=" + layout
-                        + " bad=" + bad + " save_entries=" + entries.Length
+                        + " bad=" + bad + " repeating_triggers=" + repeating + " paused=" + paused + " follows_host_shots=" + followed + " save_entries=" + entries.Length
                         + (others.Count != 0 ? " other_timer_like=" + string.Join(",", new List<string>(others).ToArray()) : ""));
             });
             LastSendableTimers = timers.Count;
@@ -850,23 +919,24 @@ namespace OriCoop
 
         // Guest: whether to take the host's phase for one timer (TimerPhase.Judge). A layout it cannot read is taken,
         // as before T-250.
-        static bool TakeTimerPhase(string key, ISerializable live, byte[] bytes)
+        static bool TakeTimerPhase(string key, ISerializable live, byte[] bytes, float period)
         {
             float local, remote;
             byte[] mine;
             try { mine = CaptureBytes(live); }
             catch (Exception e) { Disable(key, live, e); return false; }
             if (!TimerPhase.TryRead(mine, out local) || !TimerPhase.TryRead(bytes, out remote)) return true;
-            TimerPhase.Verdict verdict = TimerPhase.Judge(local, remote);
+            TimerPhase.Verdict verdict = TimerPhase.Judge(local, remote, period);
             if (verdict == TimerPhase.Verdict.InStep) { TimerPhasesInStep++; return false; }
             if (verdict == TimerPhase.Verdict.NearRestart) { TimerPhasesNearRestart++; return false; }
             if (verdict == TimerPhase.Verdict.Take) TimerPhasesTaken++;
+            s_timerTakeAt[SceneOfKey(key)] = Time.realtimeSinceStartup;
             if (s_timerTraces < MaxTimerTraces)
             {
                 s_timerTraces++;
                 Component c = live as Component;
                 CoopTrace.Event("world", "timer.phase", "key", key, "type", live.GetType().Name,
-                    "path", c != null ? c.name : "?", "local", local, "host", remote, "verdict", verdict.ToString());
+                    "path", c != null ? c.name : "?", "local", local, "host", remote, "period", period, "verdict", verdict.ToString());
             }
             return true;
         }
@@ -1064,7 +1134,7 @@ namespace OriCoop
         // A partner collected this pickup (reward already applied by ProgressSync; Collected actions are not replayed).
         // false = that copy is not live here and its scene has no checkpoint record of it.
         // active != null: a later retry, which only looks for the live copy among these.
-        public static bool MarkCollected(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null)
+        public static bool MarkCollected(MoonGuid id, MoonGuid scene, bool hasSpot, Vector2 spot, PickupBase[] active = null, bool allowArchived = true)
         {
             PickupBase live = FindPickup(id, scene, hasSpot, spot, active);
             if (live != null)
@@ -1079,7 +1149,7 @@ namespace OriCoop
                 }
                 return true;
             }
-            if (active != null) return false;
+            if (active != null || !allowArchived) return false;
             // Its scene is not loaded here: edit that scene's checkpoint record, if it has one in the PickupBase layout
             // (float m_currentTime + bool IsCollected, PickupBase.cs:134; no subclass overrides it).
             foreach (SaveScene saved in CurrentScenes())
@@ -1195,6 +1265,15 @@ namespace OriCoop
             writer.Close(); stream.Close(); return hash;
         }
 
+        // " timer_take_ago=N.N" when this PC took a host timer phase in the same scene in the last 30 s, else "".
+        static string TimerTakeNote(string key)
+        {
+            float at;
+            if (!s_timerTakeAt.TryGetValue(SceneOfKey(key), out at)) return "";
+            float ago = Time.realtimeSinceStartup - at;
+            return ago <= 30f ? " timer_take_ago=" + ago.ToString("F1") : "";
+        }
+
         public static void SendDigest()
         {
             if (!NetPlay.Connected || !SaveSync.Ready || !ProgressSync.Ready || !NetPlay.LocalInGameplay() || s_awaitSnapshot) return;
@@ -1202,7 +1281,16 @@ namespace OriCoop
             uint sequence = ++s_digestSequence;
             NetPlay.Send(MsgDigest, true, delegate(BinaryWriter w) { w.Write(sequence); w.Write(count); w.Write(hash); w.Write(progress); });
             s_digestBytes += 25;
-            SendManifest(sequence);
+            // #422: a guest's manifest only feeds the host's diff log; repair runs on the guest, from the host's manifest.
+            // While this guest's last check against the host (at most two rounds ago) matched, the host learns all it
+            // needs from the digest itself, so the growing manifest is not sent. The host always sends its manifest.
+            if (NetPlay.IsHost || !GuestInSync()) SendManifest(sequence);
+        }
+
+        static bool GuestInSync()
+        {
+            return LastDigestMatch && s_digestSender == NetRoute.HostSeat && LastDigestAt > 0
+                && Time.realtimeSinceStartup - LastDigestAt < 12f;
         }
 
         static void ReceiveDigest(BinaryReader reader)
@@ -1214,7 +1302,11 @@ namespace OriCoop
             if (!NetPlay.IsHost && sender != NetRoute.HostSeat) return;
             int localCount; ulong localHash = Digest(out localCount), localProgress = ProgressSync.Hash();
             s_digestSender = sender; s_receivedDigest = sequence;
-            s_remoteManifest.Clear(); CopyManifest(s_compareManifest);
+            // #422: equal count and hash mean the same objects with the same hashes, so the manifest would show no
+            // differences; skip copying and comparing it (both sides stay empty and the round ends as a match).
+            s_digestWorldMatched = count == localCount && hash == localHash;
+            s_remoteManifest.Clear();
+            if (s_digestWorldMatched) s_compareManifest.Clear(); else CopyManifest(s_compareManifest);
             LastRemoteCount = count; LastLocalCount = localCount; LastRemoteHash = hash; LastLocalHash = localHash;
             s_digestProgressDiffers = progress != localProgress;
             LastDigestMatch = count == localCount && hash == localHash && !s_digestProgressDiffers;
@@ -1293,6 +1385,7 @@ namespace OriCoop
         {
             uint sequence = reader.ReadUInt32(); bool final = reader.ReadBoolean(); int count = reader.ReadUInt16();
             if (sequence == 0 || sequence != s_receivedDigest || NetPlay.Sender != s_digestSender) return;
+            if (s_digestWorldMatched) count = 0;   // nothing to compare (see ReceiveDigest)
             for (int i = 0; i < count; i++)
             {
                 MoonGuid scene = new MoonGuid(reader), id = new MoonGuid(reader);
@@ -1309,7 +1402,8 @@ namespace OriCoop
                 string key = keys[i]; DigestDifference diff = differences[key];
                 Plugin.Log.LogInfo("net: world digest diff scene/object=" + key + " type=" + (diff.Local.Type ?? diff.Remote.Type)
                     + " local=" + (diff.Local.Type != null ? diff.Local.Hash.ToString("X16") : "missing")
-                    + " remote=" + (diff.Remote.Type != null ? diff.Remote.Hash.ToString("X16") : "missing"));
+                    + " remote=" + (diff.Remote.Type != null ? diff.Remote.Hash.ToString("X16") : "missing")
+                    + TimerTakeNote(key));
             }
             LastDigestMatch = differences.Count == 0 && !s_digestProgressDiffers;
             if (differences.Count != 0) Plugin.Log.LogInfo("net: world digest manifest " + differences.Count + " differing GUIDs (first 5 shown)");
@@ -1323,6 +1417,7 @@ namespace OriCoop
             static void Postfix()
             {
                 if (!NetPlay.Connected || !SaveSync.Ready) return;
+                RestoreBodies();
                 // A queued live application belongs to the world before the restore. The
                 // refreshed snapshot will supply this seat's items after the restore.
                 foreach (Blob waiting in new List<Blob>(s_deferred.Values))

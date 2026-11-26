@@ -137,18 +137,19 @@ static partial class StoryTests
         public readonly Bus Bus;
         public readonly ProgressInbox Inbox = new ProgressInbox();
         public readonly ProgressQueue<Guid> Queue = new ProgressQueue<Guid>();
+        uint revision;
         public bool SkillEnabled = true;
         public ProgressPeer(Bus bus, Clock clock)
         {
             Bus = bus;
-            bus.On(20, delegate(BinaryReader r) { Inbox.Receive(bus.IsHost, ProgressSnapshot.Read(r), clock.RealTime); });
+            bus.On(20, delegate(BinaryReader r) { if (!bus.IsHost) Inbox.Receive(bus.HostSeat, bus.Sender, ProgressSnapshot.Read(r), clock.RealTime); });
             bus.On(21, delegate(BinaryReader r) {
                 ProgressAction a = ProgressAction.Read(r);
                 if (bus.IsHost) Queue.Enqueue(bus.Sender, a);
             });
             bus.On(22, delegate(BinaryReader r) { SkillEnabled = ProgressWire.ApplySkillStatus(bus.IsHost, ProgressWire.ReadSkillStatus(r), SkillEnabled); });
         }
-        public void Snapshot(ProgressSnapshot snapshot) { Bus.Send(20, true, snapshot.Write); }
+        public void Snapshot(ProgressSnapshot snapshot) { snapshot.Generation = 1; snapshot.Revision = ++revision; Bus.Send(20, true, snapshot.Write); }
         public void Action(ProgressAction action) { Bus.Send(21, true, action.Write); }
         public void Skill(bool enabled) { Bus.Send(22, true, delegate(BinaryWriter w) { ProgressWire.WriteSkillStatus(w, enabled); }); }
     }
@@ -386,26 +387,98 @@ static partial class StoryTests
             Network n = new Network(); Clock c = new Clock(); ProgressPeer h = new ProgressPeer(n.Add(1), c), a = new ProgressPeer(n.Add(2), c), b = new ProgressPeer(n.Add(4), c);
             h.Skill(false); Equal(false, a.SkillEnabled); Equal(false, b.SkillEnabled); a.Skill(false); Equal(true, h.SkillEnabled);
         });
+        Check("T-223 a former host cannot overwrite the new host's pending progress", delegate {
+            Network n = new Network(); ProgressPeer guest = new ProgressPeer(n.Add(3), new Clock());
+            guest.Bus.HostSeat = 2;
+            ProgressSnapshot current = Snapshot(), stale = Snapshot(); current.MaxHealth = 12; stale.MaxHealth = 40;
+            n.Deliver(2, 3, 20, ProgressPacket(current, 1, 2));
+            n.Deliver(1, 3, 20, ProgressPacket(stale, 1, 3));
+            Equal(12, guest.Inbox.Take().MaxHealth);
+        });
+        Check("T-223 progress received out of order cannot resurrect rolled back capacity", delegate {
+            Network n = new Network(); ProgressPeer guest = new ProgressPeer(n.Add(3), new Clock());
+            ProgressSnapshot current = Snapshot(), stale = Snapshot(); current.MaxHealth = 8; stale.MaxHealth = 40;
+            n.Deliver(1, 3, 20, ProgressPacket(current, 2, 4));
+            n.Deliver(1, 3, 20, ProgressPacket(stale, 2, 3));
+            Equal(8, guest.Inbox.Take().MaxHealth);
+            n.Deliver(1, 3, 20, ProgressPacket(stale, 1, 99));
+            Equal(null, guest.Inbox.Snapshot);
+        });
+        Check("T-223 promotion discards the former host's approved claim and waiting snapshot", delegate {
+            ProgressInbox inbox = new ProgressInbox();
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 1, Revision = 1 }, 0f);
+            inbox.Register(10, ActionKind.MaxHealth, 4);
+            CellResult accepted = new CellResult { Sequence = 10, Kind = ActionKind.MaxHealth, Accepted = true, Maximum = 24, Generation = 1 };
+            inbox.ReceiveResult(1, 1, accepted);
+            inbox.ObserveHost(2);
+            inbox.ReceiveResult(2, 1, accepted);
+            Equal(null, inbox.Take()); Equal(null, inbox.TakeCell(24, 0));
+        });
+        Check("T-223 a restored room discards old approved and outstanding claims", delegate {
+            ProgressInbox inbox = new ProgressInbox();
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 1, Revision = 9 }, 0f); inbox.Take();
+            inbox.Register(10, ActionKind.MaxHealth, 4); inbox.Register(11, ActionKind.MaxHealth, 4);
+            CellResult result = new CellResult { Sequence = 10, Kind = ActionKind.MaxHealth, Accepted = true, Maximum = 24, Generation = 1 };
+            inbox.ReceiveResult(1, 1, result);
+            inbox.GuestLoaded();
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 2, Revision = 1 }, 1f); inbox.Take();
+            Equal(null, inbox.TakeCell(24, 0));
+            result.Sequence = 11; inbox.ReceiveResult(1, 1, result);
+            Equal(null, inbox.TakeCell(24, 0));
+        });
+        Check("T-223 loading the same room keeps the delayed award until fresh progress arrives", delegate {
+            ProgressInbox inbox = new ProgressInbox();
+            inbox.Receive(2, 2, new ProgressSnapshot { Generation = 3, Revision = 1 }, 0f); inbox.Take();
+            inbox.Register(11, ActionKind.MaxEnergy, 1);
+            inbox.GuestLoaded();
+            inbox.ReceiveResult(2, 2, new CellResult { Sequence = 11, Kind = ActionKind.MaxEnergy, Accepted = true, Maximum = 3, Generation = 3 });
+            Equal(null, inbox.TakeCell(0, 3));
+            inbox.Receive(2, 2, new ProgressSnapshot { Generation = 3, Revision = 2 }, 6f); inbox.Take();
+            Equal(11u, inbox.TakeCell(0, 3).Sequence); Equal(null, inbox.TakeCell(0, 3));
+        });
+        Check("T-223 a receipt waits for its specific snapshot even if an older capacity already matches", delegate {
+            ProgressInbox inbox = new ProgressInbox();
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 2, Revision = 8 }, 0f); inbox.Take();
+            inbox.Register(12, ActionKind.MaxHealth, 4);
+            inbox.ReceiveResult(1, 1, new CellResult { Sequence = 12, Kind = ActionKind.MaxHealth, Accepted = true, Maximum = 24, Generation = 2, Revision = 10 });
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 2, Revision = 9 }, 1f); inbox.Take();
+            Equal(null, inbox.TakeCell(24, 0));
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 2, Revision = 10 }, 2f); inbox.Take();
+            Equal(12u, inbox.TakeCell(24, 0).Sequence);
+        });
+        Check("T-223 re-election rejects the retired host's old generation and a fresh connection starts clean", delegate {
+            ProgressInbox inbox = new ProgressInbox();
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 4, Revision = 9 }, 0f);
+            inbox.ObserveHost(2); inbox.ObserveHost(1);
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 4, Revision = 12 }, 1f); Equal(null, inbox.Take());
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 6, Revision = 1 }, 2f); Equal(6u, inbox.Take().Generation);
+            inbox.ObserveHost(2); inbox.SeatJoined(1); inbox.ObserveHost(1);
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 1, Revision = 1 }, 3f); Equal(1u, inbox.Take().Generation);
+            inbox.Reset();
+            inbox.Receive(1, 1, new ProgressSnapshot { Generation = 1, Revision = 1 }, 4f); Equal(1u, inbox.Take().Generation);
+        });
         Check("progress snapshot wire round trip", delegate {
-            ProgressSnapshot s = Snapshot(); byte[] data = Wire(s.Write); ProgressSnapshot t = ProgressSnapshot.Read(Reader(data));
+            ProgressSnapshot s = Snapshot(); s.Generation = 2; s.Revision = 513;
+            byte[] data = Wire(s.Write); ProgressSnapshot t = ProgressSnapshot.Read(Reader(data));
+            Equal(2u, t.Generation); Equal(513u, t.Revision);
             Equal(s.Abilities, t.Abilities); Equal(s.MaxHealth, t.MaxHealth); Equal(s.MaxEnergy, t.MaxEnergy);
             Equal(s.Keys, t.Keys); Equal(s.Maps, t.Maps); Equal(s.Collected, t.Collected);
-            Equal(s.Experience, t.Experience); Equal(s.Level, t.Level); Equal(s.Points, t.Points); Equal(40, data.Length);
-            Equal("F0DEBC9A785634120A000000000060400300000004000000050000002C0100000700000002000000", BitConverter.ToString(data).Replace("-", ""));
+            Equal(s.Experience, t.Experience); Equal(s.Level, t.Level); Equal(s.Points, t.Points); Equal(48, data.Length);
+            Equal("F0DEBC9A785634120A000000000060400300000004000000050000002C01000007000000020000000200000001020000", BitConverter.ToString(data).Replace("-", ""));
         });
         Check("progress hash stability", delegate {
             ProgressSnapshot s = Snapshot(); Equal(s.Hash(), ProgressSnapshot.Read(Reader(Wire(s.Write))).Hash());
-            ulong before = s.Hash(); Equal(0x26c03cb01738c923UL, before); s.Points++; Equal(false, before == s.Hash());
+            ulong before = s.Hash(); Equal(0x26c03cb01738c923UL, before); s.Revision = 5; s.Generation = 2; Equal(before, s.Hash()); s.Points++; Equal(false, before == s.Hash());
         });
         Check("progress action wire round trip", delegate {
             ProgressAction a = new ProgressAction { Sequence = 42, Kind = ActionKind.MaxEnergy, Guid = Id(4), Amount = -8, Extra = 17,
-                Scene = Id(9), HasSpot = true, X = 1.5f, Y = -2.25f };
+                Scene = Id(9), HasSpot = true, Registered = true, X = 1.5f, Y = -2.25f };
             byte[] bytes = Wire(a.Write);
             BytesEqual(Wire(delegate(BinaryWriter w) { w.Write(42U); w.Write((byte)ActionKind.MaxEnergy); w.Write(Id(4)); w.Write(-8); w.Write(17);
-                w.Write(Id(9)); w.Write(true); w.Write(1.5f); w.Write(-2.25f); }), bytes);
+                w.Write(Id(9)); w.Write(true); w.Write(1.5f); w.Write(-2.25f); w.Write(true); }), bytes);
             ProgressAction b = ProgressAction.Read(Reader(bytes)); Equal(a.Sequence, b.Sequence); Equal(a.Kind, b.Kind);
             BytesEqual(a.Guid, b.Guid); Equal(a.Amount, b.Amount); Equal(a.Extra, b.Extra);
-            BytesEqual(a.Scene, b.Scene); Equal(true, b.HasSpot); Equal(1.5f, b.X); Equal(-2.25f, b.Y);
+            BytesEqual(a.Scene, b.Scene); Equal(true, b.HasSpot); Equal(true, b.Registered); Equal(1.5f, b.X); Equal(-2.25f, b.Y);
         });
         Check("T-214 progress action place: zero scene bytes mean 'scene not known'", delegate {
             ProgressAction a = new ProgressAction { Guid = Id(1) };
@@ -416,6 +489,30 @@ static partial class StoryTests
         Check("progress action fifo", delegate {
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); ProgressAction a = new ProgressAction { Sequence = 2 }, b = new ProgressAction { Sequence = 1 };
             q.Enqueue(2, a); q.Enqueue(3, b); Equal(a, q.Peek()); Equal(a, q.Dequeue()); Equal(b, q.Dequeue());
+        });
+        Check("T-223 a cell result identifies the request and its authoritative maximum", delegate {
+            Equal((byte)24, CellResult.Message);
+            CellResult result = new CellResult { Sequence = 73, Kind = ActionKind.MaxEnergy, Accepted = true, Maximum = 6f, Generation = 17, Revision = 8 };
+            byte[] bytes = Wire(result.Write);
+            BytesEqual(Wire(delegate(BinaryWriter w) { w.Write(73u); w.Write((byte)ActionKind.MaxEnergy); w.Write(true); w.Write(6f); w.Write(17u); w.Write(8u); }), bytes);
+            CellResult read = CellResult.Read(Reader(bytes)); Equal(result.Sequence, read.Sequence); Equal(result.Kind, read.Kind);
+            Equal(true, read.Accepted); Equal(6f, read.Maximum); Equal(17u, read.Generation); Equal(8u, read.Revision);
+        });
+        Check("T-223 a host restore removes queued cell requests and preserves other pending progress", delegate {
+            ProgressQueue<Guid> queue = new ProgressQueue<Guid>();
+            ProgressAction first = new ProgressAction { Sequence = 1, Kind = ActionKind.Experience };
+            ProgressAction cell = new ProgressAction { Sequence = 2, Kind = ActionKind.MaxEnergy };
+            ProgressAction last = new ProgressAction { Sequence = 3, Kind = ActionKind.Keystone };
+            queue.Enqueue(2, first); queue.Enqueue(2, cell); queue.Enqueue(3, last);
+            queue.DiscardQueuedCells(); Equal(2, queue.Count);
+            Equal(first, queue.Dequeue()); Equal(last, queue.Dequeue()); Equal(false, queue.Enqueue(2, cell));
+        });
+        Check("T-223 queued actions keep their originating connection until that seat leaves", delegate {
+            ProgressQueue<Guid> q = new ProgressQueue<Guid>();
+            ProgressAction old = new ProgressAction { Sequence = 1 }, other = new ProgressAction { Sequence = 1 }, next = new ProgressAction { Sequence = 1 };
+            q.Enqueue(2, old); q.Enqueue(3, other); Equal(2, old.SenderSeat); Equal(3, other.SenderSeat);
+            q.SeatLeft(2); q.SeatJoined(2); q.Enqueue(2, next);
+            Equal(0, q.Dequeue().SenderSeat); Equal(3, q.Dequeue().SenderSeat); Equal(2, q.Dequeue().SenderSeat);
         });
         Check("progress duplicate sequence per seat", delegate {
             ProgressQueue<Guid> q = new ProgressQueue<Guid>(); ProgressAction a = new ProgressAction { Sequence = 1 };
@@ -495,6 +592,10 @@ static partial class StoryTests
             SharedResources r = new SharedResources(); r.Remember(3, 4, 2f); r.Reset();
             SharedValues s = r.Merge(1, 2, 3f, 5f, 9, 9, 9f); Equal(1, s.Keys); Equal(2, s.Maps); Equal(3f, s.Energy);
         });
+    }
+    static byte[] ProgressPacket(ProgressSnapshot snapshot, uint generation, uint revision)
+    {
+        snapshot.Generation = generation; snapshot.Revision = revision; return Wire(snapshot.Write);
     }
     static ProgressSnapshot Snapshot()
     { return new ProgressSnapshot { Abilities = 0x123456789abcdef0UL, MaxHealth = 10, MaxEnergy = 3.5f, Keys = 3, Maps = 4, Collected = 5, Experience = 300, Level = 7, Points = 2 }; }

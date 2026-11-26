@@ -40,7 +40,7 @@ namespace OriCoop.Saves
         static void Reset()
         {
             s_present.Clear(); s_reportedHost = 0; HostRestorePending = false;
-            Current = null; s_checkpointHash = null; s_guestHash = null; s_pushRecord = null; Captures = 0; s_hostSlot = -1;
+            Current = null; s_checkpointHash = null; s_guestHash = null; Captures = 0; s_hostSlot = -1;
             RecordsReceived = RecordsSent = Restores = 0;
         }
 
@@ -80,7 +80,7 @@ namespace OriCoop.Saves
             {
                 string hash = r.ReadString();
                 SkillRecord record = SkillRecord.Read(r);
-                if (hash.Length == 0) { s_pushRecord = record; RecordsReceived++; return; }   // with the checkpoint that follows
+                if (hash.Length == 0) { SaveSync.ExpectCheckpointSkills(record); RecordsReceived++; return; }
                 if (hash != CoopSaves.Timeline)
                 {
                     Services.Log.Warn("net: skill record for save " + Short(hash) + " ignored (room save is " + Short(CoopSaves.Timeline) + ")");
@@ -147,14 +147,6 @@ namespace OriCoop.Saves
             Services.Net.SendTo(seat, MsgSeatSkills, true, delegate(BinaryWriter w) { w.Write(RecordKind); w.Write(""); record.Write(w); });
             RecordsSent++;
         }
-
-        // Guest: the record that came with the checkpoint now being loaded (once), else the room save's record.
-        internal static SkillRecord ForLoadingCheckpoint()
-        {
-            SkillRecord push = s_pushRecord; s_pushRecord = null;
-            return push ?? ForRoomSave();
-        }
-        static SkillRecord s_pushRecord;
 
         // The one way bytes from outside become a save the game loads (room enter, checkpoint transfer, LAN commit copy,
         // a guest's save offer, partner progress, single-player copy-in): strip a skill trailer. No trailer = the bytes

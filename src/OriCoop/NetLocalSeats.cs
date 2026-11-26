@@ -23,9 +23,17 @@ namespace OriCoop
             get
             {
                 EnsureHostSeats();
-                int[] seats = s_seats.SeatsOf(Players.LocalSeat);
-                return seats.Length == 0 ? new int[] { Players.LocalSeat } : seats;
+                int local = Players.LocalSeat, mask = s_seats.MaskOf(local);
+                // Shared arrays (SeatMask): read only. Same contents as SeatsOf, or { LocalSeat } with no table.
+                return mask != 0 ? SeatMask.Seats(mask) : SeatMask.Single(local);
             }
+        }
+        // Array.IndexOf(LocalSeats, seat) >= 0 without building the array.
+        public static bool IsLocalSeat(int seat)
+        {
+            EnsureHostSeats();
+            int local = Players.LocalSeat, mask = s_seats.MaskOf(local);
+            return mask != 0 ? SeatMask.Has(mask, seat) : seat == local;
         }
         static void EnsureHostSeats() { if (Enabled && IsHost && !s_factorySession && s_seats.Count == 0) s_seats.Add(1); }
         static void RetainHostLocalSeats()

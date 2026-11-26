@@ -1,1 +1,3 @@
 OriCoop\Players.cs
+OriCoop\Seats\SeatMask.cs
+OriCoop\Seats\SeatTable.cs

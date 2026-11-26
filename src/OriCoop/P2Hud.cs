@@ -24,6 +24,13 @@ namespace OriCoop
             public GlowRing Ring;
             public int RingSeat;
             public string Plain = "";
+            // Per-frame caches (UpdateTag runs every frame per teammate): the composed tag strings, what the game-font
+            // text was last rendered with, and our own copy of each glyph renderer's material.
+            public bool ComposedOnline; public int ComposedRole; public float ComposedAlpha = -1f;
+            public string ComposedName, ComposedTagFormat, ComposedWord, ComposedLabelFormat, Composed, ComposedShadow;
+            public string MeshText, MeshShadow;
+            public MessageBox RenderedBox; public string RenderedText; public Color32 RenderedColor;
+            public readonly List<KeyValuePair<Renderer, Material>> Materials = new List<KeyValuePair<Renderer, Material>>();
         }
         static readonly Dictionary<Puppet, Hud> s_huds = new Dictionary<Puppet, Hud>();
         static readonly Hud s_primary = new Hud();
@@ -105,7 +112,9 @@ namespace OriCoop
         {
             try { if (hud.GameText != null) hud.GameText.Destroy(); }
             catch (System.Exception e) { Warn("destroy GameText", e); }
-            hud.GameText = null; hud.Box = null; hud.GameRenderer = null;
+            hud.GameText = null; hud.Box = null; hud.GameRenderer = null; hud.RenderedBox = null;
+            foreach (KeyValuePair<Renderer, Material> pair in hud.Materials) if (pair.Value != null) Object.Destroy(pair.Value);
+            hud.Materials.Clear();
         }
         internal static Camera GuiCamera()
         {
@@ -152,6 +161,56 @@ namespace OriCoop
             shr.sharedMaterial = font.material;
             shr.sortingOrder = 31999;
             sh.layer = hud.Go.layer;
+        }
+
+        // Compose(.., false) and Compose(.., true) rebuilt (format, substring, 4 hex colours) every frame; the inputs
+        // only change on a fade, a language or role change, or a new partner name.
+        static void ComposeBoth(Hud hud, int role, float a)
+        {
+            bool online = NetPlay.Enabled;
+            string name = TeammateIdentity.Name(role), tagFormat = L10n.T("roles.tag"), word = null, labelFormat = null;
+            if (online)
+            {
+                if (name.Length == 0 && role == Roles.Partner) name = NetPlay.SteamPartnerName;
+                word = Roles.Word(role);
+                labelFormat = L10n.T(string.IsNullOrEmpty(name) ? "roles.label" : "roles.named_label");
+            }
+            if (hud.Composed != null && hud.ComposedOnline == online && hud.ComposedAlpha == a && hud.ComposedRole == role
+                && hud.ComposedName == name && (object)hud.ComposedTagFormat == tagFormat && hud.ComposedWord == word
+                && (object)hud.ComposedLabelFormat == labelFormat) return;
+            hud.Composed = Compose(hud, role, a, false);
+            hud.ComposedShadow = Compose(hud, role, a, true);
+            hud.ComposedOnline = online; hud.ComposedAlpha = a; hud.ComposedRole = role; hud.ComposedName = name;
+            hud.ComposedTagFormat = tagFormat; hud.ComposedWord = word; hud.ComposedLabelFormat = labelFormat;
+        }
+
+        // TextMesh.text rebuilds its mesh on every assignment; the tag used to set it twice per frame (label, then "").
+        static void SetMesh(Hud hud, string text, string shadow)
+        {
+            if ((object)hud.MeshText != text) { hud.Text.text = text; hud.MeshText = text; }
+            if ((object)hud.MeshShadow != shadow) { hud.Shadow.text = shadow; hud.MeshShadow = shadow; }
+        }
+
+        // Our own instance of a glyph renderer's material (sorting/queue changes must not touch the game's font).
+        // `renderer.material` made a fresh copy every time RenderText had put the game's font material back.
+        static Material OwnMaterial(Hud hud, Renderer renderer)
+        {
+            Material source = renderer.sharedMaterial, own = null;
+            foreach (KeyValuePair<Renderer, Material> pair in hud.Materials)
+                if (pair.Key == renderer) { own = pair.Value; break; }
+            if (own == null)
+            {
+                if (source == null) return null;
+                own = new Material(source); own.hideFlags = HideFlags.HideAndDontSave;
+                hud.Materials.Add(new KeyValuePair<Renderer, Material>(renderer, own));
+            }
+            else if (source != null && source != own)
+            {
+                own.shader = source.shader;
+                own.CopyPropertiesFromMaterial(source);
+            }
+            renderer.sharedMaterial = own;
+            return own;
         }
 
         // Match the seat colour used on the map. Online peers also see each other's current room role.
@@ -204,14 +263,15 @@ namespace OriCoop
             {
                 if (hud.Go != null) Object.Destroy(hud.Go);
                 Create(seat, hud);
+                hud.MeshText = hud.MeshShadow = null;   // new TextMeshes: nothing set on them yet
             }
             if (hud.Go == null || hud.Text == null || hud.Shadow == null || hud.Renderer == null
                 || p2.Mortality == null || p2.Mortality.Health == null) { Hide(hud); return; }
             float a = p2.gameObject.activeInHierarchy && !Revive.IsDowned(p2) && !TestHide ? GameHudOpacity() : 0f;
             if (a <= 0.01f) { Hide(hud); return; }
             if (!hud.Go.activeSelf) hud.Go.SetActive(true);
-            hud.Text.text = Compose(hud, seat, a, false);
-            hud.Shadow.text = Compose(hud, seat, a, true);
+            ComposeBoth(hud, seat, a);
+            SetMesh(hud, hud.Composed, hud.ComposedShadow);
             hud.Text.color = new Color(1f, 0.85f, 0.4f, a);   // Visible reads this alpha; the colour itself comes from the tags
             Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null, gui = GuiCamera();
             if (game == null || gui == null) { Hide(hud); return; }
@@ -256,33 +316,42 @@ namespace OriCoop
                         }
                     }
                 }
-                hud.GameRenderer = null;
                 if (HasGameText(hud))
                 {
                     hud.GameText.SetText(hud.Plain);
                     Color color = Roles.ColorOf(seat);
                     color.a = a;
-                    hud.Box.TextBox.color = color;
-                    hud.Box.TextBox.RenderText();
-                    TextRenderer[] renderers = hud.Box.TextBox.textRenderers;
-                    if (renderers != null) foreach (TextRenderer tr in renderers)
+                    Color32 shown = color;
+                    // Re-render only when the text, colour or alpha changed (RenderText is a full layout + mesh rebuild).
+                    bool render = hud.GameRenderer == null || hud.RenderedBox != hud.Box || hud.RenderedText != hud.Plain
+                        || shown.r != hud.RenderedColor.r || shown.g != hud.RenderedColor.g || shown.b != hud.RenderedColor.b || shown.a != hud.RenderedColor.a;
+                    if (render)
                     {
-                        // MoonIconRenderer is a TextRenderer without a Unity Renderer on its own object.
-                        Renderer renderer = tr != null ? tr.GetComponent<Renderer>() : null;
-                        if (renderer == null) continue;
-                        Material material = renderer.material;
-                        if (material == null) continue;
-                        renderer.sortingOrder = 32000;
-                        material.renderQueue = 3000;
-                        hud.GameRenderer = renderer;
+                        hud.GameRenderer = null;
+                        hud.Box.TextBox.color = color;
+                        hud.Box.TextBox.RenderText();
+                        TextRenderer[] renderers = hud.Box.TextBox.textRenderers;
+                        if (renderers != null) foreach (TextRenderer tr in renderers)
+                        {
+                            // MoonIconRenderer is a TextRenderer without a Unity Renderer on its own object.
+                            Renderer renderer = tr != null ? tr.GetComponent<Renderer>() : null;
+                            if (renderer == null) continue;
+                            Material material = OwnMaterial(hud, renderer);
+                            if (material == null) continue;
+                            renderer.sortingOrder = 32000;
+                            material.renderQueue = 3000;
+                            hud.GameRenderer = renderer;
+                        }
+                        hud.RenderedBox = hud.GameRenderer != null ? hud.Box : null;
+                        hud.RenderedText = hud.Plain; hud.RenderedColor = shown;
                     }
                     if (hud.GameRenderer != null && hud.GameText.Place(new Vector3(p2.Position.x, p2.Position.y + 1.3f, p2.Position.z), 0.035f, 1f, 1f))
                     {
-                        hud.Text.text = "";
-                        hud.Shadow.text = "";
+                        SetMesh(hud, "", "");
                         return;
                     }
                 }
+                else hud.GameRenderer = null;
             }
             catch (System.Exception e) { Warn("GameText tag", e); DestroyGameText(hud); }
             HideGameText(hud); // The already positioned TextMesh remains visible as the fallback.

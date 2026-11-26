@@ -58,6 +58,9 @@ static partial class NetTests
         Run("a different address is refused while connected", StrangerIsRefused);
         Run("RTT and traffic statistics are sane", Statistics);
         Run("packet loss is reflected in statistics", LossStatistics);
+        Run("deferred poll: ack rides with the reply", AckRidesWithReply);
+        Run("deferred poll sends nothing until flushed", PollWithoutFlushSendsNothing);
+        Run("deferred poll keeps reliable delivery", DeferredPollKeepsReliableFlow);
         return failures == 0 ? 0 : 1;
     }
 }

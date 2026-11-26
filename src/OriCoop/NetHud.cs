@@ -444,6 +444,10 @@ namespace OriCoop
                     return;
                 }
 
+                // OnGUI runs for Layout, Repaint and every input event. Everything below draws through NativeGui, which
+                // only acts on Repaint; only the disconnect dialog's options react to the mouse.
+                if (!s_disconnectModalOpen && Event.current != null && Event.current.type != EventType.Repaint) return;
+
                 if (HudCovered) { DrawToast(scale); return; }
                 float hudOpacity = P2Hud.GameHudOpacity();
 
@@ -493,6 +497,16 @@ namespace OriCoop
             return L10n.F("hud.signal.lost", seconds);
         }
 
+        static readonly string[] s_barIds = { "hud.signal.bar.0", "hud.signal.bar.1", "hud.signal.bar.2", "hud.signal.bar.3" };
+        static int s_rttShown = int.MinValue;
+        static string s_rttText = "";
+        // "N ms", rebuilt only when the rounded RTT changes (it was concatenated on every OnGUI call).
+        static string RttText(int ms)
+        {
+            if (ms != s_rttShown) { s_rttShown = ms; s_rttText = ms + " ms"; }
+            return s_rttText;
+        }
+
         static void DrawSignalBars(float scale, float hudAlpha, bool sample = false)
         {
             NativeGui.BeginPage("hud.signal");
@@ -502,7 +516,6 @@ namespace OriCoop
                 float topY = 24f * scale;
 
                 float barW = 6f * scale;
-                float[] barHeights = new float[] { 8f * scale, 14f * scale, 20f * scale, 26f * scale };
                 float barGap = 4f * scale;
                 float totalBarsW = 4f * barW + 3f * barGap; // 36 * scale
                 float barsX = Screen.width - rightMargin - totalBarsW;
@@ -513,15 +526,15 @@ namespace OriCoop
                 // Draw bars
                 for (int i = 0; i < 4; i++)
                 {
-                    float bh = barHeights[i];
+                    float bh = (8f + 6f * i) * scale;   // 8, 14, 20, 26
                     float bx = barsX + i * (barW + barGap);
                     float by = topY + 26f * scale - bh; // align bottoms
                     Color barColor = (i < lit) ? litColor : new Color(0.25f, 0.32f, 0.36f, 0.45f * hudAlpha);
-                    NativeGui.Panel("hud.signal.bar." + i, new Rect(bx, by, barW, bh), barColor);
+                    NativeGui.Panel(s_barIds[i], new Rect(bx, by, barW, bh), barColor);
                 }
 
                 // Latency text ("-- ms" while silent: the last RTT would be stale, lag test ②)
-                string rttText = sample ? "42 ms" : NetPlay.Connected && !NetPlay.SignalLost ? (Mathf.RoundToInt(NetPlay.RttMs) + " ms") : "-- ms";
+                string rttText = sample ? "42 ms" : NetPlay.Connected && !NetPlay.SignalLost ? RttText(Mathf.RoundToInt(NetPlay.RttMs)) : "-- ms";
                 Rect textR = new Rect(barsX - 110f * scale, topY, 100f * scale, 26f * scale);
                 Color textC = new Color(0.867f, 0.918f, 0.898f, hudAlpha);
                 DrawText("hud.signal.rtt", textR, rttText, s_signalText, textC);

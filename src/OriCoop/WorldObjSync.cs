@@ -30,12 +30,13 @@ namespace OriCoop
 //      reliable traffic), long after the toucher's PC had acted.
     //      1 stomper   -       2 collapse  -       3 flip { byte jumpKind 0 jump 1 double 2 wall 3 charge }
     //      4 damage { float amount, int type, float fx, fy, px, py, pz }      5 trigger -      6 rope cut -
+    //      7 shot - (host -> guests: a shooter that waits for its projectile fired; World/ShooterFollow.cs, #444)
     //   76 WorldObjState  host -> guest { byte kind, ushort n, entries }  unreliable
     //      1 sin { int id, float time }   2 water { int id, float y, float speed }   3 flips { int id, bool active }
     public static class WorldObjSync
     {
         const byte MsgEvent = 75, MsgState = 76;
-        const byte KStomper = 1, KCollapse = 2, KFlip = 3, KDamage = 4, KTrigger = 5, KRope = 6;
+        const byte KStomper = 1, KCollapse = 2, KFlip = 3, KDamage = 4, KTrigger = 5, KRope = 6, KShot = 7;
         const byte SSin = 1, SWater = 2, SFlips = 3;
 
         // Mutation switch for the harness (ORICOOP_WORLDOBJ_OFF=1): the old behaviour, every PC on its own.
@@ -105,6 +106,7 @@ namespace OriCoop
         static void Reset()
         {
             s_byId.Clear(); s_triggerReplicable.Clear(); s_firedOnce.Clear(); s_seen.Clear(); s_deferred.Clear();
+            s_shooterOf.Clear(); s_followed.Clear(); s_hostShotAt.Clear();
             s_waterAt2 = -10f; s_lastFlipActivity = -10f;
         }
 
@@ -262,6 +264,17 @@ namespace OriCoop
                         if (a != null && (bool)M_ropeAttached.Invoke(a, null)) a.BreakAttachment();
                         break;
                     }
+                    case KShot:
+                    {
+                        what = "shot"; TimedTrigger t = Find<TimedTrigger>(id); found = t != null;
+                        if (t == null) { ShotsUnloaded++; found = true; what = "shot (shooter not loaded here)"; break; }
+                        if (NetPlay.IsHost || !SceneStarted(t)) { what = "shot (ignored)"; break; }   // never late
+                        s_hostShotAt[id] = Time.realtimeSinceStartup;
+                        ActionSequence seq = F_ttAction == null ? null : F_ttAction.GetValue(t) as ActionSequence;
+                        if (seq != null && t.gameObject.activeInHierarchy) { seq.Perform(null); ShotsFollowed++; }
+                        else what = "shot (shooter inactive)";
+                        break;
+                    }
                     default: what = "unknown" + kind; break;
                 }
             }
@@ -356,6 +369,90 @@ namespace OriCoop
                     CoopTrace.Event("phys", "wobj.flip.fix", "id", id, "active", active);
                 }
                 else return;
+            }
+        }
+
+        // ---------------------------------------------------------------- shooters that follow the host's shots (#444)
+        // Test-only mutation ORICOOP_MUTATE_SHOT_FOLLOW_OFF=1: every PC's shooter fires on its own timer (#444 before the
+        // maintainer's choice), so WO2's follow check must fail.
+        static readonly bool s_mutateShotFollowOff = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SHOT_FOLLOW_OFF") == "1";
+        public static int ShotsSent, ShotsFollowed, ShotsDropped, ShotsOwn, ShotsUnloaded;
+        static readonly FieldInfo F_ttAction = AccessTools.Field(typeof(TimedTrigger), "Action");
+        static readonly FieldInfo F_spawnerWaits = AccessTools.Field(typeof(ProjectileSpawner), "WaitForProjectileToBeDestroyed");
+        // ActionSequence instance id -> its followed TimedTrigger (null: checked, not a followed shooter's action).
+        static readonly Dictionary<int, TimedTrigger> s_shooterOf = new Dictionary<int, TimedTrigger>();
+        static readonly Dictionary<int, bool> s_followed = new Dictionary<int, bool>();   // TimedTrigger instance id
+        static readonly Dictionary<int, float> s_hostShotAt = new Dictionary<int, float>();   // trigger IdOf -> realtime
+        static int s_shooterScanFrame = -1, s_droppedSeq, s_droppedFrame = -1;
+
+        // A repeating TimedTrigger whose ProjectileSpawner (same object) waits for its last projectile.
+        public static bool IsFollowedShooter(TimedTrigger t)
+        {
+            if (t == null || !Enabled || s_mutateShotFollowOff || F_spawnerWaits == null || F_ttAction == null) return false;
+            int key = t.GetInstanceID(); bool ok;
+            if (s_followed.TryGetValue(key, out ok)) return ok;
+            bool paused; float period;
+            bool repeat = WorldSync.RepeatingTrigger(t, out paused, out period);
+            bool spawnerWaits = false;
+            try
+            {
+                foreach (ProjectileSpawner sp in t.GetComponents<ProjectileSpawner>())
+                    if (sp != null && (bool)F_spawnerWaits.GetValue(sp)) spawnerWaits = true;
+            }
+            catch { spawnerWaits = false; }
+            ok = World.ShooterFollow.Followed(repeat, spawnerWaits);
+            s_followed[key] = ok;
+            if (repeat) Log("shooter " + t.name + " id=" + IdOf(t) + " waits_for_projectile=" + spawnerWaits + " follows_host=" + ok);
+            return ok;
+        }
+
+        // The followed TimedTrigger whose Action is this sequence, else null. A sequence seen for the first time runs one
+        // scan of the loaded TimedTriggers (at most one per frame; then it is remembered either way).
+        static TimedTrigger FollowedShooterOf(ActionSequence seq)
+        {
+            int key = seq.GetInstanceID(); TimedTrigger t;
+            if (s_shooterOf.TryGetValue(key, out t)) return t != null && F_ttAction.GetValue(t) == (object)seq ? t : null;
+            if (s_shooterScanFrame == Time.frameCount) return null;   // asked again next time
+            s_shooterScanFrame = Time.frameCount;
+            foreach (TimedTrigger each in UnityEngine.Object.FindObjectsOfType<TimedTrigger>())
+            {
+                ActionSequence action = F_ttAction.GetValue(each) as ActionSequence;
+                if (action != null && IsFollowedShooter(each)) s_shooterOf[action.GetInstanceID()] = each;
+            }
+            if (!s_shooterOf.TryGetValue(key, out t)) { s_shooterOf[key] = null; return null; }
+            return t;
+        }
+
+        // ShooterProbe: whether the Perform that just ran was a guest's own shot dropped by ShooterShot (trace only).
+        public static bool DroppedNow(ActionSequence seq)
+        { return seq != null && s_droppedFrame == Time.frameCount && s_droppedSeq == seq.GetInstanceID(); }
+
+        // The host sends each shot of a followed shooter; a guest drops its own while the host's keep coming
+        // (World/ShooterFollow.cs). The host's shot itself runs through ApplyEvent (s_applying).
+        [HarmonyPatch(typeof(ActionSequence), "Perform")]
+        static class ShooterShot
+        {
+            static bool Prefix(ActionSequence __instance)
+            {
+                try
+                {
+                    if (__instance == null || !Online || s_applying) return true;
+                    TimedTrigger t = FollowedShooterOf(__instance);
+                    if (t == null) return true;
+                    int id = IdOf(t);
+                    if (NetPlay.IsHost) { ShotsSent++; SendEvent(KShot, id, null, "shot " + t.name); return true; }
+                    float at, since = s_hostShotAt.TryGetValue(id, out at) ? Time.realtimeSinceStartup - at : -1f;
+                    if (World.ShooterFollow.DropsOwnShot(false, false, since))
+                    {
+                        ShotsDropped++; s_droppedSeq = __instance.GetInstanceID(); s_droppedFrame = Time.frameCount;
+                        CoopTrace.Event("phys", "wobj.shot.drop", "id", id, "since_host", since);
+                        return false;
+                    }
+                    ShotsOwn++;
+                    CoopTrace.Event("phys", "wobj.shot.own", "id", id, "since_host", since);
+                    return true;
+                }
+                catch (Exception e) { Plugin.Log.LogWarning("[wobj] shot: " + e.Message); return true; }
             }
         }
 
