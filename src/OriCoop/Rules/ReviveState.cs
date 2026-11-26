@@ -12,6 +12,8 @@ namespace OriCoop.Rules
         public float RespawnLeft = 30f;
         // T-041: the health of the soul link made while this player was down (0 = none) and the hold-Y timer.
         public float LinkHealth, SelfHold;
+        // T-215 #5: the health this PC's rescuer has drained into the current hold (refunded if it yields).
+        public float LocalGiven;
     }
 
     public sealed class DownedRoster<T> where T : DownedState
@@ -94,9 +96,30 @@ namespace OriCoop.Rules
             float amount = d.DrainRate * dt;
             return amount < cap ? amount : cap;
         }
+        // T-215 #5 (#301): two teammates on different PCs held at the same skull at once; each PC simulated its own
+        // hold, so both lost health and only the first revive counted. The lower seat keeps the revive. A higher seat
+        // that hears a lower seat's progress gives up its hold, gets back what it had drained, and stays out while
+        // that progress keeps coming. A teammate already reviving keeps it: a newcomer does not start beside it.
+        public const float RivalFresh = 0.3f;
+        public static bool Outranks(int rival, int rescuer) { return rival > 0 && rescuer > 0 && rival < rescuer; }
+        // activeRescuer: whose progress this PC last took (d.Rescuer); activeRemote: that seat plays on another PC.
+        public static bool StandAside(bool wasHolding, int localRescuer, int activeRescuer, bool activeRemote, float sinceActive)
+        {
+            if (!activeRemote || activeRescuer <= 0 || activeRescuer == localRescuer || sinceActive >= RivalFresh) return false;
+            return !wasHolding || Outranks(activeRescuer, localRescuer);
+        }
+        // Returns what the yielding rescuer gets back; the rival's own progress replaces this PC's.
+        public static float Yield(DownedState d, int rival)
+        {
+            float refund = d.LocalGiven;
+            d.LocalGiven = 0f; d.Holding = false; d.NeedRelease = false;
+            d.Progress = 0f; d.Given = 0f; d.Rescuer = rival;
+            return refund;
+        }
         public static void Advance(DownedState d, float dt, float drain, float duration)
         {
             d.Given += drain;
+            d.LocalGiven += drain;
             float progress = d.Progress + dt / duration;
             d.Progress = 1f < progress ? 1f : progress;
         }
