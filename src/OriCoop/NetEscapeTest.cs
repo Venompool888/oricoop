@@ -427,26 +427,32 @@ namespace OriCoop
 
                 // The skip fades into a second scene. Its storyTextMessage acquires the native input lock
                 // when it opens. Advance it through player input and leave after control returns in that scene.
-                bool sawText = false, playable = false;
+                bool sawText = false, confirmedMap = false, playable = false;
                 int presses = 0;
                 float until = Time.realtimeSinceStartup + 100f;
                 while (Time.realtimeSinceStartup < until && !playable)
                 {
                     bool swamp = Core.Scenes.Manager.CurrentScene != null && Core.Scenes.Manager.CurrentScene.Scene == SwampAfterEscape;
                     InteractiveMessageBox text = swamp ? SwampStoryText() : null;
-                    if (text != null)
+                    // After Gumo's last line, the game shows the next objective and zooms to the area map.
+                    // GameMapShowObjective waits for another Jump press specifically in its AreaMap state.
+                    GameMapShowObjective objective = swamp && GameMapUI.Instance != null ? GameMapUI.Instance.ShowObjective : null;
+                    bool mapReady = sawText && objective != null && objective.IsPerforming
+                        && objective.CurrentState == GameMapShowObjective.State.AreaMap;
+                    if (text != null || mapReady)
                     {
-                        sawText = true; presses++;
-                        NetTestHarness.BotButtons = buttons | 0x1000; // gamepad A advances dialogue
+                        if (text != null) { sawText = true; presses++; }
+                        if (mapReady) confirmedMap = true;
+                        NetTestHarness.BotButtons = buttons | 0x1000; // normal gamepad A input
                         yield return new WaitForFixedUpdate();
                         NetTestHarness.BotButtons = buttons;
                     }
-                    playable = sawText && text == null && swamp && NetPlay.LocalInGameplay() && Own != null && !Own.IsSuspended
-                        && Own.Controller.CanMove && !GameController.Instance.InputLocked && !Letterbox.ShowLetterboxes;
+                    playable = confirmedMap && text == null && swamp && NetPlay.LocalInGameplay() && Own != null && !Own.IsSuspended
+                        && !UI.MainMenuVisible && Own.Controller.CanMove && !GameController.Instance.InputLocked && !Letterbox.ShowLetterboxes;
                     if (!playable) yield return Wait(0.3f);
                 }
                 h.Check(playable, "ESC3 " + Role + ": control returned in the swamp after the ending dialogue (saw text " + sawText
-                    + ", presses " + presses + ", takeover mask " + StorySync.TakeoverMaskPublic() + ", letterbox " + Letterbox.ShowLetterboxes + ")");
+                    + ", suspended " + (Own == null || Own.IsSuspended) + ", canMove " + (Own != null && Own.Controller.CanMove) + ", game lock " + GameController.Instance.InputLocked + ", gameplay " + (NetPlay.NotInGameplayReason() ?? "yes") + ", scene " + (Core.Scenes.Manager.CurrentScene == null ? "?" : Core.Scenes.Manager.CurrentScene.Scene) + ", dialogue presses " + presses + ", confirmed objective map " + confirmedMap + ", takeover mask " + StorySync.TakeoverMaskPublic() + ", letterbox " + Letterbox.ShowLetterboxes + ")");
                 if (host)
                 {
                     yield return WaitFor(() => StorySync.CleanupsAfterSceneTrip > cleanupsBefore, 20f);

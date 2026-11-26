@@ -2844,11 +2844,13 @@ namespace OriCoop
                     MenuScreenManager menu = UI.Menu;
                     SeinCharacter ori = Own;
                     bool checkMenu = PhaseOn("S4") && menu != null && !menu.MainMenuVisible && ori != null && !ori.IsSuspended;
+                    if (PhaseOn("S4")) h.Check(checkMenu, "G screens: the guest can exercise the offline menu transition");
                     bool help = false;
                     if (checkMenu)
                     {
                         menu.ShowMenuScreen();
                         help = NetStoryTest.TryOpenHelp();
+                        h.Check(help, "G screens: opened the inventory help popup before disconnect");
                         CoopMenu.Open();
                         bool openedAtOnce = CoopMenu.IsOpen;
                         yield return null;
