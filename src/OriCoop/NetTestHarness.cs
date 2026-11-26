@@ -778,6 +778,7 @@ namespace OriCoop
             ThreePacket late = Three(0, 3);
             h.Note("3P late join loads=" + late.Loads + " placed=" + late.Joined + " distance=" + F(late.Distance));
             h.Check(late.Loads > 0 && late.Joined && late.Distance <= 3f, "3P late guest loads host save and lands within 3 units");
+            if (!NetRoute.ServerMode) yield return NetStoryWindowTest.Relay(h, n => ThreeRound(h, 340 + n));
 
             yield return ThreeMovement(h, 1);
             yield return ThreeRound(h, 1);
@@ -1720,6 +1721,7 @@ namespace OriCoop
                     if (step == 5) yield return Safely(h, "W keystone recovery", CheckKeystoneRecovery(h, 1, 25900));
                     if (step == 5) yield return Safely(h, "W map late", MapKeep(h, true));
                     if (step == 5) yield return Safely(h, "W pickups", PickupCopies(h));
+                    if (step == 5) yield return Safely(h, "W unseen story archive", UnseenStoryArchive(h));
                     if (step == 5) yield return Safely(h, "W cells", CellRefill(h));
                     if (step == 5) yield return Safely(h, "W cell ownership", NetCellAuthorityTest.Run(h, n => { PublishWorldBarrier(h, n, false); return WorldBarrier(h, n); }, () => ClosePopups()));
                     if (step == 5) yield return Safely(h, "W clone checkpoint", CloneCheckpoint(h));

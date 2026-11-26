@@ -406,6 +406,16 @@ namespace OriCoop.Story
             if (Remote.ContainsKey(TokenKey(item.Sender, item.Token))) return false;
             return !host || !HasAccepted(item.Key) && !RecentlySeen(item.Key, now);
         }
+        // The host can already be playing this story from a local interaction. Other guests still need
+        // the original sender's start, skip and end, without creating a mirror on the host.
+        public bool AcceptRelayOnly(T item, float now)
+        {
+            ulong key = TokenKey(item.Sender, item.Token);
+            if (Accepted.ContainsKey(key)) return false;
+            item.Began = now;
+            Accepted.Add(key, item);
+            return true;
+        }
         public void TrackRemote(T item, bool host, float now)
         {
             if (RecentlySeen(item.Key, now)) item.Resolved = true;

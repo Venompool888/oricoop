@@ -8,6 +8,9 @@ namespace OriCoop.World
     // A partner's story progress no longer goes into the checkpoint; the entry this PC's own game saved stays.
     public sealed class StoryProgressKeys
     {
+        // WorldSync's existing raw-blob type descriptor carries the sender's classification. An
+        // ordinary ActionSequenceSerializer still has its native type name and the same wire layout.
+        public const string StoryType = "ActionSequenceSerializer/Story";
         readonly HashSet<string> m_keys = new HashSet<string>();
         public int Count { get { return m_keys.Count; } }
         public bool Known(string key) { return m_keys.Contains(key); }
@@ -19,11 +22,11 @@ namespace OriCoop.World
 
         // A partner's blob for object `key`: is it written into this PC's checkpoint?
         // loaded: the object is loaded here. liveStory: it is loaded and is a story sequence's progress.
-        // An object that is not loaded can only be recognised if it was seen loaded before; one never seen is stored as
-        // before (it may be an ordinary sequence, whose running state is world state).
-        public bool StoreInCheckpoint(string key, bool loaded, bool liveStory)
+        // A never-loaded sequence uses the sender's classification. When a live object exists,
+        // its local classification takes precedence over the remote descriptor.
+        public bool StoreInCheckpoint(string key, bool loaded, bool liveStory, bool senderStory = false)
         {
-            if (liveStory) { m_keys.Add(key); return false; }
+            if (liveStory || (!loaded && senderStory)) { m_keys.Add(key); return false; }
             return loaded || !m_keys.Contains(key);
         }
     }

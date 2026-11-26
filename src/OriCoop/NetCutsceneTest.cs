@@ -221,6 +221,7 @@ namespace OriCoop
                 yield return Wait(0.4f);
                 s_lever.OnReleaseLever(); s_lever.OnExitLever();
             }
+            if (step == 85) yield return NetStoryWindowTest.Interaction(h, "lever", 910);
             bool sawLetterbox = false, sawCamera = false, freeAgain = false;
             float start = Now, end = Now + 30f, freeSince = -1f;
             while (Now < end)
@@ -361,12 +362,24 @@ namespace OriCoop
         // own Ori: spirit flame locked, the orb parked in the stone); one activates it with a map fragment through the
         // game's own input path. Afterwards nobody may be left with spirit flame locked or the orb in the stone.
         // Case 1: the stone's story is replayed on the partner's PC (it releases the partner by itself, with or without
-        // T-204). Case 2: the story stays local, as it does for 12 s after a lever push and 20 s after an ability
-        // pedestal on a PC (CutsceneGuard.PedestalWindow; the test opens that window directly instead of pulling a lever
-        // first): the partner only gets the stone's saved state through WorldSync and nothing released it before T-204.
+        // T-204). Case 2: run the activation as a local-only interaction so the partner only gets the stone's saved
+        // state through WorldSync. Nothing released its spirit flame before T-204.
         const string StoneScene = "sunkenGladesSpiritCavernSaveRoomB";   // found by the stonefind probe below
         static readonly Vector3 StonePosition = new Vector3(-80.5f, -247.2f, 0f);
         static MapStone s_stone;
+        static MapStone s_localOnlyStone;
+        [HarmonyPatch(typeof(MapStone), "FixedUpdate")]
+        static class LocalStoneActivation
+        {
+            static bool Prepare() { return TestHarness.Enabled; }
+            static void Prefix(MapStone __instance, out bool __state)
+            {
+                __state = __instance == s_localOnlyStone;
+                if (__state) StorySync.EnterLocalOnly(null);
+            }
+            static Exception Finalizer(bool __state, Exception __exception)
+            { if (__state) StorySync.ExitLocalOnly(); return __exception; }
+        }
         static MapStone FindStone()
         {
             foreach (MapStone stone in Resources.FindObjectsOfTypeAll<MapStone>())
@@ -430,7 +443,7 @@ namespace OriCoop
             while (Now < end && Own.Inventory.MapStones < 1) yield return null;
             yield return Barrier(h, step);
             int mirrored = StorySync.StartsMirrored;
-            if (storyStaysLocal) CutsceneGuard.TestLocalOnlyWindow(12f);
+            if (storyStaysLocal && activator) s_localOnlyStone = s_stone;
             if (activator)
             {
                 h.Check(Own.Inventory.MapStones >= 1, "T-204 " + label + ": a map fragment to use (" + StoneState() + ")");
@@ -472,7 +485,7 @@ namespace OriCoop
             NetTestHarness.BotButtons = 0;
             if (storyStaysLocal)
             {
-                CutsceneGuard.TestLocalOnlyWindow(0f);
+                s_localOnlyStone = null;
                 if (!activator) h.Check(StorySync.StartsMirrored == mirrored, "T-204 " + label + ": the stone's story was not replayed here (" + (StorySync.StartsMirrored - mirrored) + " replayed)");
             }
             Sample p = new Sample { Step = step + 1, Direction = (int)s_stone.CurrentState };
@@ -494,7 +507,7 @@ namespace OriCoop
                 yield return Step(h, 154, StoneActivate(h, "host activates", true, false, 155));
                 yield return Step(h, 158, StoneActivate(h, "guest activates, story stays local", false, true, 159));
             }
-            finally { Bot(); CutsceneGuard.TestLocalOnlyWindow(0f); }
+            finally { Bot(); s_localOnlyStone = null; }
         }
         // ---- T-204: where are the map stones? (probe, ORICOOP_P3_LEVER=stonefind; host only, notes in the result file)
         static IEnumerator StoneProbe(TestHarness h)
@@ -615,6 +628,7 @@ namespace OriCoop
             yield return ResetPedestal(h, step);
             s_lastActivation = Now;
             if (NetPlay.IsHost == host) s_pedestal.ActivatePedestal();
+            if (step == 11) yield return NetStoryWindowTest.Interaction(h, "pedestal", 912);
             float end = Now + 25f, freeSince = -1f;
             while (Now < end)
             {
@@ -1356,6 +1370,7 @@ namespace OriCoop
         public static IEnumerator Run(TestHarness h)
         {
             if (!s_registered) { NetPlay.On(BarrierMessage, Receive); s_registered = true; }
+            if (Environment.GetEnvironmentVariable("ORICOOP_P3_EXTERNAL") == "1") { yield return Step(h, 880, NetExternalStoryTest.Run(h)); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_GATE") == "1") { yield return GateRun(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_LOOK") == "1") { yield return LookRun(h); yield break; }
             string kuro = Environment.GetEnvironmentVariable("ORICOOP_P3_KURO");
@@ -1428,6 +1443,7 @@ namespace OriCoop
                 yield return LeverHoldRun(h);
                 // T-204: the map stone, same reason (a partner's state read into the live object).
                 yield return MapStoneRun(h);
+                yield return Step(h, 880, NetExternalStoryTest.Run(h));
             }
             finally
             {

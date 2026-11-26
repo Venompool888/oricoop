@@ -78,6 +78,15 @@ namespace OriCoop
         static readonly HashSet<Component> Mirrored = new HashSet<Component>();
         static readonly HashSet<CutsceneController> Starting = new HashSet<CutsceneController>();
         static readonly HashSet<ActionSequence> OwnedSequences = new HashSet<ActionSequence>();
+        // A RunActionOnce/conditional can start an action on a different branch of the scene.
+        // Keep the story that actually ran it, including calls after a native wait resumed.
+        static readonly Dictionary<Component, Story> MirrorOwners = new Dictionary<Component, Story>();
+        static Story s_executingMirror;
+        static readonly bool MutateExternalMirrorOrphan = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_EXTERNAL_MIRROR_ORPHAN") == "1";
+        static void RecordMirrorOwner(Component action)
+        {
+            if (!MutateExternalMirrorOrphan && s_executingMirror != null) MirrorOwners[action] = s_executingMirror;
+        }
         static readonly Dictionary<GameObject, HashSet<ActionSequence>> MirrorActivations = new Dictionary<GameObject, HashSet<ActionSequence>>();
         static readonly HashSet<ActionSequence> LocalOnly = new HashSet<ActionSequence>();
         static readonly HashSet<CutsceneController> LocalOnlyControllers = new HashSet<CutsceneController>();
@@ -400,7 +409,7 @@ namespace OriCoop
             CleanupNative();
             RestoreVisible(); Seen.Clear(); Performed.Clear(); Local.Clear(); Remote.Clear(); Accepted.Clear(); Mirrored.Clear(); Starting.Clear();
             StoryTexts.Clear(); ForgetInputLocks();
-            MirrorStartsLog.Clear(); WindowStarts.Clear();
+            MirrorStartsLog.Clear(); WindowStarts.Clear(); WindowMirrors.Clear();
             LocalOnly.Clear(); LocalOnlyControllers.Clear(); LocalWellSequences.Clear();
             s_mirroring = false;
             // Tokens remain monotonic so a delayed end can never release a new story in this process.
@@ -512,6 +521,7 @@ namespace OriCoop
             {
                 RestoreMirrorActivation(null);
                 OwnedSequences.Clear(); OwnedControllers.Clear(); OwnedPauses.Clear();
+                MirrorOwners.Clear();
                 s_mirroring = previous; StoryHost.Current.PositionChanged();
             }
         }
@@ -584,10 +594,16 @@ namespace OriCoop
             // Earlier net12 builds announced the first well visit as a story. The pedestal and teleporter
             // already synchronize through their native save objects, including when their scene is unloaded.
             if (data.WellActivation) { WellActivations.TryActivate(WellKey(story.Scene, story.Id)); return; }
-            if (!story.Classified || Remote.ContainsKey(TokenKey(story.Sender, story.Token)) || PlayingLocally(story)) return;
+            if (!story.Classified || Remote.ContainsKey(TokenKey(story.Sender, story.Token))) return;
+            story.Key = KeyOf(story);
+            if (PlayingLocally(story))
+            {
+                if (Services.Net.IsHost && !MutateDropLocalRelay && Ledger.AcceptRelayOnly(story, Time.realtimeSinceStartup))
+                    StoryHost.Current.Rebroadcast(r);
+                return;
+            }
             if (CutsceneGuard.PedestalWindow) MirroredInWindow++;
             LastStoryActivity = Time.realtimeSinceStartup;
-            story.Key = KeyOf(story);
             if (!Ledger.CanReceive(story, Services.Net.IsHost, Time.realtimeSinceStartup)) return;
             if (!Services.Net.IsHost)
             {
@@ -603,7 +619,7 @@ namespace OriCoop
         }
         static bool LocalOnlyStory(Story story)
         {
-            if (CutsceneGuard.PedestalWindow || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return true;
+            if (MutateWindowBlocksLocal && CutsceneGuard.PedestalWindow || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return true;
             return LocalOnlyScoped(story);
         }
         // The story's own sequence / controller was started by this PC's lever or pedestal replay.
@@ -619,14 +635,23 @@ namespace OriCoop
         // one on every PC that plays it ("the cutscene runs natively here, do not also mirror it"). The window used to
         // drop every story start that arrived inside it, also a partner's unrelated one (a map stone, a story trigger
         // elsewhere): it was never played here and the two PCs' story state could differ from then on.
-        // A partner never announces the stories of its own replay (its window keeps them unsent), so a start that
+        // A partner never announces the stories of its own replay (those specific actions stay local), so a start that
         // arrives is not one of those. It is left out only when this PC plays that very story itself: it was started
         // by this PC's replay (LocalOnlyScoped, or inside the replay's call), or natively here inside the window
         // within the last WindowDedupe seconds (both PCs' windows did not close at the same moment).
         // Test-only mutation ORICOOP_MUTATE_WINDOW_DROPS_STARTS: the window drops them all again.
         static readonly bool MutateWindowDropsStarts = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WINDOW_DROPS_STARTS") == "1";
         static readonly RecentObjects<string> WindowStarts = new RecentObjects<string>();
+        static readonly RecentObjects<string> WindowMirrors = new RecentObjects<string>();
+        static readonly bool MutateWindowBlocksLocal = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_WINDOW_BLOCKS_LOCAL") == "1";
+        static readonly bool MutateRepeatMirror = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_REPEAT_WINDOW_MIRROR") == "1";
+        static readonly bool MutateDropLocalRelay = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_HOST_DROPS_LOCAL_RELAY") == "1";
         const float WindowDedupe = 5f;
+        static bool NativeWindowStart()
+        {
+            return !MutateRepeatMirror && !s_mirroring && s_replayActionDepth == 0 && CutsceneGuard.PedestalWindow
+                && Online && !PuppetCall;
+        }
         public static int MirroredInWindow;
         static bool PlayingLocally(Story story)
         {
@@ -716,6 +741,7 @@ namespace OriCoop
                 return false;
             }
             bool previous = s_mirroring; s_mirroring = true;
+            Story priorOwner = s_executingMirror; s_executingMirror = story;
             try
             {
                 float performed;
@@ -736,14 +762,18 @@ namespace OriCoop
                     // Use the same player-takeover criterion as an all-player story gate. A camera-only
                     // sequence can still mirror, but leaves the partner's Ori where it was.
                     if (IsTakeoverAction(story.Sequence)) GatherForStory(story);
-                    CaptureNative(); OwnedSequences.Add(story.Sequence);
+                    CaptureNative(); OwnedSequences.Add(story.Sequence); RecordMirrorOwner(story.Sequence);
                     Mirrored.Add(story.Sequence);
                     bool running = story.Sequence.IsRunning;
                     if (!alreadyPerformed || running) ActivateMirrorSequence(story.Sequence);
                     MirrorStartsLog.MirrorPerformed(story.Sequence.GetInstanceID(), Time.realtimeSinceStartup);   // T-183
                     RetireOvertaken(story.Sequence, running || !alreadyPerformed && story.Sequence.enabled);
                     ForcedSync.StoryStarted();
-                    if (!alreadyPerformed) story.Sequence.Perform(null);
+                    if (!alreadyPerformed)
+                    {
+                        story.Sequence.Perform(null);
+                        WindowMirrors.Mark(story.Key, Time.realtimeSinceStartup);
+                    }
                 }
                 else
                 {
@@ -757,7 +787,11 @@ namespace OriCoop
                             story.Controller = controller; CaptureNative(); OwnedControllers.Add(controller);
                             Mirrored.Add(controller);
                             ForcedSync.StoryStarted();
-                            if (!alreadyPerformed) controller.ChangeState(state);
+                            if (!alreadyPerformed)
+                            {
+                                controller.ChangeState(state);
+                                WindowMirrors.Mark(story.Key, Time.realtimeSinceStartup);
+                            }
                             break;
                         }
                         if (story.Controller != null) break;
@@ -784,7 +818,7 @@ namespace OriCoop
                 Services.Log.Warn("net: story mirror failed; watching " + story.Key + ": " + e);
                 return true;
             }
-            finally { s_mirroring = previous; }
+            finally { s_mirroring = previous; s_executingMirror = priorOwner; }
         }
         // Test-only mutation (before T-212 item 4): a "local only" window swallows the end of a story already announced,
         // on the sender and on a receiver.
@@ -793,7 +827,7 @@ namespace OriCoop
         {
             Story story;
             if (Local.TryGetValue(token, out story)
-                && (MutateEndLostInWindow ? !LocalOnlyStory(story) : StoryLedger<Story>.EndOwed(story, LocalOnlyStory(story))))
+                && (MutateEndLostInWindow ? !CutsceneGuard.PedestalWindow && !LocalOnlyStory(story) : StoryLedger<Story>.EndOwed(story, LocalOnlyStory(story))))
             {
                 StoryRecovery recovery = completed && story.RecoversDowned ? Revive.StorySurvivors() : null;
                 Services.Net.Send(EndMessage, true, delegate(BinaryWriter w) {
@@ -812,7 +846,7 @@ namespace OriCoop
             ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r)); Story story;
             // T-212 (4): a story this PC tracks ends when its sender says so, whatever window is open here now (the
             // "already playing locally" entries of a pedestal replay used to sit in Remote for 60 s for this reason).
-            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || MutateEndLostInWindow && LocalOnlyStory(story)) return;
+            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || MutateEndLostInWindow && (CutsceneGuard.PedestalWindow || LocalOnlyStory(story))) return;
             story.Recovery = StoryRecovery.Read(r);
             StoryHost.Current.Rebroadcast(r);
             Accepted.Remove(token);
@@ -859,6 +893,7 @@ namespace OriCoop
             ActionSequence child = ContinuationOf(story.Sequence);
             if (child == null || child == story.Sequence || !child.enabled) return;
             bool previous = s_mirroring; s_mirroring = true;
+            Story priorOwner = s_executingMirror; s_executingMirror = story;
             try
             {
                 story.PlayedContinuation = child;
@@ -867,15 +902,31 @@ namespace OriCoop
                 child.Perform(null);
                 Services.Log.Info("net: played missed story continuation " + child.name);
             }
-            finally { s_mirroring = previous; }
+            finally { s_mirroring = previous; s_executingMirror = priorOwner; }
         }
         static bool SequenceRunning(Story story)
         {
             return story.Sequence != null && story.Sequence.IsRunning
                 || story.PlayedContinuation != null && story.PlayedContinuation.IsRunning;
         }
-        static bool InEndedStory(Transform part, Story ended)
+        static bool MirrorRunning(Story story)
         {
+            if (SequenceRunning(story)) return true;
+            // A normal end lets this PC finish the child's remaining actions under the existing
+            // ten-second deadline. An actual departure bypasses that grace period.
+            foreach (KeyValuePair<Component, Story> entry in MirrorOwners)
+            {
+                if (entry.Value != story) continue;
+                ActionSequence sequence = entry.Key as ActionSequence;
+                if (sequence != null && sequence.IsRunning) return true;
+            }
+            return false;
+        }
+        static bool InEndedStory(Component action, Story ended)
+        {
+            Story owner;
+            if (MirrorOwners.TryGetValue(action, out owner)) return owner == ended;
+            Transform part = action.transform;
             if (!Below(part, ended.Sequence) && !Below(part, ended.PlayedContinuation)) return false;
             foreach (Story other in Remote.Values)
                 if (Below(part, other.Sequence) || Below(part, other.PlayedContinuation)) return false;
@@ -901,15 +952,15 @@ namespace OriCoop
             bool previous = s_mirroring; s_mirroring = true;
             try
             {
-                if (story.Sequence != null || story.PlayedContinuation != null)
+                if (story.Sequence != null || story.PlayedContinuation != null || story.Controller != null)
                 {
                     foreach (ActionSequence sequence in new List<ActionSequence>(OwnedSequences))
-                        if (sequence != null && InEndedStory(sequence.transform, story)) { TryStop(sequence); OwnedSequences.Remove(sequence); }
+                        if (sequence != null && InEndedStory(sequence, story)) { TryStop(sequence); OwnedSequences.Remove(sequence); }
                     foreach (PauseGameAction pause in new List<PauseGameAction>(OwnedPauses))
-                        if (pause != null && InEndedStory(pause.transform, story)) { if (pause.IsPerforming) TryStop(pause); OwnedPauses.Remove(pause); }
+                        if (pause != null && InEndedStory(pause, story)) { if (pause.IsPerforming) TryStop(pause); OwnedPauses.Remove(pause); }
                     foreach (ShowStoryTextAction text in new List<ShowStoryTextAction>(StoryTexts.Keys))
                     {
-                        if (text == null || !StoryTexts[text] || !InEndedStory(text.transform, story)) continue;
+                        if (text == null || !StoryTexts[text] || !InEndedStory(text, story)) continue;
                         MessageBox box = StoryMessageBox.GetValue(text) as MessageBox;
                         try { if (box != null) box.HideMessageScreen(); }
                         catch (Exception e) { Services.Log.Warn("net: mirrored story text exit: " + e.Message); }
@@ -927,7 +978,12 @@ namespace OriCoop
                 StoryHost.Current.Trace("story", "mirror.stopped-own", "token", story.Token, "remaining", Remote.Count);
             }
             catch (Exception e) { Services.Log.Warn("net: stopping one mirrored story: " + e); }
-            finally { s_mirroring = previous; }
+            finally
+            {
+                foreach (Component action in new List<Component>(MirrorOwners.Keys))
+                    if (MirrorOwners[action] == story) MirrorOwners.Remove(action);
+                s_mirroring = previous;
+            }
         }
         // Test only (NetStoryLeftoverTest, T-212 item 3): a mirrored story from a seat that is not in this 2-player
         // session, and that seat leaving.
@@ -941,6 +997,7 @@ namespace OriCoop
             Resolve(story);
         }
         internal static void TestSeatLeft(int seat) { if (TestHarness.Enabled) RemoveSeat(seat); }
+        internal static void TestRemoteEnd(int seat, uint token) { if (TestHarness.Enabled) EndRemote(TokenKey(seat, token)); }
         // Test-only mutation (before T-212 item 5): an end that arrives before the mirror started drops the story.
         static readonly bool MutateNoLateStart = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_LATE_START") == "1";
         public static int LateStarts;
@@ -963,7 +1020,7 @@ namespace OriCoop
                 }
                 return;
             }
-            if (!force && !CutsceneGuard.Off && SequenceRunning(story) && !story.Watch)
+            if (!force && !CutsceneGuard.Off && MirrorRunning(story) && !story.Watch)
             {
                 // The partner's copy ended, ours is still running (it started later). Stopping it half-way left the
                 // screen black (FadeToBlack without FadeFromBlack) or the letterbox down (playtest 19:07, lever).
@@ -988,9 +1045,9 @@ namespace OriCoop
         static void ReceiveSkip(BinaryReader r)
         {
             ulong token = TokenKey(Services.Net.Sender, StoryWire.ReadToken(r)); Story story;
-            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story) || PlayingLocally(story)) return;
+            if (!(Services.Net.IsHost ? Accepted : Remote).TryGetValue(token, out story)) return;
             StoryHost.Current.Rebroadcast(r);
-            if (!Remote.ContainsKey(token)) return;
+            if (!Remote.ContainsKey(token) || PlayingLocally(story)) return;
             Ledger.Skip(story); if (story.Resolved && !story.Watch) SkipRemote(story);
         }
         static void SkipRemote(Story story)
@@ -1053,7 +1110,7 @@ namespace OriCoop
             {
                 PlayMissedContinuation(story);
                 bool running = !(now - story.Began >= 60f) && story.EndAt >= 0
-                    && SequenceRunning(story);
+                    && MirrorRunning(story);
                 if (StoryLedger<Story>.RemoteFinished(story, running, now))
                 { finished.Add(TokenKey(story.Sender, story.Token)); continue; }
                 // T-212 (5): ended by its sender before it started here, and settled without a mirror of its own
@@ -1105,7 +1162,7 @@ namespace OriCoop
             {
                 Story story = Remote[token];
                 bool completed = story.Recovery != null && now - story.Began < 60f
-                    && !SequenceRunning(story);
+                    && !MirrorRunning(story);
                 EndRemote(token, true, completed);
             }
             if (Watching) HideOwn(); else RestoreVisible();
@@ -1163,8 +1220,13 @@ namespace OriCoop
             static bool Prefix(ActionSequence __instance, out StartCall __state)
             {
                 __state = new StartCall();
+                // A new native play of an external sequence is independent of its old mirror.
+                if (__instance.enabled && s_executingMirror == null && !s_mirroring && s_replayActionDepth == 0
+                    && !Mirrored.Contains(__instance) && MirrorOwners.Remove(__instance)) OwnedSequences.Remove(__instance);
                 bool replay = s_mirroring || s_replayActionDepth > 0 || OwnedSequences.Contains(__instance);
                 bool canStart = __instance.enabled && __instance.MoonGuid != null && __instance.MoonGuid != MoonGuid.Empty;
+                if (canStart && NativeWindowStart() && WindowMirrors.Consume(KeyOf(new Story { Kind = 0, Scene = SceneOf(__instance),
+                    Id = __instance.MoonGuid }), Time.realtimeSinceStartup, WindowDedupe)) return false;
                 if (canStart && Online && !PuppetCall) NoteContinuation(__instance);
                 if (!replay && (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0)) LocalOnly.Add(__instance);
                 if (!replay && LocalWellSave) LocalWellSequences.Add(__instance);
@@ -1174,12 +1236,14 @@ namespace OriCoop
                 if (replay && s_native != null && Remote.Count > 0 && !PuppetCall)
                 {
                     OwnedSequences.Add(__instance);
+                    if (__instance.enabled) RecordMirrorOwner(__instance);
                     if (!Mirrored.Contains(__instance)) ActivateMirrorSequence(__instance);
                 }
                 return true;
             }
-            static void Postfix(ActionSequence __instance, StartCall __state)
+            static void Postfix(ActionSequence __instance, StartCall __state, bool __runOriginal)
             {
+                if (!__runOriginal) return;
                 if (Services.Net.Enabled && !s_mirroring && !PuppetCall) StartsSeen++;
                 if (OwnedSequences.Contains(__instance))
                 {
@@ -1199,20 +1263,26 @@ namespace OriCoop
         [HarmonyPatch(typeof(ActionSequence), "RunAction")]
         static class ReplayAction
         {
-            struct ActionCall { public int Flags; public ActionSequence Previous; }
+            struct ActionCall { public int Flags; public ActionSequence Previous; public Story PriorOwner; }
             static void Prefix(ActionSequence __instance, out ActionCall __state)
             {
-                __state = new ActionCall { Previous = s_inputSequence };
+                __state = new ActionCall { Previous = s_inputSequence, PriorOwner = s_executingMirror };
                 s_inputSequence = __instance;
+                s_executingMirror = null;
                 if (LocalOnly.Contains(__instance)) { __state.Flags |= 4; s_localOnlyRunDepth++; }
                 if (LocalWellSequences.Contains(__instance)) { __state.Flags |= 8; s_localWellDepth++; }
-                if (OwnedSequences.Contains(__instance)) { __state.Flags |= 1; s_replayActionDepth++; }
+                if (OwnedSequences.Contains(__instance))
+                {
+                    __state.Flags |= 1; s_replayActionDepth++;
+                    MirrorOwners.TryGetValue(__instance, out s_executingMirror);
+                }
                 foreach (Story story in Local.Values)
                     if (story.Sequence == __instance) { __state.Flags |= 2; s_sourceActionDepth++; break; }
             }
             static Exception Finalizer(ActionCall __state, Exception __exception)
             {
                 s_inputSequence = __state.Previous;
+                s_executingMirror = __state.PriorOwner;
                 if ((__state.Flags & 1) != 0) s_replayActionDepth--;
                 if ((__state.Flags & 2) != 0) s_sourceActionDepth--;
                 if ((__state.Flags & 4) != 0) s_localOnlyRunDepth--;
@@ -1233,6 +1303,8 @@ namespace OriCoop
             static bool Prefix(CutsceneController __instance, CutsceneState state, out StartCall __state)
             {
                 __state = new StartCall();
+                if (state != null && NativeWindowStart() && WindowMirrors.Consume(KeyOf(new Story { Kind = 1, Scene = SceneOf(__instance),
+                    Id = MoonGuid.Empty, Path = PathOf(__instance.transform), State = PathOf(state.transform) }), Time.realtimeSinceStartup, WindowDedupe)) return false;
                 if (s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) LocalOnlyControllers.Add(__instance);
                 __state.LocalOnly = LocalOnlyControllers.Contains(__instance);
                 if (__state.LocalOnly) s_localOnlyRunDepth++;
@@ -1242,8 +1314,9 @@ namespace OriCoop
                 if (replay && s_native != null && Remote.Count > 0 && !PuppetCall) OwnedControllers.Add(__instance);
                 return true;
             }
-            static void Postfix(CutsceneController __instance, CutsceneState state, StartCall __state)
+            static void Postfix(CutsceneController __instance, CutsceneState state, StartCall __state, bool __runOriginal)
             {
+                if (!__runOriginal) return;
                 if (state != null && OwnedControllers.Contains(__instance)) Performed[KeyOf(new Story { Kind = 1,
                     Scene = SceneOf(__instance), Id = MoonGuid.Empty, Path = PathOf(__instance.transform), State = PathOf(state.transform) })] = Time.realtimeSinceStartup;
                 if (!__state.Root || state == null || Starting.Contains(__instance) || Mirrored.Contains(__instance)) return;
@@ -1264,6 +1337,7 @@ namespace OriCoop
             {
                 if (!Online || PuppetCall || !__instance.IsPerforming) return;
                 StoryTexts[__instance] = s_native != null && (s_mirroring || s_replayActionDepth > 0);
+                if (StoryTexts[__instance]) RecordMirrorOwner(__instance);
             }
         }
         [HarmonyPatch(typeof(ShowStoryTextAction), "OnMessageScreenHide")]
@@ -1370,7 +1444,10 @@ namespace OriCoop
         static class TrackPause
         {
             static void Prefix(PauseGameAction __instance)
-            { if (s_native != null && (s_mirroring || s_replayActionDepth > 0) && !PuppetCall && !__instance.IsPerforming) OwnedPauses.Add(__instance); }
+            {
+                if (s_native != null && (s_mirroring || s_replayActionDepth > 0) && !PuppetCall && !__instance.IsPerforming)
+                { OwnedPauses.Add(__instance); RecordMirrorOwner(__instance); }
+            }
         }
         // T-183: TriggerByString.DoTrigger() deregisters its string and runs its action. On a PC that already started the
         // target sequence as a mirror, the firing is consumed instead (Story/MirrorStarts.cs): no second 03 / 04.
@@ -1445,7 +1522,7 @@ namespace OriCoop
         {
             static void Prefix()
             {
-                if (!Online || s_mirroring || PuppetCall || CutsceneGuard.PedestalWindow
+                if (!Online || s_mirroring || PuppetCall
                     || s_localOnlyDepth > 0 || s_localOnlyRunDepth > 0) return;
                 foreach (Story story in Local.Values)
                 {

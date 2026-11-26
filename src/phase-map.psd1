@@ -37,7 +37,7 @@
         'CoPushReport' = 'P'; 'StoneSeed' = 'P'
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
-        'WorldObjSync' = 'WO,R'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
+        'WorldObjSync' = 'WO,R'; 'TriggerTrails' = 'WO'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
         'OnlineCamera' = 'CAM'; 'CoopCamera' = 'MOVE,CAM'; 'CutsceneGuard' = 'INTRO,S4,CAM,CUT'
         'KeystoneRecovery' = 'W'; 'NetKeystoneRecoveryTest' = 'W'
         'EnemySync.Swarm' = 'E3,E5'; 'SwarmFamily' = 'E5'   # T-195: the splitting Swarm (E5s checks; ids: unit tests)
@@ -46,6 +46,7 @@
         'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = 'INTRO'
         'NetSaveHandoverTest' = ''; 'MovementEpochs' = 'MOVE,S4'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
+        'NetStoryWindowTest' = 'CUT'; 'NetExternalStoryTest' = 'CUT'; 'NetStoryArchiveTest' = 'W'
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
         'TitleRoomExitTest' = ''
         'TitleRoomOverlayExitTest' = ''
@@ -207,6 +208,11 @@
         @{ Switch = 'ORICOOP_MUTATE_SMALL_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'R' }   # T-255 the self-revive hint draws as large as the native hint (R6)
         @{ Switch = 'ORICOOP_MUTATE_DIM_PROMPTS'; File = 'src\OriCoop\GameText.cs'; Suite = 'net'; Phase = 'CUT' }   # T-255 the gate prompts draw their text at full alpha (GATE G1, ORICOOP_P3_GATE=1)
         @{ Switch = 'ORICOOP_MUTATE_STORY_ENDS_ON_GAP'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running script with a takeover step ahead is not over (SEIN: a story announced as long as the script ran)
+        @{ Switch = 'ORICOOP_MUTATE_WINDOW_BLOCKS_LOCAL'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
+        @{ Switch = 'ORICOOP_MUTATE_REPEAT_WINDOW_MIRROR'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
+        @{ Switch = 'ORICOOP_MUTATE_HOST_DROPS_LOCAL_RELAY'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net-3p'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_EXTERNAL_MIRROR_ORPHAN'; File = 'src\OriCoop\StorySync.cs'; Suite = 'net'; Phase = 'CUT' }
+        @{ Switch = 'ORICOOP_MUTATE_UNTYPED_STORY_PROGRESS'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'W' }
         @{ Switch = 'ORICOOP_MUTATE_SEQ_PROGRESS_SHARED'; File = 'src\OriCoop\WorldSync.cs'; Suite = 'net'; Phase = 'CUT' }   # T-196 a running story script keeps its own step (SEIN with STORY_ENDS_ON_GAP: the host's Ori walks after the story)
     )
 }

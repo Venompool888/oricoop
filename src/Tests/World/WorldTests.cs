@@ -17,6 +17,20 @@ static class WorldTests
 
     static int Main()
     {
+        Run("trigger diagnostics bound both object history and individual trails", delegate {
+            TriggerTrails trails = new TriggerTrails();
+            TriggerTrails.Entry first = trails.Record(0);
+            for (int i = 1; i < TriggerTrails.Capacity; ++i) trails.Record(i);
+            TriggerTrails.Entry last = trails.Record(TriggerTrails.Capacity - 1);
+            for (int i = 0; i < 10; ++i) last.Add(i.ToString());
+            Check(last.Describe() == "2 | 3 | 4 | 5 | 6 | 7 | 8 | 9", "only eight steps");
+            Check(trails.Find(0) == first && trails.Find(-1) == null, "reading does not evict");
+            trails.Record(TriggerTrails.Capacity);
+            Check(trails.Find(0) == null && trails.Find(1) != null && trails.Find(TriggerTrails.Capacity - 1) == last,
+                "oldest object evicted, repeated steps do not displace other objects");
+            trails.Clear();
+            Check(trails.Find(1) == null && trails.Record(0).SentAt == -1f, "session resets both history and times");
+        });
         // T-074 review: two held events for the same object must replay as the partner sent them.
         Run("held events for one object come out in arrival order", delegate {
             HeldEvents<Ev> q = new HeldEvents<Ev>(); int dropped;
@@ -108,6 +122,13 @@ static class WorldTests
             keys.Remember("scene:pickup");                                   // WorldSync.Capture saw it loaded
             Check(!keys.StoreInCheckpoint("scene:pickup", false, false), "the first partner blob arrives after the scene unloaded: not stored");
             Check(keys.StoreInCheckpoint("scene:other", false, false), "an object never seen loaded is still stored");
+        });
+        Run("a remote story in a never-loaded scene preserves the native checkpoint", delegate {
+            StoryProgressKeys keys = new StoryProgressKeys();
+            Check(!keys.StoreInCheckpoint("unseen:story", false, false, true), "first tagged progress stays local");
+            Check(!keys.StoreInCheckpoint("unseen:story", false, false), "remember through retransmission");
+            Check(keys.StoreInCheckpoint("unseen:platform", false, false), "an ordinary sequence still advances");
+            Check(keys.StoreInCheckpoint("known:mechanism", true, false, true), "local loaded mechanism takes precedence");
         });
         Run("one-shot hazard fires on both PCs again after a checkpoint reload", delegate {
             OneShotTriggers a = new OneShotTriggers(), b = new OneShotTriggers();
