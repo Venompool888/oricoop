@@ -7,8 +7,7 @@ using UnityEngine;
 namespace OriCoop
 {
     // T-181: keep the input method (IME) off for the whole game. With a Chinese IME active, letter keys (D to move)
-    // went to the IME candidate box instead of the game. Nothing in the mod needs an IME: every text field (server
-    // address, join code, room name) takes ASCII only through Input.inputString, which still works with the IME off.
+    // went to the IME candidate box instead of the game. The F8 player-name editor enables composition while open.
     // Three layers:
     //   - Input.imeCompositionMode = Off (Unity's own switch; IMGUI may set it back to Auto, so it is re-applied);
     //   - ImmAssociateContext(game window, NULL): Windows sends no keys to an IME for this window. T-187: this only
@@ -37,9 +36,18 @@ namespace OriCoop
         static class EveryStep { static void Postfix() { SubsystemGuard.Run("ImeGuard.Tick", s_tick); } }
         static readonly Action s_tick = Tick;
 
+        internal static void NameEditing(bool editing)
+        {
+            Input.imeCompositionMode = editing ? IMECompositionMode.On : IMECompositionMode.Off;
+            if (editing && s_hwnd != IntPtr.Zero && GetFocus() == s_hwnd && !WindowHasContext(s_hwnd))
+                ImmAssociateContextEx(s_hwnd, IntPtr.Zero, 0x10); // IACE_DEFAULT, on the focused game window only
+            s_tried = false;
+            if (!editing) Tick();
+        }
+
         static void Tick()
         {
-            if (s_mutate) return;
+            if (s_mutate || CoopMenu.EditingName) return;
             if (Input.imeCompositionMode != IMECompositionMode.Off) Input.imeCompositionMode = IMECompositionMode.Off;
             if (s_hwnd == IntPtr.Zero || !IsWindow(s_hwnd))
             {
@@ -184,6 +192,7 @@ namespace OriCoop
         }
 
         [DllImport("imm32.dll")] static extern IntPtr ImmAssociateContext(IntPtr hwnd, IntPtr himc);
+        [DllImport("imm32.dll")] static extern bool ImmAssociateContextEx(IntPtr hwnd, IntPtr himc, uint flags);
         [DllImport("imm32.dll")] static extern IntPtr ImmGetContext(IntPtr hwnd);
         [DllImport("imm32.dll")] static extern bool ImmReleaseContext(IntPtr hwnd, IntPtr himc);
         [DllImport("imm32.dll")] static extern bool ImmGetOpenStatus(IntPtr himc);

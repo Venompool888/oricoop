@@ -1044,6 +1044,7 @@ namespace OriCoop
             Check(CoopMenu.IsOpen && Time.timeScale == 0f, "menu: opens and freezes the game");
             Shot("menu");
             yield return StartCoroutine(Wait(0.5f));
+            yield return StartCoroutine(PlayerNameMenu());
 
             // P2 <- controller 3 (index 2): choose, then press A on that controller.
             CoopMenu.Activate(1);
@@ -1114,6 +1115,56 @@ namespace OriCoop
             Check(m_errors == err0, "menu: no errors");
         }
 
+        IEnumerator NameButton(int button)
+        {
+            CoopMenu.TestPadButtons[0] = button;
+            yield return null; yield return null;
+            CoopMenu.TestPadButtons[0] = 0;
+            yield return null; yield return null;
+        }
+
+        IEnumerator PlayerNameMenu()
+        {
+            string own = TeammateIdentity.GetLocalName(1), other = TeammateIdentity.GetLocalName(2);
+            var draft = AccessTools.Field(typeof(CoopMenu), "s_nameDraft");
+            yield return StartCoroutine(NameButton(0x4000));
+            Check(CoopMenu.EditingName && Input.imeCompositionMode != IMECompositionMode.Off,
+                "menu names: X opens the selected local seat for text composition");
+            if (!CoopMenu.EditingName) yield break;
+            draft.SetValue(null, "Sprout");
+            yield return StartCoroutine(NameButton(0x2000));
+            Check(!CoopMenu.EditingName && TeammateIdentity.GetLocalName(1) == own && Input.imeCompositionMode == IMECompositionMode.Off,
+                "menu names: cancel keeps the saved name and restores gameplay input");
+            yield return StartCoroutine(Wait(0.3f));
+            yield return StartCoroutine(NameButton(0x4000));
+            Action restore = PreservePrimaryName();
+            try
+            {
+                draft.SetValue(null, "星叶");
+                yield return StartCoroutine(NameButton(0x1000));
+                Check(!CoopMenu.EditingName && TeammateIdentity.Label(1) == Roles.Tag(1) + " 星叶" && TeammateIdentity.GetLocalName(2) == other,
+                    "menu names: save updates only the selected seat and preserves Chinese text");
+                yield return StartCoroutine(NameLabelProbe.CheckLabels(this));
+            }
+            finally { restore(); }
+            yield return StartCoroutine(Wait(0.3f));
+        }
+
+        internal static Action PreservePrimaryName()
+        {
+            var config = Plugin.Instance.Config;
+            var primary = config.Bind("TeammateNames", "Primary", "", "");
+            var environment = config.Bind("TeammateNames", "UseEnvironmentName", true, "");
+            string original = primary.Value;
+            bool fallback = environment.Value;
+            return delegate {
+                primary.Value = original;
+                environment.Value = fallback;
+                TeammateIdentity.LocalSeatsChanged();
+                TeammateIdentity.Tick();
+            };
+        }
+
         static string DescribeRenderers(GameObject root)
         {
             if (root == null) return "null";
@@ -1181,6 +1232,8 @@ namespace OriCoop
             UI.Menu.ShowMenuScreen();
             yield return StartCoroutine(Wait(1.2f));
             Check(!P2Hud.Visible, "hud: hidden while the pause menu is open");
+            Check(GameObject.Find("OriCoop_SeatRing_P1") == null && GameObject.Find("OriCoop_SeatRing_P2") == null,
+                "hud: player rings hide with the native pause menu");
             Shot("visual_pause");
             UI.Menu.HideMenuScreen();
             yield return StartCoroutine(Wait(2f));
@@ -1770,6 +1823,7 @@ namespace OriCoop
                 {
                     SeinCharacter ori = seats.OriOf(seat);
                     Check(FourPlayerVisible(ori, cam, now), "fourplayer: P" + seat + " exists, is active and visible inside the camera view");
+                    Check(SeatRingMatches(ori, seat), "fourplayer: P" + seat + " has its own coloured ring at its feet");
                 }
 
                 float allowed = Rules.LocalEdgeWall.OfflineWidth(max.x, CoopCamera.EdgeMargin, plugin.GroupLeash);
@@ -1851,6 +1905,19 @@ namespace OriCoop
                     UnityEngine.Object.Destroy(platform);
                 }
             }
+        }
+
+        static bool SeatRingMatches(SeinCharacter ori, int seat)
+        {
+            GameObject go = GameObject.Find("OriCoop_SeatRing_P" + seat);
+            if (go == null || ori == null || go.GetComponent<MeshRenderer>() == null || !go.GetComponent<MeshRenderer>().enabled) return false;
+            MeshFilter filter = go.GetComponent<MeshFilter>();
+            if (filter == null || filter.sharedMesh == null || filter.sharedMesh.colors.Length < 2) return false;
+            Color actual = filter.sharedMesh.colors[1], expected = Roles.ColorOf(seat);
+            Vector3 centre = P2Hud.GuiCamera().WorldToScreenPoint(go.transform.position);
+            Vector3 foot = UI.Cameras.Current.Camera.WorldToScreenPoint(ori.Position + Vector3.down * 0.35f);
+            return actual.a > 0.01f && Mathf.Abs(actual.r - expected.r) < 0.02f && Mathf.Abs(actual.g - expected.g) < 0.02f
+                && Mathf.Abs(actual.b - expected.b) < 0.02f && Vector2.Distance(centre, foot) < 5f;
         }
 
         IEnumerator FourPlayerRevives(Vector3 ground, SeinCharacter[] oris)

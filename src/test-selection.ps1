@@ -111,6 +111,7 @@ $TS_FileSuites = [ordered]@{
     'RoomLeaveFlow'    = @('titlejoin', 'titlejoin-cs', 'rooms')   # T-176: the leave flow's real-game checks run in titlejoin cserver
     'CServerRoomList'  = @('titlejoin-wait-cancel', 'titlejoin', 'titlejoin-cs'); 'NativeCsRooms' = @('local', 'titlejoin', 'titlejoin-cs')   # T-201: a room list that cannot be read (the server list's room page): titlejoin cserver
     'MenuSoulFlameGuard' = @('net'); 'MenuSoulFlameTest' = @('net')   # T-179 skill tree B: net phase S4
+    'TeammateMapMarkers' = @('net')
     'TitleAnyKey'      = @('local', 'titlejoin'); 'TitleAnyKeyTest' = @('local')   # T-180 stuck key on press-any-key: run-test's title scenario
     'TitleRoomExitTest' = @('titlejoin-room-exit', 'titlejoin-steam-exit')
     'TitleRoomOverlayExitTest' = @('titlejoin-room-exit', 'titlejoin-steam-exit')

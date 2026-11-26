@@ -90,6 +90,7 @@ $Mutations = @(
     @{ Name = 'MUTATE_OVERLAY_UNLOCK';  Env = @{ ORICOOP_MUTATE_OVERLAY_UNLOCK = '1' };  Script = @('run-test.ps1'); Expect = '^title menu: overlay lobby: (starting|ending) online play keeps' }
     @{ Name = 'MUTATE_REMOVE_GLOW';     Env = @{ ORICOOP_MUTATE_REMOVE_GLOW = '1' };     Script = @('run-test.ps1'); Expect = '^title menu: remove page glow is red' }
     @{ Name = 'MUTATE_FONT_LEAK';       Env = @{ ORICOOP_MUTATE_FONT_LEAK = '1' };       Script = @('run-test.ps1'); Expect = '^title menu: menu resizes and recreated HUD text leave no extra fonts' }
+    @{ Name = 'MUTATE_MAP_PROJECTION'; Env = @{ ORICOOP_MUTATE_MAP_PROJECTION = '1'; ORICOOP_PHASES = 'S4' }; Script = @('run-nettest.ps1'); Expect = '^S4 map: P2 has a marker at its native (area|world) map projection' }
     @{ Name = 'MUTATE_MODE_FIXED_SIZE'; Env = @{ ORICOOP_MUTATE_MODE_FIXED_SIZE = '1' }; Script = @('run-test.ps1'); Expect = '^title menu: how-to-play chooser scales' }
     @{ Name = 'TEST_THROW';             Env = @{ ORICOOP_TEST_THROW = 'mutation' };      Script = @('run-test.ps1', '-Scenarios', 'move');     Expect = '^move: |TestThrow' }
     @{ Name = 'P3_OFF (CUT)';           Env = @{ ORICOOP_P3_OFF = '1'; ORICOOP_NET_ONLY = 'P3' }; Script = @('run-nettest.ps1');               Expect = '^CUT ' }

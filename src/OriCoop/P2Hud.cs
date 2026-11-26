@@ -21,6 +21,8 @@ namespace OriCoop
             public GameText GameText;
             public MessageBox Box;
             public Renderer GameRenderer;
+            public GlowRing Ring;
+            public int RingSeat;
             public string Plain = "";
             // Per-frame caches (UpdateTag runs every frame per teammate): the composed tag strings, what the game-font
             // text was last rendered with, and our own copy of each glyph renderer's material.
@@ -31,6 +33,7 @@ namespace OriCoop
             public readonly List<KeyValuePair<Renderer, Material>> Materials = new List<KeyValuePair<Renderer, Material>>();
         }
         static readonly Dictionary<Puppet, Hud> s_huds = new Dictionary<Puppet, Hud>();
+        static readonly Hud s_primary = new Hud();
         static readonly HashSet<string> s_failures = new HashSet<string>();
         static Hud First
         {
@@ -93,6 +96,7 @@ namespace OriCoop
         static void Hide(Hud hud)
         {
             if (hud == null) return;
+            if (hud.Ring != null) hud.Ring.Hide();
             try { if (hud.Go != null) hud.Go.SetActive(false); }
             catch (System.Exception e) { Warn("hide TextMesh", e); }
             HideGameText(hud);
@@ -125,9 +129,9 @@ namespace OriCoop
             return 8;
         }
 
-        static void Create(Puppet puppet, Hud hud)
+        static void Create(int seat, Hud hud)
         {
-            hud.Go = new GameObject("OriCoop_P" + puppet.Seat + "Hud");
+            hud.Go = new GameObject("OriCoop_P" + seat + "Hud");
             Object.DontDestroyOnLoad(hud.Go);
             hud.Text = hud.Go.AddComponent<TextMesh>();
             Font font = null;
@@ -159,18 +163,15 @@ namespace OriCoop
             sh.layer = hud.Go.layer;
         }
 
-        // Online: one tag with the seat in its colour, the role, and the Steam name. Local co-op: "P2". The
-        // health dots that used to follow it are gone (T-061b): health is on the status bars at the bottom left.
         // Compose(.., false) and Compose(.., true) rebuilt (format, substring, 4 hex colours) every frame; the inputs
         // only change on a fade, a language or role change, or a new partner name.
         static void ComposeBoth(Hud hud, int role, float a)
         {
             bool online = NetPlay.Enabled;
-            string name = null, tagFormat = null, word = null, labelFormat = null;
+            string name = TeammateIdentity.Name(role), tagFormat = L10n.T("roles.tag"), word = null, labelFormat = null;
             if (online)
             {
-                name = NetPlay.SteamPartnerName;
-                tagFormat = L10n.T("roles.tag");
+                if (name.Length == 0 && role == Roles.Partner) name = NetPlay.SteamPartnerName;
                 word = Roles.Word(role);
                 labelFormat = L10n.T(string.IsNullOrEmpty(name) ? "roles.label" : "roles.named_label");
             }
@@ -212,18 +213,12 @@ namespace OriCoop
             return own;
         }
 
+        // Match the seat colour used on the map. Online peers also see each other's current room role.
         static string Compose(Hud hud, int role, float a, bool shadow)
         {
             Color white = new Color(0.945f, 0.988f, 1f);
             Color dark = new Color(0f, 0.02f, 0.06f);
-            if (!NetPlay.Enabled)
-            {
-                hud.Plain = "P2";
-                return "<color=" + Roles.HexOf(shadow ? dark : Roles.P2Color, shadow ? a * 0.55f : a) + ">" + hud.Plain + "</color>";
-            }
-            string name = NetPlay.SteamPartnerName;
-            string label = string.IsNullOrEmpty(name) ? L10n.F("roles.label", Roles.Tag(role), Roles.Word(role))
-                : L10n.F("roles.named_label", Roles.Tag(role), Roles.Word(role), name);
+            string label = Roles.PlayerLabel(role);
             string rest = label.Substring(Roles.Tag(role).Length);
             hud.Plain = label;
             string roleHex = shadow ? Roles.HexOf(dark, a * 0.55f) : Roles.Hex(role, a);
@@ -246,7 +241,8 @@ namespace OriCoop
                 if (puppet == null) return;
                 s_huds.TryGetValue(puppet, out hud);
                 if (puppet.Sein == null) { Hide(hud); return; }
-                UpdateTag(puppet, ref hud);
+                if (hud == null) { hud = new Hud(); s_huds[puppet] = hud; }
+                UpdateTag(puppet.Sein, puppet.Seat, hud);
             }
             catch (System.Exception e)
             {
@@ -255,31 +251,40 @@ namespace OriCoop
             }
         }
 
-        static void UpdateTag(Puppet puppet, ref Hud hud)
+        internal static void UpdatePrimary()
         {
-            SeinCharacter p2 = puppet.Sein;
-            if (hud == null)
-            {
-                hud = new Hud(); s_huds[puppet] = hud;
-            }
+            if (Players.Remotes.Count == 0 || P2Context.P2 == null || P2Context.P1 == null) { Hide(s_primary); return; }
+            UpdateTag(P2Context.P1, Players.LocalSeat, s_primary);
+        }
+
+        static void UpdateTag(SeinCharacter p2, int seat, Hud hud)
+        {
             if (hud.Go == null || hud.Text == null || hud.Shadow == null || hud.Renderer == null)
             {
                 if (hud.Go != null) Object.Destroy(hud.Go);
-                Create(puppet, hud);
+                Create(seat, hud);
                 hud.MeshText = hud.MeshShadow = null;   // new TextMeshes: nothing set on them yet
             }
             if (hud.Go == null || hud.Text == null || hud.Shadow == null || hud.Renderer == null
                 || p2.Mortality == null || p2.Mortality.Health == null) { Hide(hud); return; }
-            float a = p2.gameObject.activeInHierarchy && !TestHide ? GameHudOpacity() : 0f;
+            float a = p2.gameObject.activeInHierarchy && !Revive.IsDowned(p2) && !TestHide ? GameHudOpacity() : 0f;
             if (a <= 0.01f) { Hide(hud); return; }
             if (!hud.Go.activeSelf) hud.Go.SetActive(true);
-            ComposeBoth(hud, puppet.Seat, a);
+            ComposeBoth(hud, seat, a);
             SetMesh(hud, hud.Composed, hud.ComposedShadow);
             hud.Text.color = new Color(1f, 0.85f, 0.4f, a);   // Visible reads this alpha; the colour itself comes from the tags
             Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null, gui = GuiCamera();
             if (game == null || gui == null) { Hide(hud); return; }
             Vector3 vp = game.WorldToViewportPoint(new Vector3(p2.Position.x, p2.Position.y + 1.3f, p2.Position.z));
             if (vp.z < 0f || vp.x < -0.1f || vp.x > 1.1f || vp.y < -0.1f || vp.y > 1.1f) { Hide(hud); return; }
+            if (hud.Ring == null || hud.RingSeat != seat)
+            {
+                if (hud.Ring != null) hud.Ring.Destroy();
+                Color color = Roles.ColorOf(seat);
+                hud.Ring = new GlowRing("OriCoop_SeatRing_P" + seat, color, color, 0.28f);
+                hud.RingSeat = seat;
+            }
+            hud.Ring.Place(p2.Position + Vector3.down * 0.35f, 0.04f, 1f, a * 0.85f);
             Vector3 wp = gui.ViewportToWorldPoint(new Vector3(vp.x, vp.y, 8f));
             hud.Go.transform.position = wp;
             hud.Go.transform.rotation = gui.transform.rotation;
@@ -290,8 +295,8 @@ namespace OriCoop
             // Parent space is the HUD camera's orientation: down-right and a hair farther from the camera.
             float off = worldH * 0.05f / Mathf.Max(0.0001f, hud.Go.transform.lossyScale.x);
             hud.Shadow.transform.localPosition = new Vector3(off, -off, 0.01f);
-            // Online the tag is drawn in the game's own font (below); the TextMesh stays as the fallback.
-            if (!NetPlay.Enabled) { HideGameText(hud); return; }
+            // Opt-in names can contain glyphs outside the game's fixed atlas. Keep the dynamic OS font for those tags.
+            if (!NetPlay.Enabled || TeammateIdentity.Name(seat).Length != 0) { HideGameText(hud); return; }
             try
             {
                 if (!HasGameText(hud))
@@ -301,7 +306,7 @@ namespace OriCoop
                     MessageControllerB mc = UI.MessageController;
                     if (mc != null && mc.HintMessage != null)
                     {
-                        hud.GameText = new GameText("OriCoop_P" + puppet.Seat + "GameHud") { NoBacking = true };
+                        hud.GameText = new GameText("OriCoop_P" + seat + "GameHud") { NoBacking = true };
                         if (hud.GameText.Ok) hud.Box = hud.GameText.Go.GetComponentInChildren<MessageBox>(true);
                         if (HasGameText(hud))
                         {
@@ -314,7 +319,7 @@ namespace OriCoop
                 if (HasGameText(hud))
                 {
                     hud.GameText.SetText(hud.Plain);
-                    Color color = Roles.ColorOf(puppet.Seat);
+                    Color color = Roles.ColorOf(seat);
                     color.a = a;
                     Color32 shown = color;
                     // Re-render only when the text, colour or alpha changed (RenderText is a full layout + mesh rebuild).
@@ -352,23 +357,27 @@ namespace OriCoop
             HideGameText(hud); // The already positioned TextMesh remains visible as the fallback.
         }
 
+        static void DestroyHud(Hud hud)
+        {
+            if (hud.Go != null) Object.Destroy(hud.Go);
+            if (hud.Ring != null) hud.Ring.Destroy();
+            hud.Ring = null;
+            DestroyGameText(hud);
+        }
+
         public static void Destroy(Puppet puppet)
         {
             if (puppet == null) return;
             Hud hud;
             if (!s_huds.TryGetValue(puppet, out hud)) return;
-            if (hud.Go != null) Object.Destroy(hud.Go);
-            DestroyGameText(hud);
+            DestroyHud(hud);
             s_huds.Remove(puppet);
         }
 
         public static void Destroy()
         {
-            foreach (Hud hud in s_huds.Values)
-            {
-                if (hud.Go != null) Object.Destroy(hud.Go);
-                DestroyGameText(hud);
-            }
+            DestroyHud(s_primary);
+            foreach (Hud hud in s_huds.Values) DestroyHud(hud);
             s_huds.Clear();
         }
     }

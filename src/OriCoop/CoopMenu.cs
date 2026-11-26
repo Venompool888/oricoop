@@ -19,7 +19,7 @@ namespace OriCoop
     //   Settings (F8 / hold Back): the panel above.
     //   ModeSelect (opened by PlayMode once a save is running): Single player / 2 players. Must pick one.
     //   Setup (after "2 players"): choose each player's controller, then Start (P2 joins). B / Esc goes back.
-    public static class CoopMenu
+    public static partial class CoopMenu
     {
         public const int PageSettings = 0, PageModeSelect = 1, PageSetup = 2;
         public static bool IsOpen { get; private set; }
@@ -122,6 +122,7 @@ namespace OriCoop
 
         static void GoTo(int page)
         {
+            EndNameEdit(false);
             Page = page; s_focus = 0; s_waitFor = 0; s_message = "";
             s_settingsH = 0f;
             if (page == PageModeSelect) s_focus = PlayMode.LastChoice == PlayMode.Single ? 0 : 1;
@@ -208,6 +209,7 @@ namespace OriCoop
         public static void Close()
         {
             if (!IsOpen) return;
+            EndNameEdit(false);
             IsOpen = false;
             OpeningSeat = 0;
             s_waitFor = 0;
@@ -255,6 +257,7 @@ namespace OriCoop
             s_focus = Mathf.Clamp(s_focus, 0, Rows - 1);
             PollPads();
 
+            if (EditingName) { TickNameEdit(); return; }
             if (s_waitFor != 0)
             {
                 for (int i = 0; i < 4; i++)
@@ -273,6 +276,12 @@ namespace OriCoop
             if (Page == PageSettings)
             {
                 if (back || Input.GetKeyDown(KeyCode.F8) || AnyPadPressed(START)) { Close(); return; }
+                if (Input.GetKeyDown(KeyCode.F2) || AnyPadPressed(0x4000)) // X on an Xbox controller
+                {
+                    int[] local = s_seats.LocalSeats;
+                    if (s_focus < local.Length) BeginNameEdit(local[s_focus]);
+                    return;
+                }
             }
             else if (Page == PageModeSelect)
             {
@@ -418,10 +427,11 @@ namespace OriCoop
             s_rowFocus = new GUIStyle(s_row); s_rowFocus.normal.textColor = new Color(1f, 0.9f, 0.5f);
         }
 
-        static bool RowButton(string id, string text, bool focused, float height)
+        static bool RowButton(string id, string text, bool focused, float height, float width = 0f, Font font = null)
         {
             GUIStyle style = focused ? s_rowFocus : s_row;
-            Rect r = GUILayoutUtility.GetRect(new GUIContent(text), style, GUILayout.Height(height));
+            Rect r = width > 0f ? GUILayoutUtility.GetRect(new GUIContent(text), style, GUILayout.Height(height), GUILayout.Width(width))
+                : GUILayoutUtility.GetRect(new GUIContent(text), style, GUILayout.Height(height));
             Vector2 p = GUIUtility.GUIToScreenPoint(r.position);
             Rect screen = new Rect(p.x, p.y, r.width, r.height);
             NativeGui.Panel(id + ".background", screen, focused ? new Color(0.95f, 0.8f, 0.35f, 0.25f) : new Color(0.02f, 0.03f, 0.06f, 0.65f));
@@ -430,7 +440,7 @@ namespace OriCoop
             if (!GUI.enabled) color.a *= 0.5f;
             if (GUI.enabled && r.Contains(Event.current.mousePosition))
                 NativeGui.Panel(id + ".hover", screen, new Color(color.r, color.g, color.b, 0.14f * color.a));
-            NativeGui.Label(id, style.padding.Remove(screen), text, style.fontSize, style.alignment, color);
+            NativeGui.Label(id, style.padding.Remove(screen), text, style.fontSize, style.alignment, color, font);
             return GUI.Button(r, GUIContent.none, GUIStyle.none);
         }
 
@@ -468,7 +478,7 @@ namespace OriCoop
         static void DrawPage(string page)
         {
             if (Page == PageModeSelect) { DrawModeSelect(); return; }
-            if (Page == PageSettings) { DrawSettings(); return; }
+            if (Page == PageSettings) { if (EditingName) DrawNameEdit(); else DrawSettings(); return; }
             if (s_waitFor == 1)
             {
                 Event e = Event.current;
@@ -564,7 +574,7 @@ namespace OriCoop
                 InputDevice device = s_seats.InputOf(seats[i]);
                 string input = device.Kind == InputDevice.DeviceKind.KeyboardMouse ?
                     L10n.T("coop.keyboard_only") : L10n.F("coop.controller", device.Pad + 1);
-                string label = L10n.F("coop.local_seat", seats[i], input);
+                string label = L10n.F("coop.named_input", TeammateIdentity.Label(seats[i]), input);
                 string choose = seats[i] == 1 ? L10n.T("coop.choose_p1") : !online && seats[i] > 2
                     ? L10n.F("coop.choose_extra_device", seats[i]) : L10n.T("coop.choose_p2");
                 seatRows[i] = s_waitFor == seats[i] ? choose :
@@ -586,7 +596,8 @@ namespace OriCoop
             float w = Mathf.Min(Screen.width - 40f, 760f), inner = w - 40f, lineH = s_text.fontSize * 1.9f;
             string title = L10n.T(!online && seats.Length > 2 ? "pause.multiplayer_settings" : "coop.settings");
             float h = 36f + LineH(s_title, title, inner);
-            foreach (string label in seatRows) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
+            float editWidth = Mathf.Min(150f, inner * 0.3f);
+            foreach (string label in seatRows) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner - editWidth)) + s_row.margin.vertical;
             foreach (string label in actions) h += Mathf.Max(lineH * 1.15f, LineH(s_row, label, inner)) + s_row.margin.vertical;
             if (s_message != "") h += LineH(s_text, s_message, inner);
             if (!online) h += LineH(s_small, L10n.T("coop.cutscene_hint"), inner);
@@ -599,8 +610,14 @@ namespace OriCoop
             for (int i = 0; i < seatRows.Length; i++)
             {
                 string id = "coop.settings.seat." + seats[i];
-                if (RowButton(id, seatRows[i], s_focus == i, Mathf.Max(lineH * 1.15f, LineH(s_row, seatRows[i], inner))))
+                float height = Mathf.Max(lineH * 1.15f, LineH(s_row, seatRows[i], inner - editWidth));
+                GUILayout.BeginHorizontal();
+                Font nameFont = s_waitFor != seats[i] && TeammateIdentity.Name(seats[i]).Length != 0 ? NativeGui.NameFont : null;
+                if (RowButton(id, seatRows[i], s_focus == i, height, 0f, nameFont))
                 { s_focus = i; if (s_waitFor == 0) Activate(i); }
+                if (RowButton(id + ".name", L10n.T("coop.rename_player"), false, height, editWidth) && s_waitFor == 0)
+                { s_focus = i; BeginNameEdit(seats[i]); }
+                GUILayout.EndHorizontal();
             }
             for (int i = 0; i < actions.Length; i++)
             {

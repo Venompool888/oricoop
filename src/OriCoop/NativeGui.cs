@@ -12,6 +12,7 @@ namespace OriCoop
             public GameObject Go;
             public GameText Text;
             public MessageBox Box;
+            public TextMesh DynamicText;
             public MeshRenderer Quad;
             public int Frame = -1;
             public string Page;
@@ -258,13 +259,30 @@ namespace OriCoop
             return st;
         }
 
+        static readonly string[] s_nameFonts = { "Microsoft YaHei", "Noto Sans CJK SC", "Segoe UI Symbol", "Arial" };
+        static Font s_nameFont;
+        internal static Font NameFont
+        {
+            get
+            {
+                if (s_nameFont == null)
+                    s_nameFont = Ui.OsFonts.Shared(s_nameFonts, 48) ?? Resources.GetBuiltinResource<Font>("Arial.ttf");
+                return s_nameFont;
+            }
+        }
+
         public static void Label(string id, Rect r, string text, float fontPx, TextAnchor anchor, Color color)
         {
-            try { LabelCore(id, r, text, fontPx, anchor, color); }
+            Label(id, r, text, fontPx, anchor, color, null);
+        }
+
+        internal static void Label(string id, Rect r, string text, float fontPx, TextAnchor anchor, Color color, Font font)
+        {
+            try { LabelCore(id, r, text, fontPx, anchor, color, font); }
             catch (System.Exception error) { Failed("Label", id, error); }
         }
 
-        static void LabelCore(string id, Rect r, string text, float fontPx, TextAnchor anchor, Color color)
+        static void LabelCore(string id, Rect r, string text, float fontPx, TextAnchor anchor, Color color, Font font = null)
         {
             if (!Repaint) return;
             Frame();
@@ -278,7 +296,15 @@ namespace OriCoop
                 }
                 return;
             }
-            if (!AvailableCore()) { Hide(id); GUI.Label(r, text, LabelStyle(fontPx, anchor, color)); return; }
+            if (!AvailableCore())
+            {
+                Hide(id);
+                GUIStyle style = LabelStyle(fontPx, anchor, color);
+                if (font != null) style.font = font;
+                GUI.Label(r, text, style);
+                return;
+            }
+            if (font != null) { DynamicLabel(id, r, text, fontPx, anchor, color, font); return; }
             text = Ui.NativeGuiLogic.PlainText(text);   // IMGUI rich text means nothing to the game's parser
             if (fontPx <= 0f) fontPx = Mathf.Max(12f, Screen.height / 45f);   // style.fontSize 0 = IMGUI default size
             Element e;
@@ -341,6 +367,46 @@ namespace OriCoop
             e.Pos = e.Go.transform.position; e.Scale = e.Go.transform.localScale;
             SetOrder(e, order);
             e.Key.Store(text, r.x, r.y, r.width, r.height, fontPx, (int)anchor, color.r, color.g, color.b, color.a, screenWidth, screenHeight, zh); // A failed render must be rebuilt on the next attempt.
+            s_state.AddLabel(id);
+        }
+
+        // Nicknames may contain glyphs outside the game's fixed atlas. Use the same pixel rect,
+        // overlay camera, draw order and lifetime as a native label.
+        static void DynamicLabel(string id, Rect r, string text, float fontPx, TextAnchor anchor, Color color, Font font)
+        {
+            Element e;
+            if (s_elements.TryGetValue(id, out e) && (e == null || e.Go == null || e.DynamicText == null))
+                RemoveElement(id, e);
+            if (!s_elements.TryGetValue(id, out e))
+            {
+                e = new Element(); s_elements.Add(id, e);
+                e.Go = new GameObject("OriCoopNativeGui_" + id);
+                Object.DontDestroyOnLoad(e.Go);
+                e.DynamicText = e.Go.AddComponent<TextMesh>();
+                e.DynamicText.richText = false;
+                e.DynamicText.font = font;
+                e.DynamicText.fontSize = 48;
+                e.Quad = e.Go.GetComponent<MeshRenderer>();
+                e.QuadMaterial = new Material(font.material) { hideFlags = HideFlags.HideAndDontSave };
+                e.Quad.sharedMaterial = e.QuadMaterial;
+            }
+            Touch(e); e.LastRect = r;
+            Camera camera = P2Hud.GuiCamera();
+            float z = TextZ(camera);
+            float unit = (Point(camera, 0f, 0f, z) - Point(camera, 1f, 0f, z)).magnitude;
+            int horizontal = (int)anchor % 3, vertical = (int)anchor / 3;
+            e.Go.transform.rotation = camera.transform.rotation;
+            e.Go.transform.position = Point(camera, r.x + r.width * horizontal * 0.5f, r.y + r.height * vertical * 0.5f, z);
+            e.Go.transform.localScale = Vector3.one;
+            e.DynamicText.anchor = anchor;
+            e.DynamicText.characterSize = unit * fontPx / (e.DynamicText.fontSize * 0.1f);
+            if (e.DynamicText.text != text) e.DynamicText.text = text;
+            e.DynamicText.color = color;
+            float fit = Ui.NativeGuiLogic.FitScale(1f, e.Quad.bounds.size.x, r.width, unit);
+            e.Go.transform.localScale = Vector3.one * fit;
+            e.QuadMaterial.mainTexture = font.material.mainTexture;
+            e.Quad.sortingOrder = ++DrawOrder;
+            e.QuadMaterial.renderQueue = QueueBase + DrawOrder;
             s_state.AddLabel(id);
         }
 

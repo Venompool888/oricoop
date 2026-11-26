@@ -54,6 +54,7 @@
         'VirtualPads' = 'MOVE'; 'VirtualPadPatch' = 'MOVE'; 'PsHid' = 'MOVE'; 'PadDetector' = ''; 'PadGlyphs' = ''; 'GlyphProbe' = ''   # T-178 (PsReport/MirrorJudge/PadTypes: unit tests only)
         'PsReport' = ''; 'MirrorJudge' = ''; 'PadTypes' = ''
         'NetEscapeTest' = 'ESC'; 'EscapeRules' = 'ESC'; 'Revive.Escape' = 'R,ESC'; 'EscapeProbe' = ''   # T-169 escapes (3P part: net-3p suites)
+        'NetMapMarkerTest' = 'S4'; 'TeammateMapMarkers' = 'S4'
         'EnemySync' = 'E3,E5,CUT'   # T-183: partner scene streaming is paused during stories (KURO, phase CUT)
         'CoopTraceAudio' = ''; 'AudioWatch' = ''   # T-252: audio trace lines only, nothing in play changes (rules: AudioWatch unit tests)
         'GameText' = 'R,CUT'   # T-255: full-alpha text is checked in GATE G1 (CUT, ORICOOP_P3_GATE=1) and R6 (the self-revive hint); its module M8 selects no net phase
@@ -61,6 +62,7 @@
     # Every test-only mutation switch: where it lives, which suite and which net phase (2-player suites) must catch it.
     # Suite 'net' means the 2-player net suites (net, net-newgame), which take ORICOOP_PHASES.
     Mutations = @(
+        @{ Switch = 'ORICOOP_MUTATE_MAP_PROJECTION'; File = 'src\OriCoop\TeammateMapMarkers.cs'; Suite = 'net'; Phase = 'S4' }
         @{ Switch = 'ORICOOP_MUTATE_GUARD_FIGHTS_SCENE'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }
         @{ Switch = 'ORICOOP_MUTATE_LEVER_DROP_HOLD'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-194 a partner's world blob does not drop this PC's hold on a lever (CUT real grab)
         @{ Switch = 'ORICOOP_MUTATE_STONE_RAW_APPLY'; File = 'src\OriCoop\CutsceneGuard.cs'; Suite = 'net'; Phase = 'CUT' }   # T-204 a partner activating a map stone releases this PC's highlight (CUT map stone, story stays local)
