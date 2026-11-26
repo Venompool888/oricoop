@@ -1386,7 +1386,7 @@ namespace OriCoop
 
         static void EndSequenceInput(ActionSequence sequence, bool finished)
         {
-            if (!InputLocks.Any) return;
+            if (!InputLocks.Any) { TraceKeptInput(sequence, "untracked"); return; }
             ActionSequence next = null;
             bool sceneTrip = false;
             if (finished && sequence.Actions != null && sequence.Actions.Count > 0)
@@ -1398,6 +1398,14 @@ namespace OriCoop
                 sceneTrip = last is LoadSceneAction;
             }
             ApplyInputLock(InputLocks.End(sequence, next, sceneTrip, StopInputTimer));
+            TraceKeptInput(sequence, InputLocks.Describe() + (next != null ? " next=" + next.name : "") + (sceneTrip ? " scene-trip" : ""));
+        }
+        // T-235: playtest 6 showed the member still locked after sequence.end with nothing saying which lock held it.
+        static void TraceKeptInput(ActionSequence sequence, string reason)
+        {
+            GameController gc = GameController.Instance;
+            if (gc == null || !gc.LockInputByAction || !Online) return;
+            StoryHost.Current.Trace("story", "input.kept", "sequence", sequence == null ? "null" : sequence.name, "locks", reason);
         }
         static void FinishSequence(ActionSequence sequence, bool finished)
         {
