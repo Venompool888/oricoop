@@ -33,6 +33,8 @@
         'WorldSync.Bodies' = 'W,WO'
         'NetPickupCheckpointTest' = 'W'; 'SavedPickupCopies' = 'W'; 'NetCellAuthorityTest' = 'W'
         'NetSkillFxTest' = 'E3'; 'NetFacingTest' = 'MOVE'   # T-199 partner facing after wall jumps (scenario FACE)
+        'NetPhysTest.SoloRejoin' = 'P'; 'NetCoPushReportTest' = 'P'; 'NetPhysDepartedHolderTest' = 'P'
+        'CoPushReport' = 'P'; 'StoneSeed' = 'P'
         'NetStandInTest' = 'MOVE'; 'StandInCorrection' = 'MOVE'   # T-251 the stand-in jumps instead of sliding through walls (MOVE WALL; rules: NetCore unit tests)
         'NetCameraTest' = 'CAM'; 'NetCutsceneTest' = 'CUT'; 'EnemySyncTest' = 'E5'; 'NetKuroTest' = 'CUT'; 'NetSeinTest' = 'CUT'; 'NetStoryLeftoverTest' = 'CUT'; 'NetStoryScan' = 'CUT'; 'NetStorySweep' = 'CUT'
         'WorldObjSync' = 'WO,R'; 'PushBlockSync' = 'P'; 'ProgressSync' = 'INTRO,W,R,S4,CAM,CUT'
@@ -132,6 +134,11 @@
         @{ Switch = 'ORICOOP_MUTATE_STONE_DROP_HELPER'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net';     Phase = 'P' }   # T-197 the second pusher keeps hold of the stone (PE)
         @{ Switch = 'ORICOOP_MUTATE_STONE_STALE_STATE'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net';     Phase = 'P' }   # T-197 no jump to a state of an older lease epoch (PF)
         @{ Switch = 'ORICOOP_MUTATE_STONE_KEEP_DOWNED_GRAB'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net'; Phase = 'P' }  # T-197 a downed player lets go of the stone (PG)
+        @{ Switch = 'ORICOOP_MUTATE_STONE_EXPIRE_OWNER_PUSH'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-stones'; Phase = 'P' }
+        @{ Switch = 'ORICOOP_MUTATE_COPUSH_DEVICE_POSE'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-stones'; Phase = 'P' }
+        @{ Switch = 'ORICOOP_MUTATE_COPUSH_ARRIVAL_ORDER'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-stones'; Phase = 'P' }
+        @{ Switch = 'ORICOOP_MUTATE_STONE_KEEP_DEPARTED_GRIP'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-stones'; Phase = 'P' }
+        @{ Switch = 'ORICOOP_MUTATE_STONE_RESEED_UNPUBLISHED'; File = 'src\OriCoop\Authority\StoneSeed.cs'; Suite = 'net-stones-cs'; Phase = 'P' }
         @{ Switch = 'ORICOOP_WORLDOBJ_OFF';          File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
         @{ Switch = 'ORICOOP_WOBJ_NO_DEFER';         File = 'src\OriCoop\WorldObjSync.cs';   Suite = 'net';       Phase = 'WO' }
         @{ Switch = 'ORICOOP_MUTATE_WOBJ_KEEP_FIRED'; File = 'src\OriCoop\WorldObjSync.cs'; Suite = 'net';       Phase = 'R' }   # T-144 R3 reload re-arms one-shots

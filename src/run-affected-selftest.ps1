@@ -57,6 +57,8 @@ foreach ($x in $ph) { '[   1.00] === phase ' + $x; '[   1.00] PASS ' + $x + ' ok
 '[   2.00] === phase END'; '[   6.00] RESULT PASS 2/2'; 'NETTEST PASS'
 '@)
 
+Set-Content (Join-Path $fake 'run-pushblocks.ps1') ($common + [Environment]::NewLine + "'[   1.00] RESULT PASS 1/1'; 'NETTEST PASS'")
+
 function Invoke-Fake([hashtable]$vars, [string[]]$files) {
     Remove-Item (Join-Path $fake 'calls') -Recurse -Force -ErrorAction SilentlyContinue
     $flaky = Join-Path $fake 'flaky.tsv'; Remove-Item $flaky -ErrorAction SilentlyContinue
@@ -117,15 +119,16 @@ Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=R,WO' }).Count -e
 #     WO and CAM as passed although they never ran), and passing then = FLAKY.
 $tf = 'src/OriCoop/NetStoryTest.cs,src/OriCoop/NetPhysTest.cs,src/OriCoop/NetWorldObjTest.cs,src/OriCoop/NetCameraTest.cs'
 $r = Invoke-Fake @{ FAKE_NET = 'failfast' } $tf
+Expect (@($r.Calls | Where-Object { $_ -eq 'run-pushblocks phases=' }).Count -eq 1 -and @($r.Calls | Where-Object { $_ -eq 'run-pushblocks -CServer phases=' }).Count -eq 1) 'stone suites each run once while the ordinary net phase retries'
 Expect ($r.Out -match 'PLAN: .*net \[S4,P,WO,CAM\]') 'plan: net runs S4,P,WO,CAM (four net test files)'
-Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=S4,P,WO,CAM' }).Count -eq 1 -and @($r.Calls | Where-Object { $_ -eq 'run-nettest phases=P,WO,CAM' }).Count -eq 1 -and @($r.Calls).Count -eq 2) ('fail-fast in P: rerun P and the phases that never ran (P,WO,CAM), not S4 (calls: ' + ($r.Calls -join ' | ') + ')')
+Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=S4,P,WO,CAM' }).Count -eq 1 -and @($r.Calls | Where-Object { $_ -eq 'run-nettest phases=P,WO,CAM' }).Count -eq 1 -and @($r.Calls | Where-Object { $_ -notlike 'run-pushblocks*' }).Count -eq 2) ('fail-fast in P: rerun P and the phases that never ran (P,WO,CAM), not S4 (calls: ' + ($r.Calls -join ' | ') + ')')
 Expect ($r.Out -match 'net: FAIL, rerun phases P,WO,CAM \(failed P; never ran WO,CAM\)') 'the rerun line names the failed phase and the phases that never ran'
 Expect ($r.Out -match '(?m)^net: FLAKY' -and $r.Code -eq 0) 'fail-fast, then the rerun of every phase left passes: FLAKY'
 
 # 4c. T-226: a run that went to its end (every phase marked, END) and failed in P: the later phases ran and passed, so
 #     only P is rerun.
 $r = Invoke-Fake @{ FAKE_NET = 'pfail' } $tf
-Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=P' }).Count -eq 1 -and @($r.Calls).Count -eq 2 -and $r.Out -match '(?m)^net: FLAKY') ('a full run failing in P: rerun P only (calls: ' + ($r.Calls -join ' | ') + ')')
+Expect (@($r.Calls | Where-Object { $_ -eq 'run-nettest phases=P' }).Count -eq 1 -and @($r.Calls | Where-Object { $_ -notlike 'run-pushblocks*' }).Count -eq 2 -and $r.Out -match '(?m)^net: FLAKY') ('a full run failing in P: rerun P only (calls: ' + ($r.Calls -join ' | ') + ')')
 
 # 4d. T-226: a rerun that passes without running every phase it was given (here only P of P,WO,CAM) is no pass: the
 #     phases it skipped never ran in either run.

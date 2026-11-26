@@ -650,6 +650,7 @@ namespace OriCoop
                 if (Characters.Sein == p2) Characters.Sein = null;
                 if (object.ReferenceEquals(Characters.Current, p2)) Characters.Current = null;
                 P2Lifecycle.DropCarried(p2);
+                if (p2.PlatformBehaviour != null) PushBlockSync.ForgetGrip(p2.PlatformBehaviour.PlatformMovement);
                 p2.gameObject.SetActive(false);
                 UnityEngine.Object.Destroy(p2.gameObject);
             }

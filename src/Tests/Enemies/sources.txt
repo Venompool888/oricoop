@@ -11,4 +11,6 @@ OriCoop\Authority\CsWire.cs
 OriCoop\Authority\Arbiter.cs
 OriCoop\Authority\AuthorityClient.cs
 OriCoop\Authority\StoneLeaseSimulation.cs
+OriCoop\Authority\StoneSeed.cs
 OriCoop\Authority\CoPushRule.cs
+OriCoop\Authority\CoPushReport.cs

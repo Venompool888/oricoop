@@ -17,6 +17,8 @@ $TS_Suites = [ordered]@{
     'net-newgame' = @('run-nettest.ps1', '-GuestNewGame')
     'net-lp2'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '2')
     'net-lp3'     = @('run-nettest.ps1', '-LocalPlayers', '-Clients', '3')
+    'net-stones'   = @('run-pushblocks.ps1')
+    'net-stones-cs' = @('run-pushblocks.ps1', '-CServer')
     'coopsave'    = @('run-coopsave.ps1')
     'titlejoin'   = @('run-titlejoin.ps1')
     'titlejoin-room-exit' = @('run-titlejoin.ps1', '-RoomExit')
@@ -114,6 +116,10 @@ $TS_FileSuites = [ordered]@{
     'TitleRoomOverlayExitTest' = @('titlejoin-room-exit', 'titlejoin-steam-exit')
     'ImeGuard'         = @('local')   # T-181 IME off: checked in run-test's lifecycle scenario
     'LobbyProbe'       = @();          'SkinDump' = @();               'L10nProbe' = @('local'); 'EscapeProbe' = @('local')   # T-169 run-test.ps1 -Scenarios escapeprobe
+    'NetPhysTest' = @('net', 'net-stones', 'net-stones-cs')
+    'PushBlockSync' = @('net', 'net-3p', 'net-3p-cs', 'net-stones', 'net-stones-cs')
+    'NetCoPushReportTest' = @('net-stones'); 'NetPhysDepartedHolderTest' = @('net-stones'); 'CoPushReport' = @('net-stones')
+    'NetPhysTest.SoloRejoin' = @('net-stones-cs'); 'StoneSeed' = @('net-stones-cs')
 }
 
 function Get-TSModuleMap {
@@ -158,6 +164,7 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -match '^src\\(run-[\w-]+\.ps1)$') {
         $own = $Matches[1]
         $s = @($TS_Suites.Keys | Where-Object { $TS_Suites[$_][0] -eq $own })
+        if ($own -eq 'run-nettest.ps1') { $s += @('net-stones', 'net-stones-cs') }
         if ($s.Count) { return @{ Suites = $s; Why = 'its own script (every suite that runs it)' } }
     }
     if ($p -like 'src\assets\*') { return @{ Suites = @('local'); Why = 'assets' } }

@@ -29,8 +29,8 @@ namespace OriCoop
             public readonly float[] SeatPushAt = { -10f, -10f, -10f, -10f, -10f };
             public float LocalPushAt = -10f, PushSentAt = -10f, BaseMultiplier = -1f;
             // T-115: one report per remote seat (3-4 players), not a single slot every sender overwrites.
-            public readonly Dictionary<int, int> RemotePushDirs = new Dictionary<int, int>();
-            public readonly Dictionary<int, float> RemotePushAts = new Dictionary<int, float>();
+            internal readonly Dictionary<int, CoPushReport> Reports = new Dictionary<int, CoPushReport>();
+            internal byte SentSeatDirs;
             public bool HasRemote;
             public uint StateEpoch, StateVersion;
             public uint SimEpoch;   // T-197: the lease epoch this PC last simulated the stone in as its owner (kept over session resets)
@@ -47,6 +47,7 @@ namespace OriCoop
         sealed class Inst
         {
             public St St;
+            public readonly StoneSeed Seed = new StoneSeed();
             public readonly List<PlatformMovement> Ignored = new List<PlatformMovement>();
             public PlatformMovement Basher;
             public float PuppetIgnoreAt;
@@ -72,6 +73,7 @@ namespace OriCoop
         // T-197 mutations (the PE / PF / PG checks of net phase P must fail): the second grabber is dropped as before;
         // a copy follows / is seeded from a state of an older lease epoch; a suspended Ori keeps its grab.
         internal static readonly bool s_mutateDropHelper = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_DROP_HELPER") == "1";
+        static readonly bool s_mutateExpireOwnerPush = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_EXPIRE_OWNER_PUSH") == "1";
         internal static readonly bool s_mutateStaleState = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_STALE_STATE") == "1";
         internal static readonly bool s_mutateKeepDownedGrab = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_KEEP_DOWNED_GRAB") == "1";
         static float GetIgnoreTime(PushPullBlock b) { return (float)s_fIgnore.GetValue(b); }
@@ -100,8 +102,13 @@ namespace OriCoop
             s_registered = true;
             ResetOwnership("connected");
             NetPlay.SessionStarted += delegate { ResetOwnership("connected"); };
-            NetPlay.SessionEnded += delegate { ResetOwnership("disconnected"); };
+            NetPlay.SessionEnded += delegate { ResetOwnership("disconnected", true); };
             NetPlay.On(MsgCoPush, OnCoPush);
+            NetPlay.PlayerLeft += ForgetPushReports;
+            Players.SeatsRenamed += delegate(int[] renamed) {
+                for (int seat = 1; seat < renamed.Length; seat++)
+                    if (renamed[seat] != 0) { ForgetPushReports(seat); ForgetPushReports(renamed[seat]); }
+            };
             // T-115: guests only talk to the P2P host: it must relay a guest's push to the other guests.
             if (!s_mutateNoForward) NetPlay.Forward(MsgCoPush);
             s_layerDefault = LayerMask.NameToLayer("Default");
@@ -156,7 +163,7 @@ namespace OriCoop
                 kv.Value.RemoveAll(x => x == null);
                 if (kv.Key == null) gone.Add(kv.Key);
             }
-            foreach (PlatformMovement k in gone) s_ignoring.Remove(k);
+            foreach (PlatformMovement k in gone) ForgetGrip(k);
             List<Component> expired = new List<Component>();
             foreach (Component component in s_readyFrame.Keys) if (component == null) expired.Add(component);
             foreach (Component component in expired) s_readyFrame.Remove(component);
@@ -178,12 +185,12 @@ namespace OriCoop
             // T-197: no takeover prediction while the owner itself pushes. The arbiter keeps an active owner, so the
             // prediction only let this PC's copy run ahead for 2 RTT and jump back when the lease was refused; the Ori
             // lost the stone in that jump. This Ori holds the stone the owner moves (Allow) until the owner stops.
+            // The last accepted state describes the owner until it reports a stop or the lease changes.
             if (pushing && !s_mutateDropHelper && lease.Owner != 0 && !lease.Owns && lease.RemoteActive
-                && lease.StateEpoch == lease.Epoch && now - lease.ReceivedAt < OwnerPushWindow) pushing = false;
+                && lease.StateEpoch == lease.Epoch && (!s_mutateExpireOwnerPush || now - lease.ReceivedAt < 0.3f)) pushing = false;
             return st.Simulation.Allows(lease.Owner, lease.Epoch, AuthoritySource.Current.LocalSeat,
                 now, NetPlay.RttMs, pushing);
         }
-        const float OwnerPushWindow = 0.3f;   // the owner publishes 20 states a second
 
         public static St StateOf(PushPullBlock b) { return b == null ? null : InstOf(b).St; }
         public static bool IsLocalOwner(PushPullBlock b) { return b != null && LocalOwns(InstOf(b).St) && Simulates(InstOf(b).St); }
@@ -258,16 +265,18 @@ namespace OriCoop
         // published, this PC's own included. Before, only the partner's last state counted, so the PC that pushed the
         // stone last put it back where the partner had left it earlier (playtest 4: both PCs saw the stone go from
         // -246 to -279 when the guest rejoined, and the two PCs disagreed by 12 units after walking back in).
-        static bool SeedPose(St st, float z, out Pose pose)
+        static bool SeedPose(Inst instance, Rigidbody body, out Pose pose)
         {
+            St st = instance.St;
             pose = new Pose();
             if (s_mutateStaleState)
             {
                 pose.Position = st.RemotePos; pose.RotZ = st.RemoteRotZ; pose.Velocity = st.RemoteVel; pose.AngularZ = st.RemoteAngularZ;
                 return st.HasRemote;
             }
-            StateUpdate latest = AuthoritySource.Current.LatestState(st.Key);
-            return latest != null && Decode(latest.Data, z, out pose);
+            Vector3 live = body.position;
+            StateUpdate latest = instance.Seed.ForReseed(AuthoritySource.Current, st.Key, live.x, live.y, body.rotation.eulerAngles.z);
+            return latest != null && Decode(latest.Data, live.z, out pose);
         }
 
         // ---------------------------------------------------------------- per-pair collision
@@ -335,9 +344,32 @@ namespace OriCoop
             if (!s_ignoring.TryGetValue(pm, out list)) { list = new List<PushPullBlock>(); s_ignoring[pm] = list; }
             if (ignore) { i.Ignored.Add(pm); list.Add(b); }
             else { i.Ignored.Remove(pm); list.Remove(b); }
-            if (cols != null)
-                foreach (Collider c in cols)
-                    if (c != null && c.enabled && c.gameObject.activeInHierarchy) c.material = i.Ignored.Count > 0 ? b.PushPullMaterialMoving : b.PushPullMaterial;
+            SetGripMaterial(cols, i.Ignored.Count > 0 ? b.PushPullMaterialMoving : b.PushPullMaterial);
+        }
+
+        static void SetGripMaterial(Collider[] cols, PhysicMaterial material)
+        {
+            if (cols == null) return;
+            foreach (Collider c in cols)
+                if (c != null && c.enabled) c.sharedMaterial = material;
+        }
+
+        static readonly bool s_mutateKeepDepartedGrip = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_KEEP_DEPARTED_GRIP") == "1";
+
+        // The disappearing collider needs no collision pair restored. Other live holders still need moving friction.
+        internal static void ForgetGrip(PlatformMovement pm)
+        {
+            List<PushPullBlock> held;
+            if (object.ReferenceEquals(pm, null) || !s_ignoring.TryGetValue(pm, out held)) return;
+            if (!s_mutateKeepDepartedGrip)
+                foreach (PushPullBlock block in held)
+                {
+                    Inst instance;
+                    if (block == null || !s_inst.TryGetValue(block, out instance) || !instance.Ignored.Remove(pm)) continue;
+                    if (object.ReferenceEquals(instance.Basher, pm)) { instance.Basher = null; SetIgnoreTime(block, 0f); }
+                    SetGripMaterial(s_colliders(block), instance.Ignored.Count > 0 ? block.PushPullMaterialMoving : block.PushPullMaterial);
+                }
+            s_ignoring.Remove(pm);
         }
 
         // The game's own version: the whole block on the pushPullBlock layer (for every Ori). Ours: per Ori.
@@ -400,8 +432,6 @@ namespace OriCoop
             float now = Time.realtimeSinceStartup;
             if (what == "grab") st.GrabbedAt = now;
             if (Moving(pm) || now - st.GrabbedAt < 0.5f) st.InteractionUntil = now + 0.15f;
-            SeinCharacter me = LocalOri(pm);
-            NoteOwnPush(st, me == null ? 0 : Players.SeatOf(me), PushDir(pm), now);
             Simulates(st);
             LeaseStep(b, st);
             Rigidbody rb = s_body(b);
@@ -520,8 +550,21 @@ namespace OriCoop
         {
             static void Postfix(SeinGrabBlock __instance)
             {
-                if (!Enabled || s_mutateDropHelper || !Online || __instance == null || __instance.IsGrabbing || __instance.Sein == null) return;
-                try { Regrab(__instance); }
+                if (!Enabled || !Online || __instance == null || __instance.Sein == null) return;
+                try
+                {
+                    if (__instance.IsGrabbing)
+                    {
+                        // Report the native actor's completed state. A couch player's physics callback can
+                        // happen outside its input swap, where the current context points to the primary.
+                        SeinCharacter actor = LocalOri(__instance.PlatformMovement);
+                        if (actor == null) return;
+                        PushPullBlock block = s_fPushable.GetValue(__instance) as PushPullBlock;
+                        if (block != null && Ready(block))
+                            NoteOwnPush(InstOf(block).St, Players.SeatOf(actor), PushDir(__instance.PlatformMovement), Time.realtimeSinceStartup);
+                    }
+                    else if (!s_mutateDropHelper) Regrab(__instance);
+                }
                 catch (Exception e) { if (CoopTraceEvery("regrab", 5f)) Plugin.Log.LogWarning("[phys] regrab: " + e.Message); }
             }
         }
@@ -539,9 +582,8 @@ namespace OriCoop
             PushPullBlock pushed = null;
             foreach (KeyValuePair<PushPullBlock, Inst> pair in s_inst)
             {
-                St st = pair.Value.St; int dir; float at;
-                if (pair.Key == null || st == null || !st.RemotePushDirs.TryGetValue(seat, out dir) || dir == 0
-                    || !st.RemotePushAts.TryGetValue(seat, out at) || now - at > CoPushRule.Fresh) continue;
+                St st = pair.Value.St;
+                if (pair.Key == null || st == null || RecentSeatPush(st, seat, now) == 0) continue;
                 pushed = pair.Key; break;
             }
             if (pushed == null || !Ready(pushed) || !ReferenceEquals(Detect(grab, true), pushed)) return;
@@ -577,6 +619,12 @@ namespace OriCoop
         // T-049: which way our Ori moves the stone: Push goes the way it faces, Pull the other way; 0 = only holding.
         public const byte MsgCoPush = 89;   // docs/net-msg-ids.md
         public static int CoPushSent, CoPushReceived, CoPushBoosted, CoPushHeard;
+        static uint s_pushSequence;
+        static readonly Puppet[] s_pushActors = new Puppet[5];
+        static readonly uint[] s_pushBirths = new uint[5];
+        static readonly uint?[,] s_releasedPushSeats = new uint?[5, 5];
+        static readonly bool s_devicePose = TestHarness.Enabled && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_COPUSH_DEVICE_POSE") == "1";
+        static readonly bool s_arrivalOrder = TestHarness.Enabled && Environment.GetEnvironmentVariable("ORICOOP_MUTATE_COPUSH_ARRIVAL_ORDER") == "1";
         // T-115 mutation: the P2P host does not relay 89 / 80 (the 3P test must fail).
         internal static readonly bool s_mutateNoForward = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_NO_FX_FORWARD") == "1";
         static readonly List<int> s_pushDirs = new List<int>();
@@ -606,14 +654,34 @@ namespace OriCoop
         // seat: whose call this is; this PC reports one direction for all its Oris on the stone (CoPushRule.DeviceDir).
         internal static void NoteOwnPush(St st, int seat, int dir, float now)
         {
+            int device = Players.LocalSeat;
+            bool newPusher = false;
+            if (seat >= 1 && seat <= 4 && seat != device)
+            {
+                Puppet actor = null;
+                foreach (Puppet p in Players.Remotes) if (p.IsLocal && p.Seat == seat) { actor = p; break; }
+                if (!ReferenceEquals(actor, s_pushActors[seat]) || s_pushBirths[seat] == 0)
+                {
+                    s_pushActors[seat] = actor;
+                    do { s_pushBirths[seat] = unchecked(++s_pushSequence); } while (s_pushBirths[seat] == 0);
+                    newPusher = dir != 0;
+                }
+            }
             if (seat >= 1 && seat < st.SeatPushDir.Length) { st.SeatPushDir[seat] = dir; st.SeatPushAt[seat] = now; }
             dir = CoPushRule.DeviceDir(st.SeatPushDir, st.SeatPushAt, now, 0.15f);
+            byte seats = CoPushReport.Pack(st.SeatPushDir, st.SeatPushAt, now, 0.15f);
             st.LocalPushDir = dir; st.LocalPushAt = now;
-            if (dir == 0 && st.SentPushDir == 0) return;
-            if (dir == st.SentPushDir && now - st.PushSentAt < 0.1f) return;
-            st.SentPushDir = dir; st.PushSentAt = now;
+            if (seats == st.SentSeatDirs && (seats == 0 || !newPusher && now - st.PushSentAt < 0.1f)) return;
+            st.SentSeatDirs = seats; st.SentPushDir = dir; st.PushSentAt = now;
             int id = st.Id; sbyte d = (sbyte)dir;
-            NetPlay.Send(MsgCoPush, false, w => { w.Write(id); w.Write(d); });
+            uint sequence = unchecked(++s_pushSequence);
+            Action<BinaryWriter> write = w => {
+                w.Write(id); w.Write(d); w.Write(sequence); w.Write(seats);
+                for (int actorSeat = 1; actorSeat <= 4; actorSeat++)
+                    if (actorSeat != device && ((seats >> (2 * (actorSeat - 1))) & 3) != 0) w.Write(s_pushBirths[actorSeat]);
+            };
+            if (TestObserveReport != null) TestObserveReport(id, write);
+            NetPlay.Send(MsgCoPush, false, write);
             CoPushSent++;
         }
 
@@ -621,8 +689,46 @@ namespace OriCoop
         {
             int id = r.ReadInt32(); int dir = r.ReadSByte(); CoPushHeard++;
             St st; if (!s_byId.TryGetValue(id, out st)) return;
-            int seat = NetPlay.Sender;
-            st.RemotePushDirs[seat] = Math.Sign(dir); st.RemotePushAts[seat] = Time.realtimeSinceStartup; CoPushReceived++;
+            ApplyReport(st, NetPlay.Sender, dir, r, Time.realtimeSinceStartup);
+        }
+
+        static void ApplyReport(St st, int sender, int dir, BinaryReader tail, float now)
+        {
+            CoPushReport previous, incoming;
+            st.Reports.TryGetValue(sender, out previous);
+            if (!CoPushReport.TryRead(dir, tail, now, previous, s_arrivalOrder, out incoming, sender, s_releasedPushSeats)) return;
+            if (incoming.Ordered)
+                for (int seat = 1; seat <= 4; seat++)
+                    if (seat != sender && NetPlay.DeviceSeat(seat) != sender) incoming.ForgetSeat(seat);
+            st.Reports[sender] = incoming; CoPushReceived++;
+        }
+
+        static void ForgetPushReports(int seat)
+        {
+            foreach (St st in s_byId.Values)
+            {
+                st.Reports.Remove(seat);
+                for (int sender = 1; sender <= 4; sender++)
+                {
+                    CoPushReport report;
+                    if (!st.Reports.TryGetValue(sender, out report) || !report.Ordered) continue;
+                    uint? floor = s_releasedPushSeats[sender, seat];
+                    if (!floor.HasValue || CoPushReport.Newer(report.Sequence, floor.Value))
+                        s_releasedPushSeats[sender, seat] = report.Sequence;
+                    report.ForgetSeat(seat); st.Reports[sender] = report;
+                }
+            }
+            for (int s = 1; s <= 4; s++) s_releasedPushSeats[seat, s] = null;
+        }
+
+        internal static Action<int, Action<BinaryWriter>> TestObserveReport;
+
+        // The stone this specific Ori can re-grab while its grab input remains held.
+        internal static int RecentSeatPush(St st, int seat, float now)
+        {
+            int device = NetPlay.DeviceSeat(seat);
+            CoPushReport report;
+            return st.Reports.TryGetValue(device, out report) ? report.Direction(seat, device, now, s_devicePose) : 0;
         }
 
         // Every step on every PC: both pushing the same way -> the game's own push/pull speed ratio x1.5 (Oris and stone).
@@ -635,8 +741,8 @@ namespace OriCoop
             if (online)
             {
                 s_pushDirs.Clear(); s_pushAges.Clear();
-                foreach (KeyValuePair<int, int> report in st.RemotePushDirs)
-                { s_pushDirs.Add(report.Value); s_pushAges.Add(now - st.RemotePushAts[report.Key]); }
+                foreach (CoPushReport report in st.Reports.Values)
+                { s_pushDirs.Add(report.DeviceDir); s_pushAges.Add(now - report.At); }
                 m = CoPushRule.Multiplier(local, s_pushDirs, s_pushAges);
             }
             float target = st.BaseMultiplier * m;
@@ -707,6 +813,11 @@ namespace OriCoop
                 if (!Ready(__instance)) return true;
                 try
                 {
+                    if (Online && Enabled)
+                    {
+                        SeinCharacter actor = LocalOri(platformMovement);
+                        if (actor != null) NoteOwnPush(InstOf(__instance).St, Players.SeatOf(actor), 0, Time.realtimeSinceStartup);
+                    }
                     if (Online && Enabled && (IsPuppet(platformMovement) || Players.RemoteContext)) { SetIgnore(__instance, platformMovement, false); return false; }
                     if (Online && Enabled && platformMovement == LocalPm) InstOf(__instance).St.InteractionUntil = -10f;
                     if (Online && Enabled && platformMovement == LocalPm && !Simulates(InstOf(__instance).St))
@@ -836,7 +947,7 @@ namespace OriCoop
                 if (Simulates(st))
                 {
                     Pose seed;
-                    if (!st.Seeded && rb != null && SeedPose(st, rb.position.z, out seed))
+                    if (!st.Seeded && rb != null && SeedPose(i, rb, out seed))
                     {
                         Quaternion rotation = Quaternion.Euler(0f, 0f, seed.RotZ);
                         if (LeaseMath.Finite(seed.Position) && LeaseMath.Finite(rotation))
@@ -974,12 +1085,26 @@ namespace OriCoop
         // Net test (PF): what a partner joining or leaving does to this PC's stones.
         internal static void TestSessionReset() { ResetOwnership("test"); }
 
-        static void ResetOwnership(string why)
+        static void ResetOwnership(string why, bool lastPeerLeft = false)
         {
             Prune();
+            Array.Clear(s_releasedPushSeats, 0, s_releasedPushSeats.Length);
+            if (lastPeerLeft && NetRoute.ServerMode && NetPlay.IsHost && NetPlay.Connected)
+            {
+                // With no puppet the native game moves this instance without the network FixedUpdate path.
+                foreach (var pair in s_inst)
+                {
+                    if (pair.Key == null || !pair.Key.isActiveAndEnabled || pair.Value.St == null) continue;
+                    Rigidbody body = s_body(pair.Key);
+                    if (body == null) continue;
+                    Vector3 live = body.position;
+                    pair.Value.Seed.LastPeerLeft(AuthoritySource.Current, pair.Value.St.Key, live.x, live.y, body.rotation.eulerAngles.z);
+                }
+            }
             foreach (St st in s_byId.Values)
             {
                 st.Epoch = st.OwnerSeat = 0; st.HasRemote = st.WasLocalOwner = st.Seeded = false;
+                st.Reports.Clear(); st.SentSeatDirs = 0;
                 st.Simulation = new StoneLeaseSimulation();
                 st.InteractionUntil = st.SentAt = -10f;
                 st.Hits.Clear();
@@ -993,8 +1118,9 @@ namespace OriCoop
             static void Postfix(PushPullBlock __instance)
             {
                 Inst i;
-                if (Online && s_inst.TryGetValue(__instance, out i) && i.St != null)
-                    DynamicLease.For(i.St.Key).Cancel();
+                if (!s_inst.TryGetValue(__instance, out i)) return;
+                i.Seed.Unloaded();
+                if (Online && i.St != null) DynamicLease.For(i.St.Key).Cancel();
             }
         }
 

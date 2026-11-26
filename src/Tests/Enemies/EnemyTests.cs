@@ -64,6 +64,7 @@ static class EnemyTests
     }
     static void AuthorityTests()
     {
+        CoPushReportTests.Register(Run);
         Run("presence join and leave", delegate { EnemyAuthority a = new EnemyAuthority(); a.Presence(2, true); a.Presence(3, true); a.Presence(2, false); Check(!a.LoadedSeats.Contains(2) && a.LoadedSeats.Contains(3), "presence"); a.SeatLeft(3, false, delegate { return 0; }); Check(a.LoadedSeats.Count == 0, "leave"); });
         // T-147 (replaces "presence refresh clock", which expected unloaded enemies to be re-announced every 2 s):
         // a PC reports an enemy when it loads or unloads it, and refreshes only enemies it has loaded. Enemies it merely
@@ -194,6 +195,7 @@ static class EnemyTests
         Run("negative damage rejected", delegate { byte[] b = Bytes(delegate(BinaryWriter w) { w.Write(-1f); w.Write(0); for (int i = 0; i < 5; i++) w.Write(0f); }); bool rejected = false; try { EnemyWire.ReadDamage(Reader(b)); } catch (InvalidDataException) { rejected = true; } Check(rejected, "negative damage"); });
         // T-023: a player who starts pushing a stone another player only holds keeps simulating it until the arbiter's
         // grant comes back (request + grant = one RTT plus server and send delays), then owns it without a gap.
+        StoneSeedTests.Register(Run);
         Run("stone takeover survives the grant round trip", delegate {
             OriCoop.Authority.StoneLeaseSimulation sim = new OriCoop.Authority.StoneLeaseSimulation();
             const float rtt = 150f, grantAt = 0.25f;
