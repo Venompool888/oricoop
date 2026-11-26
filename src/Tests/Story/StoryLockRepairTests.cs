@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using OriCoop.Story;
 
 static partial class StoryTests
@@ -111,6 +112,39 @@ static partial class StoryTests
             Equal((bool?)true, l.End("A", null, false, delegate(string action) { stopped = action; }));
             Equal("only A's timer", stopped);
             Equal(false, l.UnlockManual("B"));
+        });
+        // T-235: the tree of a sequence: its actions, nested sequences and RunActionOnce targets.
+        Dictionary<string, string[]> tree = new Dictionary<string, string[]>();
+        tree["ambient loop"] = new[] { "animate", "wait", "animate" };
+        tree["map 04"] = new[] { "camera", "unlock input" };
+        tree["outer"] = new[] { "camera", "nested" };
+        tree["nested"] = new[] { "once" };
+        tree["once"] = new[] { "deep" };
+        tree["deep"] = new[] { "lock input" };
+        tree["loop a"] = new[] { "loop b" };
+        tree["loop b"] = new[] { "loop a" };
+        Func<string, bool> input = n => n == "lock input" || n == "unlock input";
+        Func<string, IEnumerable<string>> children = n => tree.ContainsKey(n) ? tree[n] : null;
+        Check("lock repair: an ambient sequence without input actions does not keep a stale lock", delegate {
+            Equal(false, StoryLockRepair.TouchesInput("ambient loop", input, children));
+            Equal(false, StoryLockRepair.TouchesInput<string>(null, input, children));
+        });
+        Check("lock repair: a continuation that unlocks input still keeps the lock", delegate {
+            Equal(true, StoryLockRepair.TouchesInput("map 04", input, children));
+            Equal(true, StoryLockRepair.TouchesInput("outer", input, children));
+        });
+        Check("lock repair: input search stops at cycles", delegate {
+            Equal(false, StoryLockRepair.TouchesInput("loop a", input, children));
+        });
+        Check("lock repair: guard only waits for running sequences that touch input (playtest 6 map)", delegate {
+            string[] running = { "ambient loop" };
+            Func<bool> lookup = delegate {
+                foreach (string name in running) if (StoryLockRepair.TouchesInput(name, input, children)) return true;
+                return false;
+            };
+            Equal(true, StoryLockRepair.Due(5f, false, 3f, false, lookup));
+            running = new[] { "ambient loop", "map 04" };
+            Equal(false, StoryLockRepair.Due(5f, false, 3f, false, lookup));
         });
     }
 }

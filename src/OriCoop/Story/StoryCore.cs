@@ -371,6 +371,8 @@ namespace OriCoop.Story
             return released ? (bool?)Locked : null;
         }
         public void Clear() { manual.Clear(); timed.Clear(); nativeLock = false; }
+        // T-235 trace: why input stays locked after a sequence ended.
+        public string Describe() { return "manual=" + manual.Count + " timed=" + timed.Count + " native=" + nativeLock; }
     }
 
     internal enum StoryResolution { Retry, Drop, Watch }

@@ -234,10 +234,34 @@ namespace OriCoop
             string old;
             if (!Traces.TryGetValue(key, out old) || old != value) { Traces[key] = value; Log(key + "=" + value); }
         }
+        // T-235: a running sequence keeps a stale lock only if it can lock or unlock input itself.
+        static readonly Dictionary<ActionSequence, bool> s_inputSequences = new Dictionary<ActionSequence, bool>();
+        static readonly Func<Component, bool> s_isInputAction = c => c is LockPlayerInputAction || c is LockPlayerInputManualAction;
+        static readonly Func<Component, IEnumerable<Component>> s_childActions = ChildActions;
+        static string s_lockWaitedFor;
+        static IEnumerable<Component> ChildActions(Component component)
+        {
+            ActionSequence sequence = component as ActionSequence;
+            if (sequence != null)
+            {
+                if (sequence.Actions != null) foreach (ActionMethod action in sequence.Actions) if (action != null) yield return action;
+                yield break;
+            }
+            RunActionOnce once = component as RunActionOnce;
+            if (once != null && once.Action != null) yield return once.Action;
+        }
+        static bool TouchesInput(ActionSequence sequence)
+        {
+            bool touches;
+            if (s_inputSequences.TryGetValue(sequence, out touches)) return touches;
+            if (s_inputSequences.Count > 512) s_inputSequences.Clear();
+            return s_inputSequences[sequence] = StoryLockRepair.TouchesInput<Component>(sequence, s_isInputAction, s_childActions);
+        }
         static bool FindRunningSequence()
         {
             foreach (ActionSequence sequence in Resources.FindObjectsOfTypeAll<ActionSequence>())
-                if (sequence != null && sequence.IsRunning) { s_storyRanAt = Time.realtimeSinceStartup; return true; }
+                if (sequence != null && sequence.IsRunning && TouchesInput(sequence))
+                { s_storyRanAt = Time.realtimeSinceStartup; s_lockWaitedFor = sequence.name; return true; }
             return false;
         }
         public static void Tick()
@@ -270,7 +294,7 @@ namespace OriCoop
                 && gc != null && !gc.IsLoadingGame && Services.Session.Ready && !StorySync.StoryActive;
             if (!black) s_blackSince = -1f; else if (s_blackSince < 0) s_blackSince = now;
             if (gc != null && gc.LockInputByAction && !gc.IsLoadingGame) { if (s_actionLockSince < 0) s_actionLockSince = now; }
-            else s_actionLockSince = -1f;
+            else { s_actionLockSince = -1f; s_lockWaitedFor = null; }
             bool parked = ParkedInMove(UI.Cameras.Current);
             if (!parked) s_moveSince = -1f; else if (s_moveSince < 0) s_moveSince = now;
             bool paused = gc != null && (gc.GameplaySuspended || gc.GameplaySuspendedForUI || gc.IsSuspended);
@@ -280,7 +304,9 @@ namespace OriCoop
                 && StoryLockRepair.Due(now - s_actionLockSince, storyRunning, s_storyRanAt < 0f ? float.MaxValue : now - s_storyRanAt,
                     paused, s_findRunningSequence))
             {
-                Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + storyRunning + ")");
+                Log("repair stale LockInputByAction (held " + (now - s_actionLockSince).ToString("0") + " s, story running=" + storyRunning
+                    + (s_lockWaitedFor != null ? ", waited for " + s_lockWaitedFor : "") + ")");
+                s_lockWaitedFor = null;
                 StorySync.ForgetInputLocks();
                 gc.LockInputByAction = false; s_actionLockSince = -1f; Repairs++;
             }
