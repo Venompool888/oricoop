@@ -56,21 +56,15 @@ namespace OriCoop
             SavesHost.Current = new GameSavesHost();
             s_checkpoints = new GuestCheckpoints(Services.Net, () => s_started && !s_disabled, ReceiveCheckpoint, SeatSkillSync.ForRoomSave);
             Services.Net.On(SaveWire.SaveOffer, ReceiveOffer);
-            Services.Net.On(SaveWire.LoadedMessage, delegate(BinaryReader r)
+            s_guests.Observe(Services.Net, () => s_joined && Ready, delegate(int seat)
             {
-                int seat = Services.Net.Sender;
-                if (!Services.Net.IsHost) { s_guests.SawLoaded(seat); return; }   // T-213 (10): a guest notes who has loaded
-                if (!s_guests.Loaded(seat)) return;
-                SaveWire.ReadLoaded(r); UpdateHostReady();
+                UpdateHostReady();
                 Services.Log.Info("net: guest save loaded; sending full world and progress");
                 SavesHost.Current.SendWorldSnapshot(seat);   // also pays off a resync this load queued (T-254)
                 SavesHost.Current.SendProgressSnapshot(seat);
             });
             Services.Net.SessionStarted += Start;
             Services.Net.SessionEnded += Reset;
-            // T-213 (10): a guest that has finished its own join notes every seat that joins after it, until that seat
-            // announces its load (SeatReadiness.SawJoin): if this guest becomes the host, that seat still needs a save.
-            Services.Net.PlayerJoined += delegate(int seat) { if (Services.Net.IsHost) s_guests.Join(seat); else if (s_joined) s_guests.SawJoin(seat); };
             Services.Net.PlayerLeft += delegate(int seat)
             {
                 s_guests.Leave(seat);

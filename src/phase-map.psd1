@@ -40,6 +40,7 @@
         'EnemySync.Leftovers' = 'E3,E5'; 'EnemySyncTest.Leftovers' = 'E5'; 'HitIds' = 'E3,E5'   # T-208: enemy-sync leftovers (E5k checks; rules: unit tests)
         'PartnerFx' = 'R,S4,E3'; 'ReviveHud' = 'R'; 'NetHud' = 'R,S4'; 'CoopMenu' = 'S4'; 'MenuSoulFlameGuard' = 'S4'; 'MenuSoulFlameTest' = 'S4'   # Online screens leave LockInput alone
         'P2Input' = 'MOVE'; 'InputState' = 'MOVE'; 'P2Lifecycle' = 'MOVE,R'; 'PlatformFix' = ''; 'TitleReturn' = ''; 'P2Extras' = 'INTRO'
+        'NetSaveHandoverTest' = ''; 'MovementEpochs' = 'MOVE,S4'
         'NetLocalPlayersTest' = ''   # runs only in the -LocalPlayers suites (no 2-player phase)
         'StoryLeftoverTest' = ''   # T-207 / T-212 scenarios of the local suite (run-test.ps1)
         'SharedPrologue' = 'INTRO,MOVE,W'; 'PrologueCore' = ''; 'TitlePrologueTest' = ''; 'TitlePrologueProbe' = ''   # T-203 / T-205: its own checks run in the titlejoin-prologue suites; the input hook and the join wait touch INTRO / MOVE / W
@@ -126,6 +127,9 @@
         @{ Switch = 'ORICOOP_MUTATE_WOBJ_KEEP_FIRED'; File = 'src\OriCoop\WorldObjSync.cs'; Suite = 'net';       Phase = 'R' }   # T-144 R3 reload re-arms one-shots
         @{ Switch = 'ORICOOP_MUTATE_NO_COOP_FOLDER'; File = 'src\OriCoop\Saves\CoopSaveFolder.cs'; Suite = 'titlejoin'; Phase = '' }   # T-043 online saves stay in OriCoop-coop
         @{ Switch = 'ORICOOP_MUTATE_NO_SAVEOFFER';   File = 'src\OriCoop\SaveSync.cs'; Suite = 'net';       Phase = 'R' }   # T-043 a guest's save point becomes the room's save
+        @{ Switch = 'ORICOOP_MUTATE_PREVIOUS_MOVEMENT'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'net'; Phase = 'S4' }
+        @{ Switch = 'ORICOOP_MUTATE_QUIT_HOLDS_SEAT'; File = 'src\OriCoop\NetPlay.cs'; Suite = 'quitseat'; Phase = '' }
+        @{ Switch = 'ORICOOP_MUTATE_SKIP_EARLY_SAVE_HELLO'; File = 'src\OriCoop\Saves\SeatReadiness.cs'; Suite = 'net-save-handover'; Phase = '' }
         @{ Switch = 'ORICOOP_MUTATE_PROMOTE_ALL_READY'; File = 'src\OriCoop\SaveSync.cs'; Suite = 'net-3p-cs'; Phase = '' }   # T-213 a new host sends its save to a guest still waiting for its first one
         @{ Switch = 'ORICOOP_MUTATE_NO_SEAT_SKILLS'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net';     Phase = 'R' }   # T-043 checkpoint skill rollback
         @{ Switch = 'ORICOOP_MUTATE_NO_SEAT_SKILLS'; File = 'src\OriCoop\ProgressSync.cs'; Suite = 'net-4p';  Phase = '' }

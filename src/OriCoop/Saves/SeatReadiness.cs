@@ -1,4 +1,6 @@
+using System;
 using System.Collections.Generic;
+using OriCoop.Seams;
 
 namespace OriCoop.Saves
 {
@@ -31,18 +33,33 @@ namespace OriCoop.Saves
         }
         // (A waiting mark is a guest's note about a server session, where seats are not renumbered: nothing to rebind.)
         public void Join(int seat) { m_guests[seat] = new GuestState(); }
+        static readonly bool s_skipEarlyHello = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_SKIP_EARLY_SAVE_HELLO") == "1";
+
+        public void Observe(INetBus net, Func<bool> localLoaded, Action<int> checkpointLoaded)
+        {
+            net.PlayerJoined += seat => {
+                if (net.IsHost) { Join(seat); return; }
+                if (seat == net.HostSeat) return;
+                bool playing = localLoaded();
+                if ((!s_skipEarlyHello || playing) && !m_peerLoaded.ContainsKey(seat)) SawJoin(seat);
+                if (playing) net.SendTo(seat, SaveWire.PeerPlaying, true, SaveWire.WriteLoaded);
+            };
+            net.On(SaveWire.PeerPlaying, r => { if (!net.IsHost) SawLoaded(net.Sender); });
+            net.On(SaveWire.LoadedMessage, r => {
+                if (!net.IsHost) { SawLoaded(net.Sender); return; }
+                if (Loaded(net.Sender)) checkpointLoaded(net.Sender);
+            });
+        }
         // T-126: a seat already playing the co-op world when this player became the host (no checkpoint to send).
         public void JoinReady(int seat) { GuestState g = new GuestState(); g.Sent = g.Ready = true; m_guests[seat] = g; }
-        public void Leave(int seat) { m_guests.Remove(seat); m_awaiting.Remove(seat); SettleRestore(); }
-        public void Clear() { m_guests.Clear(); m_awaiting.Clear(); m_restoring = false; }
+        public void Leave(int seat) { m_guests.Remove(seat); m_peerLoaded.Remove(seat); SettleRestore(); }
+        public void Clear() { m_guests.Clear(); m_peerLoaded.Clear(); m_restoring = false; }
 
-        // T-213 (10): what a guest notes about the other guests, for the day the server makes it the host. A seat that
-        // said hello after this guest finished its own join has no save until it announces its load (the announcement
-        // is a broadcast, and a server hands every broadcast to every seat). A seat that was here before is taken as
-        // playing: whether it had loaded cannot be known.
-        readonly HashSet<int> m_awaiting = new HashSet<int>();
-        public void SawJoin(int seat) { m_awaiting.Add(seat); }
-        public void SawLoaded(int seat) { m_awaiting.Remove(seat); }
+        // Another guest's Hello can arrive during our own load. Its load broadcast or introduction can also
+        // precede its Hello. Keep the completed state until this occupant leaves.
+        readonly Dictionary<int, bool> m_peerLoaded = new Dictionary<int, bool>();
+        public void SawJoin(int seat) { m_peerLoaded[seat] = false; }
+        public void SawLoaded(int seat) { m_peerLoaded[seat] = true; }
         // This guest became the host. A seat still waiting for its first save is unsent (the new host sends its
         // checkpoint; marked sent and ready, it waited for the old host's save for ever). Every other seat already
         // plays the co-op world (T-126: ready, nothing to send, no forced reload).
@@ -55,9 +72,10 @@ namespace OriCoop.Saves
             {
                 GuestState known;
                 if (m_guests.TryGetValue(seat, out known) && !known.Sent) continue;
-                if (m_awaiting.Contains(seat)) Join(seat); else JoinReady(seat);
+                bool playing;
+                if (m_peerLoaded.TryGetValue(seat, out playing) && !playing) Join(seat); else JoinReady(seat);
             }
-            m_awaiting.Clear();
+            m_peerLoaded.Clear();
         }
         public void MarkSent(int seat) { MarkSent(seat, 0f); }
         public void MarkSent(int seat, float now) { GuestState guest = m_guests[seat]; guest.Sent = true; guest.SentAt = now; }

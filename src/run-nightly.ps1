@@ -49,6 +49,9 @@ if (Test-Path $summary) {
 # BLOCKED (the suite died or never reached it; other failures listed), ERROR (the script failed, see <log>.err).
 # A MISSED mutation makes the nightly fail. MUTATE_KEEP_MODAL runs leave mode "host" (T-072): with "drop" the guest picks 回到标题, which closes the dialog by itself, so the auto-close this switch turns off never ran. ORICOOP_NET_ONLY (P3 = CUT, WO) skips the earlier net phases.
 $Mutations = @(
+    @{ Name = 'MUTATE_PREVIOUS_MOVEMENT'; Env = @{ ORICOOP_MUTATE_PREVIOUS_MOVEMENT = '1'; ORICOOP_NET_ONLY = 'S4R' }; Script = @('run-nettest.ps1'); Expect = 'S4 a delayed pre-disconnect movement packet leaves the rejoined Ori' }
+    @{ Name = 'MUTATE_QUIT_HOLDS_SEAT'; Env = @{ ORICOOP_MUTATE_QUIT_HOLDS_SEAT = '1' }; Script = @('run-quitseat.ps1'); Expect = 'shutdown_sends_the_device_release_before_goodbye' }
+    @{ Name = 'MUTATE_SKIP_EARLY_SAVE_HELLO'; Env = @{ ORICOOP_MUTATE_SKIP_EARLY_SAVE_HELLO = '1' }; Script = @('run-nettest.ps1', '-Clients', '3', '-CServer', '-SaveHandover'); Expect = 'handover P2 sent its first checkpoint to waiting P3|handover P3 restored exactly one checkpoint from P2' }
     @{ Name = 'MUTATE_NO_LIFECYCLE';    Env = @{ ORICOOP_MUTATE_NO_LIFECYCLE = '1' };    Script = @('run-test.ps1', '-Scenarios', 'title');    Expect = '^title: ' }
     @{ Name = 'MUTATE_KEEP_NET';        Env = @{ ORICOOP_MUTATE_KEEP_NET = '1' };        Script = @('run-test.ps1', '-Scenarios', 'title');    Expect = '^title: ' }
     @{ Name = 'MUTATE_NO_PLATFORMFIX';  Env = @{ ORICOOP_MUTATE_NO_PLATFORMFIX = '1' };  Script = @('run-test.ps1', '-Scenarios', 'platform'); Expect = '^platform: ' }

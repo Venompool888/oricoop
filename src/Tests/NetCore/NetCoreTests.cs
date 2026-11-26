@@ -4,7 +4,7 @@ using System.IO;
 using OriCoop.Authority;
 using OriCoop.Net;
 
-static class NetCoreTests
+static partial class NetCoreTests
 {
     sealed class Packet
     {
@@ -198,6 +198,7 @@ static class NetCoreTests
 
     static int Main()
     {
+        MovementHandover();
         Run("owner notice: a token rejoin's first online roster is silent even after waiting with our seat offline", delegate {
             RoomOwnerNotice notice = new RoomOwnerNotice();
             Equal(0, notice.TakePreviousOwner(2, false, 0));

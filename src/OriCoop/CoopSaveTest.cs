@@ -22,6 +22,7 @@ namespace OriCoop
         {
             static void Postfix(TestHarness h, ref IEnumerator __result)
             {
+                if (NetSaveHandoverTest.Enabled) return;
                 __result = s_only ? Scenario(h) : Then(__result, AfterSuite(h));
             }
         }

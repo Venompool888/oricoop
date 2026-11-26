@@ -160,6 +160,7 @@ namespace OriCoop.Net
             if (Validate != null && !Validate(message, sourceSeat)) return;
             BinaryReader r = new BinaryReader(new MemoryStream(message));
             byte type = r.ReadByte();
+            if (type == MsgHello && !reliable) return;
             int previous = Sender;
             Sender = r.ReadByte();
             try

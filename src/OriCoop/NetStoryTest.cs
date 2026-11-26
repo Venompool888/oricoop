@@ -1107,7 +1107,14 @@ namespace OriCoop
         }
         static IEnumerator Reconnect(TestHarness h)
         {
+            if (NetPlay.IsHost)
+            {
+                NetPlay.TestCaptureNextMovement();
+                float captureBy = Now + 3f;
+                while (NetPlay.TestCapturedMovement == null && Now < captureBy) yield return null;
+            }
             yield return Barrier(h, 51); int disconnects = SessionRules.Disconnects, sessions = SessionRules.Sessions;
+            byte[] previousMovement = NetPlay.TestCapturedMovement;
             float start = Now;
             // T-106: while the guest is cut off from the host (session ended, retrying), its own Ori stays visible and free.
             int cutFrames = 0, heldFrames = 0;
@@ -1166,7 +1173,15 @@ namespace OriCoop
                     + heldFrames + " of " + cutFrames + " disconnected frames held)");
             }
             h.Check(!SessionRules.PartnerInMenu && !StorySync.Watching, "S4 no stale remote menu or watching lock");
+            if (NetPlay.IsHost) NetPlay.TestCaptureNextMovement();
             yield return Digests(h, 52);
+            if (NetPlay.IsHost)
+            {
+                h.Check(NetPlay.TestMovementAdmission(previousMovement, false),
+                    "S4 a delayed pre-disconnect movement packet leaves the rejoined Ori's position and play buffer unchanged");
+                h.Check(NetPlay.TestMovementAdmission(NetPlay.TestCapturedMovement, true),
+                    "S4 movement from the guest's new connection reaches its Ori");
+            }
         }
         // ORICOOP_NET_ONLY=S4R: just the drop + rejoin step (fast iteration on T-030).
         public static IEnumerator RunReconnect(TestHarness h)

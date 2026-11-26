@@ -2488,6 +2488,11 @@ namespace OriCoop
 
         public static IEnumerator Run(TestHarness h)
         {
+            if (NetSaveHandoverTest.Enabled)
+            {
+                yield return Safely(h, "3P save handover", NetSaveHandoverTest.Run(h));
+                yield break;
+            }
             s_readySeats.Clear(); s_threePackets.Clear();
             s_goAt = s_pickupAt = s_collectedAt = s_worldGoAt = 0; s_threeEnded = s_leaveReleased = s_done = false;
             NetPlay.TestSignalReceived += ReadTestSignal;

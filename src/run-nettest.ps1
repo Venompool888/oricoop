@@ -11,7 +11,7 @@
 #   the prologue, load the host's save from the title and join the host (GuestJoin.cs; "W empty slot" checks).
 # -GuestNoSlot: same empty guest, but it never picks a slot (title 加入 path): GuestJoin.BeginNoSlot once connected.
 param([int]$TimeoutSec = 0, [int]$HarnessSec = 1500, [string]$Sim = '', [switch]$Force, [switch]$CServer, [int]$Width = 640, [int]$Height = 360, [switch]$GuestNewGame, [switch]$GuestNoSlot,
-    [switch]$LocalPlayers, [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0)
+    [switch]$LocalPlayers, [ValidateSet(2, 3, 4)][int]$Clients = 2, [ValidateRange(0, 3600)][int]$LateJoinSec = 0, [switch]$SaveHandover)
 $script:ExtraEnv = @{}
 if ($TimeoutSec -le 0) { $TimeoutSec = $HarnessSec + 120 }   # the watchdog stays behind the in-game limit, which writes the result file
 if ($LocalPlayers) {
@@ -21,7 +21,13 @@ if ($LocalPlayers) {
 $ErrorActionPreference = 'Stop'
 if (-not $PSBoundParameters.ContainsKey('LateJoinSec') -and $Clients -ge 3) { $LateJoinSec = 20 }
 . (Join-Path $PSScriptRoot 'test-launch.ps1')   # copy lock, quiet launch, owner watchdog (docs\testing-rules.md)
-if ($CServer) {
+if ($SaveHandover) {
+    if (-not $CServer -or $Clients -ne 3 -or $LocalPlayers) { throw '-SaveHandover requires -CServer -Clients 3.' }
+    . (Join-Path $PSScriptRoot 'test-servers\LocalCServer.ps1')
+    $localServerExe = Get-LocalCServerExecutable -Kind Server -Path $env:ORICOOP_LOCAL_CSERVER_EXE
+    $script:ExtraEnv['ORICOOP_TEST_SAVE_HANDOVER'] = '1'
+    $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
+} elseif ($CServer) {
     $script:ExtraEnv['ORICOOP_NET_CSERVER'] = Get-RemoteTestServer 'cserver'
     Assert-TestServerCurrent 'cserver'
     $script:ExtraEnv['ORICOOP_NET_TRANSPORT'] = 'cserver'
@@ -119,8 +125,21 @@ function Compare-Tracks([string]$label, [object[]]$observer, [object[]]$owner) {
 }
 
 $clientProcesses = @()
+$localServer = $null
 $watch = [System.Diagnostics.Stopwatch]::StartNew()
 try {
+    if ($SaveHandover) {
+        $serverOutput = Join-Path $testDir 'handover-server.txt'
+        $localServer = Start-Process -FilePath $localServerExe -ArgumentList @('--port', '0') -WorkingDirectory $testDir -WindowStyle Hidden -PassThru -RedirectStandardOutput $serverOutput
+        $serverPort = $null
+        for ($tryPort = 0; $tryPort -lt 50 -and -not $serverPort -and -not $localServer.HasExited; $tryPort++) {
+            Start-Sleep -Milliseconds 100
+            $line = Select-String -Path $serverOutput -Pattern 'listening on UDP port (\d+)' | Select-Object -First 1
+            if ($line) { $serverPort = $line.Matches[0].Groups[1].Value }
+        }
+        if (-not $serverPort) { throw 'The local handover C-server did not announce its test port.' }
+        $script:ExtraEnv['ORICOOP_NET_CSERVER'] = '127.0.0.1:' + $serverPort
+    }
     $roomFile = Join-Path $testDir 'room-code.txt'
     Remove-Item $roomFile -Force -ErrorAction SilentlyContinue
     if ($CServer) { $script:ExtraEnv['ORICOOP_NET_ROOM_FILE'] = $roomFile }
@@ -163,6 +182,7 @@ try {
         }
     }
 } finally {
+    if ($null -ne $localServer -and -not $localServer.HasExited) { $localServer.Kill(); $localServer.WaitForExit() }
     foreach ($client in $clientProcesses) {
         if (-not $client.HasExited) { $client.Kill(); $client.WaitForExit() }
         Add-Content -LiteralPath $launchLog -Value ('EXIT ' + [DateTime]::UtcNow.ToString('o') + ' pid=' + $client.Id + ' exitCode=' + $client.ExitCode)

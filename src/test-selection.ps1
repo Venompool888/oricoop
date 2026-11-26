@@ -10,6 +10,8 @@ $TS_Suites = [ordered]@{
     'local'       = @('run-test.ps1')
     'net'         = @('run-nettest.ps1')
     'net-3p'      = @('run-nettest.ps1', '-Clients', '3')
+    'net-save-handover' = @('run-nettest.ps1', '-Clients', '3', '-CServer', '-SaveHandover')
+    'quitseat' = @('run-quitseat.ps1')
     'net-4p'      = @('run-nettest.ps1', '-Clients', '4')
     'net-3p-cs'   = @('run-nettest.ps1', '-Clients', '3', '-CServer')   # T-111: server mode, P1 leaves, seat 2 hosts
     'net-newgame' = @('run-nettest.ps1', '-GuestNewGame')
@@ -88,6 +90,8 @@ $TS_FileSuites = [ordered]@{
     'CoopSaves'        = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat; 'GuestJoin' = @('net', 'coopsave', 'titlejoin', 'titlejoin-prologue', 'titlejoin-prologue-late', 'titlejoin-prologue-hostquit', 'titlejoin-prologue-hostquit-slot', 'net-newgame', 'rooms') + $TS_MultiSeat
     'LoadRestart'      = @('net', 'coopsave', 'titlejoin', 'net-newgame', 'rooms') + $TS_MultiSeat
     # T-165 / T-116: the extra local players' bottom bars online are checked only by the -LocalPlayers suites.
+    'NetSaveHandoverTest' = @('net-save-handover')
+    'MovementEpochs' = @('net', 'net-3p', 'net-4p', 'net-3p-cs', 'net-lp2', 'net-lp3')
     'BottomHud'        = @('local', 'titlejoin', 'net-lp2', 'net-lp3')
     # T-059 several local players per device online: the -LocalPlayers suites (2 devices / 3 players, 3 devices / 4 players).
     'NetLocalPlayersTest' = @('net-lp2', 'net-lp3'); 'OnlineLocalPlayers' = @('local', 'net', 'net-lp2', 'net-lp3'); 'OnlineRoomScreen' = @('net-lp2', 'net-lp3', 'titlejoin', 'titlejoin-cs', 'rooms'); 'RoomScreenModel' = @('net-lp2', 'net-lp3', 'rooms', 'titlejoin')
@@ -131,6 +135,7 @@ function Get-SuitesFor([string]$path, $moduleMap) {
     if ($p -eq 'src\phase-map.psd1' -or $p -eq 'src\test-selection.ps1') { return @{ Suites = $TS_AllSuites; Why = 'the test selection itself: everything' } }
     if ($p -like 'docs\*' -or $p -like '*.md') { return @{ Suites = @(); Why = 'docs' } }
     if ($p -like 'src\Tests\*') { return @{ Suites = @(); Why = 'unit tests only' } }
+    if ($p -eq 'src\test-servers\LocalCServer.ps1') { return @{ Suites = @('net-save-handover', 'quitseat'); Why = 'local C-server fixtures' } }
     if ($p -like 'src\test-servers\*') { return @{ Suites = @('net-3p-cs', 'titlejoin-cs', 'rooms'); Why = 'remote test server tooling' } }
     if ($p -like 'src\RoomServer\*') { return @{ Suites = @('rooms'); Why = 'room server' } }
     if ($p -like 'src\CServer\*') { return @{ Suites = @('net', 'net-3p-cs', 'rooms'); Why = 'C-server (net-3p-cs runs it; My rooms plays on it, T-159)' } }
@@ -181,6 +186,14 @@ function Get-Selection([string[]]$files) {
         $why[$f] = $r
         foreach ($s in $r.Suites) { $suites[$s] = $true }
         $ph = Get-PhasesFor $f $moduleMap $phaseMap
+        if ($f -match '^src[/\\]OriCoop[/\\](?:Saves[/\\])?(SaveSync|SaveWire|SeatReadiness|NetTestHarness)\.cs$') {
+            $suites['net-save-handover'] = $true
+            $r.Suites += 'net-save-handover'
+        }
+        if ($f -match '^src[/\\](?:OriCoop[/\\](?:Authority[/\\])?(NetPlay|Plugin|CServerClient|CServerLink|TestHarness)|CServer[/\\]CServer(?:Test)?)\.cs$') {
+            $suites['quitseat'] = $true
+            $r.Suites += 'quitseat'
+        }
         if ($ph -eq 'FULL') { $full = $true; $phaseWhy[$f] = 'FULL' }
         else { foreach ($x in @($ph)) { $phases[$x] = $true }; $phaseWhy[$f] = (@($ph) -join ',') }
     }
