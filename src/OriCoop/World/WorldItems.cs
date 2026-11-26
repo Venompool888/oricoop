@@ -260,21 +260,61 @@ namespace OriCoop.World
             return WithTriggers(incoming, ReadController(local).Triggers);
         }
 
+        // Area-state and icon keys are a<decimal area>.s... and a<decimal area>.i....
+        // Locate their bucket without creating a string for every map cell.
+        static int AreaBucket(string key, int areas)
+        {
+            if (key.StartsWith("r:", StringComparison.Ordinal)) return 2 * areas;
+            if (key.Length < 5 || key[0] != 'a' || key[1] < '0' || key[1] > '9') return -1;
+            int i = 1, area = 0;
+            while (i < key.Length && key[i] >= '0' && key[i] <= '9')
+            {
+                area = 10 * area + key[i++] - '0';
+                if (area >= areas || (i > 2 && key[1] == '0')) return -1;
+            }
+            if (i + 1 >= key.Length || key[i] != '.') return -1;
+            if (key[i + 1] == 's') return 2 * area;
+            return key[i + 1] == 'i' ? 2 * area + 1 : -1;
+        }
+
+        static List<string> OrderedMapKeys(IEnumerable<string> template, HashSet<string> remaining, string prefix)
+        {
+            if (remaining == null) return new List<string>();
+            List<string> keys = new List<string>(remaining.Count);
+            foreach (string key in template) if (remaining.Remove(prefix + key)) keys.Add(key);
+            if (remaining.Count > 0)
+            {
+                List<string> extra = new List<string>(remaining);
+                extra.Sort(StringComparer.Ordinal);
+                foreach (string key in extra) keys.Add(key.Substring(prefix.Length));
+            }
+            return keys;
+        }
+
         static void WriteMap(BinaryWriter w, Map t, IDictionary<string, byte[]> items)
         {
+            // Partition once; the previous writer visited every map key twice for each area.
+            HashSet<string>[] groups = new HashSet<string>[2 * t.Areas.Count + 1];
+            foreach (string key in items.Keys)
+            {
+                int index = AreaBucket(key, t.Areas.Count);
+                if (index < 0) continue;
+                if (groups[index] == null) groups[index] = new HashSet<string>(StringComparer.Ordinal);
+                groups[index].Add(key);
+            }
             w.Write(t.Areas.Count);
             for (int a = 0; a < t.Areas.Count; a++)
             {
                 string prefix = "a" + a + ".s";
-                List<string> states = Ordered(t.Areas[a].States.ConvertAll(s => s.Key.ToString()), items, prefix);
+                List<string> states = OrderedMapKeys(t.Areas[a].States.ConvertAll(s => s.Key.ToString()), groups[2 * a], prefix);
                 w.Write(states.Count);
                 foreach (string key in states) { w.Write(int.Parse(key)); w.Write(ToInt(items[prefix + key])); }
                 prefix = "a" + a + ".i";
-                List<string> icons = Ordered(t.Areas[a].Icons.ConvertAll(i => i.Key), items, prefix);
+                List<string> icons = OrderedMapKeys(t.Areas[a].Icons.ConvertAll(i => i.Key), groups[2 * a + 1], prefix);
                 w.Write(icons.Count);
                 foreach (string id in icons) { w.Write(FromHex(id)); w.Write(ToInt(items[prefix + id])); }
             }
-            List<string> revealed = Ordered(t.Revealed, items, "r:");
+            List<string> revealed = OrderedMapKeys(t.Revealed, groups[2 * t.Areas.Count], "r:");
             List<string> expanded = new List<string>();
             foreach (string g in revealed) for (int n = ToInt(items["r:" + g]); n > 0; n--) expanded.Add(g);
             w.Write(expanded.Count); foreach (string g in expanded) w.Write(FromHex(g));

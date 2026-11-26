@@ -14,3 +14,4 @@ OriCoop\Story\StoryLockRepair.cs
 OriCoop\Story\MirrorStarts.cs
 OriCoop\Story\SceneTripRule.cs
 OriCoop\Story\SessionEndRepair.cs
+OriCoop\Story\StoryControls.cs

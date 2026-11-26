@@ -3,3 +3,5 @@ OriCoop\Net\SteamApi.cs
 OriCoop\Net\FakeSteamApi.cs
 OriCoop\SteamTransport.cs
 OriCoop\Net\NetPeer.cs
+OriCoop\Net\RoutedTransport.cs
+OriCoop\PeerHub.cs

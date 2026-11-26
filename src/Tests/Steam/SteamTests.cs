@@ -6,6 +6,8 @@ using System.Net;
 using System.Threading;
 using OriCoop.Net;
 
+namespace OriCoop { internal static class Players { internal const int MaxSeats = 4; } }
+
 // The game adapter is compiled by build-commit, not loaded in this console suite.
 namespace OriCoop.Net
 {
@@ -71,6 +73,31 @@ static class SteamTests
         Check(!entered, "join completed inside JoinLobby");
         Until(() => entered, "no join result", guest);
         guest.LobbyEntered -= handler;
+    }
+
+    private static void FriendRoomDirectory(string dir)
+    {
+        using (var host = new FakeSteamApi(dir, 1001, "Host", "no-overlay"))
+        using (var guest = new FakeSteamApi(dir, 1002, "Guest", ""))
+        using (var other = new FakeSteamApi(dir, 1003, "Other", ""))
+        {
+            ulong lobby = Create(host, 2);
+            Check(host.SetLobbyData(lobby, "oricoop", "1") && host.SetLobbyData(lobby, "build", "build-a"), "publish version");
+            SteamFriendRow[] matches = SteamDirectory.List(guest, true, "build-a");
+            Check(matches.Length == 1 && matches[0].Lobby == lobby && matches[0].Reason == "", "discover a joinable friend room");
+            Check(SteamDirectory.List(guest, true, "build-b")[0].Reason == "server.err.version", "version mismatch remains visible");
+            Join(guest, lobby, "Success");
+            host.SetMemberState(lobby, "loading");
+            Until(() => guest.MemberState(lobby, host.LocalId) == "loading", "guest sees the host start without user input", guest);
+            matches = SteamDirectory.List(other, true, "build-a");
+            Check(matches.Length == 1 && matches[0].Reason == "lobby.error.full", "full friend room deduplicated and disabled");
+            Check(SteamDirectory.List(host, false, "build-a").Length == 2, "fallback shows both friends");
+            Check(!host.OverlayEnabled && host.Invite(lobby, guest.LocalId), "send targeted invite without overlay");
+            Check(host.GetLobbyData(lobby, "invite." + guest.LocalId) == "1" &&
+                host.GetLobbyData(lobby, "invite." + other.LocalId) == "", "only the selected friend was invited");
+            host.LeaveLobby(lobby);
+            Until(() => SteamDirectory.List(other, true, "build-a").Length == 0, "closed lobby disappears", other);
+        }
     }
 
     private static void LobbyFlow(string dir)
@@ -651,8 +678,82 @@ static class SteamTests
         }
     }
 
-    // A request from a user that never shows up in the lobby is refused once the grace runs out; one from a third
-    // user while a guest is the peer is refused at once.
+    private static void FourPlayerHub(string dir)
+    {
+        using (var host = new FakeSteamApi(dir, 1001, null, ""))
+        using (var a = new FakeSteamApi(dir, 1002, null, ""))
+        using (var b = new FakeSteamApi(dir, 1003, null, ""))
+        using (var c = new FakeSteamApi(dir, 1004, null, ""))
+        using (var spare = new FakeSteamApi(dir, 1005, null, ""))
+        {
+            SteamApi.SetForTests(host);
+            SteamTransport transport = SteamTransport.Host();
+            using (var hub = new PeerHub(transport))
+            {
+                var connected = new List<NetPeer>();
+                hub.Connected += connected.Add;
+                hub.Disconnected += (peer, why) => connected.Remove(peer);
+                transport.GuestLeft += hub.Drop;
+                Until(() => transport.Ready, "four seats: lobby did not open", host);
+                var guests = new[] { a, b, c };
+                var clients = new NetPeer[3];
+                Action pump = delegate
+                {
+                    host.Pump();
+                    for (int i = 0; i < clients.Length; i++)
+                    {
+                        guests[i].Pump();
+                        if (clients[i] != null) clients[i].Poll();
+                    }
+                    hub.Poll();
+                };
+                for (int i = 0; i < guests.Length; i++)
+                {
+                    Join(guests[i], transport.LobbyId, "Success");
+                    clients[i] = new NetPeer(new RawLink(guests[i], host.LocalId));
+                    clients[i].Connect(RawLink.Host);
+                    Until(() => { pump(); return clients[i].State == PeerState.Connected && connected.Count == i + 1; },
+                        "four seats: a guest could not complete its own handshake");
+                }
+                Join(spare, transport.LobbyId, "Full");
+                for (int i = 0; i < clients.Length; i++)
+                {
+                    transport.SetSeatMember(i + 2, connected[i].Remote);
+                    Check(transport.SeatName(i + 2) == guests[i].PersonaName, "four seats: wrong name for guest");
+                    clients[i].SendReliable(new byte[] { (byte)(i + 2) }, 0, 1);
+                    connected[i].SendReliable(new byte[] { (byte)(20 + i) }, 0, 1);
+                }
+                for (int i = 0; i < clients.Length; i++)
+                {
+                    byte[] reply = null; bool reliable = false;
+                    Until(() => { pump(); return clients[i].TryReceive(out reply, out reliable); }, "four seats: missing private host reply");
+                    Check(reliable && reply[0] == 20 + i, "four seats: reply delivered to another guest");
+                    Until(() => { pump(); return connected[i].TryReceive(out reply, out reliable); }, "four seats: missing guest message");
+                    Check(reliable && reply[0] == i + 2, "four seats: guest message read on another host connection");
+                }
+                NetPeer first = connected[0], last = connected[2];
+                EndPoint oldEndpoint = connected[1].Remote;
+                b.LeaveLobby(transport.LobbyId);
+                Until(() => { pump(); return connected.Count == 2; }, "four seats: the departed guest kept its route");
+                Check(connected[0] == first && connected[1] == last, "four seats: another guest was disconnected");
+                clients[1] = null;
+                guests[1] = spare;
+                Join(spare, transport.LobbyId, "Success");
+                clients[1] = new NetPeer(new RawLink(spare, host.LocalId));
+                clients[1].Connect(RawLink.Host);
+                Until(() => { pump(); return clients[1].State == PeerState.Connected && connected.Count == 3; },
+                    "four seats: the replacement could not join");
+                transport.SendTo(Payload, 0, Payload.Length, oldEndpoint);
+                connected[2].SendReliable(new byte[] { 99 }, 0, 1);
+                byte[] final = null; bool finalReliable = false;
+                Until(() => { pump(); return clients[1].TryReceive(out final, out finalReliable); }, "four seats: no reply on replacement route");
+                Check(finalReliable && final[0] == 99 && first.State == PeerState.Connected && last.State == PeerState.Connected,
+                    "four seats: joining the replacement changed another route");
+            }
+        }
+    }
+
+    // Membership may arrive late for the second guest too. Never accept packets from a nonmember.
     private static void StrangerRefused(string dir)
     {
         using (var host = new FakeSteamApi(dir, 1001, null, ""))
@@ -674,7 +775,7 @@ static class SteamTests
                 Check(transport.HandshakeStep.StartsWith("session request refused", StringComparison.Ordinal), "stranger: step after refusal: " + transport.HandshakeStep);
                 Check(!Available(host, 0), "stranger: a packet of the refused user got through");
 
-                // A guest connects; a third user's request is then refused without waiting.
+                // A second request while the first guest is connected stays subject to the same membership check.
                 Join(guest, transport.LobbyId, "Success");
                 var guestPeer = new NetPeer(new RawLink(guest, host.LocalId));
                 guestPeer.Connect(RawLink.Host);
@@ -682,7 +783,7 @@ static class SteamTests
                 lines.Clear();
                 Check(stranger.SendP2PPacket(host.LocalId, Payload, 0, Payload.Length, 0), "stranger: second send failed");
                 Until(() => { SteamTransport.PumpFake(); transport.Update(); return Has(lines, "1003 refused"); }, "stranger: second request not refused: " + Text(lines));
-                Check(!Has(lines, "1003 held"), "stranger: a third user was held while a guest is connected: " + Text(lines));
+                Check(Has(lines, "1003 held") && !Available(host, 0), "stranger: the second membership check failed: " + Text(lines));
             }
         }
     }
@@ -742,6 +843,7 @@ static class SteamTests
     public static int Main()
     {
         Run("lobby flow", LobbyFlow);
+        Run("T-219 discover rooms, status, version, capacity and targeted invitations", FriendRoomDirectory);
         Run("drop create", DropCreate);
         Run("drop enter", DropEnter);
         Run("late members", LateMembers);
@@ -763,7 +865,8 @@ static class SteamTests
         Run("T-216 nothing awaited after Steam restarts", NothingAwaitedAfterSteamRestart);
         Run("T-218 a throwing invite window keeps the lobby", InviteThrows);
         Run("T-253 a guest Steam lists late is held, then the handshake completes", GuestListedLate);
-        Run("T-253 a stranger's request is held, then refused; a third user's at once", StrangerRefused);
+        Run("T-220 four Steam players, routed messages, full lobby and a replacement guest", FourPlayerHub);
+        Run("T-253 strangers are refused, including while another guest is connected", StrangerRefused);
         Run("T-253 the guest's trace names the step the handshake stopped at", GuestTraceNamesStep);
         Console.WriteLine("Steam: " + cases + " cases, " + failures + " failed");
         return failures == 0 ? 0 : 1;

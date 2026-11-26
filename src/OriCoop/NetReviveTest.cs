@@ -14,7 +14,7 @@ namespace OriCoop
     //   R2 host holds Spirit Flame at the skull -> host's health drains, guest sees the progress; at 100% the guest is
     //      back with the health the host gave.
     //   R3 host dies (downed), then guest dies -> host decides "both down" -> both games reload a checkpoint.
-    public static class NetReviveTest
+    public static partial class NetReviveTest
     {
         const byte MsgBarrier = 65;
         // T-043: barriers also carry the partner's room-save counter and checkpoint fingerprint (step "R save").
@@ -780,6 +780,9 @@ namespace OriCoop
             h.Note("--- phase R: online downed / revive (" + (host ? "host" : "guest") + ")");
             if (DifficultyController.Instance.Difficulty == DifficultyMode.OneLife) { h.Note("R skipped on One Life difficulty"); yield break; }
             if (Own == null || Puppet == null) { h.Check(false, "R needs both Oris"); yield break; }
+            string replay = System.Environment.GetEnvironmentVariable("ORICOOP_REVIVE_REPLAY");
+            if (replay == "ginso") { yield return GinsoSave(h, host); yield break; }
+            if (replay == "audio") { yield return SpectatorAudio(h, host); yield break; }
             int restores0 = TestHarness.RestoreCheckpointCalls;
             Own.Mortality.Health.RestoreAllHealth();
             yield return Barrier(h, 1);

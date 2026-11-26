@@ -929,6 +929,38 @@ static class RoomTests
         }
     }
 
+    static void SharedPasswordPrompt(bool cancel)
+    {
+        using (Fixture x = new Fixture())
+        {
+            int prompts = 0, completed = 0;
+            Action<string> submit = null;
+            x.Session.Password = delegate(Action<string> action) { prompts++; submit = action; };
+            for (int i = 0; i < 2; i++)
+            {
+                x.Http.Reply("info", "ok", "0", "error", "bad_token");
+                x.Session.Call(delegate { return x.Client.Info(x.Auth); }, delegate(RoomReply r)
+                {
+                    Check(cancel ? r.Error == "cancelled" : r.Ok, "unexpected rebind result");
+                    completed++;
+                });
+            }
+            x.Drain();
+            Equal(1, prompts);
+            if (!cancel)
+            {
+                x.Http.Reply("challenge", "ok", "1", "salt", new byte[8], "nonce", new byte[] { 9 });
+                x.Http.Reply("rebind", "ok", "1", "token", "replacement");
+                x.Http.Reply("info", "ok", "1");
+                x.Http.Reply("info", "ok", "1");
+            }
+            submit(cancel ? null : "4321");
+            x.PumpUntil(delegate { return completed == 2; });
+            Equal(1, prompts);
+            x.Http.Done();
+        }
+    }
+
     static void SessionWaitingDeadline()
     {
         using (Fixture x = new Fixture())
@@ -1128,6 +1160,8 @@ static class RoomTests
         Run("session queues uploads before leave", SessionQueuedUploadsBeforeLeave);
         Run("session upload conflict", SessionConflict);
         Run("session rebind", SessionRebind);
+        Run("concurrent requests share one password and rebind", delegate { SharedPasswordPrompt(false); });
+        Run("cancelling the password answers every waiting request", delegate { SharedPasswordPrompt(true); });
         Run("abandoned info does not ask for a password", SessionExpiredPasswordReply);
         Run("abandoned rebind preserves the newer token", ExpiredRebindDoesNotReplaceCurrentToken);
         Run("in-game upload reports authentication failure", BackgroundBadTokenDoesNotOpenPasswordPage);

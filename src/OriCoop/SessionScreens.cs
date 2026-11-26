@@ -289,6 +289,8 @@ namespace OriCoop
             }
             string help = catching ? Host.Text("session.catching_up_help") : prologue ? Host.Text("session.waiting_prologue_help")
                 : Phase == SavePhase.Waiting ? Host.Text("session.waiting_help") : Host.Text("session.loading_help");
+            if (NetPlay.UsesSteam && (Phase == SavePhase.Receiving || Phase == SavePhase.Loading))
+                help = Host.Text(Phase == SavePhase.Loading ? "steam.step.game" : "steam.step.save");
             WaitingText = text;
             Text(new Rect(0, Screen.height - 110f * scale, Screen.width, 28f * scale), help, s_bodyZh, ink);
             if (CanCancelWait)

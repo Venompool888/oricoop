@@ -11,6 +11,10 @@ namespace OriCoop.Ui
     internal sealed class RoomScreenModel
     {
         internal bool IsHost, ShowInvite, AddEnabled, ServerNote;
+        internal bool Steam, InGame, SteamReady, ShowFriends, HasSpace, RetryHost;
+        internal string SteamTitle = "", SteamStatus = "";
+        internal readonly List<string> SteamMembers = new List<string>();
+        internal readonly List<KeyValuePair<ulong, string>> Friends = new List<KeyValuePair<ulong, string>>();
         internal string RoomCode = "";
         internal string[] Addresses = new string[0];
         internal readonly List<RoomSaveRow> Saves = new List<RoomSaveRow>();

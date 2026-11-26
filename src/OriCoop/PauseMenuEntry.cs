@@ -65,7 +65,7 @@ namespace OriCoop
         }
 
         // T-189: the pause menu shows 房间管理 now (Ui/InGameRoomRules via CsRoomPage.InGameAvailable).
-        internal static bool RoomEntryWanted { get { return CsRoomPage.InGameAvailable || (s_mutateRoomAnyOnline && NetPlay.Enabled && NetPlay.LocalInGameplay()); } }
+        internal static bool RoomEntryWanted { get { return OnlineRoomScreen.SteamInGameAvailable || CsRoomPage.InGameAvailable || (s_mutateRoomAnyOnline && NetPlay.Enabled && NetPlay.LocalInGameplay()); } }
 
         static void Install(PauseScreen screen)
         {
@@ -90,9 +90,15 @@ namespace OriCoop
             if (want && room == null)
             {
                 int quit = QuitIndex(nav);
-                if (quit > 0 && AddItem(screen, RoomItemName, quit, RoomText, CsRoomPage.OpenInGame) != null)
+                if (quit > 0 && AddItem(screen, RoomItemName, quit, RoomText, OpenRoom) != null)
                     Plugin.Log.LogInfo("pause menu: room page entry installed");
             }
+        }
+
+        static void OpenRoom()
+        {
+            if (OnlineRoomScreen.SteamInGameAvailable) OnlineRoomScreen.OpenSteamInGame();
+            else CsRoomPage.OpenInGame();
         }
 
         // The game's quit item: the last native item of the pause menu.

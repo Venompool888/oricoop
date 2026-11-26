@@ -59,8 +59,9 @@ namespace OriCoop.World
         }
 
         // Confirmed with my pending batches on top: what the arbiter will have once it has ordered all of them.
-        SortedDictionary<string, byte[]> Expected()
+        SortedDictionary<string, byte[]> Expected(bool copy = false)
         {
+            if (!copy && m_pending.Count == 0) return m_confirmed;
             SortedDictionary<string, byte[]> expected = new SortedDictionary<string, byte[]>(m_confirmed, StringComparer.Ordinal);
             foreach (Batch b in m_pending) foreach (ItemOp op in b.Ops) Put(expected, op);
             return expected;
@@ -107,25 +108,45 @@ namespace OriCoop.World
         {
             // Items I am still changing, measured BEFORE this batch moves Confirmed.
             HashSet<string> busy = new HashSet<string>();
-            foreach (ItemOp op in Diff(Expected(), current)) busy.Add(op.Key);
+            IDictionary<string, byte[]> expected = m_confirmed;
+            if (m_pending.Count != 0)
+            {
+                HashSet<string> touched = new HashSet<string>();
+                expected = new Dictionary<string, byte[]>(StringComparer.Ordinal);
+                foreach (ItemOp op in ops)
+                {
+                    touched.Add(op.Key);
+                    byte[] value;
+                    if (m_confirmed.TryGetValue(op.Key, out value)) expected[op.Key] = value;
+                }
+                foreach (Batch pending in m_pending)
+                    foreach (ItemOp op in pending.Ops) if (touched.Contains(op.Key)) Put(expected, op);
+            }
+            foreach (ItemOp op in ops)
+            {
+                if (WorldItems.OnlyGrows(op.Key)) continue;
+                byte[] value, wanted;
+                bool have = current.TryGetValue(op.Key, out value), had = expected.TryGetValue(op.Key, out wanted);
+                if (have ? !had || !Same(value, wanted) : had && !WorldItems.NeverRemoved(op.Key))
+                    busy.Add(op.Key);
+            }
             foreach (ItemOp op in ops) Put(m_confirmed, op);
             if (mine) Acknowledge(batch);
             foreach (Batch b in m_pending) foreach (ItemOp op in b.Ops) busy.Add(op.Key);
-            SortedDictionary<string, byte[]> visible = new SortedDictionary<string, byte[]>(current, StringComparer.Ordinal);
-            bool changed = false;
+            SortedDictionary<string, byte[]> visible = null;
             foreach (ItemOp op in ops)
             {
                 // T-214: not for an item that only grows: there the highest level wins, not the latest writer, so my own
                 // lower level (unproposed or pending) must not hide a partner's higher one here.
                 if (busy.Contains(op.Key) && !WorldItems.OnlyGrows(op.Key)) continue;
                 byte[] now, want;
-                bool have = visible.TryGetValue(op.Key, out now), wanted = m_confirmed.TryGetValue(op.Key, out want);
+                bool have = (visible ?? current).TryGetValue(op.Key, out now), wanted = m_confirmed.TryGetValue(op.Key, out want);
                 if (have == wanted && (!have || Same(now, want))) continue;
                 if (WorldItems.OnlyGrows(op.Key) && !WorldItems.Higher(wanted ? want : null, have ? now : null)) continue;
+                if (visible == null) visible = new SortedDictionary<string, byte[]>(current, StringComparer.Ordinal);
                 if (wanted) visible[op.Key] = want; else visible.Remove(op.Key);
-                changed = true;
             }
-            return changed ? visible : null;
+            return visible;
         }
 
         // A full snapshot (join, digest resync, host rollback) replaced the object: it is the new Confirmed. Returns the
@@ -138,7 +159,7 @@ namespace OriCoop.World
         {
             m_confirmed.Clear();
             foreach (KeyValuePair<string, byte[]> item in snapshot) m_confirmed[item.Key] = item.Value;
-            SortedDictionary<string, byte[]> visible = Expected();
+            SortedDictionary<string, byte[]> visible = Expected(true);
             if (current != null)
                 foreach (KeyValuePair<string, byte[]> item in current)
                 {
@@ -179,7 +200,7 @@ namespace OriCoop.World
     // Wire form of one batch (the Data of an arbiter event, kind WorldDelta.Kind). The arbiter never parses it.
     public sealed class DeltaBatch
     {
-        public const byte Kind = 0x57;          // 'W': IAuthority.Propose kind for world item batches
+        public const byte Kind = OriCoop.Authority.Arbiter.WorldBatchKind;          // 'W': IAuthority.Propose kind for world item batches
         public const byte Version = 1;
         public const int MaxBytes = 12000;      // one batch stays well inside a NetPlay message (16000)
         public uint Id;                          // proposer's batch number (matched when it comes back)

@@ -348,10 +348,18 @@ static partial class NetCoreTests
             Rig r = new Rig(false, false, false); r.Receive(4, 1, true, 0, delegate(BinaryWriter w) { w.Write((byte)3); });
             Equal(3, r.Seat); Equal("seat:3,hello-send", Events(r)); Check(!r.Session.WaitingForSeat, "still waiting");
         });
-        Run("seat message validates host steam and sender", delegate {
+        Run("only the host assigns a seat including on Steam", delegate {
             Rig r = new Rig(false, false, false); Action<BinaryWriter> seat = delegate(BinaryWriter w) { w.Write((byte)3); };
-            r.Receive(4, 2, true, 0, seat); r.Steam = true; r.Receive(4, 1, true, 0, seat); r.Steam = false; r.Host = true; r.Receive(4, 1, true, 0, seat);
+            r.Steam = true; r.Receive(4, 2, true, 0, seat); r.Host = true; r.Receive(4, 1, true, 0, seat);
             Equal(0, r.Seat); Equal("", Events(r));
+            r.Host = false; r.Receive(4, 1, true, 0, seat);
+            Equal(3, r.Seat); Equal("seat:3,hello-send", Events(r));
+        });
+        Run("a two-player Steam host can bootstrap a waiting guest with its targeted table", delegate {
+            Rig r = new Rig(false, false, false); r.Steam = true;
+            int tables = 0; r.Bus.On(8, delegate(BinaryReader reader) { tables++; });
+            r.Receive(8, 3, true, 0, Empty); r.Receive(8, 1, true, 0, Empty);
+            Equal(1, tables);
         });
         Run("waiting guest drops ordinary traffic", delegate {
             Rig r = new Rig(false, false, false); int received = 0; r.Bus.On(70, delegate(BinaryReader b) { received++; });
@@ -520,7 +528,7 @@ static partial class NetCoreTests
             Rig r = new Rig(true, false, false); Check(!r.Session.WaitingForSeat, "direct host waiting");
             r.Factory = true; Check(r.Session.WaitingForSeat, "factory host not waiting");
             r.Factory = false; r.Host = false; Check(r.Session.WaitingForSeat, "direct guest not waiting");
-            r.Steam = true; Check(!r.Session.WaitingForSeat, "steam guest waiting");
+            r.Steam = true; Check(r.Session.WaitingForSeat, "Steam guest sent before its host assigned a seat");
         });
         Run("session events see sender and state at each transition", delegate {
             Rig r = new Rig(false, true, false); r.Seat = 2; List<string> seen = new List<string>();

@@ -61,7 +61,7 @@ namespace OriCoop
         static bool Online { get { return Services.Net.Enabled && Services.Net.Connected; } }
         static SeinCharacter Own { get { return Host.P1 != null ? Host.P1 : Characters.Sein; } }
         static SeinCharacter PanelOri { get { return CoopMenu.OpeningSeat == 0 ? null : Players.OriOf(CoopMenu.OpeningSeat); } }
-        static bool NativeMenuOpen { get { return UI.MainMenuVisible || CsRoomPage.InGame; } }
+        static bool NativeMenuOpen { get { return UI.MainMenuVisible || CsRoomPage.InGame || OnlineRoomScreen.SteamInGame; } }
         internal static bool LiveScreen
         {
             get { return MenuPresence.ScreenRunsLive(NoPause && !s_paused, NativeMenuOpen, PopupOpen, Host.CoopMenuOpen); }
@@ -90,6 +90,7 @@ namespace OriCoop
             s_departureWell = null;
             HidePopups();
             if (CsRoomPage.InGame) CsRoomPage.Close();
+            if (OnlineRoomScreen.SteamInGame) OnlineRoomScreen.CloseInGame();
             PauseMenuEntry.Release();
             if (UI.Menu != null)
             {
@@ -669,7 +670,7 @@ namespace OriCoop
         [HarmonyPatch(typeof(MenuScreenManager), "FixedUpdate")]
         static class BlockMenuKeysUnderOverlay
         {
-            static bool Prefix() { return !NoPause || !(PopupOpen || Host.CoopMenuOpen || CsRoomPage.InGame); }
+            static bool Prefix() { return !NoPause || !(PopupOpen || Host.CoopMenuOpen || CsRoomPage.InGame || OnlineRoomScreen.SteamInGame); }
         }
         [HarmonyPatch(typeof(CleverMenuItemSelectionManager), "FixedUpdate")]
         static class BlockNavigationUnderPopup

@@ -927,6 +927,9 @@ namespace OriCoop
             while (Now < hintUntil) yield return null;
             h.Note("GATE brightness " + ForcedSync.BrightnessDebug(native));
             GateCheck(h, ForcedSync.PromptsFullyOpaque(), "G1 gate prompts draw their text at full alpha (the native hint beside them for the screenshot)");
+            string backing;
+            bool lightBacking = ForcedSync.LightPromptBackings(out backing);
+            GateCheck(h, lightBacking, "G1 gate backing strips transmit the scene at alpha <= 0.27:" + backing);
             h.Note("GATE every mod prompt shown: " + GameText.ShownAlphas() + "; heights: native h=" + GameText.HeightOf(native) + ", " + GameText.ShownHeights());
             string smallGate = ForcedSync.SmallPrompts(GameText.HeightOfNative(native));
             GateCheck(h, smallGate.Length == 0, "G1 gate prompts draw as large as the native hint (native h=" + GameText.HeightOf(native) + (smallGate.Length > 0 ? "; small: " + smallGate : "") + ")");
@@ -1370,6 +1373,7 @@ namespace OriCoop
         public static IEnumerator Run(TestHarness h)
         {
             if (!s_registered) { NetPlay.On(BarrierMessage, Receive); s_registered = true; }
+            if (Environment.GetEnvironmentVariable("ORICOOP_P3_STORY_REQUEST") == "1") { yield return Step(h, 890, NetSharedSkipTest.Run(h)); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_EXTERNAL") == "1") { yield return Step(h, 880, NetExternalStoryTest.Run(h)); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_GATE") == "1") { yield return GateRun(h); yield break; }
             if (Environment.GetEnvironmentVariable("ORICOOP_P3_LOOK") == "1") { yield return LookRun(h); yield break; }
@@ -1444,6 +1448,7 @@ namespace OriCoop
                 // T-204: the map stone, same reason (a partner's state read into the live object).
                 yield return MapStoneRun(h);
                 yield return Step(h, 880, NetExternalStoryTest.Run(h));
+                yield return Step(h, 890, NetSharedSkipTest.Run(h));
             }
             finally
             {

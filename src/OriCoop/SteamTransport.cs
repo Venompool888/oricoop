@@ -65,6 +65,19 @@ namespace OriCoop.Net
             public bool Held;
         }
         private readonly List<SessionRequest> sessionRequests = new List<SessionRequest>();
+        // A separate endpoint object for each accepted session, including a new object on rejoin.
+        // A delayed send from a retired PeerHub route can never reach the replacement guest.
+        private sealed class GuestRoute : EndPoint
+        {
+            public readonly ulong Id;
+            public readonly double Started;
+            public bool Received;
+            public GuestRoute(ulong id, double started) { Id = id; Started = started; }
+            public override string ToString() { return "Steam " + Id; }
+        }
+        private readonly List<GuestRoute> guests = new List<GuestRoute>(3);
+        internal event Action<EndPoint, string> GuestLeft;
+        private double nextMemberCheck;
         private int rejectsLogged;
         private bool sentLogged;
         private bool sendRefusedLogged;
@@ -76,7 +89,6 @@ namespace OriCoop.Net
         private ulong localId;
         private ulong lobbyId;
         private ulong remoteId;
-        private ulong sessionId;
         private bool ready;
         private bool disposed;
         private bool leftLobby;
@@ -126,8 +138,8 @@ namespace OriCoop.Net
         public bool Ready { get { return ready; } }
         public string Error { get { return error; } }
         public ulong LobbyId { get { return lobbyId; } }
-        public ulong RemoteSteamId { get { return remoteId; } }
-        public EndPoint RemoteEndPoint { get { return remoteId == 0 ? null : VirtualRemote; } }
+        public ulong RemoteSteamId { get { return hosting ? (guests.Count == 0 ? 0 : guests[0].Id) : remoteId; } }
+        public EndPoint RemoteEndPoint { get { return hosting ? (guests.Count == 0 ? null : guests[0]) : remoteId == 0 ? null : VirtualRemote; } }
         // Virtual transport: no local UDP socket or listening port exists.
         public int LocalPort { get { return 0; } }
         private double Now { get { return clock.Elapsed.TotalSeconds; } }
@@ -136,10 +148,32 @@ namespace OriCoop.Net
         {
             get
             {
-                if (remoteId == 0 || disposed || steam == null) return string.Empty;
-                try { return steam.FriendName(remoteId) ?? string.Empty; }
+                if (RemoteSteamId == 0 || disposed || steam == null) return string.Empty;
+                try { return steam.FriendName(RemoteSteamId) ?? string.Empty; }
                 catch (Exception) { return string.Empty; }
             }
+        }
+
+        // Lobby metadata is written by the owner. Guests can look up each other's names without a direct P2P link.
+        internal void SetSeatMember(int seat, EndPoint endpoint)
+        {
+            if (!hosting || !ready) return;
+            GuestRoute guest = endpoint as GuestRoute;
+            try { steam.SetLobbyData(lobbyId, "oricoop.seat" + seat, guest == null ? "" : guest.Id.ToString(CultureInfo.InvariantCulture)); }
+            catch (Exception e) { Log("could not publish the Steam member for seat " + seat + ": " + e.Message); }
+        }
+
+        internal string SeatName(int seat)
+        {
+            if (!ready) return "";
+            try
+            {
+                ulong id;
+                if (seat == 1) id = steam.GetLobbyOwner(lobbyId);
+                else if (!ulong.TryParse(steam.GetLobbyData(lobbyId, "oricoop.seat" + seat), out id)) return "";
+                return id == localId ? LocalPersonaName : FriendName(id);
+            }
+            catch (Exception) { return ""; }
         }
 
         // T-253: the furthest step of the Steam side of the handshake, i.e. where it stopped when the game handshake
@@ -177,7 +211,7 @@ namespace OriCoop.Net
         {
             get
             {
-                return (hosting ? "host" : "guest") + " lobby " + lobbyId + ", peer " + remoteId + ", channel " + Channel +
+                return (hosting ? "host" : "guest") + " lobby " + lobbyId + ", peer " + RemoteSteamId + ", channel " + Channel +
                     ": " + HandshakeStep + " (session requests " + requestsSeen + " seen, " + requestsHeld + " held, " +
                     requestsAccepted + " accepted, " + requestsRefused + " refused; packets " + packetsSent + " sent, " +
                     sendsRefused + " refused by Steam, " + packetsReceived + " received, " + packetsDropped + " dropped from non-members)";
@@ -317,8 +351,8 @@ namespace OriCoop.Net
                 RetirePending();
                 pendingOperation = transport;
                 transport.operationStarted = transport.Now;
-                Log((hosting ? "CreateLobby (friends-only, 2 players)" : "JoinLobby " + lobby) + " as " + transport.localId);
-                if (hosting) transport.steam.CreateLobby(2);
+                Log((hosting ? "CreateLobby (friends-only, 4 players)" : "JoinLobby " + lobby) + " as " + transport.localId);
+                if (hosting) transport.steam.CreateLobby(4);
                 else transport.steam.JoinLobby(lobby);
             }
             catch (Exception e)
@@ -438,6 +472,7 @@ namespace OriCoop.Net
         {
             SteamTransport transport = active;
             if (transport == null || transport.lobbyId == 0 || lobby != transport.lobbyId) return;
+            transport.nextMemberCheck = 0;
             Log("lobby member " + FriendName(who) + " (" + who + ") " + change);
         }
 
@@ -530,25 +565,26 @@ namespace OriCoop.Net
         {
             SteamTransport transport = active;
             Log("P2P session with " + who + " failed: " + reason);
-            if (transport == null || who == 0 || (who != transport.remoteId && who != transport.sessionId)) return;
-            // A host keeps its lobby (and the friend's invite stays valid); only the guest gives up.
-            if (transport.hosting) transport.DropPeer("P2P session failed: " + reason);
-            else transport.Fail("Steam P2P session failed: " + reason);
+            if (transport == null || who == 0) return;
+            if (transport.hosting) transport.DropGuest(transport.FindGuest(who), "P2P session failed: " + reason);
+            else if (who == transport.remoteId) transport.Fail("Steam P2P session failed: " + reason);
         }
 
-        // Host only: forget the current guest but keep the lobby open, so the friend can rejoin (or another
-        // friend can be invited) without a new lobby ID. NetPeer notices the silence and listens again.
-        private void DropPeer(string why)
+        private GuestRoute FindGuest(ulong id)
         {
-            ulong peer = remoteId != 0 ? remoteId : sessionId;
-            Log("guest " + peer + " dropped (" + why + "); lobby " + lobbyId + " stays open");
-            CloseSession(peer);
-            remoteId = 0;
-            sessionId = 0;
-            receivedPeer = false;
+            for (int i = 0; i < guests.Count; i++) if (guests[i].Id == id) return guests[i];
+            return null;
+        }
+
+        private void DropGuest(GuestRoute guest, string why)
+        {
+            if (guest == null || !guests.Remove(guest)) return;
+            Log("guest " + guest.Id + " dropped (" + why + "); lobby " + lobbyId + " stays open");
+            CloseSession(guest.Id);
+            if (GuestLeft != null) GuestLeft(guest, why);
+            if (guests.Count != 0) return;
             sentLogged = false;
             sendRefusedLogged = false;
-            peerStarted = -1.0;
             requestsSeen = requestsHeld = requestsAccepted = requestsRefused = 0;
             packetsSent = sendsRefused = packetsReceived = packetsDropped = 0;
         }
@@ -556,18 +592,17 @@ namespace OriCoop.Net
         private bool IsAllowedPeer(ulong id)
         {
             if (id == 0 || id == localId || lobbyId == 0) return false;
-            if (remoteId != 0 && remoteId != id) return false;
+            if (!hosting && remoteId != id) return false;
             int count = steam.GetNumLobbyMembers(lobbyId);
             for (int i = 0; i < count; i++)
                 if (steam.GetLobbyMemberByIndex(lobbyId, i) == id) return true;
             return false;
         }
 
-        // A user that may still turn into this transport's peer once Steam lists it in the lobby: not ourselves,
-        // and not while another peer is set (a guest's only peer is the lobby owner; a host has one guest at a time).
+        // Membership may lag the request for any of the three guests. A guest only ever talks to the owner.
         private bool CouldBecomePeer(ulong id)
         {
-            return id != 0 && id != localId && lobbyId != 0 && (remoteId == 0 || remoteId == id);
+            return id != 0 && id != localId && lobbyId != 0 && (hosting ? guests.Count < 3 : remoteId == id);
         }
 
         public void Update()
@@ -588,11 +623,18 @@ namespace OriCoop.Net
                     if (Now - operationStarted >= TimeoutSeconds) Fail("Timed out waiting for the Steam lobby");
                     return;
                 }
-                ulong peer = remoteId != 0 ? remoteId : sessionId;
-                if (peer != 0 && hosting && !IsAllowedPeer(peer))
-                    DropPeer("the guest left the lobby");
-                else if (peer != 0 && (!IsAllowedPeer(peer) ||
-                    (!hosting && steam.GetLobbyOwner(lobbyId) != remoteId)))
+                if (hosting && Now >= nextMemberCheck)
+                {
+                    nextMemberCheck = Now + 0.1;
+                    for (int i = guests.Count - 1; i >= 0; i--)
+                    {
+                        GuestRoute guest = guests[i];
+                        if (!IsAllowedPeer(guest.Id)) DropGuest(guest, "the guest left the lobby");
+                        else if (!guest.Received && Now - guest.Started >= TimeoutSeconds)
+                            DropGuest(guest, "no packet from the guest for " + TimeoutSeconds + " s");
+                    }
+                }
+                else if (!hosting && (!IsAllowedPeer(remoteId) || steam.GetLobbyOwner(lobbyId) != remoteId))
                 {
                     Fail("The Steam peer left the lobby or its owner changed");
                     return;
@@ -634,21 +676,25 @@ namespace OriCoop.Net
                     if (hosting && MutateNoAccept && SteamApi.Fake) { sessionRequests.RemoveAt(i); continue; }
                     if (!steam.AcceptP2PSession(request))
                     {
-                        Fail("Steam could not accept the peer session with " + request);
-                        return;
+                        string failure = "Steam could not accept the peer session with " + request;
+                        if (!hosting) { Fail(failure); return; }
+                        Log(failure);
+                        CloseSession(request);
+                        sessionRequests.RemoveAt(i);
+                        continue;
                     }
                     requestsAccepted++;
                     Log("P2P session accepted with " + FriendName(request) + " (" + request + ")" +
                         (entry.Held ? " after " + (Now - entry.Since).ToString("0.0", CultureInfo.InvariantCulture) + " s waiting for the lobby member list" : ""));
-                    sessionId = request;
-                    if (peerStarted < 0) peerStarted = Now;
+                    if (hosting)
+                    {
+                        if (FindGuest(request) == null) guests.Add(new GuestRoute(request, Now));
+                    }
+                    else if (peerStarted < 0) peerStarted = Now;
                     sessionRequests.RemoveAt(i);
                 }
-                if (!receivedPeer && peerStarted >= 0 && Now - peerStarted >= TimeoutSeconds)
-                {
-                    if (hosting) DropPeer("no packet from the guest for " + TimeoutSeconds + " s");
-                    else Fail("Timed out connecting to the Steam peer");
-                }
+                if (!hosting && !receivedPeer && peerStarted >= 0 && Now - peerStarted >= TimeoutSeconds)
+                    Fail("Timed out connecting to the Steam peer");
             }
             catch (Exception e) { Fail("Steam transport update failed: " + e.Message); }
             finally { updating = false; }
@@ -678,23 +724,28 @@ namespace OriCoop.Net
                 throw new ArgumentOutOfRangeException("length");
             if (length > MaxDatagram) throw new ArgumentOutOfRangeException("length", "Steam datagrams must be at most 1200 bytes");
             Update();
-            if (!ready || remoteId == 0 || length == 0)
+            GuestRoute route = to as GuestRoute;
+            ulong target = hosting ? (route != null && guests.Contains(route) ? route.Id : 0) : remoteId;
+            if (!ready || target == 0 || length == 0)
             {
-                if (skippedLogged++ < 3) Log("send skipped (" + length + " bytes): ready " + ready + ", remote " + remoteId);
+                if (skippedLogged++ < 3) Log("send skipped (" + length + " bytes): ready " + ready + ", remote " + target);
                 return;
             }
-            if (to == null || !VirtualRemote.Equals(to)) throw new ArgumentException("Unknown Steam endpoint", "to");
+            if (!hosting && !VirtualRemote.Equals(to)) throw new ArgumentException("Unknown Steam endpoint", "to");
             try
             {
-                sessionId = remoteId;
-                if (peerStarted < 0) peerStarted = Now;
-                bool sent = steam.SendP2PPacket(remoteId, data, offset, length, Channel);
+                if (!hosting && peerStarted < 0) peerStarted = Now;
+                bool sent = steam.SendP2PPacket(target, data, offset, length, Channel);
                 packetsSent++;
                 if (!sent) sendsRefused++;
-                if (!sentLogged) { sentLogged = true; sendRefusedLogged = !sent; Log("first packet sent to " + remoteId + " on channel " + Channel + " (" + length + " bytes, accepted by Steam: " + sent + ")"); }
-                else if (!sent && !sendRefusedLogged) { sendRefusedLogged = true; Log("Steam refused a packet to " + remoteId + " on channel " + Channel + " (" + length + " bytes; " + sendsRefused + " of " + packetsSent + " sends refused)"); }
+                if (!sentLogged) { sentLogged = true; sendRefusedLogged = !sent; Log("first packet sent to " + target + " on channel " + Channel + " (" + length + " bytes, accepted by Steam: " + sent + ")"); }
+                else if (!sent && !sendRefusedLogged) { sendRefusedLogged = true; Log("Steam refused a packet to " + target + " on channel " + Channel + " (" + length + " bytes; " + sendsRefused + " of " + packetsSent + " sends refused)"); }
             }
-            catch (Exception e) { Fail("Steam packet send failed: " + e.Message); }
+            catch (Exception e)
+            {
+                if (hosting) DropGuest(route, "Steam packet send failed: " + e.Message);
+                else Fail("Steam packet send failed: " + e.Message);
+            }
         }
 
         public int Receive(byte[] buffer, out EndPoint from)
@@ -725,13 +776,14 @@ namespace OriCoop.Net
                         continue;
                     }
                     if (size == 0 || size > MaxDatagram || size > buffer.Length) continue;
-                    remoteId = sender;
-                    sessionId = remoteId;
+                    GuestRoute route = hosting ? FindGuest(sender) : null;
+                    if (hosting && route == null) continue;
                     packetsReceived++;
-                    if (!receivedPeer) Log("first packet received from " + RemoteName + " (" + remoteId + ") on channel " + Channel + " (" + size + " bytes)");
-                    receivedPeer = true;
+                    if (hosting ? !route.Received : !receivedPeer)
+                        Log("first packet received from " + FriendName(sender) + " (" + sender + ") on channel " + Channel + " (" + size + " bytes)");
+                    if (hosting) route.Received = true; else receivedPeer = true;
                     Buffer.BlockCopy(scratch, 0, buffer, 0, (int)size);
-                    from = VirtualRemote;
+                    from = hosting ? route : VirtualRemote;
                     return (int)size;
                 }
             }
@@ -756,8 +808,8 @@ namespace OriCoop.Net
 
         private void Cleanup()
         {
-            CloseSession(sessionId != 0 ? sessionId : remoteId);
-            sessionId = 0;
+            if (hosting) { foreach (GuestRoute guest in guests) CloseSession(guest.Id); guests.Clear(); }
+            else CloseSession(remoteId);
             sessionRequests.Clear();
             if (steam == null || lobbyId == 0 || leftLobby) return;
             Log("leaving lobby " + lobbyId + (error != null ? " (" + error + ")" : disposed ? " (closed)" : ""));

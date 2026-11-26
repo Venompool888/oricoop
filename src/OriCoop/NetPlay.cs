@@ -336,6 +336,7 @@ namespace OriCoop
             s_mode = cfg.Bind("Net", "Mode", "off", "Online co-op: off, host (wait for a friend) or join (connect to Address).");
             s_address = cfg.Bind("Net", "Address", "127.0.0.1", "Host's IP address (for join).");
             s_port = cfg.Bind("Net", "Port", 47011, "UDP port. The host must let it through its firewall/router (or use Tailscale/ZeroTier).");
+            s_lanKey = cfg.Bind("Net", "LanPairingKey", "", "Optional direct LAN authentication. Use the same 32 random hexadecimal digits on each device. Empty uses ordinary LAN mode.");
             s_statsKey = cfg.Bind("Net", "StatsKey", KeyCode.F6, "Shows/hides the network status line.");
             s_snapDist = cfg.Bind("Net", "SnapDistance", 4f, "Puppet farther than this from the owner's position jumps there at once; closer, it is pulled smoothly.");
             s_blend = cfg.Bind("Net", "CorrectionBlend", 0.2f, "Share of the position error removed per fixed step (0..1).");
@@ -393,7 +394,9 @@ namespace OriCoop
             transport = SessionMachine.NormalizeTransport(transport);
             // Steam guest: a join started by an accepted invite (SteamInviteHook) may already be running when the
             // player opens Online -> Steam -> Join. Restarting it would leave the lobby and lose the invite.
-            if (!host && transport == "steam" && SteamJoinHealthy)
+            ulong chosenLobby;
+            ulong.TryParse(target, out chosenLobby);
+            if (!host && transport == "steam" && SteamJoinHealthy && (chosenLobby == 0 || chosenLobby == s_steamLobby))
             {
                 Plugin.Log.LogInfo("online co-op: Steam join already in progress (lobby " + s_steamLobby + "); keeping it");
                 return;
@@ -403,7 +406,7 @@ namespace OriCoop
             ulong invite;
             if (!host && transport == "steam" && ulong.TryParse(target, out invite) && invite != 0) rejoin = invite;
             End("restarting online play");
-            s_steamLobby = rejoin;
+            s_steamLobby = !host && transport == "steam" && chosenLobby != 0 ? chosenLobby : rejoin;
             if (rejoin != 0) Plugin.Log.LogInfo("online co-op: retrying the Steam lobby " + rejoin);
             s_session.ActiveTransport = transport;
             s_factorySession = TransportFactory != null && transport != "direct" && transport != "steam";
@@ -459,7 +462,7 @@ namespace OriCoop
                 finally { EndingByChoice = false; }
             }
             Close();
-            s_reListen = false; s_modeNow = "off"; Problem = "";
+            s_modeNow = "off"; Problem = "";
             s_session.ActiveTransport = null;
             if (Stopped != null) { try { Stopped(); } catch (Exception e) { Plugin.Log.LogWarning("online co-op: stop hook: " + e.Message); } }
             HostOverride = false;      // a role from the ended session (server-mode arbiter) never carries into the next one
@@ -478,15 +481,14 @@ namespace OriCoop
         public const float SilenceHintMs = 1000f;
         public static bool SignalLost { get { return s_session.SignalLost; } }
         public static string SteamPartnerName { get { return s_steam != null ? s_steam.RemoteName : ""; } }
+        public static string SteamNameForSeat(int seat) { return s_steam == null ? "" : s_steam.SeatName(DeviceSeat(seat)); }
         public static bool SteamReady { get { return s_steam != null && s_steam.Ready; } }
-        static float s_overlayToastAt;
+        internal static ulong ActiveSteamLobby { get { return s_steam == null ? 0 : s_steam.LobbyId; } }
         public static void OpenSteamInvite()
         {
-            if (s_steam != null && s_steam.Ready && !s_steam.OpenInviteOverlay() && Time.realtimeSinceStartup >= s_overlayToastAt)
-            {
-                s_overlayToastAt = Time.realtimeSinceStartup + 5f;
-                NetHud.Toast(L10n.T("steam.overlay.off", true), L10n.T("steam.overlay.off", false));
-            }
+            ISteamApi api = SteamApi.Current;
+            if (IsHost && s_steam != null && s_steam.Ready && api != null && (!api.OverlayEnabled || !s_steam.OpenInviteOverlay()))
+                OnlineRoomScreen.OpenSteamFriends();
         }
 
         // This PC's LAN IPv4 addresses, for the direct-host page ("tell your friend this address").
@@ -512,7 +514,13 @@ namespace OriCoop
 
         static void OpenSteam()
         {
-            if (IsHost) { s_steam = SteamTransport.Host(); s_transport = s_steam; NewPeer(); Peer.Listen(); Plugin.Log.LogInfo("net: Steam: creating a friends-only lobby"); }
+            if (IsHost)
+            {
+                s_steam = SteamTransport.Host();
+                StartHub(new PeerHub(s_steam));
+                s_steam.GuestLeft += s_hub.Drop;
+                Plugin.Log.LogInfo("net: Steam: creating a friends-only lobby");
+            }
             else
             {
                 // A new invite wins; otherwise rejoin the lobby of this session (after a dropped connection or
@@ -552,7 +560,7 @@ namespace OriCoop
             if (s_steam == null)
             {
                 bool haveTarget = IsHost || s_steamLobby != 0 || SteamTransport.PendingInviteLobby != 0;
-                if (haveTarget && Time.realtimeSinceStartup >= s_retryAt) OpenSteam();
+                if (haveTarget && Time.realtimeSinceStartup >= s_retryAt) Open();
                 else if (!haveTarget && !s_steamWaitLogged)
                 {
                     s_steamWaitLogged = true;
@@ -579,6 +587,7 @@ namespace OriCoop
         }
 
         static ConfigEntry<string> s_transportKind;
+        static ConfigEntry<string> s_lanKey;
         static bool s_pendingConnect;
         static string Env(string name, string fallback) { string e = Environment.GetEnvironmentVariable(name); return string.IsNullOrEmpty(e) ? fallback : e; }
         public static string RoomCode { get { return RoomCodeOverride ?? ""; } }
@@ -601,6 +610,14 @@ namespace OriCoop
             ApplySimFromEnv(Peer.Sim);
             Peer.Connected += OnConnected;
             Peer.Disconnected += OnDisconnected;
+        }
+
+        static void StartHub(PeerHub hub)
+        {
+            s_hub = hub;
+            hub.PeerCreated += p => ApplySimFromEnv(p.Sim);
+            hub.Connected += OnHubConnected;
+            hub.Disconnected += OnHubDisconnected;
         }
 
         static int Port { get { int p; return int.TryParse(Environment.GetEnvironmentVariable("ORICOOP_NET_PORT"), out p) ? p : s_rtPort > 0 ? s_rtPort : s_port.Value; } }
@@ -644,15 +661,12 @@ namespace OriCoop
                 }
                 if (IsHost)
                 {
-                    s_hub = new PeerHub(Port);
-                    s_hub.PeerCreated += p => ApplySimFromEnv(p.Sim);
-                    s_hub.Connected += OnHubConnected;
-                    s_hub.Disconnected += OnHubDisconnected;
+                    StartHub(new PeerHub(PairedLanTransport.Open(Port, s_lanKey.Value)));
                     Plugin.Log.LogInfo("net: hosting on UDP " + s_hub.LocalPort);
                 }
                 else
                 {
-                    s_transport = new UdpTransport(0);
+                    s_transport = PairedLanTransport.Open(0, s_lanKey.Value);
                     NewPeer();
                     IPAddress ip;
                     if (!IPAddress.TryParse(Address, out ip))
@@ -700,7 +714,7 @@ namespace OriCoop
             if (s_hub != null) { s_hub.Dispose(); s_hub = null; }
             if (s_transport != null) { try { s_transport.Dispose(); } catch { } }
             s_transport = null; s_peer = null; s_steam = null; s_pendingConnect = false; s_steamReadyLogged = false;
-            s_factorySession = false; s_reListen = false;
+            s_factorySession = false;
             ResetSession();
         }
 
@@ -770,6 +784,7 @@ namespace OriCoop
             if (seat > Players.MaxSeats) { peer.Disconnect("room full"); return; }
             s_seats.Add(seat);
             s_remotes.Add(seat, new RemoteState { Seat = seat, Peer = peer });
+            if (s_steam != null) s_steam.SetSeatMember(seat, peer.Remote);
             Problem = "";
             SendTo(seat, MsgSeat, true, w => w.Write((byte)seat));
             SendTo(seat, MsgHello, true, WriteHello);
@@ -792,6 +807,7 @@ namespace OriCoop
             foreach (RemoteState remote in s_remotes.Values) if (remote.Peer == peer) { leaving = remote; break; }
             if (leaving == null) return;
             int seat = leaving.Seat;
+            if (s_steam != null) s_steam.SetSeatMember(seat, null);
             Plugin.Log.LogInfo("net: P" + seat + " disconnected from " + peer.Remote + ": " + reason);
             foreach (int owned in s_seats.SeatsOf(seat))
             {
@@ -850,16 +866,6 @@ namespace OriCoop
             // T-030: a guest tries again after 1 s (was 3 s). Each connect attempt itself keeps asking for up to 10 s, so this
             // only shortens the gap after a timeout; the host listens again after 0.5 s.
             s_retryAt = Time.realtimeSinceStartup + (IsHost ? 0.5f : 1f);
-            // A Steam host keeps its lobby (same lobby for the friend): new peer on the same Steam transport.
-            if (IsHost && s_steam != null && s_steam.Ready) { s_reListen = true; }
-        }
-        static bool s_reListen;
-        static void ReListenIfNeeded()
-        {
-            if (!s_reListen) return;
-            s_reListen = false;
-            NewPeer(); Peer.Listen();
-            Plugin.Log.LogInfo("net: Steam lobby waiting for a new guest");
         }
 
         static void RemoveRemote(string why)
@@ -890,7 +896,6 @@ namespace OriCoop
             SubsystemGuard.Run("SteamInviteHook.Tick", s_inviteTick);
             if (!Enabled) return;
             if (Input.GetKeyDown(s_statsKey.Value)) s_showStats = !s_showStats;
-            ReListenIfNeeded();
             if (UsesSteam && !PumpSteam()) return;
             if (!HasHub && (Peer == null || Peer.State == PeerState.Disconnected || (Peer.State == PeerState.Idle && !s_pendingConnect)))
             {

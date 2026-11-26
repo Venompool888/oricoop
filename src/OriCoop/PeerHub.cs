@@ -6,12 +6,13 @@ namespace OriCoop.Net
 {
     public sealed class PeerHub : IDisposable
     {
-        readonly UdpTransport socket;
+        readonly IDatagramTransport socket;
         readonly byte[] buffer = new byte[65536];
         readonly Dictionary<EndPoint, RoutedTransport> routes = new Dictionary<EndPoint, RoutedTransport>();
         readonly Dictionary<EndPoint, NetPeer> peers = new Dictionary<EndPoint, NetPeer>();
 
-        public PeerHub(int port) { socket = new UdpTransport(port); }
+        public PeerHub(int port) : this(new UdpTransport(port)) { }
+        public PeerHub(IDatagramTransport transport) { socket = transport; }
         public int LocalPort { get { return socket.LocalPort; } }
         public event Action<NetPeer> PeerCreated, Connected;
         public event Action<NetPeer, string> Disconnected;
@@ -67,6 +68,12 @@ namespace OriCoop.Net
         }
 
         public void Flush() { foreach (NetPeer peer in peers.Values) peer.Flush(); }
+        // A lobby departure or a P2P failure ends only this route. Ordinary UDP routes time out in Poll.
+        public void Drop(EndPoint endpoint, string reason)
+        {
+            NetPeer peer;
+            if (peers.TryGetValue(endpoint, out peer)) peer.Disconnect(reason);
+        }
         public void Disconnect(string reason, Action<NetPeer> beforeDisconnect = null)
         {
             foreach (NetPeer peer in peers.Values)

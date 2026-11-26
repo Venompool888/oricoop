@@ -24,6 +24,7 @@
 #   copy takes to catch up from there).
 param([ValidateSet('direct', 'cserver', 'steam')][string]$Transport = 'direct', [int]$TimeoutSec = 300, [switch]$Force, [switch]$FullSlots, [int]$Width = 800, [int]$Height = 450,
     [ValidateSet('', 'skip', 'late', 'hostquit', 'deep', 'probe')][string]$Prologue = '', [int]$FastForward = 0, [switch]$GuestSlot, [int]$ProbeJoin = 0,
+    [ValidateSet('invite','browse','fallback')][string]$SteamEntry = 'invite',
     [ValidateSet('', 'drop-create')][string]$SteamFault = '', [switch]$RoomExit, [switch]$WaitCancel, [switch]$LobbyRecovery)
 $ErrorActionPreference = 'Stop'
 if ($RoomExit -and ($Transport -eq 'cserver' -or $WaitCancel -or $LobbyRecovery -or $Prologue -or $FullSlots -or $SteamFault)) {
@@ -87,7 +88,9 @@ function Client-Spec([string]$role, [string]$appData, [string]$resultPath) {
         $vars['ORICOOP_NET_TRANSPORT'] = 'steam'
         $vars['ORICOOP_FAKE_STEAM_DIR'] = $fakeDir
         $vars['ORICOOP_FAKE_STEAM_ID'] = if ($role -eq 'host') { '1001' } else { '1002' }
-        $vars['ORICOOP_FAKE_STEAM_AUTOINVITE'] = if ($role -eq 'join') { '1' } else { '0' }
+        $vars['ORICOOP_TITLEJOIN_STEAMENTRY'] = $SteamEntry
+        if ($role -eq 'host' -and $SteamEntry -eq 'fallback') { $vars['ORICOOP_FAKE_STEAM_FAULT'] = 'no-overlay' }
+        $vars['ORICOOP_FAKE_STEAM_AUTOINVITE'] = if ($role -eq 'join' -and $SteamEntry -ne 'browse') { '1' } else { '0' }
         if ($SteamFault) { $vars['ORICOOP_TITLEJOIN_STEAMFAULT'] = $SteamFault; if ($role -eq 'host') { $vars['ORICOOP_FAKE_STEAM_FAULT'] = $SteamFault } }
     }
     if ($RoomExit) { $vars['ORICOOP_TITLEJOIN_ROOM_EXIT'] = '1' }

@@ -23,6 +23,7 @@ namespace OriCoop
         static readonly Dictionary<int, double> s_reported = new Dictionary<int, double>();
         static bool s_registered, s_hadPartner, s_joined;
         static int s_left;
+        static readonly HashSet<long> s_requests = new HashSet<long>();
         static float s_nextSend, s_reportAt = -1f, s_nextBurst;
 
         public static void Tick()
@@ -36,13 +37,14 @@ namespace OriCoop
             }
             float now = Time.realtimeSinceStartup;
             bool partner = NetPlay.Connected && NetPlay.RemoteHello;
-            if (partner && (!s_hadPartner || s_joined)) { s_table.Clear(); s_reported.Clear(); s_reportAt = -1f; StartBurst(now); }
+            if (partner && (!s_hadPartner || s_joined)) { s_reported.Clear(); s_reportAt = -1f; StartBurst(now); }
             s_hadPartner = partner; s_joined = false;
             if (!partner) return;
             if (s_left > 0 && now >= s_nextSend)
             {
                 s_left--; s_nextSend = now + Interval;
                 long t0 = DateTime.UtcNow.Ticks;
+                s_requests.Add(t0);
                 NetPlay.Send(MsgClock, false, delegate(BinaryWriter w) { w.Write((byte)1); w.Write(t0); });
                 if (s_left == 0) s_reportAt = now + Settle;
             }
@@ -50,7 +52,12 @@ namespace OriCoop
             if (s_left == 0 && s_reportAt < 0f && now >= s_nextBurst) StartBurst(now);
         }
 
-        static void StartBurst(float now) { s_left = Burst; s_nextSend = now; s_nextBurst = now + Repeat; }
+        static void StartBurst(float now)
+        {
+            s_table.Clear();
+            s_requests.Clear();
+            s_left = Burst; s_nextSend = now; s_nextBurst = now + Repeat;
+        }
 
         static void OnMessage(BinaryReader r)
         {
@@ -70,7 +77,7 @@ namespace OriCoop
             {
                 int requester = r.ReadByte();
                 long t0 = r.ReadInt64(), t1 = r.ReadInt64(), t2 = r.ReadInt64();
-                if (requester != Players.LocalSeat) return;
+                if (requester != Players.LocalSeat || !s_requests.Contains(t0)) return;
                 s_table.Add(sender, ClockSync.Compute(t0, t1, t2, received));
             }
         }

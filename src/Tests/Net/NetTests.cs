@@ -35,9 +35,30 @@ static partial class NetTests
         Check(host.Remote.Equals(guestTransport.Endpoint) && guest.Remote.Equals(hostTransport.Endpoint), "wrong peer endpoint");
     }
 
+    static void PairedLan()
+    {
+        byte[] key = new byte[16];
+        new Random(7).NextBytes(key);
+        FakeClock clock = new FakeClock();
+        FakeNetwork network = new FakeNetwork(clock);
+        FakeTransport receiver = network.Open(10001);
+        using (PairedLanTransport host = new PairedLanTransport(receiver, key))
+        using (PairedLanTransport guest = new PairedLanTransport(network.Open(10002), key))
+        using (PairedLanTransport otherRoom = new PairedLanTransport(network.Open(10003), new byte[16]))
+        {
+            byte[] data = { 7, 8, 9 };
+            byte[] buffer = new byte[16];
+            EndPoint from;
+            otherRoom.SendTo(data, 0, 3, receiver.Endpoint);
+            guest.SendTo(data, 1, 2, receiver.Endpoint);
+            Check(host.Receive(buffer, out from) == 2 && buffer[0] == 8 && buffer[1] == 9, "paired LAN failed to deliver the matching room's data");
+        }
+    }
+
     static int Main()
     {
         Run("handshake connects both peers", Handshake);
+        Run("paired LAN delivers only matching room traffic", PairedLan);
         Run("peer handshake and data wire bytes", PeerWireBytes);
         Run("connection request is retried after loss", ConnectRetry);
         Run("protocol version mismatch is rejected", ProtocolMismatch);

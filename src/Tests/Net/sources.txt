@@ -1,3 +1,4 @@
 OriCoop\Net\Transport.cs
 OriCoop\Net\NetPeer.cs
+OriCoop\Net\PairedLanTransport.cs
 OriCoop\Net\RoutedTransport.cs
