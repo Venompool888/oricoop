@@ -224,6 +224,37 @@ static class RulesTests
             Near(ReviveLogic.DisplayProgress(0.99f, 0.99f, rate, 0.1f, 0f), 1f);
             Check(ReviveLogic.DisplayProgress(0.2f, 0.6f, rate, 0.016f, 0f) >= 0.6f, "ring lagged behind a jump");
         });
+        // T-215 #5 (#301): two rescuers on different PCs hold at one skull at the same time.
+        Run("simultaneous rescuers: the higher seat yields and gets its drained health back", delegate {
+            DownedRoster<DownedState> r = Roster(); DownedState d = Down(1); r.TryAdd(1, d);
+            ReviveLogic.BeginHold(d, 3); ReviveLogic.SetDrainRate(d, 10f, 1.5f);
+            float drained = 0f;
+            for (int i = 0; i < 6; i++) { float x = ReviveLogic.Drain(d, 10f - drained, 0.05f); drained += x; ReviveLogic.Advance(d, 0.05f, x, 1.5f); }
+            Check(ReviveLogic.Outranks(2, 3), "seat 2 does not outrank seat 3");
+            Check(!ReviveLogic.Outranks(3, 2), "seat 3 outranks seat 2");
+            float refund = ReviveLogic.Yield(d, 2);
+            Near(refund, drained);
+            Check(!d.Holding && d.Rescuer == 2, "yielded rescuer still holding");
+            r.MergeProgress(1, 2, 2, 3, 0.15f, 0.5f);
+            Near(d.Progress, 0.15f); Near(d.Given, 0.5f);
+        });
+        Run("simultaneous rescuers: the yielded seat stays out while the rival's progress comes", delegate {
+            Check(ReviveLogic.StandAside(false, 3, 2, true, 0.1f), "yielded seat started again beside the rival");
+            Check(!ReviveLogic.StandAside(false, 3, 2, true, ReviveLogic.RivalFresh), "rival gone, still standing aside");
+            Check(!ReviveLogic.StandAside(true, 2, 2, false, 0f), "the keeper stood aside from itself");
+            Check(!ReviveLogic.StandAside(true, 2, 3, true, 0.1f), "the lower seat stood aside for a higher one");
+            Check(ReviveLogic.StandAside(true, 3, 2, true, 0.1f), "the higher seat kept draining beside a lower one");
+        });
+        Run("simultaneous rescuers: a newcomer does not start beside a teammate already reviving", delegate {
+            Check(ReviveLogic.StandAside(false, 2, 3, true, 0.05f), "lower seat took over a running revive");
+            Check(!ReviveLogic.StandAside(false, 2, 3, false, 0.05f), "a local rescuer blocked another local seat");
+            Check(!ReviveLogic.StandAside(false, 2, 0, true, 0.05f), "no rescuer yet, still standing aside");
+        });
+        Run("a yield with nothing drained gives nothing back", delegate {
+            DownedState d = Down(1); ReviveLogic.BeginHold(d, 3);
+            Near(ReviveLogic.Yield(d, 2), 0f);
+            Near(d.LocalGiven, 0f);
+        });
         Run("multi progress requires active local hold", delegate {
             DownedState d = Down(2); d.Progress = 0.5f; d.Rescuer = 1;
             Check(!ReviveLogic.ShouldSend(d, 1, true, 0f), "sent without holding");

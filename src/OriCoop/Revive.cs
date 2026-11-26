@@ -428,6 +428,7 @@ namespace OriCoop
             if (d == null) return;
             bool multi = MultiRevive;
             SeinCharacter saver = multi ? Rescuer(d, true) : Partner(d.Sein);
+            bool wasHolding = d.Holding && Players.IsLocal(d.Rescuer);
             d.Holding = false;
             bool saverInMenu = SessionRules.NoPause ? SessionRules.ScreenInputLocked(saver)
                 : Host.CoopMenuOpen || (UI.MainMenuVisible && (saver == Host.P1 || !Services.Net.Enabled));
@@ -436,6 +437,9 @@ namespace OriCoop
             bool holding = multi || SaverNear(saver, d) && SaverHolding(saver);
             if (!holding) { ReviveLogic.Release(d); return; }
             if (!ReviveLogic.CanSimulateHold(Services.Net.Enabled, Players.IsLocal(PlayerOf(saver)))) return;
+            // T-215 #5: a teammate on another PC is already reviving this skull: do not drain a second rescuer.
+            if (multi && Services.Net.Enabled && ReviveLogic.StandAside(wasHolding, PlayerOf(saver), d.Rescuer,
+                    !Players.IsLocal(d.Rescuer), SinceProgress(d.Player))) return;
             if (multi && d.Rescuer != PlayerOf(saver))
             {
                 ReviveLogic.Release(d);

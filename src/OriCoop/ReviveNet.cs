@@ -425,8 +425,27 @@ namespace OriCoop
         {
             ReviveWire.Progress message = ReviveWire.ReadProgress(r);
             if (NetPlay.DeviceSeat(message.Rescuer) != Services.Net.Sender) return;
+            YieldToRival(message.Seat, message.Rescuer, message.Value);
             s_roster.MergeProgress(message.Seat, message.Rescuer, message.Rescuer, Host.LocalSeat, message.Value, message.Given);
             if (message.Seat >= 1 && message.Seat <= ReviveLogic.MaxSeats) s_progressAt[message.Seat] = Time.unscaledTime;
+        }
+
+        // T-215 #5 (#301): this PC's rescuer and a lower seat on another PC hold at the same skull. The lower seat keeps
+        // the revive; this rescuer stops and gets back the health its hold had drained.
+        internal static int RivalYields;
+        static void YieldToRival(int seat, int rival, float progress)
+        {
+            if (seat < 1 || seat > ReviveLogic.MaxSeats || progress <= 0f) return;
+            Downed d = s_down[seat];
+            if (d == null || !d.Holding || !Players.IsLocal(d.Rescuer) || Players.IsLocal(rival) || !ReviveLogic.Outranks(rival, d.Rescuer)) return;
+            int payer = d.Rescuer;
+            SeinCharacter saver = SeinAt(payer);
+            float refund = ReviveLogic.Yield(d, rival);
+            if (saver != null && saver.Mortality != null && saver.Mortality.Health != null && refund > 0f)
+                saver.Mortality.Health.SetAmount(Mathf.Min(saver.Mortality.Health.MaxHealth, saver.Mortality.Health.Amount + refund));
+            RivalYields++;
+            Services.Log.Info("revive of P" + seat + ": P" + payer + " yields to P" + rival + " holding at the same time, "
+                + refund.ToString("F1") + " health back");
         }
 
         // T-215 (#301): when this PC last heard a teammate's revive progress for a downed seat (ReviveHud smooths the ring).
