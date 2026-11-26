@@ -453,13 +453,15 @@ namespace OriCoop
                 }
                 h.Check(playable, "ESC3 " + Role + ": control returned in the swamp after the ending dialogue (saw text " + sawText
                     + ", suspended " + (Own == null || Own.IsSuspended) + ", canMove " + (Own != null && Own.Controller.CanMove) + ", game lock " + GameController.Instance.InputLocked + ", gameplay " + (NetPlay.NotInGameplayReason() ?? "yes") + ", scene " + (Core.Scenes.Manager.CurrentScene == null ? "?" : Core.Scenes.Manager.CurrentScene.Scene) + ", dialogue presses " + presses + ", confirmed objective map " + confirmedMap + ", takeover mask " + StorySync.TakeoverMaskPublic() + ", letterbox " + Letterbox.ShowLetterboxes + ")");
-                if (host)
-                {
-                    yield return WaitFor(() => StorySync.CleanupsAfterSceneTrip > cleanupsBefore, 20f);
-                    GameplayCamera camera = UI.Cameras.Current;
-                    h.Check(StorySync.CleanupsAfterSceneTrip > cleanupsBefore && camera != null && camera.Target != null,
-                        "ESC3 host: the mirror ended across a native scene trip and the destination camera still has its live target");
-                }
+                yield return WaitFor(() => !StorySync.StoryActive || StorySync.CleanupsAfterSceneTrip > cleanupsBefore, 20f);
+                int localCleanups = StorySync.CleanupsAfterSceneTrip - cleanupsBefore;
+                yield return Barrier(h, 17, default(Vector3), localCleanups);
+                Report partner = Of(17, host ? 2 : 1);
+                GameplayCamera camera = UI.Cameras.Current;
+                // The first PC that starts Kuro owns this run. Either seat may be the one that mirrors it.
+                h.Check(partner != null && localCleanups + partner.I > 0 && camera != null && camera.Target != null,
+                    "ESC3 " + Role + ": the mirror ended across a native scene trip and the destination camera still has its live target"
+                    + " (this PC " + localCleanups + ", partner " + (partner == null ? "missing" : partner.I.ToString()) + ")");
             }
             finally { watchingEndSkip = false; NetTestHarness.BotButtons = buttons; }
         }
