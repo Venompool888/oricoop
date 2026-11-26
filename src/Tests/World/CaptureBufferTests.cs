@@ -32,6 +32,9 @@ static class CaptureBufferTests
             bool threw = false;
             try { s.Write(new byte[2], 1, 2); } catch (ArgumentOutOfRangeException) { threw = true; }
             Check(threw && s.Length == 0 && s.Hash == CaptureBuffer.Offset, "out-of-range write changes nothing");
+            threw = false;
+            try { s.Write(new byte[1], 1, int.MaxValue); } catch (ArgumentOutOfRangeException) { threw = true; }
+            Check(threw && s.Length == 0, "overflowed range is refused before advancing the hash");
             threw = false; try { s.Seek(0, SeekOrigin.Begin); } catch (NotSupportedException) { threw = true; }
             Check(threw, "seek");
         });
@@ -54,6 +57,8 @@ static class CaptureBufferTests
             MemoryStream hidden = new MemoryStream(new byte[] { 5, 6, 7 }, 0, 3, true, false);
             Check(CaptureBuffer.Exposed(hidden) == null && !CaptureBuffer.Same(hidden, known),
                 "a stream that hides its buffer counts as changed (the capture copies it)");
+            MemoryStream segment = new MemoryStream(new byte[] { 5, 6, 7, 8 }, 1, 3, true, true);
+            Check(!CaptureBuffer.Same(segment, known), "sliced visible stream cannot reuse bytes preceding its origin");
             Check(!CaptureBuffer.Same(new MemoryStream(), null), "no previous blob");
         });
     }

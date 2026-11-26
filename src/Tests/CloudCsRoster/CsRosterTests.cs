@@ -67,6 +67,19 @@ static class CsRosterTests
             c.Receive(Roster(new CsRosterEntry { Seat = 1, Online = true }, new CsRosterEntry { Seat = 200, Online = true }));
             Check(offline.Count == 1 && offline[0] == 4, "SeatOffline events: " + offline.Count);
         });
+        Run("T-256 only a real transition to the sole local device records the survivor", delegate(CServerClient c)
+        {
+            CsMessage welcome = new CsMessage { Type = CsWire.CsWelcome, Code = "234567", Token = new byte[16] };
+            welcome.Seats.Add(2); c.Receive(CsWire.Encode(welcome));
+            int observed = 0; c.LastDeviceInRoom += delegate { observed++; };
+            var me = new CsRosterEntry { Seat = 2, Online = true };
+            var host = new CsRosterEntry { Seat = 1, Online = true };
+            var third = new CsRosterEntry { Seat = 3, Online = true };
+            c.Receive(Roster(me)); c.Receive(Roster(host, me, third)); c.Receive(Roster(me, third));
+            Check(observed == 0, "initial or still shared roster counted as last");
+            c.Receive(Roster(me)); c.Receive(Roster(me)); c.Receive(Roster(me, third)); c.Receive(Roster(third));
+            Check(observed == 1, "duplicate roster or own departure counted as last");
+        });
         Console.WriteLine(failures == 0 ? "ALL PASS" : failures + " FAILED");
         return failures == 0 ? 0 : 1;
     }

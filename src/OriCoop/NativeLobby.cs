@@ -80,17 +80,36 @@ namespace OriCoop
 
         // A Steam invite accepted outside the Join page (SteamInviteHook): show the joining page if the menu is
         // open. The page then proceeds by itself once the host is there (LobbyTick).
-        public static void ShowSteamJoinPage()
+        public static void ShowSteamJoinPage(ulong lobby = 0)
         {
-            if (!UseNativeLobby) return;
             if (!IsOpen) OpenTitleOrbForInvite();          // invite accepted on the title: the join page there
             if (!IsOpen || s_mgr == null) return;
+            if (OnlineLobby.IsOpen)
+            {
+                OnlineLobby.Close(); s_returnSteamOverlay = true;
+                RoomPanelVisible(false);
+            }
             s_transport = "steam";
-            s_joinTarget = "";
-            GoPage(PageJoin, 1);
+            s_joinTarget = lobby == 0 ? "" : lobby.ToString();
+            GoPage(PageJoin, 0);
         }
 
-        public static bool OnSteamJoinPage { get { return IsOpen && UseNativeLobby && s_page == PageJoin && s_transport == "steam"; } }
+        static bool s_returnSteamOverlay;
+        internal static bool OpenSteamBrowserFromOverlay()
+        {
+            if (!IsOpen || s_mgr == null) return false;
+            NetPlay.Begin(false, "steam", "");
+            ShowSteamJoinPage();
+            return true;
+        }
+
+        internal static void RememberSteamInvite(ulong lobby) { s_joinTarget = lobby.ToString(); }
+        internal static void LeaveSteamRoom()
+        {
+            if (s_fromTitle && s_page == PageHost) HostBackToSlots();
+            else LobbyBack();
+        }
+        public static bool OnSteamJoinPage { get { return IsOpen && s_page == PageJoin && s_transport == "steam"; } }
 
         public static bool LobbyEditing { get { return s_editing; } }
         public static string LobbyEntry { get { return s_entry; } }
@@ -211,11 +230,24 @@ namespace OriCoop
             else if (s_page == PageJoin)
             {
                 string dots = new string('.', 1 + (int)(Time.realtimeSinceStartup * 2f) % 3);
-                if (JoinFailed)
+                if (SteamBrowsing)
+                {
+                    string help = L10n.T("lobby.steam.accept", zh) + SaveNote(zh) + "\n" + SteamRoomMenu.Status(zh);
+                    s_shownFriends = SteamRoomMenu.List(true);
+                    if (s_shownFriends.Length == 0) r.Add(new[] { L10n.T("steam.empty.rooms", zh), help });
+                    foreach (Net.SteamFriendRow friend in s_shownFriends)
+                    {
+                        string why = friend.Reason.Length == 0 ? "" : L10n.T(friend.Reason, zh);
+                        r.Add(new[] { friend.Name + (why.Length == 0 ? "" : " · " + why),
+                            (why.Length == 0 ? L10n.T("steam.join.friend", zh) : why) + SaveNote(zh) + "\n" + SteamRoomMenu.Status(zh) });
+                    }
+                    r.Add(new[] { L10n.T("common.back", zh), help });
+                }
+                else if (JoinFailed)
                 {
                     string errorKey = s_transport == "steam" && SteamInviteHook.CanRetry ? "lobby.error.timeout"
                         : FriendlyError(NetPlay.Problem, Time.realtimeSinceStartup - NetPlay.StartedAt > 15f);
-                    string error = L10n.T(errorKey, zh);
+                    string error = (s_transport == "steam" ? L10n.T(NetPlay.SteamReady ? "steam.step.peer" : "steam.step.lobby", zh) + " · " : "") + L10n.T(errorKey, zh);
                     if (!zh && errorKey == "lobby.error.failed" && !string.IsNullOrEmpty(NetPlay.Problem)) error += " (" + NetPlay.Problem + ")";
                     r.Add(new[] { L10n.T("common.retry", zh), error });
                     r.Add(new[] { L10n.T("common.back", zh), error });
@@ -231,7 +263,8 @@ namespace OriCoop
                     else if (NetPlay.CurrentPhase == NetPlay.Phase.Connecting)
                         status = roomCode ? L10n.T("lobby.room.found", zh) : string.Format(L10n.T("lobby.connecting.target", zh), s_joinTarget);
                     else status = L10n.T("lobby.preparing", zh);
-                    r.Add(new[] { L10n.T(waiting ? "lobby.steam.waiting" : "lobby.connecting_bare", zh) + dots, status + SaveNote(zh) });
+                    r.Add(new[] { L10n.T(steam ? (NetPlay.SteamReady ? "steam.step.peer" : "steam.step.lobby") : "lobby.connecting_bare", zh) + dots,
+                        (steam ? string.Format(L10n.T("steam.join.title", zh), SteamRoomMenu.HostName) + "\n" : "") + status + SaveNote(zh) });
                     // T-218: the page opens with the cursor on Cancel and only the focused row's text is shown. While
                     // waiting for an invite the player must see what to do, so Cancel carries the same explanation.
                     r.Add(new[] { L10n.T("common.cancel", zh), waiting ? status + SaveNote(zh) : L10n.T("lobby.join.cancel.desc", zh) });
@@ -248,6 +281,10 @@ namespace OriCoop
 
         static readonly string MutateLobbyRecovery = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_LOBBY_RECOVERY");
         static bool CreateRefused { get { return UsesRoomCode && NetPlay.RetryHeld && MutateLobbyRecovery != "host"; } }
+        static bool SteamBrowsing { get { return s_page == PageJoin && s_transport == "steam" && string.IsNullOrEmpty(s_joinTarget)
+            && NetPlay.SteamLobby == 0 && Net.SteamTransport.PendingInviteRaw == 0; } }
+        static Net.SteamFriendRow[] s_shownFriends = new Net.SteamFriendRow[0];
+
         static bool JoinFailed
         {
             get
@@ -524,7 +561,17 @@ namespace OriCoop
             }
             else if (s_page == PageJoin)
             {
-                if (JoinFailed && index == 0)
+                if (SteamBrowsing)
+                {
+                    if (index == Math.Max(1, s_shownFriends.Length)) { LobbyBack(); return; }
+                    if (index < 0 || index >= s_shownFriends.Length) return;
+                    Net.SteamFriendRow friend = s_shownFriends[index];
+                    if (friend.Reason.Length > 0) { ToastKey(friend.Reason); return; }
+                    s_joinTarget = friend.Lobby.ToString();
+                    NetPlay.Begin(false, "steam", s_joinTarget);
+                    GoPage(PageJoin, 0);
+                }
+                else if (JoinFailed && index == 0)
                 {
                     s_connectedAt = 0f;
                     Plugin.Log.LogInfo("mode menu: retry join " + s_transport + " " + s_joinTarget);
@@ -563,7 +610,7 @@ namespace OriCoop
         // with what was typed last. Used by the 加入 row of the host / join page and by 加入房间 on the title (TitleMenu.cs).
         static void OpenJoinEntry()
         {
-            if (s_transport == "steam") { SteamInviteHook.ForgetRetry(); s_joinTarget = ""; GoPage(PageJoin, 1); NetPlay.Begin(false, "steam", ""); return; }
+            if (s_transport == "steam") { SteamInviteHook.ForgetRetry(); s_joinTarget = ""; NetPlay.Begin(false, "steam", ""); GoPage(PageJoin, 0); return; }
             bool roomCode = UsesRoomCode;
             s_entryKind = roomCode ? 0 : 1;
             if (roomCode)
@@ -588,6 +635,14 @@ namespace OriCoop
                 s_roomEntry = RoomEntryKind.None;
                 NetPlay.End("listed room join cancelled");
                 GoPage(PageRole, 0);
+                return;
+            }
+            if (OnSteamJoinPage && s_returnSteamOverlay)
+            {
+                s_returnSteamOverlay = false;
+                NetPlay.End("join cancelled");
+                HideUnderOverlay();
+                OnlineLobby.Open("steam");
                 return;
             }
             if (TitleFlowBack()) return;                    // a join opened from 加入房间 on the title goes back there (TitleMenu.cs)
@@ -625,7 +680,7 @@ namespace OriCoop
             if (!IsOpen || !IsLobbyPage) return;
             if (IsRoomsPage) { RoomTick(); return; }
             if (OnlineRoomScreen.Visible) return;
-            if (s_page == PageHost && !OnlineRoomScreen.Confirmed && (NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected))
+            if (s_page == PageHost && !OnlineRoomScreen.Confirmed && (NetPlay.UsesSteam && NetPlay.Enabled || NetPlay.CurrentPhase == NetPlay.Phase.Waiting || NetPlay.CurrentPhase == NetPlay.Phase.Connected))
             { OnlineRoomScreen.Show(OnlineProceed); return; }
             if (s_editing) EditTick();
             else if (s_page == PageEntry && !s_mgr.IsLocked && s_entryKind == 0 && !s_legacyCode && s_mgr.Index == 0 && HasLegacyLetter(Input.inputString))
@@ -1146,7 +1201,7 @@ namespace OriCoop
             if (s_mgr == null || s_items.Count < 2) return;
             // T-200: the 我的房间 menu has five rows when the server did not answer and this PC has rooms (try again / new /
             // join / list / back): more than the orb's fixed places, so it scrolls like a list then.
-            bool list = s_page == PageServerList || s_page == PageServerRemove || s_page == PageDiagnosticsList || (IsRoomsPage && (s_page != PageRoomsMenu || count > MaxItems));
+            bool list = SteamBrowsing || s_page == PageServerList || s_page == PageServerRemove || s_page == PageDiagnosticsList || (IsRoomsPage && (s_page != PageRoomsMenu || count > MaxItems));
             s_mgr.ItemDirection = list ? CleverMenuItemSelectionManager.Direction.TopToBottom : s_itemDirection;
             int focus = Mathf.Clamp(s_mgr.Index, 0, Math.Max(0, count - 1));
             if (focus < s_listTop) s_listTop = focus;

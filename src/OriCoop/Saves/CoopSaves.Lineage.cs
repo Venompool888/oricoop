@@ -79,6 +79,15 @@ namespace OriCoop
                 if (seat < 0 && s_checkpointCommit) SeatSkillSync.ForSave(s_hostSlot, hash);
                 SaveHeader h = ReadHeader(bytes);
                 if (h != null) s_hostLink.SaveId = h.Id;
+                var room = Authority.CServerLink.Client;
+                if (NetPlay.UsesCServer && room != null && room.HasRemoteRoomMember)
+                {
+                    // A third player who leaves early still holds this room run's evidence, even if the
+                    // other two save again before the final departure.
+                    if (s_roomRound.Length == 0) s_roomRound = Guid.NewGuid().ToString("N");
+                    s_hostLink.LastPlayer = "";
+                }
+                s_hostLink.RoomRound = s_roomRound;
                 s_hostLink.Synced = hash;
                 s_hostLink.SyncedAt = DateTime.UtcNow.ToString("yyyy-MM-ddTHH:mm:ssZ");
                 if (bytes != null) s_hostLink.Write(s_hostSlot);
@@ -88,7 +97,7 @@ namespace OriCoop
                 Action<BinaryWriter> body = delegate(BinaryWriter w)
                 {
                     LineageCommit commit = new LineageCommit();
-                    commit.Coop = coop; commit.PlayerId = PlayerId; commit.Name = LocalName; commit.SaveId = saveId; commit.Bytes = bytes;
+                    commit.Coop = coop; commit.PlayerId = PlayerId; commit.Name = LocalName; commit.SaveId = saveId; commit.Bytes = bytes; commit.Round = s_roomRound;
                     LineageWire.WriteCommit(w, commit);
                 };
                 if (seat < 0) Services.Net.Send(LineageWire.Commit, true, body);
@@ -126,6 +135,7 @@ namespace OriCoop
                 CoopId = s_hostLink.Coop;
                 LineageOffer offer = new LineageOffer();
                 offer.Coop = s_hostLink.Coop; offer.Hash = s_hostHash; offer.Summary = s_hostSummary;
+                if (NetPlay.UsesCServer) { offer.PreviousRound = s_hostLink.RoomRound; offer.WasLast = s_hostLink.LastPlayer == PlayerId; }
                 return offer;
             }
 
@@ -146,6 +156,7 @@ namespace OriCoop
                 s_guestMatch = -1;
                 string hash = "", last = "", summary = "";
                 bool free = false;
+                LineageReply reply = new LineageReply();
                 int current = SafeCurrentSlot();
                 for (int i = 0; i < SlotCount; i++)
                 {
@@ -153,9 +164,11 @@ namespace OriCoop
                     if (bytes == null) { if (i != current || GuestJoiningEmpty) free = true; continue; }
                     CoopLink l = ValidLink(i, bytes);
                     if (l != null && l.Coop == s_offerCoop && s_guestMatch < 0)
-                    { s_guestMatch = i; hash = Hash(bytes); last = l.Synced; summary = Summary(bytes); }
+                    {
+                        s_guestMatch = i; hash = Hash(bytes); last = l.Synced; summary = Summary(bytes);
+                        if (NetPlay.UsesCServer) { reply.PreviousRound = l.RoomRound; reply.WasLast = l.LastPlayer == PlayerId; }
+                    }
                 }
-                LineageReply reply = new LineageReply();
                 reply.Found = s_guestMatch >= 0; reply.Slot = s_guestMatch; reply.Hash = hash; reply.LastSync = last;
                 reply.Summary = summary; reply.FreeSlot = free;
                 return reply;
@@ -185,8 +198,10 @@ namespace OriCoop
             public void BeginChoosing(LineageReply reply)
             {
                 DivergenceSeen = true;
+                s_reply = reply;
+                s_hostLink.Partner = PartnerName(reply.Name); s_hostLink.PartnerId = reply.PlayerId;
                 s_partnerChanged = reply.LastSync.Length == 0 || reply.Hash != reply.LastSync;
-                s_focus = 0;
+                s_focus = Math.Max(0, s_machine.Suggested);
             }
             public void ChoosingSent()
             {
@@ -247,6 +262,7 @@ namespace OriCoop
                     return;
                 }
                 s_commitCoop = coop; s_commitHostId = hostId; s_commitHostName = hostName; s_commitSaveId = saveId; s_commitBytes = bytes;
+                s_roomRound = NetPlay.UsesCServer ? commit.Round : "";
                 KeepCopy(-1);
             }
             public byte[] ReadUpload() { return s_guestMatch >= 0 ? ReadSlot(s_guestMatch) : null; }

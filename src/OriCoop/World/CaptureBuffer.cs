@@ -29,7 +29,9 @@ namespace OriCoop.World
         {
             if (known == null || stream.Length != known.Length) return false;
             byte[] buffer = Exposed(stream);
-            return buffer != null && Same(buffer, known.Length, known);
+            // A publicly visible segment can start inside its backing array. Archives allocate whole
+            // streams; refuse sliced buffers when the logical origin cannot be established on .NET 3.5.
+            return buffer != null && buffer.Length == stream.Capacity && Same(buffer, known.Length, known);
         }
 
         internal static ulong Hash(byte[] bytes)
@@ -61,7 +63,7 @@ namespace OriCoop.World
         public override void Write(byte[] buffer, int offset, int count)
         {
             if (buffer == null) throw new ArgumentNullException("buffer");
-            if (offset < 0 || count < 0 || offset + count > buffer.Length) throw new ArgumentOutOfRangeException("count");
+            if (offset < 0 || count < 0 || offset > buffer.Length - count) throw new ArgumentOutOfRangeException("count");
             unchecked { for (int i = offset, end = offset + count; i < end; i++) { hash ^= buffer[i]; hash *= Prime; } }
             length += count;
         }

@@ -15,6 +15,18 @@ static class DigestRepairTests
 
     public static void Register(Action<string, Action> run)
     {
+        run("OnlyGumosCinematicMeshComparesPosePresence", delegate {
+            const string scene = "-1289149174 680822595 558787450 1729667918";
+            const string mesh = "-1517079076 1077808971 1966622865 680266200";
+            const string transform = "TransformSaveSerialize";
+            Check(DigestRepair.ComparesPosePresence(scene + ":" + mesh, transform), "Gumo mesh pose");
+            Check(!DigestRepair.ComparesPosePresence(scene + ":1 2 3 4", transform), "another transform in the same scene");
+            Check(!DigestRepair.ComparesPosePresence("1 2 3 4:" + mesh, transform), "same object ID in a different scene");
+            Check(!DigestRepair.ComparesPosePresence(scene + ":" + mesh, "GameController"), "different component type");
+            var local = new Dictionary<string, DigestObject> { { scene + ":" + mesh, new DigestObject(transform, 0) } };
+            var remote = new Dictionary<string, DigestObject>();
+            Check(DigestRepair.Differences(local, remote).Count == 1, "missing Gumo still differs");
+        });
         run("ExcludedDigestObjectsDoNotRequestResync", delegate {
             var local = new Dictionary<string, DigestObject> {
                 { "door", new DigestObject("EnergyDoor", 10) },

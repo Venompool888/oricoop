@@ -439,6 +439,11 @@ static class UiTests
             Equal("470129", d.Digits); Equal(5, d.Focus);
             d.Type(3); Equal("470123", d.Digits);                  // last wheel: overwrite, stay
             d.Back(); Equal("470120", d.Digits); Equal(4, d.Focus);
+            DigitDial password = DigitDial.Password();
+            foreach (char digit in "12345") password.Type(digit - '0');
+            password.Back(); password.Type(6); Equal("12346", password.Digits);
+            foreach (char digit in "789") password.Type(digit - '0');
+            password.Back(); password.Type(0); Equal("12346780", password.Digits);
             d.Type(-1); d.Type(10); Equal("470120", d.Digits);     // not digits: ignored
         });
         Run("dial: IP loads right-aligned per octet and gives numbers back", delegate {

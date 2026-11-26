@@ -682,7 +682,7 @@ namespace OriCoop
         }
         static void Show(Gate gate, Vector3 point, int seat)
         {
-            if (s_bottom == null) s_bottom = new GameText("OriCoop_GateWait");
+            if (s_bottom == null) s_bottom = new GameText("OriCoop_GateWait") { LightGateBacking = true };
             BottomText = gate.Missing == 0 ? L10n.F("gate.count", LastCount, LastTotal)
                 : L10n.F("gate.wait", MissingPlayers(gate.Missing), LastCount, LastTotal);
             Camera game = UI.Cameras.Current != null ? UI.Cameras.Current.Camera : null;
@@ -691,8 +691,8 @@ namespace OriCoop
             if (s_bottom.SetText(BottomText)) s_bottom.PlaceViewport(x, y, GameText.PromptHeight, 0.6f);
             if (Waits[seat] == null || Waits[seat].State.Key != gate.Key) { HideKeys(); return; }
 
-            if (s_top == null) s_top = new GameText("OriCoop_GateForce");
-            if (s_leave == null) s_leave = new GameText("OriCoop_GateLeave");
+            if (s_top == null) s_top = new GameText("OriCoop_GateForce") { LightGateBacking = true };
+            if (s_leave == null) s_leave = new GameText("OriCoop_GateLeave") { LightGateBacking = true };
             if (s_ring == null) s_ring = new GlowRing("OriCoop_GateHold");
             bool primary = seat == Players.LocalSeat;
             bool keyboard = !primary && ExtraUsesKeyboard(seat);
@@ -705,6 +705,19 @@ namespace OriCoop
         internal static bool WaitPromptOnScreen() { return s_bottom != null && s_bottom.OnScreen(false); }
         internal static bool ForcePromptOnScreen() { return s_top != null && s_top.OnScreen(false) && s_top.OnScreen(true); }
         internal static bool LeavePromptOnScreen() { return s_leave != null && s_leave.OnScreen(false) && s_leave.OnScreen(true); }
+        internal static bool LightPromptBackings(out string measured)
+        {
+            measured = "";
+            GameText[] shown = { s_bottom, s_top, s_leave };
+            foreach (GameText prompt in shown)
+            {
+                if (prompt == null || !prompt.OnScreen(false)) continue;
+                float alpha = prompt.BackingAlpha();
+                measured += " " + prompt.Name + "=" + alpha.ToString("0.00");
+                if (alpha <= 0f || alpha > 0.27f) return false;
+            }
+            return measured.Length > 0;
+        }
         // T-255 test oracle: every gate prompt shown draws its text at full material alpha. Not "as the native hint": on the
         // test PC the native hint's material reads 0.50 and still draws full white (its own fade path), while our copy at
         // 0.50 drew grey (screenshot pixels 160 against the native 222; at 1.0: 255). Comparing with it let the dim

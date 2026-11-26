@@ -69,7 +69,7 @@ namespace OriCoop
             On(MsgSeatTable, delegate(BinaryReader r) {
                 if (IsHost || Sender != 1 || s_factorySession) return;
                 s_seats.Read(r);
-                // Steam has no legacy MsgSeat handshake. The targeted table bootstraps its primary too.
+                // Two-player Steam hosts from before T-220 assign the guest through the targeted table.
                 if (r.BaseStream.Position < r.BaseStream.Length)
                 {
                     int assigned = r.ReadByte();

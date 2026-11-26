@@ -1,5 +1,6 @@
 ﻿using System;
 using System.Threading;
+using System.Collections.Generic;
 
 namespace OriCoop.Rooms
 {
@@ -44,6 +45,12 @@ namespace OriCoop.Rooms
         readonly RoomAuth auth;
         readonly string server;
         public Action<Action<string>> Password;
+        sealed class PendingAuth
+        {
+            public Func<bool> Wanted;
+            public Action<RoomReply> Resume;
+        }
+        readonly List<PendingAuth> pendingAuth = new List<PendingAuth>();
         public Action<string> Error;
         public Action Copied;
         public bool Online;
@@ -102,43 +109,55 @@ namespace OriCoop.Rooms
         // wanted: see RoomJobs.Add (T-200); null = always run.
         public void Call(Func<RoomReply> work, Action<RoomReply> done, Func<bool> wanted)
         {
-            jobs.Add(work, delegate(RoomReply reply)
+            string attemptedToken = null;
+            jobs.Add(delegate { attemptedToken = auth.Token; return work(); }, delegate(RoomReply reply)
             {
                 if (!MutateRoomFailures && wanted != null && !wanted()) return;
                 if (reply.Error == "bad_token" && Password != null && !(started && game.InGameplay))
                 {
-                    Password(delegate(string password)
+                    if (attemptedToken != auth.Token)
                     {
-                        if (!MutateRoomFailures && wanted != null && !wanted()) return;
-                        if (password == null)
-                        {
-                            done(new RoomReply
-                            {
-                                Error = "cancelled", Fields = new RoomWire.Fields()
-                            });
-                            return;
-                        }
-                        jobs.Add(delegate
-                        {
-                            return client.Rebind(auth.Room, password, auth.Steam);
-                        },
-                            delegate(RoomReply rebound)
-                            {
-                                if (!MutateRoomFailures && wanted != null && !wanted()) return;
-                                if (!rebound.Ok)
-                                {
-                                    done(rebound);
-                                    return;
-                                }
-                                auth.Token = rebound.Fields.GetString("token");
-                                store.SaveToken(auth.Room, auth.Token);
-                                Call(work, done, wanted);
-                            }, wanted);
-                    });
+                        Call(work, done, wanted);
+                        return;
+                    }
+                    pendingAuth.Add(new PendingAuth { Wanted = wanted, Resume = delegate(RoomReply rebound)
+                    {
+                        if (rebound.Ok) Call(work, done, wanted);
+                        else done(rebound);
+                    } });
+                    if (pendingAuth.Count == 1) Password(PasswordEntered);
                     return;
                 }
                 done(reply);
             }, wanted);
+        }
+
+        void PasswordEntered(string password)
+        {
+            if (password == null || !pendingAuth.Exists(IsWanted))
+            {
+                FinishRebind(new RoomReply { Error = "cancelled", Fields = new RoomWire.Fields() });
+                return;
+            }
+            jobs.Add(delegate { return client.Rebind(auth.Room, password, auth.Steam); }, FinishRebind);
+        }
+
+        static bool IsWanted(PendingAuth request)
+        {
+            return request.Wanted == null || request.Wanted();
+        }
+
+        void FinishRebind(RoomReply reply)
+        {
+            PendingAuth[] requests = pendingAuth.ToArray();
+            pendingAuth.Clear();
+            if (reply.Ok && Array.Exists(requests, IsWanted))
+            {
+                auth.Token = reply.Fields.GetString("token");
+                store.SaveToken(auth.Room, auth.Token);
+            }
+            foreach (PendingAuth request in requests)
+                if (IsWanted(request)) request.Resume(reply);
         }
 
         void Fail(string error)

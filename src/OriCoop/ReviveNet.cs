@@ -28,6 +28,21 @@ namespace OriCoop
         internal static bool SpectateActive { get { return s_spectate.Active; } }
         internal static int SpectateTarget { get { return s_spectate.Target; } }
         internal static SeinCharacter SpectateSein { get { return SpectateActive ? Host.SeinAt(SpectateTarget) : null; } }
+
+        // Native SoundPlayer falloff and SoundSource range checks use this position independently of
+        // Unity's AudioListener. When the camera follows a teammate, listen from that same teammate.
+        [HarmonyLib.HarmonyPatch(typeof(Core.Sound), "get_SoundListenerPosition")]
+        static class SpectatorSoundPosition
+        {
+            static bool Prefix(ref Vector3 __result)
+            {
+                SeinCharacter watched = SpectateSein;
+                if (watched == null || UI.Cameras.Current == null || UI.Cameras.Current.Target != watched.Transform) return true;
+                __result = watched.Position;
+                return false;
+            }
+        }
+
         internal static void SpectateNext() { s_spectate.Next(); }
         internal static void SpectatePrevious() { s_spectate.Prev(); }
         internal static void ResetSpectate() { if (SpectateActive) s_spectate = new SpectateState(); }
