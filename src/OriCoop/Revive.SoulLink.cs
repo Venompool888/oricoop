@@ -559,6 +559,9 @@ namespace OriCoop
             bool pad = !primary || GameSettings.Instance != null && GameSettings.Instance.CurrentControlScheme == ControlScheme.Controller;
             if (!s_point.Have) { LastSelfHint = null; HideSelfHint(seat); return; }
             string text = L10n.F("revive.self_hold", pad ? PadY : KeyQ);
+            // T-202 (#285): the online camera may follow a teammate, so the ring around the skull can be off screen;
+            // the hint, kept in view, also shows how far the hold is (in 10% steps: each new text re-renders the native box).
+            if (d.SelfHold > 0f) text += "  " + Mathf.FloorToInt(Mathf.Clamp01(d.SelfHold / SoulLinkRules.SelfHoldSeconds) * 10f) * 10 + "%";
             if (s_selfHint[seat] == null) s_selfHint[seat] = new GameText("OriCoop_SelfReviveHint_P" + seat);
             GameText hint = s_selfHint[seat];
             // The online camera may follow a teammate, not the downed Ori. Keep the primary hint in the viewport.

@@ -206,6 +206,24 @@ static class RulesTests
             clock.Advance(0.09f); Check(!ReviveLogic.ShouldSend(d, 1, false, clock.Time), "sent too early");
             clock.Advance(0.02f); Check(ReviveLogic.ShouldSend(d, 1, false, clock.Time), "next send denied");
         });
+        Run("watched revive ring fills between progress messages", delegate {
+            float rate = 1f / 1.5f, shown = 0f;
+            shown = ReviveLogic.DisplayProgress(shown, 0.1f, rate, 0.016f, 0f);
+            Check(shown >= 0.1f, "shown below the received progress: " + shown);
+            float before = shown;
+            for (int i = 0; i < 3; i++) shown = ReviveLogic.DisplayProgress(shown, 0.1f, rate, 0.016f, 0.016f * (i + 1));
+            Check(shown > before, "ring stood still between messages");
+            for (int i = 0; i < 30; i++) shown = ReviveLogic.DisplayProgress(shown, 0.1f, rate, 0.016f, 0.05f);
+            Near(shown, 0.1f + rate * ReviveLogic.ProgressLead);
+        });
+        Run("watched revive ring stops when messages stop and restarts with a new revive", delegate {
+            float rate = 1f / 1.5f, shown = 0.5f;
+            Near(ReviveLogic.DisplayProgress(shown, 0.5f, rate, 0.016f, 1f), 0.5f);
+            Near(ReviveLogic.DisplayProgress(0.9f, 0.05f, rate, 0.016f, 0f), 0.05f + rate * 0.016f);
+            Near(ReviveLogic.DisplayProgress(0.7f, 0f, rate, 0.016f, 0f), 0f);
+            Near(ReviveLogic.DisplayProgress(0.99f, 0.99f, rate, 0.1f, 0f), 1f);
+            Check(ReviveLogic.DisplayProgress(0.2f, 0.6f, rate, 0.016f, 0f) >= 0.6f, "ring lagged behind a jump");
+        });
         Run("multi progress requires active local hold", delegate {
             DownedState d = Down(2); d.Progress = 0.5f; d.Rescuer = 1;
             Check(!ReviveLogic.ShouldSend(d, 1, true, 0f), "sent without holding");

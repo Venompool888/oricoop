@@ -109,6 +109,8 @@ namespace OriCoop
                     Revive.Downed d = Revive.DownedOf(1);
                     h.Check(Core.Input.Bash.IsPressed && d != null && d.SelfHold > 0.5f && d.SelfHold < 2f,
                         "T248 game reads held Y and counts the first second, progress " + (d == null ? -1 : d.SelfHold));
+                    float ring = d == null ? -1f : ReviveHud.RingProgressAtSeat(d.Player);
+                    h.Check(ring > 0.25f && ring < 1f, "T202 the revive ring fills while holding Y at the soul link, ring " + ring.ToString("0.00"));
                     TestClock.Window remaining = new TestClock.Window(3f);
                     while (Revive.DownedOf(1) != null && remaining.Open) yield return null;
                 }

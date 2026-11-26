@@ -49,6 +49,8 @@ namespace OriCoop
         static readonly GlowRing[] s_ring = new GlowRing[Players.MaxSeats + 1];
         static readonly GameText[] s_gameHint = new GameText[Players.MaxSeats + 1], s_gameTag = new GameText[Players.MaxSeats + 1];
         public static string LastPercentText = "", LastHintText = "";
+        static readonly float[] s_ringProgress = new float[Players.MaxSeats + 1], s_watched = new float[Players.MaxSeats + 1];
+        internal static float RingProgressAtSeat(int seat) { return seat >= 1 && seat <= Players.MaxSeats ? s_ringProgress[seat] : 0f; }
         // TODO(4p): phase 1 removes slot-based query; existing callers use local/puppet slots.
         public static bool IconShown(int player) { return IconShownAtSeat(Roles.OfSlot(player)); }
         public static bool SkullShown(int player) { return SkullShownAtSeat(Roles.OfSlot(player)); }
@@ -103,13 +105,23 @@ namespace OriCoop
             // The head picture sits in the lower part of its quad, so the ring is centred below the quad's centre.
             Vector3 head = d.Marker + new Vector3(0f, 0.4f, 0f);
             if (s_ring[player] == null) s_ring[player] = new GlowRing("OriCoop_ReviveRing_P" + player);
-            LastPercentText = d.Progress > 0f ? Mathf.FloorToInt(d.Progress * 100f) + "%" : "";
+            // T-202 (#285, 6th playtest "复活的进度条也没有"): holding Y / Q to revive at the soul link fills the same ring
+            // on the downed player's own PC; a teammate's revive shows whichever of the two is further along.
+            float self = d.Remote ? 0f : Mathf.Clamp01(d.SelfHold / OriCoop.Rules.SoulLinkRules.SelfHoldSeconds);
+            float teammate = d.Progress;
+            if (d.Rescuer > 0 && !Players.IsLocal(d.Rescuer))   // T-215 (#301): progress from the network, 10 messages a second
+                teammate = s_watched[player] = OriCoop.Rules.ReviveLogic.DisplayProgress(s_watched[player], d.Progress,
+                    1f / Revive.HoldSeconds, Time.unscaledDeltaTime, Revive.SinceProgress(player));
+            else s_watched[player] = d.Progress;
+            float progress = Mathf.Max(teammate, self);
+            s_ringProgress[player] = progress;
+            LastPercentText = progress > 0f ? Mathf.FloorToInt(progress * 100f) + "%" : "";
             if (s_ring[player].Ok && DeadMarker.Available)
             {
-                s_ring[player].Place(head, 0.12f, d.Progress, a);
+                s_ring[player].Place(head, 0.12f, progress, a);
                 s_percent[player].Hide();
             }
-            else if (d.Progress > 0f)
+            else if (progress > 0f)
             {
                 s_percent[player].Text.text = LastPercentText;
                 s_percent[player].Place(d.Marker + new Vector3(0f, 1.6f, 0f), 0.04f, a);
@@ -154,6 +166,7 @@ namespace OriCoop
 
         static void Hide(int player)
         {
+            s_ringProgress[player] = s_watched[player] = 0f;
             if (s_skull[player] != null) { s_skull[player].Hide(); s_percent[player].Hide(); s_hint[player].Hide(); }
             if (s_icon[player] != null) s_icon[player].Hide();
             if (s_ring[player] != null) s_ring[player].Hide();

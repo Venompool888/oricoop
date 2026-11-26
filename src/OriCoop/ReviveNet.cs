@@ -426,6 +426,12 @@ namespace OriCoop
             ReviveWire.Progress message = ReviveWire.ReadProgress(r);
             if (NetPlay.DeviceSeat(message.Rescuer) != Services.Net.Sender) return;
             s_roster.MergeProgress(message.Seat, message.Rescuer, message.Rescuer, Host.LocalSeat, message.Value, message.Given);
+            if (message.Seat >= 1 && message.Seat <= ReviveLogic.MaxSeats) s_progressAt[message.Seat] = Time.unscaledTime;
         }
+
+        // T-215 (#301): when this PC last heard a teammate's revive progress for a downed seat (ReviveHud smooths the ring).
+        static readonly float[] s_progressAt = { float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity, float.NegativeInfinity };
+        internal static float SinceProgress(int seat)
+        { return seat >= 1 && seat <= ReviveLogic.MaxSeats ? Time.unscaledTime - s_progressAt[seat] : float.PositiveInfinity; }
     }
 }
