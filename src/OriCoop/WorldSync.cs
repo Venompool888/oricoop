@@ -23,7 +23,7 @@ namespace OriCoop
         public const bool ReplicateCoroutinePlatforms = false;
         const byte MsgBlobs = 12, MsgResync = 13, MsgDigest = 14, MsgManifest = 15;
         const int MaxMessage = 16000, ChunkSize = 14000, MaxBlob = 4 * 1024 * 1024, MaxParts = 8;
-        const ulong Offset = 14695981039346656037UL, Prime = 1099511628211UL;
+        public static long CapturesReused { get; private set; }
         // The same schema is carried on the wire, so unloaded bytes have exactly the live hash meaning.
         enum Meaning : byte { Raw, Pickup, Controller, Door, Pedestal, Clock, BaseAnimation, LegacyAnimation,
             SpriteAnimation, Map, AmbientPhase, Path, Vent, SequencePlatform, RespawnPickup, Respawner, Body }
@@ -114,7 +114,7 @@ namespace OriCoop
             Applying = false; LastDigestMatch = false; LastDigestAt = 0;
             s_loggedHighlightedDoors = false;
             s_loggedSceneLoader = false;
-            s_snapshotRequests.Clear(); s_snapshotNumber = 0;
+            s_snapshotRequests.Clear(); s_snapshotNumber = 0; CapturesReused = 0;
             s_mirrorHold.Clear(); s_mirrorKeys.Clear(); s_storyProgress.Clear();
             s_bandwidthAt = Time.realtimeSinceStartup; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             s_digestSequence = s_receivedDigest = 0; s_digestWorldMatched = false;
@@ -163,7 +163,8 @@ namespace OriCoop
                     + " digest=" + (s_digestBytes / elapsed).ToString("F1")
                     + " timers sent=" + TimerPhasesSent + " taken=" + TimerPhasesTaken + " in_step=" + TimerPhasesInStep
                     + " near_restart=" + TimerPhasesNearRestart + " paused=" + TimerPhasesPaused
-                    + " shots followed=" + WorldObjSync.ShotsFollowed + " dropped=" + WorldObjSync.ShotsDropped + " own=" + WorldObjSync.ShotsOwn);
+                    + " shots followed=" + WorldObjSync.ShotsFollowed + " dropped=" + WorldObjSync.ShotsDropped + " own=" + WorldObjSync.ShotsOwn
+                    + " captures reused=" + CapturesReused);
                 s_bandwidthAt = now; s_deltaBytes = s_snapshotBytes = s_digestBytes = 0;
             }
         }
@@ -329,7 +330,7 @@ namespace OriCoop
         {
             using (MemoryStream input = new MemoryStream(bytes))
             using (BinaryReader r = new BinaryReader(input))
-            using (MemoryStream output = new MemoryStream())
+            using (HashStream output = new HashStream())   // same hash as HashBytes of the canonical bytes, no copy
             using (BinaryWriter w = new BinaryWriter(output))
             {
                 w.Write((byte)schema);
@@ -339,7 +340,11 @@ namespace OriCoop
                     // T-183: the string-trigger list is each PC's own (World/WorldItems.cs); it is not compared.
                     SortedGuidValues(r, w);
                     if (World.WorldItems.MutateShareTriggers) SortedStrings(r, w);
-                    else using (BinaryWriter skip = new BinaryWriter(new MemoryStream())) SortedStrings(r, skip);
+                    else
+                    {
+                        int strings = ReadCount(r);
+                        for (int i = 0; i < strings; i++) r.ReadString();
+                    }
                     r.ReadSingle(); r.ReadSingle(); r.ReadInt32(); r.ReadInt32(); r.ReadBoolean();
                     SortedInts(r, w, false);
                 }
@@ -400,7 +405,7 @@ namespace OriCoop
                 else if (schema == Meaning.Respawner) { r.ReadInt32(); r.ReadInt32(); w.Write(r.ReadBoolean()); r.ReadSingle(); }
                 else { w.Write(bytes); input.Position = input.Length; }
                 if (input.Position != input.Length) throw new InvalidDataException("unrecognized canonical Archive suffix");
-                w.Flush(); return HashBytes(output.ToArray());
+                w.Flush(); return output.Hash;
             }
         }
 
@@ -508,14 +513,6 @@ namespace OriCoop
             return old.Match(map.ObjectiveTextProviders.IndexOf(map.ObjectiveText)) && old.Offset == bytes.Length;
         }
 
-        static bool SameArchive(MemoryStream stream, byte[] previous)
-        {
-            if (stream.Length != previous.Length) return false;
-            byte[] buffer = stream.GetBuffer();
-            for (int i = 0; i < previous.Length; i++) if (buffer[i] != previous[i]) return false;
-            return true;
-        }
-
         static Blob CaptureRecord(MoonGuid scene, MoonGuid id, ISerializable save)
         {
             Archive scratch = new Archive();
@@ -528,6 +525,20 @@ namespace OriCoop
             if (map == null) return false;
             byte[] native = CaptureBytes(map);
             if (!MapMatches(map, native)) return false;
+            // A snapshot may have supplied the same bytes with a different schema or type. Capture must then
+            // replace the record so that the canonical hash and the next outgoing snapshot use the local schema.
+            Blob prior = MakeBlob(MoonGuid.Empty, MoonGuid.Empty, native, Meaning.Map, map.GetType().FullName);
+            Archive scratch = new Archive();
+            using (scratch.MemoryStream)
+            {
+                if (CaptureRecord(prior.Scene, prior.Id, map, scratch, prior) != prior) return false;
+                prior.Schema = Meaning.Raw;
+                Blob corrected = CaptureRecord(prior.Scene, prior.Id, map, scratch, prior);
+                if (corrected == prior || corrected.Schema != Meaning.Map || corrected.Hash != prior.Hash) return false;
+                prior.Schema = Meaning.Map; prior.Type = "other";
+                corrected = CaptureRecord(prior.Scene, prior.Id, map, scratch, prior);
+                if (corrected == prior || corrected.Type != map.GetType().FullName) return false;
+            }
             // A changed area count, first area, middle byte (icon/cell) and objective each force a fresh capture.
             foreach (int position in new int[] { 0, 4, native.Length / 2, native.Length - 1 })
             {
@@ -546,7 +557,9 @@ namespace OriCoop
                 s_storyProgress.Remember(Key(scene, id));
                 if (!s_untypedStoryProgress) type = World.StoryProgressKeys.StoryType;
             }
-            if (old != null && old.Type == type)
+            Meaning schema = Describe(save);
+            bool canReuse = old != null && old.Schema == schema && old.Type == type;
+            if (canReuse)
             {
                 if (old.Bytes.Length == 0 && EmptyActionArchive(save)) return old;
                 GameWorld map = save as GameWorld;
@@ -556,8 +569,8 @@ namespace OriCoop
             scratch.WriteMode();
             save.Serialize(scratch);
             if (scratch.MemoryStream.Length > MaxBlob) throw new InvalidDataException("Archive exceeds 4 MB limit");
-            if (old != null && old.Type == type && SameArchive(scratch.MemoryStream, old.Bytes)) return old;
-            return MakeBlob(scene, id, scratch.MemoryStream.ToArray(), Describe(save), type);
+            if (canReuse && CaptureBuffer.Same(scratch.MemoryStream, old.Bytes)) return old;
+            return MakeBlob(scene, id, scratch.MemoryStream.ToArray(), schema, type);
         }
 
         static List<Blob> Capture(bool full)
@@ -588,7 +601,7 @@ namespace OriCoop
                         Blob old;
                         bool seen = s_blobs.TryGetValue(key, out old);
                         Blob blob = CaptureRecord(scene, entry.Id, save, scratch, old);
-                        if (object.ReferenceEquals(old, blob)) continue;
+                        if (object.ReferenceEquals(old, blob)) { CapturesReused++; continue; }
                         if (seen && old.Hash != blob.Hash)
                             s_changed[key] = Time.realtimeSinceStartup;
                         else if (!seen) ObserveAggregate(blob);
@@ -1377,9 +1390,7 @@ namespace OriCoop
 
         public static ulong HashBytes(byte[] bytes)
         {
-            ulong hash = Offset;
-            unchecked { foreach (byte b in bytes) { hash ^= b; hash *= Prime; } }
-            return hash;
+            return CaptureBuffer.Hash(bytes);
         }
 
         // T-172: a change held back by MirrorHold is not shared yet; the digest compares what the partners know of it
@@ -1414,7 +1425,7 @@ namespace OriCoop
         {
             Capture(false);
             List<string> keys = new List<string>(s_blobs.Keys); keys.Sort(StringComparer.Ordinal);
-            MemoryStream stream = new MemoryStream(); BinaryWriter writer = new BinaryWriter(stream);
+            HashStream stream = new HashStream(); BinaryWriter writer = new BinaryWriter(stream);
             count = 0;
             foreach (string key in keys)
             {
@@ -1423,7 +1434,7 @@ namespace OriCoop
                 writer.Write(blob.Scene.ToByteArray()); writer.Write(blob.Id.ToByteArray());
                 writer.Write((byte)blob.Schema); writer.Write(SharedHash(key, blob)); count++;
             }
-            writer.Flush(); ulong hash = HashBytes(stream.ToArray());
+            writer.Flush(); ulong hash = stream.Hash;
             writer.Close(); stream.Close(); return hash;
         }
 
