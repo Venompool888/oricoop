@@ -100,6 +100,22 @@ namespace OriCoop.Rules
             float progress = d.Progress + dt / duration;
             d.Progress = 1f < progress ? 1f : progress;
         }
+        // T-215 (#301, 6th playtest "看队友复活的转圈一卡一卡"): a teammate's revive progress arrives every 0.1 s on an
+        // unreliable channel, so a watcher's ring jumped a step per message (two when one was lost). Between messages
+        // the shown ring keeps filling at the revive rate, at most ProgressLead seconds' worth past the last value, and
+        // only while messages keep coming; a value well below the shown one (a new revive) is taken at once.
+        public const float ProgressLead = 0.12f, ProgressFresh = 0.25f;
+        public static float DisplayProgress(float shown, float target, float rate, float dt, float sinceUpdate)
+        {
+            if (target <= 0f) return 0f;
+            float lead = rate * ProgressLead;
+            if (shown > target + lead) shown = target;   // a new revive started below what was shown
+            float next = sinceUpdate < ProgressFresh ? shown + rate * dt : shown;
+            float high = target + lead < 1f ? target + lead : 1f;
+            if (next > high) next = high;
+            return next < target ? target : next;
+        }
+
         public static bool ShouldSend(DownedState d, int localSeat, bool multi, float now)
         {
             if (d.Progress <= 0f || d.Rescuer != localSeat || multi && !d.Holding || now < d.ProgressSendAt) return false;

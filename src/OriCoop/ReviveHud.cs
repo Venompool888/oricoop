@@ -49,7 +49,7 @@ namespace OriCoop
         static readonly GlowRing[] s_ring = new GlowRing[Players.MaxSeats + 1];
         static readonly GameText[] s_gameHint = new GameText[Players.MaxSeats + 1], s_gameTag = new GameText[Players.MaxSeats + 1];
         public static string LastPercentText = "", LastHintText = "";
-        static readonly float[] s_ringProgress = new float[Players.MaxSeats + 1];
+        static readonly float[] s_ringProgress = new float[Players.MaxSeats + 1], s_watched = new float[Players.MaxSeats + 1];
         internal static float RingProgressAtSeat(int seat) { return seat >= 1 && seat <= Players.MaxSeats ? s_ringProgress[seat] : 0f; }
         // TODO(4p): phase 1 removes slot-based query; existing callers use local/puppet slots.
         public static bool IconShown(int player) { return IconShownAtSeat(Roles.OfSlot(player)); }
@@ -108,7 +108,12 @@ namespace OriCoop
             // T-202 (#285, 6th playtest "复活的进度条也没有"): holding Y / Q to revive at the soul link fills the same ring
             // on the downed player's own PC; a teammate's revive shows whichever of the two is further along.
             float self = d.Remote ? 0f : Mathf.Clamp01(d.SelfHold / OriCoop.Rules.SoulLinkRules.SelfHoldSeconds);
-            float progress = Mathf.Max(d.Progress, self);
+            float teammate = d.Progress;
+            if (d.Rescuer > 0 && !Players.IsLocal(d.Rescuer))   // T-215 (#301): progress from the network, 10 messages a second
+                teammate = s_watched[player] = OriCoop.Rules.ReviveLogic.DisplayProgress(s_watched[player], d.Progress,
+                    1f / Revive.HoldSeconds, Time.unscaledDeltaTime, Revive.SinceProgress(player));
+            else s_watched[player] = d.Progress;
+            float progress = Mathf.Max(teammate, self);
             s_ringProgress[player] = progress;
             LastPercentText = progress > 0f ? Mathf.FloorToInt(progress * 100f) + "%" : "";
             if (s_ring[player].Ok && DeadMarker.Available)
@@ -161,7 +166,7 @@ namespace OriCoop
 
         static void Hide(int player)
         {
-            s_ringProgress[player] = 0f;
+            s_ringProgress[player] = s_watched[player] = 0f;
             if (s_skull[player] != null) { s_skull[player].Hide(); s_percent[player].Hide(); s_hint[player].Hide(); }
             if (s_icon[player] != null) s_icon[player].Hide();
             if (s_ring[player] != null) s_ring[player].Hide();
