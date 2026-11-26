@@ -751,6 +751,27 @@ namespace OriCoop
         [HarmonyPatch(typeof(PlayerInput), "FixedUpdate")]
         static class PrologueInputPatch
         {
+            static int lastDeviceFrame = -1;
+
+            static bool Prefix(PlayerInput __instance)
+            {
+                if (!CatchingUp || s_pace.Rate != PrologueRate.Fast || !__instance.Active || UI.MainMenuVisible) return true;
+                int frame = Time.frameCount;
+                if (frame != lastDeviceFrame) { lastDeviceFrame = frame; return true; }
+
+                // Unity samples devices once per rendered frame. A covered replay can simulate 60 steps in that
+                // frame. Advance the button edges, then let the postfix apply the host's input for this story step.
+                foreach (Core.Input.InputButtonProcessor button in Core.Input.Buttons)
+                {
+                    button.Update(button.IsPressed);
+                    button.Used = false;
+                }
+                Core.Input.LeftClick.Update(Core.Input.LeftClick.IsPressed);
+                Core.Input.RightClick.Update(Core.Input.RightClick.IsPressed);
+                Core.Input.CursorMoved = false;
+                return false;
+            }
+
             [HarmonyPriority(Priority.Last)]
             static void Postfix()
             {
