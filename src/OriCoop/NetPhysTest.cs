@@ -775,25 +775,55 @@ namespace OriCoop
             // when it stops), not 20 states a second; the partner still hears it and both PCs agree where it lies.
             // 2026-11-28: 1 s after the last push the stone was still sliding on a busy test PC (max speed 0.9 in the
             // window), so the window starts once it has lain still here for longer than the pacer's settle burst.
-            float[] rest = new float[2];
-            yield return WaitAtRest(block, StoneSendPacer.Settle + 0.2f, 8f, rest);
-            h.Note("PF stone came to rest after " + F(rest[0]) + " s" + (rest[1] > 0f ? "" : " (still moving at the limit)"));
-            yield return Barrier(h, 252, block);
-            PushBlockSync.St idleState = PushBlockSync.StateOf(block);
-            DynamicLease idleLease = DynamicLease.For(idleState.Key);
-            bool idleOwner = PushBlockSync.IsLocalOwner(block);
-            int idleSentBefore = idleState.Sent; float idleHeardBefore = idleLease.ReceivedAt;
-            idleState.Pacer.ResetStats();
-            Vector3 idleFrom = block.Position;
-            yield return Wait(2.0f);
-            int idleSent = idleState.Sent - idleSentBefore;
-            string idleWhy = idleState.Pacer.Why() + "; drift " + F((block.Position - idleFrom).magnitude) + ", fps " + F(1f / Mathf.Max(Time.smoothDeltaTime, 1e-4f))
-                + ", interacting " + (Time.realtimeSinceStartup < idleState.InteractionUntil);
-            if (idleOwner) h.Note("PF stone at rest: " + idleSent + " states in 2 s (" + idleWhy + ")");
-            bool idleOwnerAfter = PushBlockSync.IsLocalOwner(block);
-            yield return Barrier(h, 253, block);
-            if (s_partnerSteps.TryGetValue(253, out partner))
+            // Round 4: once in four runs the stone, at rest for 0.7 s, moved again in the window (a step of 0.03, drift
+            // 0.06) with nobody pushing; states for a stone that moves are right. So a window in which the stone moves
+            // by more than the pacer's thresholds, measured here and not by the pacer, is noted and tried again (3 tries).
+            for (int attempt = 0; attempt < 3; attempt++)
             {
+                bool last = attempt == 2;
+                int before = attempt == 0 ? 252 : 280 + attempt * 2, after = before + 1;
+                float[] rest = new float[2];
+                yield return WaitAtRest(block, StoneSendPacer.Settle + 0.2f, 8f, rest);
+                h.Note("PF stone came to rest after " + F(rest[0]) + " s" + (rest[1] > 0f ? "" : " (still moving at the limit)")
+                    + (attempt > 0 ? " (try " + (attempt + 1) + ")" : ""));
+                yield return Barrier(h, before, block);
+                PushBlockSync.St idleState = PushBlockSync.StateOf(block);
+                DynamicLease idleLease = DynamicLease.For(idleState.Key);
+                bool idleOwner = PushBlockSync.IsLocalOwner(block);
+                int idleSentBefore = idleState.Sent, pushOutsBefore = PushBlockSync.PushOuts, puppetPushOutsBefore = PushBlockSync.PuppetPushOuts;
+                float idleHeardBefore = idleLease.ReceivedAt;
+                idleState.Pacer.ResetStats();
+                Vector3 idleFrom = block.Position; float idleRot = block.transform.eulerAngles.z;
+                Rigidbody idleBody = block.GetComponent<Rigidbody>();
+                float shift = 0f, turn = 0f, speed = 0f, spin = 0f, windowEnd = Time.realtimeSinceStartup + 2.0f;
+                while (Time.realtimeSinceStartup < windowEnd)
+                {
+                    KeepAlive(); yield return null;
+                    Vector3 now = block.Position;
+                    shift = Mathf.Max(shift, Mathf.Max(Mathf.Abs(now.x - idleFrom.x), Mathf.Abs(now.y - idleFrom.y)));
+                    turn = Mathf.Max(turn, Mathf.Abs(Mathf.DeltaAngle(idleRot, block.transform.eulerAngles.z)));
+                    if (idleBody != null && !idleBody.isKinematic)
+                    {
+                        speed = Mathf.Max(speed, Mathf.Max(Mathf.Abs(idleBody.velocity.x), Mathf.Abs(idleBody.velocity.y)));
+                        spin = Mathf.Max(spin, Mathf.Abs(idleBody.angularVelocity.z));
+                    }
+                }
+                bool stirred = shift > StoneSendPacer.PositionEpsilon || turn > StoneSendPacer.RotationEpsilon
+                    || speed > StoneSendPacer.SpeedEpsilon || spin > StoneSendPacer.AngularEpsilon;
+                int idleSent = idleState.Sent - idleSentBefore;
+                string idleWhy = idleState.Pacer.Why() + "; moved here: shift " + F(shift) + ", turn " + F(turn) + ", speed " + F(speed)
+                    + ", spin " + F(spin) + "; fps " + F(1f / Mathf.Max(Time.smoothDeltaTime, 1e-4f))
+                    + ", interacting " + (Time.realtimeSinceStartup < idleState.InteractionUntil)
+                    + ", push-outs " + (PushBlockSync.PushOuts - pushOutsBefore) + "/" + (PushBlockSync.PuppetPushOuts - puppetPushOutsBefore);
+                if (idleOwner) h.Note("PF stone at rest: " + idleSent + " states in 2 s (" + idleWhy + ")");
+                bool idleOwnerAfter = PushBlockSync.IsLocalOwner(block);
+                yield return Barrier(h, after, block, false, stirred ? 1f : 0f);
+                if (!s_partnerSteps.TryGetValue(after, out partner)) yield break;
+                if ((stirred || partner.Extra > 0f) && !last)
+                {
+                    Note(h, "PF stone moved in the rest window (try " + (attempt + 1) + ", " + (stirred ? "here" : "on the partner's PC") + ")", block);
+                    continue;
+                }
                 if (idleOwner && idleOwnerAfter && rest[1] == 0f)
                     h.Check(false, "PF setup: the stone came to rest on its owner's PC within 8 s (" + idleWhy + ")");
                 else if (idleOwner && idleOwnerAfter)
@@ -801,6 +831,7 @@ namespace OriCoop
                 else if (!idleOwner && !idleOwnerAfter && idleLease.Owner != 0)
                     h.Check(idleLease.ReceivedAt > idleHeardBefore, "PF the partner still hears the owner of a stone at rest (heartbeat)");
                 h.Check(Agree(block, partner, out detail), "PF the stone at rest is in the same place on both PCs (" + detail + ")");
+                break;
             }
             yield return Barrier(h, 250, block);
             WatchStart(block);
