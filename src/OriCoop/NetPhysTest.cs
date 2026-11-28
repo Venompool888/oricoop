@@ -37,6 +37,23 @@ namespace OriCoop
             while (Time.realtimeSinceStartup < end) { KeepAlive(); yield return null; }
         }
 
+        // #424: waits until the stone lies still on this PC (no step above 0.005 for `still` real seconds), at most `limit`
+        // seconds; waited[0] = how long it took, waited[1] = 1 when it came to rest.
+        static IEnumerator WaitAtRest(PushPullBlock block, float still, float limit, float[] waited)
+        {
+            float began = Time.realtimeSinceStartup, quietSince = began; Vector3 last = block.Position;
+            waited[1] = 0f;
+            while (Time.realtimeSinceStartup - began < limit)
+            {
+                KeepAlive(); yield return null;
+                Vector3 now = block.Position;
+                if ((now - last).magnitude > 0.005f) quietSince = Time.realtimeSinceStartup;
+                last = now;
+                if (Time.realtimeSinceStartup - quietSince >= still) { waited[1] = 1f; break; }
+            }
+            waited[0] = Time.realtimeSinceStartup - began;
+        }
+
         // T-226: a push whose distance is checked lasts this much game (physics) time, capped in real time. A busy machine
         // runs fewer physics steps per real second (Unity drops game time when a frame takes too long), so a push timed
         // in real seconds moved the stone less and missed the distance threshold (PB, PF). Returns the real seconds used.
@@ -746,6 +763,11 @@ namespace OriCoop
             }
             // #424: the stone lies still after the pushes. Its owner sends a heartbeat (2 a second, after a 0.5 s burst
             // when it stops), not 20 states a second; the partner still hears it and both PCs agree where it lies.
+            // 2026-11-28: 1 s after the last push the stone was still sliding on a busy test PC (max speed 0.9 in the
+            // window), so the window starts once it has lain still here for longer than the pacer's settle burst.
+            float[] rest = new float[2];
+            yield return WaitAtRest(block, StoneSendPacer.Settle + 0.2f, 6f, rest);
+            h.Note("PF stone came to rest after " + F(rest[0]) + " s" + (rest[1] > 0f ? "" : " (still moving at the limit)"));
             yield return Barrier(h, 252, block);
             PushBlockSync.St idleState = PushBlockSync.StateOf(block);
             DynamicLease idleLease = DynamicLease.For(idleState.Key);
