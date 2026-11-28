@@ -37,18 +37,27 @@ namespace OriCoop
             while (Time.realtimeSinceStartup < end) { KeepAlive(); yield return null; }
         }
 
-        // #424: waits until the stone lies still on this PC (no step above 0.005 for `still` real seconds), at most `limit`
-        // seconds; waited[0] = how long it took, waited[1] = 1 when it came to rest.
+        // #424: waits until the stone lies still on this PC for `still` real seconds, at most `limit` seconds; waited[0] =
+        // how long it took, waited[1] = 1 when it came to rest. Still means what the pacer counts as still, with margin:
+        // within half of PositionEpsilon / RotationEpsilon of where it lay when the quiet began, and, where this PC
+        // simulates it, under half of SpeedEpsilon / AngularEpsilon. 2026-11-28 round 3: the first version compared one
+        // frame with the next (0.005), and at 140-170 fps a stone creeping at 0.2-0.4 a second stays under that every
+        // frame, so it was called still while it was not (the window then saw max speed 0.16-0.39).
         static IEnumerator WaitAtRest(PushPullBlock block, float still, float limit, float[] waited)
         {
-            float began = Time.realtimeSinceStartup, quietSince = began; Vector3 last = block.Position;
+            Rigidbody body = block.GetComponent<Rigidbody>();
+            float began = Time.realtimeSinceStartup, quietSince = began;
+            Vector3 anchor = block.Position; float anchorRot = block.transform.eulerAngles.z;
             waited[1] = 0f;
             while (Time.realtimeSinceStartup - began < limit)
             {
                 KeepAlive(); yield return null;
-                Vector3 now = block.Position;
-                if ((now - last).magnitude > 0.005f) quietSince = Time.realtimeSinceStartup;
-                last = now;
+                Vector3 now = block.Position; float rot = block.transform.eulerAngles.z;
+                bool fast = body != null && !body.isKinematic && (Mathf.Abs(body.velocity.x) > StoneSendPacer.SpeedEpsilon * 0.5f
+                    || Mathf.Abs(body.velocity.y) > StoneSendPacer.SpeedEpsilon * 0.5f || Mathf.Abs(body.angularVelocity.z) > StoneSendPacer.AngularEpsilon * 0.5f);
+                if (fast || Mathf.Max(Mathf.Abs(now.x - anchor.x), Mathf.Abs(now.y - anchor.y)) > StoneSendPacer.PositionEpsilon * 0.5f
+                    || Mathf.Abs(Mathf.DeltaAngle(anchorRot, rot)) > StoneSendPacer.RotationEpsilon * 0.5f)
+                { quietSince = Time.realtimeSinceStartup; anchor = now; anchorRot = rot; }
                 if (Time.realtimeSinceStartup - quietSince >= still) { waited[1] = 1f; break; }
             }
             waited[0] = Time.realtimeSinceStartup - began;
@@ -760,13 +769,14 @@ namespace OriCoop
                 h.Check(back <= 1f && snaps == 0, "PF push " + (k + 1) + " (" + whose + "): the stone never jumps back on this PC (largest step back " + F(back) + ", snaps " + snaps + ")");
                 h.Check(Agree(block, partner, out detail), "PF after push " + (k + 1) + " the stone is in the same place on both PCs (" + detail + ")");
                 if (pusher) h.Check(travel >= 1.5f, "PF push " + (k + 1) + " moved the stone (" + F(travel) + ")");
+                if (pusher && travel < 1.5f) Note(h, "PF push " + (k + 1) + " short", block);   // #424 round 3: push 2 once moved 0.00
             }
             // #424: the stone lies still after the pushes. Its owner sends a heartbeat (2 a second, after a 0.5 s burst
             // when it stops), not 20 states a second; the partner still hears it and both PCs agree where it lies.
             // 2026-11-28: 1 s after the last push the stone was still sliding on a busy test PC (max speed 0.9 in the
             // window), so the window starts once it has lain still here for longer than the pacer's settle burst.
             float[] rest = new float[2];
-            yield return WaitAtRest(block, StoneSendPacer.Settle + 0.2f, 6f, rest);
+            yield return WaitAtRest(block, StoneSendPacer.Settle + 0.2f, 8f, rest);
             h.Note("PF stone came to rest after " + F(rest[0]) + " s" + (rest[1] > 0f ? "" : " (still moving at the limit)"));
             yield return Barrier(h, 252, block);
             PushBlockSync.St idleState = PushBlockSync.StateOf(block);
@@ -784,7 +794,9 @@ namespace OriCoop
             yield return Barrier(h, 253, block);
             if (s_partnerSteps.TryGetValue(253, out partner))
             {
-                if (idleOwner && idleOwnerAfter)
+                if (idleOwner && idleOwnerAfter && rest[1] == 0f)
+                    h.Check(false, "PF setup: the stone came to rest on its owner's PC within 8 s (" + idleWhy + ")");
+                else if (idleOwner && idleOwnerAfter)
                     h.Check(idleSent <= 8, "PF the owner of a stone at rest sends a heartbeat, not 20 states a second (" + idleSent + " states in 2 s; " + idleWhy + ")");
                 else if (!idleOwner && !idleOwnerAfter && idleLease.Owner != 0)
                     h.Check(idleLease.ReceivedAt > idleHeardBefore, "PF the partner still hears the owner of a stone at rest (heartbeat)");
