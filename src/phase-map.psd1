@@ -139,6 +139,7 @@
         @{ Switch = 'ORICOOP_MUTATE_STONE_DROP_HELPER'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net';     Phase = 'P' }   # T-197 the second pusher keeps hold of the stone (PE)
         @{ Switch = 'ORICOOP_MUTATE_STONE_STALE_STATE'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net';     Phase = 'P' }   # T-197 no jump to a state of an older lease epoch (PF)
         @{ Switch = 'ORICOOP_MUTATE_STONE_KEEP_DOWNED_GRAB'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net'; Phase = 'P' }  # T-197 a downed player lets go of the stone (PG)
+        @{ Switch = 'ORICOOP_MUTATE_STONE_IDLE_SEND'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net';    Phase = 'P' }   # #424 a resting stone's owner sends only a heartbeat (PF)
         @{ Switch = 'ORICOOP_MUTATE_STONE_EXPIRE_OWNER_PUSH'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-stones'; Phase = 'P' }
         @{ Switch = 'ORICOOP_MUTATE_COPUSH_DEVICE_POSE'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-stones'; Phase = 'P' }
         @{ Switch = 'ORICOOP_MUTATE_COPUSH_ARRIVAL_ORDER'; File = 'src\OriCoop\PushBlockSync.cs'; Suite = 'net-stones'; Phase = 'P' }

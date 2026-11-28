@@ -196,6 +196,7 @@ static class EnemyTests
         // T-023: a player who starts pushing a stone another player only holds keeps simulating it until the arbiter's
         // grant comes back (request + grant = one RTT plus server and send delays), then owns it without a gap.
         StoneSeedTests.Register(Run);
+        StoneSendPacerTests.Register(Run);
         Run("stone takeover survives the grant round trip", delegate {
             OriCoop.Authority.StoneLeaseSimulation sim = new OriCoop.Authority.StoneLeaseSimulation();
             const float rtt = 150f, grantAt = 0.25f;
