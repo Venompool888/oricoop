@@ -92,5 +92,28 @@ static class StoneSendPacerTests
             pacer.Reset();
             Check(pacer.Take(2.02f, 3, false, 5f, 2f, 0f, 0f, 0f, 0f), "after an ownership reset");
         });
+        run("#424 a resting stone's solver jitter is not movement", delegate {
+            // A body lying on the ground reports a small residual velocity every step and wobbles by a few thousandths.
+            StoneSendPacer pacer = new StoneSendPacer();
+            Count(pacer, 0f, 1f, 3, false, Still);
+            pacer.ResetStats();
+            int f = 0;
+            int sent = Count(pacer, 1f, 2f, 3, false, delegate(float t) { f++; return new[] { 5f + ((f & 1) == 0 ? 0.003f : -0.003f), (f & 1) == 0 ? 0.06f : -0.08f }; });
+            Check(sent >= 3 && sent <= 5, "2 s of jitter at rest: heartbeats only, got " + sent + " (" + pacer.Why() + ")");
+            Check(pacer.Heartbeats == sent && pacer.Moving == 0 && pacer.Moved == 0, "every state counted as a heartbeat (" + pacer.Why() + ")");
+        });
+        run("#424 the reasons for the states sent are counted", delegate {
+            StoneSendPacer pacer = new StoneSendPacer();
+            Check(pacer.Take(0f, 3, false, 5f, 2f, 0f, 0f, 0f, 0f) && pacer.First == 1, "the first state");
+            Check(pacer.Take(0.1f, 4, false, 5f, 2f, 0f, 0f, 0f, 0f) && pacer.NewEpoch == 1, "a new epoch");
+            Check(pacer.Take(0.2f, 4, true, 5f, 2f, 0f, 0f, 0f, 0f) && pacer.Active == 1, "a push");
+            Check(pacer.Take(0.3f, 4, false, 5f, 2f, 0f, 0f, 0f, 0f) && pacer.Active == 2, "the push stops");
+            Check(pacer.Take(0.4f, 4, false, 5.5f, 2f, 0f, 2f, 0f, 0f) && pacer.Moving == 1, "sliding");
+            Check(pacer.Take(0.5f, 4, false, 5.6f, 2f, 0f, 0f, 0f, 0f) && pacer.Moved == 1, "moved, no speed reported");
+            Check(pacer.Take(0.6f, 4, false, 5.6f, 2f, 0f, 0f, 0f, 0f) && pacer.Settling == 1, "settling");
+            Check(pacer.Why().Contains("max speed 2.000"), "the largest speed is kept: " + pacer.Why());
+            pacer.ResetStats();
+            Check(pacer.First + pacer.NewEpoch + pacer.Active + pacer.Moving + pacer.Moved + pacer.Settling + pacer.Heartbeats == 0 && pacer.MaxSpeed == 0f, "stats reset");
+        });
     }
 }

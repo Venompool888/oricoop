@@ -751,14 +751,19 @@ namespace OriCoop
             DynamicLease idleLease = DynamicLease.For(idleState.Key);
             bool idleOwner = PushBlockSync.IsLocalOwner(block);
             int idleSentBefore = idleState.Sent; float idleHeardBefore = idleLease.ReceivedAt;
+            idleState.Pacer.ResetStats();
+            Vector3 idleFrom = block.Position;
             yield return Wait(2.0f);
             int idleSent = idleState.Sent - idleSentBefore;
+            string idleWhy = idleState.Pacer.Why() + "; drift " + F((block.Position - idleFrom).magnitude) + ", fps " + F(1f / Mathf.Max(Time.smoothDeltaTime, 1e-4f))
+                + ", interacting " + (Time.realtimeSinceStartup < idleState.InteractionUntil);
+            if (idleOwner) h.Note("PF stone at rest: " + idleSent + " states in 2 s (" + idleWhy + ")");
             bool idleOwnerAfter = PushBlockSync.IsLocalOwner(block);
             yield return Barrier(h, 253, block);
             if (s_partnerSteps.TryGetValue(253, out partner))
             {
                 if (idleOwner && idleOwnerAfter)
-                    h.Check(idleSent <= 8, "PF the owner of a stone at rest sends a heartbeat, not 20 states a second (" + idleSent + " states in 2 s)");
+                    h.Check(idleSent <= 8, "PF the owner of a stone at rest sends a heartbeat, not 20 states a second (" + idleSent + " states in 2 s; " + idleWhy + ")");
                 else if (!idleOwner && !idleOwnerAfter && idleLease.Owner != 0)
                     h.Check(idleLease.ReceivedAt > idleHeardBefore, "PF the partner still hears the owner of a stone at rest (heartbeat)");
                 h.Check(Agree(block, partner, out detail), "PF the stone at rest is in the same place on both PCs (" + detail + ")");
