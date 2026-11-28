@@ -744,6 +744,25 @@ namespace OriCoop
                 h.Check(Agree(block, partner, out detail), "PF after push " + (k + 1) + " the stone is in the same place on both PCs (" + detail + ")");
                 if (pusher) h.Check(travel >= 1.5f, "PF push " + (k + 1) + " moved the stone (" + F(travel) + ")");
             }
+            // #424: the stone lies still after the pushes. Its owner sends a heartbeat (2 a second, after a 0.5 s burst
+            // when it stops), not 20 states a second; the partner still hears it and both PCs agree where it lies.
+            yield return Barrier(h, 252, block);
+            PushBlockSync.St idleState = PushBlockSync.StateOf(block);
+            DynamicLease idleLease = DynamicLease.For(idleState.Key);
+            bool idleOwner = PushBlockSync.IsLocalOwner(block);
+            int idleSentBefore = idleState.Sent; float idleHeardBefore = idleLease.ReceivedAt;
+            yield return Wait(2.0f);
+            int idleSent = idleState.Sent - idleSentBefore;
+            bool idleOwnerAfter = PushBlockSync.IsLocalOwner(block);
+            yield return Barrier(h, 253, block);
+            if (s_partnerSteps.TryGetValue(253, out partner))
+            {
+                if (idleOwner && idleOwnerAfter)
+                    h.Check(idleSent <= 8, "PF the owner of a stone at rest sends a heartbeat, not 20 states a second (" + idleSent + " states in 2 s)");
+                else if (!idleOwner && !idleOwnerAfter && idleLease.Owner != 0)
+                    h.Check(idleLease.ReceivedAt > idleHeardBefore, "PF the partner still hears the owner of a stone at rest (heartbeat)");
+                h.Check(Agree(block, partner, out detail), "PF the stone at rest is in the same place on both PCs (" + detail + ")");
+            }
             yield return Barrier(h, 250, block);
             WatchStart(block);
             if (host) PushBlockSync.TestSessionReset();

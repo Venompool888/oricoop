@@ -11,7 +11,7 @@ namespace OriCoop
     // Per-player collision and one leased simulation of each pushable stone.
     public static class PushBlockSync
     {
-        const float SendInterval = 0.05f, SnapDistance = 3f, MaxExtrapolate = 0.25f;
+        const float SnapDistance = 3f, MaxExtrapolate = 0.25f;
 
         public sealed class St
         {
@@ -37,6 +37,8 @@ namespace OriCoop
             public Vector3 RemotePos, RemoteVel;
             public float RemoteRotZ, RemoteAngularZ, RemoteAt;
             public float SentAt = -10f;
+            internal readonly StoneSendPacer Pacer = new StoneSendPacer();   // #424: a resting stone sends a heartbeat only
+            public int Sent;
             public bool WasLocalOwner, Seeded;
             internal readonly List<PendingHit> Hits = new List<PendingHit>();
         }
@@ -74,6 +76,8 @@ namespace OriCoop
         // a copy follows / is seeded from a state of an older lease epoch; a suspended Ori keeps its grab.
         internal static readonly bool s_mutateDropHelper = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_DROP_HELPER") == "1";
         static readonly bool s_mutateExpireOwnerPush = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_EXPIRE_OWNER_PUSH") == "1";
+        // #424 mutation: the old pacing, 20 states a second for as long as this PC owns the stone (PF idle check fails).
+        static readonly bool s_mutateIdleSend = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_IDLE_SEND") == "1";
         internal static readonly bool s_mutateStaleState = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_STALE_STATE") == "1";
         internal static readonly bool s_mutateKeepDownedGrab = Environment.GetEnvironmentVariable("ORICOOP_MUTATE_STONE_KEEP_DOWNED_GRAB") == "1";
         static float GetIgnoreTime(PushPullBlock b) { return (float)s_fIgnore.GetValue(b); }
@@ -199,18 +203,21 @@ namespace OriCoop
         static void SendState(PushPullBlock b, St st)
         {
             Rigidbody rb = s_body(b);
-            if (rb == null || Time.realtimeSinceStartup - st.SentAt < SendInterval) return;
-            st.SentAt = Time.realtimeSinceStartup;
+            if (rb == null) return;
             Vector3 p = b.Position, v = rb.isKinematic ? Vector3.zero : rb.velocity;
             float rotation = b.transform.eulerAngles.z, angular = rb.isKinematic ? 0f : rb.angularVelocity.z;
             if (!LeaseMath.Finite(p.x) || !LeaseMath.Finite(p.y) || !LeaseMath.Finite(rotation)
                 || !LeaseMath.Finite(v.x) || !LeaseMath.Finite(v.y) || !LeaseMath.Finite(angular)) return;
+            float now = Time.realtimeSinceStartup;
+            if (s_mutateIdleSend ? now - st.SentAt < StoneSendPacer.Interval
+                : !st.Pacer.Take(now, st.Lease.Epoch, st.Lease.Active, p.x, p.y, rotation, v.x, v.y, angular)) return;
+            st.SentAt = now;
             using (MemoryStream stream = new MemoryStream())
             using (BinaryWriter w = new BinaryWriter(stream))
             {
                 w.Write(p.x); w.Write(p.y); w.Write(rotation); w.Write(v.x); w.Write(v.y); w.Write(angular);
                 byte[] data = stream.ToArray();
-                st.Lease.Publish(data); StatesSent++;
+                st.Lease.Publish(data); StatesSent++; st.Sent++;
             }
         }
 
@@ -1107,6 +1114,7 @@ namespace OriCoop
                 st.Reports.Clear(); st.SentSeatDirs = 0;
                 st.Simulation = new StoneLeaseSimulation();
                 st.InteractionUntil = st.SentAt = -10f;
+                st.Pacer.Reset();
                 st.Hits.Clear();
             }
             Log("ownership reset (" + why + ")");
